@@ -408,45 +408,73 @@ public sealed partial class WorldIndexer : IDisposable
 
     private void Write(DateTimeOffset now)
     {
+        FlushRemovals();
+        var batch = new List<Observation>();
+        var written = new List<(IndexEntry E, string Text, string Fields)>();
+        var refresh = TimeSpan.FromMinutes(Math.Max(1, _o.RefreshMinutes));
+        foreach (var e in _entries.Values)
+        {
+            if (RenderForWrite(e, now, refresh) is not { } w) continue;
+            batch.Add(ObservationOf(e, w.Text, w.Fields));
+            written.Add((e, w.Text, w.Fields));
+        }
+        if (batch.Count == 0 || !UpsertBatches(batch)) return;
+        foreach (var (e, text, fields) in written) MarkWritten(e, text, fields, now);
+    }
+
+    private void FlushRemovals()
+    {
         foreach (var (kind, key) in _removals)
         {
             try { if (_sink.Remove(kind, key, _dim)) Stats.Removes++; }
             catch (Exception ex) { _log.LogDebug(ex, "remove {Kind} {Key} failed", kind, key); }
         }
         _removals.Clear();
+    }
 
-        var batch = new List<Observation>();
-        var written = new List<(IndexEntry E, string Text, string Fields)>();
-        var refresh = TimeSpan.FromMinutes(Math.Max(1, _o.RefreshMinutes));
-        foreach (var e in _entries.Values)
+    /// <summary>Dirty, seen or with new contents, and not written too recently (forced ones always); an entry whose area isn't
+    /// loaded is let go (not dirty any more).</summary>
+    private bool ReadyToWrite(IndexEntry e, DateTimeOffset now)
+    {
+        if (!e.Dirty && !e.Seen && !e.ContentsDirty) return false;
+        if (!e.Force && e.WrittenAt != default && now - e.WrittenAt < e.MinWriteInterval) return false;
+        if (e.Force || CanRender(e)) return true;
+        e.Dirty = false;
+        return false;
+    }
+
+    /// <summary>The entry's text and fields when they changed (or a seen entry is due for a refresh), else null.</summary>
+    private (string Text, string Fields)? RenderForWrite(IndexEntry e, DateTimeOffset now, TimeSpan refresh)
+    {
+        if (!ReadyToWrite(e, now)) return null;
+        var (text, fields) = Render(e);
+        var bounds = (e.Min, e.Max);
+        bool changed = text != e.WrittenText || fields != e.WrittenFields || e.WrittenBounds != bounds || e.ContentsDirty;
+        bool touch = e.Seen && now - e.WrittenAt >= refresh;
+        e.Dirty = false;
+        e.Seen = false;
+        return changed || touch ? (text, fields) : null;
+    }
+
+    private Observation ObservationOf(IndexEntry e, string text, string fields) => new(e.Kind, e.Key, text)
+    {
+        Bounds = e.Bounds,
+        FieldsJson = fields,
+        Source = ObservationSource.Auto,
+        Confidence = Confidence(e),
+        Contents = e.ContentsDirty ? e.Contents : null,
+        ContentsAt = e.ContentsDirty ? e.ContentsAt : null,
+        ContentsBy = !e.ContentsDirty ? null : e.ContentsBy ?? (_selfName.Length > 0 ? _selfName : null),
+        Dimension = _dim,
+    };
+
+    /// <summary>Upserts in batches of MaxBatch; on a failure the rest stays dirty (retried next pass) and this returns false.</summary>
+    private bool UpsertBatches(List<Observation> batch)
+    {
+        int size = Math.Max(1, _o.MaxBatch);
+        for (int i = 0; i < batch.Count; i += size)
         {
-            if (!e.Dirty && !e.Seen && !e.ContentsDirty) continue;
-            if (!e.Force && e.WrittenAt != default && now - e.WrittenAt < e.MinWriteInterval) continue;
-            if (!e.Force && !CanRender(e)) { e.Dirty = false; continue; }
-            var (text, fields) = Render(e);
-            var bounds = (e.Min, e.Max);
-            bool changed = text != e.WrittenText || fields != e.WrittenFields || e.WrittenBounds != bounds || e.ContentsDirty;
-            bool touch = e.Seen && now - e.WrittenAt >= refresh;
-            e.Dirty = false;
-            e.Seen = false;
-            if (!changed && !touch) continue;
-            batch.Add(new Observation(e.Kind, e.Key, text)
-            {
-                Bounds = e.Bounds,
-                FieldsJson = fields,
-                Source = ObservationSource.Auto,
-                Confidence = Confidence(e),
-                Contents = e.ContentsDirty ? e.Contents : null,
-                ContentsAt = e.ContentsDirty ? e.ContentsAt : null,
-                ContentsBy = !e.ContentsDirty ? null : e.ContentsBy ?? (_selfName.Length > 0 ? _selfName : null),
-                Dimension = _dim,
-            });
-            written.Add((e, text, fields));
-        }
-        if (batch.Count == 0) return;
-        for (int i = 0; i < batch.Count; i += Math.Max(1, _o.MaxBatch))
-        {
-            var slice = batch.GetRange(i, Math.Min(Math.Max(1, _o.MaxBatch), batch.Count - i));
+            var slice = batch.GetRange(i, Math.Min(size, batch.Count - i));
             try
             {
                 _sink.UpsertMany(slice);
@@ -458,30 +486,34 @@ public sealed partial class WorldIndexer : IDisposable
                 _log.LogWarning(ex, "world index write failed ({Count} observations)", slice.Count);
                 // Leave them dirty: retried next pass.
                 foreach (var o in slice) if (Find(o.Kind, o.Key) is { } e) e.Dirty = true;
-                return;
+                return false;
             }
         }
-        foreach (var (e, text, fields) in written)
+        return true;
+    }
+
+    private void MarkWritten(IndexEntry e, string text, string fields, DateTimeOffset now)
+    {
+        e.WrittenText = text;
+        e.WrittenFields = fields;
+        e.WrittenBounds = (e.Min, e.Max);
+        e.WrittenAt = now;
+        e.ContentsDirty = false;
+        e.Force = false;
+        if (e.Kind == IndexKinds.UnknownStructure && e.Extra.ContainsKey("new")) AnnounceUnknown(e, text);
+    }
+
+    private void AnnounceUnknown(IndexEntry e, string text)
+    {
+        e.Extra.Remove("new");
+        var u = new UnknownStructure(e.Key, e.Min, e.Max, text) { Blocks = e.Extra.GetValueOrDefault("blocks") as Dictionary<string, int> };
+        lock (_unknownLock) _pendingUnknown[e.Key] = u;
+        try
         {
-            e.WrittenText = text;
-            e.WrittenFields = fields;
-            e.WrittenBounds = (e.Min, e.Max);
-            e.WrittenAt = now;
-            e.ContentsDirty = false;
-            e.Force = false;
-            if (e.Kind == IndexKinds.UnknownStructure && e.Extra.ContainsKey("new"))
-            {
-                e.Extra.Remove("new");
-                var u = new UnknownStructure(e.Key, e.Min, e.Max, text) { Blocks = e.Extra.GetValueOrDefault("blocks") as Dictionary<string, int> };
-                lock (_unknownLock) _pendingUnknown[e.Key] = u;
-                try
-                {
-                    // The scenery ledger (persisted) decides: already announced/asked before, or unchanged since last seen = silent.
-                    if (ShouldAnnounce?.Invoke(u, _dim) ?? true) UnknownStructureFound?.Invoke(u);
-                }
-                catch (Exception ex) { _log.LogDebug(ex, "UnknownStructureFound handler failed"); }
-            }
+            // The scenery ledger (persisted) decides: already announced/asked before, or unchanged since last seen = silent.
+            if (ShouldAnnounce?.Invoke(u, _dim) ?? true) UnknownStructureFound?.Invoke(u);
         }
+        catch (Exception ex) { _log.LogDebug(ex, "UnknownStructureFound handler failed"); }
     }
 
     /// <summary>World-derived text needs the area loaded; container snapshots and player facts don't.</summary>

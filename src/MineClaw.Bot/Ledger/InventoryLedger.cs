@@ -175,40 +175,60 @@ public sealed class InventoryLedger(TimeProvider? time = null, int capacity = 60
             return delta < 0
                 ? "server correction: my inventory model listed them but the server didn't have them (gone earlier, unrecorded)"
                 : "server correction: the server had more than my model showed";
-        if (delta > 0)
-        {
-            int k = _pickups.FindIndex(x => x.Id == id && (at - x.At).Duration() <= TimeSpan.FromSeconds(1.5));
-            if (k >= 0)
-            {
-                _pickups.RemoveAt(k);
-                return scope is null && action is null ? "picked up" : $"picked up ({scope ?? action})";
-            }
-        }
-        if (delta < 0 && scope != Correction)
-        {
-            // Eating takes 32 ticks (1.6 s) after it starts; the slot update may come a little later still.
-            int m = _meals.FindIndex(x => x.Id == id && at >= x.At - TimeSpan.FromSeconds(0.5) && at - x.At <= TimeSpan.FromSeconds(6));
-            if (m >= 0)
-            {
-                bool auto = _meals[m].Auto;
-                _meals.RemoveAt(m);
-                return auto ? "ate (reflex)" : "eaten";
-            }
-        }
-        if (delta < 0 && _diedAt is { } died && (at - died).Duration() <= TimeSpan.FromSeconds(3))
-            return "lost when I died" + (_diedWhere is { } w ? $" at {w}" : "") + " (dropped there, despawns after 5 min)";
+        return PickupCause(at, id, delta, scope, action) ?? MealCause(at, id, delta) ?? DeathCause(at, delta)
+               ?? ActionCauseOf(id, delta, scope, action, container);
+    }
+
+    /// <summary>A gain right after a pickup of the same item (the pickup is used up).</summary>
+    private string? PickupCause(DateTimeOffset at, int id, int delta, string? scope, string? action)
+    {
+        if (delta <= 0) return null;
+        int k = _pickups.FindIndex(x => x.Id == id && (at - x.At).Duration() <= TimeSpan.FromSeconds(1.5));
+        if (k < 0) return null;
+        _pickups.RemoveAt(k);
+        return scope is null && action is null ? "picked up" : $"picked up ({scope ?? action})";
+    }
+
+    /// <summary>A loss of food being eaten. Eating takes 32 ticks (1.6 s) after it starts; the slot update may come a little later still.</summary>
+    private string? MealCause(DateTimeOffset at, int id, int delta)
+    {
+        if (delta >= 0) return null;
+        int m = _meals.FindIndex(x => x.Id == id && at >= x.At - TimeSpan.FromSeconds(0.5) && at - x.At <= TimeSpan.FromSeconds(6));
+        if (m < 0) return null;
+        bool auto = _meals[m].Auto;
+        _meals.RemoveAt(m);
+        return auto ? "ate (reflex)" : "eaten";
+    }
+
+    private string? DeathCause(DateTimeOffset at, int delta) =>
+        delta < 0 && _diedAt is { } died && (at - died).Duration() <= TimeSpan.FromSeconds(3)
+            ? "lost when I died" + (_diedWhere is { } w ? $" at {w}" : "") + " (dropped there, despawns after 5 min)"
+            : null;
+
+    private static string ActionCauseOf(int id, int delta, string? scope, string? action, string? container)
+    {
         // A deposit inside a bigger job (the gen loop storing its haul) is a deposit, not "harvest_generator" (live 10-27: "-64
         // cobblestone: harvest_generator -62/-63/-64" while the haul went into chest 14,64,-5).
         if (action == "deposit" && (scope is null || !scope.StartsWith("deposited", StringComparison.Ordinal)))
-            return delta < 0 ? $"deposited ({container ?? "chest"})" : $"gained during a deposit ({container ?? "chest"})";
+            return DepositCause(delta, container);
         if (scope is not null) return scope;
-        if (delta < 0 && Items.Get(id) is { MaxDamage: > 0 } && action is "dig" or "mine" or "chop" or "harvest" or "attack" or "spar" or "collect")
-            return $"wore out ({action})";
+        if (WoreOut(id, delta, action)) return $"wore out ({action})";
         if (action is not null && action != "click") return ActionCause(action, delta);
-        return action == "click"
+        return UnexplainedCause(action, delta);
+    }
+
+    private static string DepositCause(int delta, string? container) =>
+        delta < 0 ? $"deposited ({container ?? "chest"})" : $"gained during a deposit ({container ?? "chest"})";
+
+    /// <summary>A window click, or no action at all (the server corrected the inventory model?).</summary>
+    private static string UnexplainedCause(string? action, int delta) =>
+        action == "click"
             ? (delta < 0 ? "moved out of the inventory by a window click" : "moved into the inventory by a window click")
             : (delta < 0 ? "vanished without an action (server correction of my inventory model?)" : "appeared without an action (server correction?)");
-    }
+
+    /// <summary>A tool lost while working with it: it broke.</summary>
+    private static bool WoreOut(int id, int delta, string? action) =>
+        delta < 0 && Items.Get(id) is { MaxDamage: > 0 } && action is "dig" or "mine" or "chop" or "harvest" or "attack" or "spar" or "collect";
 
     private static string ActionCause(string action, int delta) => (action, delta < 0) switch
     {

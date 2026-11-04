@@ -249,17 +249,24 @@ export function apiUrl<K extends RouteId>(
 
 /** Human text for any error thrown by the client. */
 export function errorText(e: unknown): string {
-  if (e instanceof ApiError) {
-    if (e.status === 0) return 'The server could not be reached. Check your connection.';
-    if (e.status === 401) return 'Your session has ended. Sign in again.';
-    if (e.status === 403) return e.code === 'csrf' ? 'Security token expired. Reload the page.' : 'You do not have access to this.';
-    if (e.status === 404) return 'Not found.';
-    if (e.status === 429) return 'Too many requests. Wait a moment and try again.';
-    if (e.status === 503) return e.code === 'busy' ? 'The renderer is busy. Try again shortly.' : 'The bot is not reachable right now.';
-    if (e.status === 501) return 'Not available yet on this server.';
-    return e.message;
-  }
+  if (e instanceof ApiError) return apiErrorText(e);
   if (e instanceof ContractError) return 'The server answered in an unexpected format.';
-  if (e instanceof Error) return e.message;
-  return String(e);
+  return e instanceof Error ? e.message : String(e);
+}
+
+/** What an HTTP status means to the reader (some depend on the error code); any other status shows the server's message. */
+const STATUS_TEXT: Partial<Record<number, string | ((code: string | undefined) => string)>> = {
+  0: 'The server could not be reached. Check your connection.',
+  401: 'Your session has ended. Sign in again.',
+  403: (code) => (code === 'csrf' ? 'Security token expired. Reload the page.' : 'You do not have access to this.'),
+  404: 'Not found.',
+  429: 'Too many requests. Wait a moment and try again.',
+  501: 'Not available yet on this server.',
+  503: (code) => (code === 'busy' ? 'The renderer is busy. Try again shortly.' : 'The bot is not reachable right now.'),
+};
+
+function apiErrorText(e: ApiError): string {
+  const t = STATUS_TEXT[e.status];
+  if (t === undefined) return e.message;
+  return typeof t === 'function' ? t(e.code) : t;
 }

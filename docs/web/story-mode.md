@@ -420,7 +420,13 @@ so the other pawns stood idle in front of a field of work. Fox also saw pawns st
   its row):
   - `stuck`
   - `work not taken yet`: its last search found work that an idle leg still holds
-  - from its designations: `all targets leased`, `tool waiting`, `targets backing off`, `no reachable target`, or `back-off rest`
+  - from its designations: `all targets leased`, `tool waiting`, `targets backing off`, `no reachable target`, or `back-off rest`.
+    `no reachable target` (a mark free and not resting that its search still passed over) says which and why when its last search
+    knows: `no reachable target: mine 181,57,366: buried (dug once a cell over or beside it is gone)`. The reasons: buried, under
+    someone's feet, by a spot where a pawn got stuck, forbidden, out of sight (a haul or hunt mark whose entity no body sees). The
+    mark named is the first such one in the colony's list, so pawns idle for the same reason group together. What the picker skips
+    on purpose is no blocked work and gives no reason: a cave plant the colony marked itself, and trees an under-ground pawn leaves
+    to a pawn up top.
   - `waiting: …`: what its last search found held back. Examples: `waiting: build b3: need 48 block of iron (short: 432 iron ore)`,
     `waiting: bill Iron Ingot suspended: no iron ore …`, `waiting: Torch for build b5: no coal …`,
     `waiting: build b2: the level below is still being built`, `waiting: build b2: its open cells are taken or backing off`,
@@ -452,8 +458,10 @@ so the other pawns stood idle in front of a field of work. Fox also saw pawns st
   "stuck" 4 s later and then avoid that move); one that lands farther away re-plans from there at once. The goto's own escape for
   "stuck twice here" hops toward the step holding jump in water (one tap only floated the body off the floor).
 - **Caves in picking.** Idle cells are never cave cells. A home zone's own floors still count, such as a basement at the zone's height.
-  Cut and harvest targets in a cave under the box wait; mine designations are explicit and still go. Guard targets in a cave are
-  ignored (see Defending).
+  Cut and harvest marks the colony placed itself (`seek_seeds`' grass) wait when the plant is in a cave. Marks the owner placed are
+  ordinary work wherever they are, cave or not (live 11-04: five pawns idle all evening on "cut 91,55,463: in a cave"): the route,
+  reach and stuck rules decide, and the idle audit says why when they can't. Mine designations go as before. Guard targets in a cave
+  are ignored (see Defending).
 - The pawn's row carries `stuck` (`{since, at, reason, step, attempts}`, or null); the web lists stuck pawns as a condition.
 
 ### Keeping loot while gathering (added 2026-11-04)
@@ -539,8 +547,9 @@ Now:
   the pawn that took part rests from it 20 s, so another pawn (or it, later) climbs for the rest. After two partial goes the designation
   leaves the map with the alert, as before.
 - **Under ground, trees go to a pawn up top.** A pawn under ground (natural ground over it) leaves chop work to a pawn on the surface
-  that does chop work (not drafted, not stuck); it keeps to the work down there, or heads up by the under-ground rule. With nobody up
-  top it takes the tree itself.
+  that does chop work (not drafted, not stuck) and will take it: one idle now or chopping now. A pawn up top busy at other work doesn't
+  count (live 11-04: the trees waited while the pawn under ground stood idle). It keeps to the work down there, or heads up by the
+  under-ground rule. With nobody up top to take it, it takes the tree itself.
 - **Replanting (normal world).** With no sapling of the tree's species on it, the pawn breaks crown leaves it can reach (from its
   pillar before it comes down, then from the ground, at most 24, no long walks) until a sapling drops, and waits up to 12 s for the
   rest of the crown to decay. The spot is planted with the tree's own species, as on Skyblock.
@@ -1382,6 +1391,10 @@ limit the types of items allowed in a chest, pawns … should rearrange … Othe
   It is the nearest such pawn, once per drop, at most one every 5 s.
 - **Batching:** a trip picks up the drops within 6 blocks of the first one that go to the same place, up to the pawn's free slots
   (`collect` with a radius; each drop is leased, so no other pawn is sent to them; label "(+2 more)").
+- **A collect that found nothing** ("no reachable drops nearby", live 11-04: ×36 in 4 minutes on the farm): when none of its drops is in
+  the colony's view any more (another pawn or a player picked them up on the way, they merged, they despawned) nothing failed. A drop
+  still in view rests for that pawn only (30 s, 1 min, then 5 min) and the others may go; only when 3 pawns missed it does it rest for
+  everyone. A drop the pawn's own safety checks wrote off ("; 1 drop(s) left near the void") rests for everyone at once, as before.
 - **Re-sorting** (background, after drops): a stack a chest's filter no longer allows goes to a chest that takes it. A stack a
   better-priority chest accepts moves up. One trip takes as many stacks out of one chest as the pawn has room for, each to its own
   chest. With no chest for it, the fallback chest takes it (option on). What the fallback put somewhere stays there. Else the stack is

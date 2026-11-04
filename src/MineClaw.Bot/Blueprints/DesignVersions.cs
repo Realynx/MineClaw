@@ -24,16 +24,14 @@ public static partial class DesignVersions
     private static readonly AsyncLocal<string?> _server = new();
 
     /// <summary>"b1.8.1" / "1.12.2" from a loose spelling ("beta", "b181", "1.12"), or null.</summary>
-    public static string? Normalize(string? v)
+    public static string? Normalize(string? v) => Spellings.GetValueOrDefault((v ?? "").Trim().ToLowerInvariant());
+
+    /// <summary>Every accepted spelling (lower case, trimmed) of each version.</summary>
+    private static readonly Dictionary<string, string> Spellings = new()
     {
-        var s = (v ?? "").Trim().ToLowerInvariant();
-        return s switch
-        {
-            "b1.8.1" or "b181" or "beta" or "b1.8" or "beta 1.8.1" or "beta1.8.1" => Beta,
-            "1.12.2" or "1.12" or "1122" or "release" => Release,
-            _ => null,
-        };
-    }
+        ["b1.8.1"] = Beta, ["b181"] = Beta, ["beta"] = Beta, ["b1.8"] = Beta, ["beta 1.8.1"] = Beta, ["beta1.8.1"] = Beta,
+        ["1.12.2"] = Release, ["1.12"] = Release, ["1122"] = Release, ["release"] = Release,
+    };
 
     /// <summary>The game data of a version.</summary>
     public static IGameData Data(string version) => Normalize(version) == Release ? Release1122GameData.Instance : Beta181GameData.Instance;

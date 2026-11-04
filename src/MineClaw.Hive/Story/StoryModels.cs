@@ -301,6 +301,10 @@ public sealed class DesignationState
     public string Status { get; set; } = "open";
     /// <summary>Why it last failed (null while it hasn't).</summary>
     public string? Reason { get; set; }
+    /// <summary>Placed by the colony, not the owner (seek_seeds' grass cuts): its cells are the colony's choice, so a plant in a cave is
+    /// left alone (surface work). An owner's mark is work wherever it is.</summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
+    public bool Auto { get; set; }
     /// <summary>Why it waits without failing ("needs a stone pickaxe"): no pawn that picked it had or could fetch the tool; not saved.</summary>
     [System.Text.Json.Serialization.JsonIgnore] public string? Wait { get; set; }
     public long Rev { get; set; }

@@ -51,21 +51,14 @@ function LoginForm() {
       qc.setQueryData(meKey, res.user);
       router.replace(safeNext(params.get('next')));
     } catch (err) {
-      if (err instanceof ApiError && err.status === 409) {
+      const f = loginFailure(err, totp);
+      if (f.kind === 'setup') {
         router.replace('/setup'); // no account exists yet: first-run setup
-      } else if (err instanceof ApiError && err.status === 423) {
-        setError('Too many attempts. Sign-in is locked for a while; try again later.');
-      } else if (err instanceof ApiError && (err.status === 401 || err.status === 400)) {
-        if (!totp && needsTotp(err)) {
-          setError('Enter the code from your authenticator app.');
-          codeRef.current?.focus();
-        } else {
-          setError(totp ? 'Wrong username, password or code. Codes change every 30 seconds.' : 'Wrong username or password. If you use an authenticator, add its code.');
-          setTotp('');
-        }
-      } else {
-        setError(errorText(err));
+        return;
       }
+      setError(f.text);
+      if (f.kind === 'askCode') codeRef.current?.focus();
+      if (f.kind === 'wrong') setTotp('');
     } finally {
       setBusy(false);
     }
@@ -116,6 +109,19 @@ function LoginForm() {
       </Button>
     </form>
   );
+}
+
+/** What a failed sign-in means: no account yet (setup), locked, a code needed, wrong credentials (the code is cleared), or else. */
+function loginFailure(err: unknown, totp: string): { kind: 'setup' } | { kind: 'askCode' | 'wrong' | 'other'; text: string } {
+  if (!(err instanceof ApiError)) return { kind: 'other', text: errorText(err) };
+  if (err.status === 409) return { kind: 'setup' };
+  if (err.status === 423) return { kind: 'other', text: 'Too many attempts. Sign-in is locked for a while; try again later.' };
+  if (err.status !== 401 && err.status !== 400) return { kind: 'other', text: errorText(err) };
+  if (!totp && needsTotp(err)) return { kind: 'askCode', text: 'Enter the code from your authenticator app.' };
+  return {
+    kind: 'wrong',
+    text: totp ? 'Wrong username, password or code. Codes change every 30 seconds.' : 'Wrong username or password. If you use an authenticator, add its code.',
+  };
 }
 
 export default function LoginPage() {

@@ -59,40 +59,54 @@ export function passwordStrength(pw: string, context: ReadonlyArray<string | nul
     const left = PASSWORD_MIN_LENGTH - pw.length;
     return { score: 0, label: 'Too short', hint: `${left} more character${left === 1 ? '' : 's'} (at least ${PASSWORD_MIN_LENGTH})` };
   }
-  let pool = 0;
-  if (/[a-z]/.test(pw)) pool += 26;
-  if (/[A-Z]/.test(pw)) pool += 26;
-  if (/\d/.test(pw)) pool += 10;
-  if (/[^A-Za-z0-9\s]/.test(pw)) pool += 33;
-  if (/\s/.test(pw)) pool += 1;
   const unique = new Set(pw).size;
   // Repeated characters add little: count length as if each distinct character appeared at most ~3 times.
   const effective = Math.min(pw.length, unique * 3);
-  let bits = effective * Math.log2(Math.max(pool, 2));
-
-  const lower = pw.toLowerCase();
+  let bits = effective * Math.log2(Math.max(poolSize(pw), 2));
   const weak: string[] = [];
-  const words = [...COMMON, ...context.filter((c): c is string => !!c && c.length >= 3).map((c) => c.toLowerCase())];
-  if (words.some((w) => lower.includes(w))) {
-    bits -= 20;
-    weak.push('avoid your name and common words');
+  for (const w of weaknesses(pw, context)) {
+    bits -= w.bits;
+    weak.push(w.hint);
   }
-  if (/(.)\1\1/.test(pw)) {
-    bits -= 10;
-    weak.push('avoid repeated characters');
-  }
-  if (hasRun(pw)) {
-    bits -= 10;
-    weak.push('avoid runs like abcd or 1234');
-  }
-
-  const score: Strength['score'] = bits < 45 ? 1 : bits < 60 ? 2 : bits < 80 ? 3 : 4;
+  const score = scoreOf(bits);
   const label = ['Too short', 'Weak', 'Fair', 'Good', 'Strong'][score]!;
-  const hint =
-    weak.length > 0
-      ? `${weak[0]![0]!.toUpperCase()}${weak[0]!.slice(1)}.`
-      : score >= 4
-        ? 'A strong password.'
-        : 'Longer is stronger: a few unrelated words work well.';
-  return { score, label, hint };
+  return { score, label, hint: hintOf(weak, score) };
+}
+
+/** Character classes and how many characters each adds to the guessing pool. */
+const CHAR_POOLS: ReadonlyArray<[RegExp, number]> = [
+  [/[a-z]/, 26],
+  [/[A-Z]/, 26],
+  [/\d/, 10],
+  [/[^A-Za-z0-9\s]/, 33],
+  [/\s/, 1],
+];
+
+function poolSize(pw: string): number {
+  let pool = 0;
+  for (const [re, n] of CHAR_POOLS) if (re.test(pw)) pool += n;
+  return pool;
+}
+
+/** What weakens a password: common words or the user's names, repeated characters, keyboard runs (bits off, hint). */
+function weaknesses(pw: string, context: ReadonlyArray<string | null | undefined>): Array<{ bits: number; hint: string }> {
+  const lower = pw.toLowerCase();
+  const words = [...COMMON, ...context.filter((c): c is string => !!c && c.length >= 3).map((c) => c.toLowerCase())];
+  const checks: Array<[boolean, number, string]> = [
+    [words.some((w) => lower.includes(w)), 20, 'avoid your name and common words'],
+    [/(.)\1\1/.test(pw), 10, 'avoid repeated characters'],
+    [hasRun(pw), 10, 'avoid runs like abcd or 1234'],
+  ];
+  return checks.filter(([hit]) => hit).map(([, bits, hint]) => ({ bits, hint }));
+}
+
+function scoreOf(bits: number): Strength['score'] {
+  if (bits < 45) return 1;
+  if (bits < 60) return 2;
+  return bits < 80 ? 3 : 4;
+}
+
+function hintOf(weak: readonly string[], score: Strength['score']): string {
+  if (weak.length > 0) return `${weak[0]![0]!.toUpperCase()}${weak[0]!.slice(1)}.`;
+  return score >= 4 ? 'A strong password.' : 'Longer is stronger: a few unrelated words work well.';
 }

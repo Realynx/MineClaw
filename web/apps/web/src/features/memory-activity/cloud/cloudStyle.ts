@@ -298,12 +298,21 @@ export function fidelityBadge(arrangement: CloudArrangement, f: CloudFidelity | 
   const stress = toNumber(f.stress);
   if (!Number.isFinite(r) || !Number.isFinite(stress)) return null;
   const detail = `r = ${r.toFixed(2)}, stress ${stress.toFixed(2)}`;
-  const good = r >= 0.8 && stress <= 0.3;
-  const fair = r >= 0.6;
-  const text = good ? 'Distances: true to embeddings' : fair ? 'Distances: roughly to scale' : 'Distances: not to scale';
+  const grade = fidelityGrade(r, stress);
+  return { text: grade.text, detail, tone: grade.tone, tooltip: fidelityTooltip(arrangement, f) };
+}
+
+/** True to embeddings (strong correlation, low stress), roughly to scale (fair correlation), or not to scale. */
+function fidelityGrade(r: number, stress: number): { text: string; tone: FidelityBadge['tone'] } {
+  if (r >= 0.8 && stress <= 0.3) return { text: 'Distances: true to embeddings', tone: 'ok' };
+  return r >= 0.6 ? { text: 'Distances: roughly to scale', tone: 'info' } : { text: 'Distances: not to scale', tone: 'warn' };
+}
+
+/** Why the drawn distances can never be perfect, what r and stress mean, the axes' variance, and (non-metric) how to read it. */
+function fidelityTooltip(arrangement: CloudArrangement, f: CloudFidelity): string {
   const meta = arrangementMeta(arrangement);
   const ve = f.varianceExplained?.map((v) => `${Math.round(toNumber(v) * 100)} %`);
-  const tooltip = [
+  return [
     `${meta.label}. ${meta.hint}`,
     `Each memory is a 1024-number embedding; no flat picture can keep every distance between them, so some are stretched or squeezed.`,
     `r = correlation between drawn and embedding distance on ${f.pairs.toLocaleString()} memory pairs (1 = perfect); stress = how much the drawn distances are off overall (0 = perfect, below 0.3 is good).`,
@@ -312,7 +321,6 @@ export function fidelityBadge(arrangement: CloudArrangement, f: CloudFidelity | 
   ]
     .filter(Boolean)
     .join(' ');
-  return { text, detail, tone: good ? 'ok' : fair ? 'info' : 'warn', tooltip };
 }
 
 /**

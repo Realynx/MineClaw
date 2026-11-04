@@ -41,19 +41,103 @@ function ShardHistory() {
   );
 }
 
+/** The export dialog's preset from the URL (`export`, `node`, `kind`, `q`, `people`). */
+function presetFrom(params: { get(k: string): string | null }, exportMode: ShardSelection['mode'] | null): ExportPreset {
+  const node = params.get('node');
+  const kind = params.get('kind');
+  const people = params.get('people');
+  return {
+    mode: exportMode ?? undefined,
+    node: node ? Number(node) : undefined,
+    kinds: kind ? [kind] : undefined,
+    query: params.get('q') ?? undefined,
+    people: people ? people.split(',') : undefined,
+  };
+}
+
+type Packs = ReturnType<typeof useApi<'shards.packs'>>;
+type Pack = NonNullable<Packs['data']>['packs'][number];
+
+/** The default packs and the other files found: loading, an error, none, or the list. */
+function PackList({ packs, canImport, onImport }: { packs: Packs; canImport: boolean; onImport: (mode: ShardImportMode) => void }) {
+  if (packs.isPending) return <SkeletonLines lines={6} className="p-4" />;
+  if (packs.error) return <ErrorState error={packs.error} onRetry={() => void packs.refetch()} />;
+  if (packs.data.packs.length === 0) return <EmptyState title="No packs found" />;
+  return (
+    <ul className="divide-y divide-border">
+      {packs.data.packs.map((p) => (
+        <PackRow key={p.file} p={p} canImport={canImport} onImport={onImport} />
+      ))}
+      {packs.data.extra.map((f) => (
+        <li key={f.file} className="px-4 py-3">
+          <div className="flex items-center gap-2">
+            <span className="text-[13px] font-medium text-fg">{f.file}</span>
+            <Badge>{f.kindLabel}</Badge>
+          </div>
+          <p className="text-[11px] text-subtle">
+            {bytes(f.bytes)}
+            {f.error ? ` · ${f.error}` : ''}
+          </p>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/** What importing a pack previews: swapping a version pack, removing an active mode pack, adding one. */
+function importFor(p: Pack): { mode: ShardImportMode; label: string } {
+  if (p.kind === 'version') return { mode: 'swap-pack', label: 'Preview swap' };
+  return p.active ? { mode: 'remove-mode', label: 'Preview remove' } : { mode: 'add-mode', label: 'Preview add' };
+}
+
+/** Records, size, vectors (and how many still need embedding), builder. */
+function PackFacts({ p }: { p: Pack }) {
+  return (
+    <p className="mt-1 text-[11px] text-subtle">
+      {num(p.records)} records · {bytes(p.bytes)} · {p.vectors ? `${num(p.vectors)} vectors ${p.embeddingModel}@${p.dims}` : 'no vectors'}
+      {p.needsEmbedding ? ` · ${num(p.needsEmbedding)} to embed` : ''}
+      {p.builder ? ` · ${p.builder}` : ''}
+    </p>
+  );
+}
+
+/** One pack: its kind, active / problem badges, the import preview (admin), description, facts and error. */
+function PackRow({ p, canImport, onImport }: { p: Pack; canImport: boolean; onImport: (mode: ShardImportMode) => void }) {
+  const imp = importFor(p);
+  return (
+    <li className="px-4 py-3.5">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-[13px] font-semibold text-fg">{p.kindLabel}</span>
+        {p.active ? (
+          <Badge tone="ok">
+            <CheckCircle2 className="size-3" /> active
+          </Badge>
+        ) : null}
+        {p.error ? (
+          <Badge tone="danger">
+            <AlertTriangle className="size-3" /> problem
+          </Badge>
+        ) : null}
+        {canImport && !p.error ? (
+          <Button size="sm" variant="ghost" className="ml-auto" onClick={() => onImport(imp.mode)}>
+            <Upload className="size-3.5" /> {imp.label}
+          </Button>
+        ) : null}
+      </div>
+      {p.description ? <p className="mt-0.5 text-xs text-muted">{p.description}</p> : null}
+      <PackFacts p={p} />
+      {p.error ? <p className="mt-1 text-xs text-danger">{p.error}</p> : null}
+    </li>
+  );
+}
+
 function ShardsInner() {
   const params = useSearchParams();
   const router = useRouter();
   const { isAdmin } = useAuth();
   const packs = useApi('shards.packs');
   const exportMode = params.get('export') as ShardSelection['mode'] | null;
-  const preset: ExportPreset = {
-    mode: exportMode ?? undefined,
-    node: params.get('node') ? Number(params.get('node')) : undefined,
-    kinds: params.get('kind') ? [params.get('kind')!] : undefined,
-    query: params.get('q') ?? undefined,
-    people: params.get('people') ? params.get('people')!.split(',') : undefined,
-  };
+  const preset = presetFrom(params, exportMode);
   const [exportOpen, setExportOpen] = useState(!!exportMode);
   const [importMode, setImportMode] = useState<ShardImportMode | undefined>(undefined);
   const closeExport = (o: boolean) => {
@@ -76,62 +160,7 @@ function ShardsInner() {
         <div className="space-y-4">
           <Card>
             <CardHeader title="Default packs" subtitle="Version packs (game data) and mode packs (play styles)" icon={<Package className="size-4" />} />
-            {packs.isPending ? (
-              <SkeletonLines lines={6} className="p-4" />
-            ) : packs.error ? (
-              <ErrorState error={packs.error} onRetry={() => void packs.refetch()} />
-            ) : packs.data.packs.length === 0 ? (
-              <EmptyState title="No packs found" />
-            ) : (
-              <ul className="divide-y divide-border">
-                {packs.data.packs.map((p) => (
-                  <li key={p.file} className="px-4 py-3.5">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="text-[13px] font-semibold text-fg">{p.kindLabel}</span>
-                      {p.active ? (
-                        <Badge tone="ok">
-                          <CheckCircle2 className="size-3" /> active
-                        </Badge>
-                      ) : null}
-                      {p.error ? (
-                        <Badge tone="danger">
-                          <AlertTriangle className="size-3" /> problem
-                        </Badge>
-                      ) : null}
-                      {isAdmin && !p.error ? (
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          className="ml-auto"
-                          onClick={() => setImportMode(p.kind === 'version' ? 'swap-pack' : p.active ? 'remove-mode' : 'add-mode')}
-                        >
-                          <Upload className="size-3.5" /> {p.kind === 'version' ? 'Preview swap' : p.active ? 'Preview remove' : 'Preview add'}
-                        </Button>
-                      ) : null}
-                    </div>
-                    {p.description ? <p className="mt-0.5 text-xs text-muted">{p.description}</p> : null}
-                    <p className="mt-1 text-[11px] text-subtle">
-                      {num(p.records)} records · {bytes(p.bytes)} · {p.vectors ? `${num(p.vectors)} vectors ${p.embeddingModel}@${p.dims}` : 'no vectors'}
-                      {p.needsEmbedding ? ` · ${num(p.needsEmbedding)} to embed` : ''}
-                      {p.builder ? ` · ${p.builder}` : ''}
-                    </p>
-                    {p.error ? <p className="mt-1 text-xs text-danger">{p.error}</p> : null}
-                  </li>
-                ))}
-                {packs.data.extra.map((f) => (
-                  <li key={f.file} className="px-4 py-3">
-                    <div className="flex items-center gap-2">
-                      <span className="text-[13px] font-medium text-fg">{f.file}</span>
-                      <Badge>{f.kindLabel}</Badge>
-                    </div>
-                    <p className="text-[11px] text-subtle">
-                      {bytes(f.bytes)}
-                      {f.error ? ` · ${f.error}` : ''}
-                    </p>
-                  </li>
-                ))}
-              </ul>
-            )}
+            <PackList packs={packs} canImport={isAdmin} onImport={setImportMode} />
           </Card>
           {isAdmin ? <ShardHistory /> : null}
         </div>

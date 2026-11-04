@@ -44,13 +44,15 @@ public static class MineTemplates
     /// north-east corner is east's, the north-west north's).</summary>
     internal static int EdgeOf(int lx, int lz, int n)
     {
-        int dN = lz, dE = n - 1 - lx, dS = n - 1 - lz, dW = lx;
-        int m = Math.Min(Math.Min(dN, dE), Math.Min(dS, dW));
-        if (dN == m && dE == m) return 1;
-        if (dE == m && dS == m) return 2;
-        if (dS == m && dW == m) return 3;
-        if (dW == m && dN == m) return 0;
-        return dN == m ? 0 : dE == m ? 1 : dS == m ? 2 : 3;
+        // The cell's distance to each edge, north, east, south, west: it is on the nearest one.
+        Span<int> d = [lz, n - 1 - lx, n - 1 - lz, lx];
+        int m = Math.Min(Math.Min(d[0], d[1]), Math.Min(d[2], d[3]));
+        // A corner (on two edges) belongs to the next one clockwise.
+        for (int e = 0; e < 4; e++)
+            if (d[e] == m && d[(e + 1) % 4] == m) return (e + 1) % 4;
+        for (int e = 0; e < 3; e++)
+            if (d[e] == m) return e;
+        return 3;
     }
 
     /// <summary>A walkway cell's place on the ring (0..4(n−1)−1, clockwise from the north-west corner).</summary>
@@ -92,43 +94,76 @@ public static class MineTemplates
     /// </summary>
     public static MineCells Spiral(SpiralSpec s)
     {
-        int n = Math.Clamp(s.Size, MinSize, MaxSize), c = Math.Clamp(s.Core, 1, n - 2), off = (n - c) / 2, ring = 4 * (n - 1);
-        bool Core(int lx, int lz) => lx >= off && lx < off + c && lz >= off && lz < off + c;
-        var byPlace = new List<(int Lx, int Lz)>[ring];
-        for (int i = 0; i < ring; i++) byPlace[i] = [];
-        for (int lz = 0; lz < n; lz++)
-            for (int lx = 0; lx < n; lx++)
-                if (!Core(lx, lz)) byPlace[RingIndex(lx, lz, n)].Add((lx, lz));
-        int Place(int k) => s.Clockwise ? k % ring : (ring - k % ring) % ring;
+        int n = Math.Clamp(s.Size, MinSize, MaxSize), c = Math.Clamp(s.Core, 1, n - 2), ring = 4 * (n - 1);
+        var byPlace = RingPlaces(n, c);
         var cells = new List<CanvasCell>();
         var path = new List<BlockPos>();
         int top = s.Top, bottom = Math.Max(1, s.Bottom);
         for (int k = 0; top - k >= bottom; k++)
         {
-            int y = top - k, at = Place(k);
+            int y = top - k, at = s.Clockwise ? k % ring : (ring - k % ring) % ring;
             foreach (var (lx, lz) in byPlace[at])
                 for (int dy = 0; dy < 3; dy++) cells.Add(new CanvasCell(s.X + lx, y + dy, s.Z + lz, 0, 0));
             var (ox, oz) = Outer(at, n);
             path.Add(new BlockPos(s.X + ox, y, s.Z + oz));
         }
+        DigLandings(s, n, top, bottom, cells);
+        HangSpiralTorches(s, n, path, cells);
+        var entry = path.Count > 0 ? path[0] : new BlockPos(s.X, top, s.Z);
+        return new MineCells(cells, entry, path, SpiralLabel(s, n, c, top, bottom));
+    }
+
+    /// <summary>The walkway cells (the square minus its centred c×c core) by their place on the ring.</summary>
+    private static List<(int Lx, int Lz)>[] RingPlaces(int n, int c)
+    {
+        int off = (n - c) / 2, ring = 4 * (n - 1);
+        var byPlace = new List<(int Lx, int Lz)>[ring];
+        for (int i = 0; i < ring; i++) byPlace[i] = [];
+        for (int lz = 0; lz < n; lz++)
+            for (int lx = 0; lx < n; lx++)
+                if (!InCore(lx, lz, off, c)) byPlace[RingIndex(lx, lz, n)].Add((lx, lz));
+        return byPlace;
+    }
+
+    private static bool InCore(int lx, int lz, int off, int c) => lx >= off && lx < off + c && lz >= off && lz < off + c;
+
+    /// <summary>The landings between bottom and top: the whole square dug 2 high (each level once, lowest first).</summary>
+    private static void DigLandings(SpiralSpec s, int n, int top, int bottom, List<CanvasCell> cells)
+    {
         foreach (var ly in (s.Landings ?? []).Distinct().Where(l => l >= bottom && l <= top).Order())
             for (int dy = 0; dy < 2; dy++)
                 for (int lz = 0; lz < n; lz++)
                     for (int lx = 0; lx < n; lx++) cells.Add(new CanvasCell(s.X + lx, ly + dy, s.Z + lz, 0, 0));
-        if (s.TorchEvery > 0)
-            for (int k = s.TorchEvery; k < path.Count; k += s.TorchEvery)
-            {
-                var p = path[k];
-                var side = OutSide(p.X - s.X, p.Z - s.Z, n);
-                cells.Add(new CanvasCell(p.X, p.Y + 2, p.Z, Blocks.Torch, DesignerCanvas.MetaOn(Blocks.Torch, side)));
-            }
-        var entry = path.Count > 0 ? path[0] : new BlockPos(s.X, top, s.Z);
-        var label = string.Create(CultureInfo.InvariantCulture,
-            $"spiral shaft {n}×{n} (core {c}×{c}) y{top}→{bottom}{(s.Clockwise ? "" : " ccw")}{((s.Landings?.Count ?? 0) > 0 ? ", landings " + string.Join("/", s.Landings!) : "")}");
-        return new MineCells(cells, entry, path, label);
     }
 
+    /// <summary>A wall torch every TorchEvery steps, on the outer wall over the head.</summary>
+    private static void HangSpiralTorches(SpiralSpec s, int n, List<BlockPos> path, List<CanvasCell> cells)
+    {
+        if (s.TorchEvery <= 0) return;
+        for (int k = s.TorchEvery; k < path.Count; k += s.TorchEvery)
+        {
+            var p = path[k];
+            var side = OutSide(p.X - s.X, p.Z - s.Z, n);
+            cells.Add(new CanvasCell(p.X, p.Y + 2, p.Z, Blocks.Torch, DesignerCanvas.MetaOn(Blocks.Torch, side)));
+        }
+    }
+
+    private static string SpiralLabel(SpiralSpec s, int n, int c, int top, int bottom) => string.Create(CultureInfo.InvariantCulture,
+        $"spiral shaft {n}×{n} (core {c}×{c}) y{top}→{bottom}{(s.Clockwise ? "" : " ccw")}{((s.Landings?.Count ?? 0) > 0 ? ", landings " + string.Join("/", s.Landings!) : "")}");
+
     // ------------------------------------------------------------------ strip mine
+
+    /// <summary>A strip mine's frame: cell <c>a</c> along the corridor's axis, <c>across</c> to its right (+z for an x corridor).</summary>
+    private readonly record struct StripFrame(int X, int Z, bool AlongX)
+    {
+        public (int X, int Z) At(int a, int across) => AlongX ? (X + a, Z + across) : (X + across, Z + a);
+
+        public void Dig(List<CanvasCell> cells, int a, int across, int y)
+        {
+            var (x, z) = At(a, across);
+            cells.Add(new CanvasCell(x, y, z, 0, 0));
+        }
+    }
 
     /// <summary>
     /// The strip mine's cells: the main corridor (Width × Height) along the axis for Length; 1×2 branches off its sides at every
@@ -139,43 +174,50 @@ public static class MineTemplates
     {
         int len = Math.Clamp(s.Length, 1, 64), w = Math.Clamp(s.Width, 1, 2), h = Math.Clamp(s.Height, 2, 3), sp = Math.Clamp(s.Spacing, 1, 8),
             bl = Math.Clamp(s.BranchLength, 0, 64);
-        bool alongX = char.ToLowerInvariant(s.Axis) != 'z';
-        (int X, int Z) P(int a, int across) => alongX ? (s.X + a, s.Z + across) : (s.X + across, s.Z + a);
+        var f = new StripFrame(s.X, s.Z, char.ToLowerInvariant(s.Axis) != 'z');
         var cells = new List<CanvasCell>();
-        void Dig(int a, int across, int y)
-        {
-            var (x, z) = P(a, across);
-            cells.Add(new CanvasCell(x, y, z, 0, 0));
-        }
         for (int a = 0; a < len; a++)
             for (int across = 0; across < w; across++)
-                for (int dy = 0; dy < h; dy++) Dig(a, across, s.Y + dy);
+                for (int dy = 0; dy < h; dy++) f.Dig(cells, a, across, s.Y + dy);
         var sides = (s.Sides ?? "both").ToLowerInvariant();
+        var branches = DigBranches(f, cells, s.Y, len, w, sp, bl, sides);
+        if (s.TorchEvery > 0) HangStripTorches(f, cells, s.Y, s.TorchEvery, len, branches);
+        var (ex, ez) = f.At(0, 0);
+        var path = Enumerable.Range(0, len).Select(a => f.At(a, 0)).Select(p => new BlockPos(p.X, s.Y, p.Z)).ToList();
+        var label = string.Create(CultureInfo.InvariantCulture,
+            $"strip mine at y{s.Y} along {(f.AlongX ? "x" : "z")}: {w}×{h} × {len}, {branches.Count} branch rows {sp} apart ({bl} long, {sides})");
+        return new MineCells(cells, new BlockPos(ex, s.Y, ez), path, label);
+    }
+
+    /// <summary>The branch rows: 1×2 tunnels off the corridor's sides (left = −across, right = past its width); their positions along it.</summary>
+    private static HashSet<int> DigBranches(StripFrame f, List<CanvasCell> cells, int y, int len, int w, int sp, int bl, string sides)
+    {
         var branches = new HashSet<int>();
+        bool left = sides is "both" or "left", right = sides is "both" or "right";
         for (int a = sp; a < len; a += sp + 1)
         {
             branches.Add(a);
             for (int b = 1; b <= bl; b++)
                 for (int dy = 0; dy < 2; dy++)
                 {
-                    if (sides is "both" or "left") Dig(a, -b, s.Y + dy);
-                    if (sides is "both" or "right") Dig(a, w - 1 + b, s.Y + dy);
+                    if (left) f.Dig(cells, a, -b, y + dy);
+                    if (right) f.Dig(cells, a, w - 1 + b, y + dy);
                 }
         }
-        if (s.TorchEvery > 0)
-            for (int a = s.TorchEvery - 1; a < len; a += s.TorchEvery)
-            {
-                int at = branches.Contains(a) ? a + 1 : a;
-                if (at >= len || branches.Contains(at)) continue;
-                var (x, z) = P(at, 0);
-                var wall = alongX ? (0, -1) : (-1, 0);
-                cells.Add(new CanvasCell(x, s.Y + 1, z, Blocks.Torch, DesignerCanvas.MetaOn(Blocks.Torch, wall)));
-            }
-        var (ex, ez) = P(0, 0);
-        var path = Enumerable.Range(0, len).Select(a => P(a, 0)).Select(p => new BlockPos(p.X, s.Y, p.Z)).ToList();
-        var label = string.Create(CultureInfo.InvariantCulture,
-            $"strip mine at y{s.Y} along {(alongX ? "x" : "z")}: {w}×{h} × {len}, {branches.Count} branch rows {sp} apart ({bl} long, {sides})");
-        return new MineCells(cells, new BlockPos(ex, s.Y, ez), path, label);
+        return branches;
+    }
+
+    /// <summary>Torches on the corridor's left wall at head height every <paramref name="every"/> cells, moved one on past a branch's mouth.</summary>
+    private static void HangStripTorches(StripFrame f, List<CanvasCell> cells, int y, int every, int len, HashSet<int> branches)
+    {
+        for (int a = every - 1; a < len; a += every)
+        {
+            int at = branches.Contains(a) ? a + 1 : a;
+            if (at >= len || branches.Contains(at)) continue;
+            var (x, z) = f.At(at, 0);
+            var wall = f.AlongX ? (0, -1) : (-1, 0);
+            cells.Add(new CanvasCell(x, y + 1, z, Blocks.Torch, DesignerCanvas.MetaOn(Blocks.Torch, wall)));
+        }
     }
 
     // ------------------------------------------------------------------ steps (presets and the AI's tools)
@@ -188,30 +230,35 @@ public static class MineTemplates
     public static MineCells FromStep(JsonElement step, MineTerrain? terrain, string? template = null)
     {
         template ??= Str(step, "template") ?? "spiral";
-        switch (template.ToLowerInvariant())
+        return template.ToLowerInvariant() switch
         {
-            case "spiral" or "spiral_shaft" or "shaft":
-                {
-                    int x = Int(step, "x") ?? 30, z = Int(step, "z") ?? 30, size = Int(step, "size") ?? 4;
-                    int top = Int(step, "top") ?? (terrain?.SurfaceOver(x, z, x + size - 1, z + size - 1) ?? 64);
-                    var dir = (Str(step, "dir") ?? "cw").ToLowerInvariant();
-                    var landings = Ints(step, "landings");
-                    return Spiral(new SpiralSpec(x, z, top, Int(step, "bottom") ?? 11, size, Int(step, "core") ?? 2, dir is not ("ccw" or "counterclockwise"),
-                        Int(step, "torchEvery", "torch_every") ?? 0, landings));
-                }
-            case "strip" or "strip_mine":
-                {
-                    var axis = (Str(step, "axis") ?? "x").Trim();
-                    return Strip(new StripSpec(Int(step, "x") ?? 0, Int(step, "y") ?? 11, Int(step, "z") ?? 0, axis.Length > 0 ? axis[0] : 'x',
-                        Int(step, "length") ?? 30, Int(step, "width") ?? 1, Int(step, "height") ?? 2, Int(step, "spacing") ?? 3,
-                        Int(step, "branchLength", "branch_length") ?? 12, Str(step, "sides") ?? "both", Int(step, "torchEvery", "torch_every") ?? 0));
-                }
-            default:
-                throw new ArgumentException($"no mine template '{template}' (spiral, strip)");
-        }
+            "spiral" or "spiral_shaft" or "shaft" => SpiralStep(step, terrain),
+            "strip" or "strip_mine" => StripStep(step),
+            _ => throw new ArgumentException($"no mine template '{template}' (spiral, strip)"),
+        };
+    }
+
+    private static MineCells SpiralStep(JsonElement step, MineTerrain? terrain)
+    {
+        int x = IntOr(step, "x", 30), z = IntOr(step, "z", 30), size = IntOr(step, "size", 4);
+        int top = Int(step, "top") ?? (terrain?.SurfaceOver(x, z, x + size - 1, z + size - 1) ?? 64);
+        var dir = (Str(step, "dir") ?? "cw").ToLowerInvariant();
+        var landings = Ints(step, "landings");
+        return Spiral(new SpiralSpec(x, z, top, IntOr(step, "bottom", 11), size, IntOr(step, "core", 2), dir is not ("ccw" or "counterclockwise"),
+            Int(step, "torchEvery", "torch_every") ?? 0, landings));
+    }
+
+    private static MineCells StripStep(JsonElement step)
+    {
+        var axis = (Str(step, "axis") ?? "x").Trim();
+        return Strip(new StripSpec(IntOr(step, "x", 0), IntOr(step, "y", 11), IntOr(step, "z", 0), axis.Length > 0 ? axis[0] : 'x',
+            IntOr(step, "length", 30), IntOr(step, "width", 1), IntOr(step, "height", 2), IntOr(step, "spacing", 3),
+            Int(step, "branchLength", "branch_length") ?? 12, Str(step, "sides") ?? "both", Int(step, "torchEvery", "torch_every") ?? 0));
     }
 
     private static string? Str(JsonElement e, string k) => e.ValueKind == JsonValueKind.Object && e.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+
+    private static int IntOr(JsonElement e, string key, int fallback) => Int(e, key) ?? fallback;
 
     private static int? Int(JsonElement e, params string[] keys)
     {

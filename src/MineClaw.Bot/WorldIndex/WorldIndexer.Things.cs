@@ -78,40 +78,52 @@ public sealed partial class WorldIndexer
         }
         var key = ObservationStore.KeyFor(s.KeyPos.X, s.KeyPos.Y, s.KeyPos.Z);
         var e = GetOrCreate(s.Kind, key, out bool created);
-        if (s.Kind == IndexKinds.Chest && s.Cells.Length == 2 && e.Cells.Count == 1 && e.Contents is { } own && s.Cells.Contains(e.Cells.First()))
-            (e.HalfContents ??= new())[e.Cells.First()] = own.ToList(); // a single gaining a half: what it held is its half
+        KeepSingleAsHalf(s.Kind, s.Cells, e);
         foreach (var c in s.Cells)
         {
-            if (_stationCells.TryGetValue(c, out var other) && other != e)
-            {
-                // Re-keyed (a second chest placed beside, bed rebuilt): carry over what we knew.
-                if (s.Kind == IndexKinds.Chest && other.Kind == IndexKinds.Chest) JoinHalf(e, c, other);
-                else e.Contents ??= other.Contents;
-                e.Label ??= other.Label;
-                e.LabelSign ??= other.LabelSign;
-                RemoveEntry(other);
-                foreach (var oc in other.Cells) if (_stationCells.GetValueOrDefault(oc) == other) { _stationCells.Remove(oc); Track(_stationsByChunk, oc, false); }
-                if (e.Contents != null) e.ContentsDirty = true;
-            }
+            if (_stationCells.TryGetValue(c, out var other) && other != e) MergeStation(s.Kind, e, c, other);
             _stationCells[c] = e;
             Track(_stationsByChunk, c, true);
         }
-        var cells = s.Cells.ToHashSet();
-        bool lit = _world.GetBlock(s.KeyPos) == Blocks.LitFurnace;
-        if (created || !e.Cells.SetEquals(cells) || e.FurnaceLit != lit)
-        {
-            foreach (var oc in e.Cells.Where(c => !cells.Contains(c)).ToList())
-                if (_stationCells.GetValueOrDefault(oc) == e) { _stationCells.Remove(oc); Track(_stationsByChunk, oc, false); }
-            e.Cells = cells;
-            e.Anchor = s.KeyPos;
-            e.SetBounds(cells);
-            e.FurnaceLit = lit;
-            e.Dirty = true;
-            SetProtect(e, new HashSet<BlockPos>(cells));
-            if (created) { GridAdd(e); MarkNear(e); }
-        }
+        ReshapeStation(e, s.KeyPos, s.Cells, created);
         if (seen) e.Seen = true;
         return e;
+    }
+
+    /// <summary>A single chest gaining a half: what it held is its half.</summary>
+    private static void KeepSingleAsHalf(string kind, BlockPos[] cells, IndexEntry e)
+    {
+        if (kind == IndexKinds.Chest && cells.Length == 2 && e.Cells.Count == 1 && e.Contents is { } own && cells.Contains(e.Cells.First()))
+            (e.HalfContents ??= new())[e.Cells.First()] = own.ToList();
+    }
+
+    /// <summary>Re-keyed (a second chest placed beside, bed rebuilt): carry over what we knew, then drop the old entry.</summary>
+    private void MergeStation(string kind, IndexEntry e, BlockPos c, IndexEntry other)
+    {
+        if (kind == IndexKinds.Chest && other.Kind == IndexKinds.Chest) JoinHalf(e, c, other);
+        else e.Contents ??= other.Contents;
+        e.Label ??= other.Label;
+        e.LabelSign ??= other.LabelSign;
+        RemoveEntry(other);
+        foreach (var oc in other.Cells) if (_stationCells.GetValueOrDefault(oc) == other) { _stationCells.Remove(oc); Track(_stationsByChunk, oc, false); }
+        if (e.Contents != null) e.ContentsDirty = true;
+    }
+
+    /// <summary>New cells, anchor, bounds, lit state and protection when the station changed shape (or is new).</summary>
+    private void ReshapeStation(IndexEntry e, BlockPos keyPos, BlockPos[] stationCells, bool created)
+    {
+        var cells = stationCells.ToHashSet();
+        bool lit = _world.GetBlock(keyPos) == Blocks.LitFurnace;
+        if (!created && e.Cells.SetEquals(cells) && e.FurnaceLit == lit) return;
+        foreach (var oc in e.Cells.Where(c => !cells.Contains(c)).ToList())
+            if (_stationCells.GetValueOrDefault(oc) == e) { _stationCells.Remove(oc); Track(_stationsByChunk, oc, false); }
+        e.Cells = cells;
+        e.Anchor = keyPos;
+        e.SetBounds(cells);
+        e.FurnaceLit = lit;
+        e.Dirty = true;
+        SetProtect(e, new HashSet<BlockPos>(cells));
+        if (created) { GridAdd(e); MarkNear(e); }
     }
 
     private void DropStation(IndexEntry e, BlockPos gone)
@@ -422,40 +434,53 @@ public sealed partial class WorldIndexer
         IReadOnlyList<ObservationRow> rows;
         try { rows = _sink.Near(null, (cx << 4) + 8, 64, (cz << 4) + 8, 72, 400, _dim); }
         catch { return; }
-        foreach (var r in rows)
+        foreach (var r in rows) ReconcileRow(r, cx, cz);
+    }
+
+    /// <summary>A persisted row anchored in this column: a point row is checked against the world now, a cluster row waits for
+    /// the cluster pass.</summary>
+    private void ReconcileRow(ObservationRow r, int cx, int cz)
+    {
+        if (r.Bounds is not { } b) return;
+        int ax = (int)Math.Floor(b.MinX), az = (int)Math.Floor(b.MinZ);
+        if (ax >> 4 != cx || az >> 4 != cz) return;
+        // Chest rows of either size (a double's box spans two blocks; its key is the west/north half = the box's min).
+        if (IndexKinds.PointKinds.Contains(r.Kind) && (b.IsPoint || r.Kind == IndexKinds.Chest))
+            ReconcilePointRow(r, b, new BlockPos(ax, (int)Math.Floor(b.MinY), az));
+        else if (IndexKinds.ClusterKinds.Contains(r.Kind) && r.Source == ObservationSource.Auto)
+            _pendingClusterRows.Add(r);
+    }
+
+    private void ReconcilePointRow(ObservationRow r, Box b, BlockPos p)
+    {
+        if (Find(r.Kind, r.Key) is { } live)
         {
-            if (r.Bounds is not { } b) continue;
-            int ax = (int)Math.Floor(b.MinX), az = (int)Math.Floor(b.MinZ);
-            if (ax >> 4 != cx || az >> 4 != cz) continue;
-            // Chest rows of either size (a double's box spans two blocks; its key is the west/north half = the box's min).
-            if (IndexKinds.PointKinds.Contains(r.Kind) && (b.IsPoint || r.Kind == IndexKinds.Chest))
-            {
-                var p = new BlockPos(ax, (int)Math.Floor(b.MinY), az);
-                if (Find(r.Kind, r.Key) is { } live)
-                {
-                    if (r.Kind == IndexKinds.Chest) ReconcileChestSize(r, b, live);
-                    continue;
-                }
-                // A row on the non-key half of a pair is a phantom second chest (a chest went down west/north of a remembered
-                // single while the bot was away): gone, its memory carried into the pair. Was: kept, and the double counted twice.
-                bool present = r.Kind == IndexKinds.Sign
-                    ? _world.GetBlock(p) is Blocks.SignPost or Blocks.WallSign
-                    : StationAt(p) is { } s && s.Kind == r.Kind && (r.Kind != IndexKinds.Chest || s.KeyPos == p);
-                if (present) continue;
-                if (r.Kind == IndexKinds.Chest && _stationCells.GetValueOrDefault(p) is { Kind: IndexKinds.Chest, Contents: null } pair
-                    && Remembered(pair) is null && _sink.PreviousContents(r.Kind, r.Key, _dim) is { Items.Count: > 0 } half)
-                {
-                    pair.Contents = half.Items.ToList();
-                    pair.ContentsAt = half.At;
-                    pair.ContentsBy = half.By;
-                    if (pair.Cells.Count == 2) (pair.HalfContents ??= new())[p] = pair.Contents.ToList();
-                    pair.ContentsDirty = pair.Dirty = true;
-                }
-                _removals.Add((r.Kind, r.Key));
-            }
-            else if (IndexKinds.ClusterKinds.Contains(r.Kind) && r.Source == ObservationSource.Auto)
-                _pendingClusterRows.Add(r);
+            if (r.Kind == IndexKinds.Chest) ReconcileChestSize(r, b, live);
+            return;
         }
+        if (StillPresent(r.Kind, p)) return;
+        if (r.Kind == IndexKinds.Chest) CarryPhantomHalf(r, p);
+        _removals.Add((r.Kind, r.Key));
+    }
+
+    /// <summary>The row's thing is still there. A row on the non-key half of a pair is a phantom second chest (a chest went down
+    /// west/north of a remembered single while the bot was away): gone, its memory carried into the pair. Was: kept, and the
+    /// double counted twice.</summary>
+    private bool StillPresent(string kind, BlockPos p) =>
+        kind == IndexKinds.Sign
+            ? _world.GetBlock(p) is Blocks.SignPost or Blocks.WallSign
+            : StationAt(p) is { } s && s.Kind == kind && (kind != IndexKinds.Chest || s.KeyPos == p);
+
+    /// <summary>The phantom half's remembered contents go to the pair when the pair has none of its own.</summary>
+    private void CarryPhantomHalf(ObservationRow r, BlockPos p)
+    {
+        if (_stationCells.GetValueOrDefault(p) is not { Kind: IndexKinds.Chest, Contents: null } pair || Remembered(pair) is not null
+            || _sink.PreviousContents(r.Kind, r.Key, _dim) is not { Items.Count: > 0 } half) return;
+        pair.Contents = half.Items.ToList();
+        pair.ContentsAt = half.At;
+        pair.ContentsBy = half.By;
+        if (pair.Cells.Count == 2) (pair.HalfContents ??= new())[p] = pair.Contents.ToList();
+        pair.ContentsDirty = pair.Dirty = true;
     }
 
     /// <summary>

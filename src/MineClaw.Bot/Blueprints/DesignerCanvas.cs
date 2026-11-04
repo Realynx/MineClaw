@@ -114,13 +114,7 @@ public sealed class DesignerCanvas
         int n = 0;
         foreach (var c0 in cells)
         {
-            if (++n > MaxCellsPerOp) { rejected++; continue; }
-            if (!Contains(c0.X, c0.Y, c0.Z)) { rejected++; continue; }
-            var c = c0.Id is 0 or Earth ? c0 with { Id = c0.Id == Earth && Ground(c0.X, c0.Y, c0.Z) ? Earth : 0, Meta = 0 } : c0;
-            if (RefusalOf(c.Id, c.Meta) != null) { rejected++; continue; }
-            // A mine never digs bedrock.
-            if (c.Id == 0 && Bedrock(c.X, c.Y, c.Z) && !_blocks.ContainsKey(new BlockPos(c.X, c.Y, c.Z))) { rejected++; continue; }
-            if (c.Id > 0 && Pair(c) is { } paired) c = paired;
+            if (++n > MaxCellsPerOp || Accepted(c0) is not { } c) { rejected++; continue; }
             Set(c, changed);
             // A drawn first half brings its second (a door's upper half, a bed's head); a second half alone is accepted as drawn
             // (the browser sends both).
@@ -129,16 +123,37 @@ public sealed class DesignerCanvas
         }
         // Wall torches and ladders hang on their wall: the changed ones and the ones next to a changed cell (a wall placed after
         // its torch) are turned to the solid side when theirs is open.
+        LastFixed = FixAttachments(Near(changed.Keys), changed);
+        if (changed.Count > 0) Rev++;
+        return changed.Values.ToList();
+    }
+
+    /// <summary>A cell as it is set (air or earth by the ground there, a chest paired with its neighbour), or null when it is refused
+    /// (outside the plot, not in the design palette, a mine's bedrock).</summary>
+    private CanvasCell? Accepted(CanvasCell c0)
+    {
+        if (!Contains(c0.X, c0.Y, c0.Z)) return null;
+        var c = c0.Id is 0 or Earth ? Grounded(c0) : c0;
+        if (RefusalOf(c.Id, c.Meta) != null) return null;
+        // A mine never digs bedrock.
+        if (c.Id == 0 && Bedrock(c.X, c.Y, c.Z) && !_blocks.ContainsKey(new BlockPos(c.X, c.Y, c.Z))) return null;
+        return c.Id > 0 && Pair(c) is { } paired ? paired : c;
+    }
+
+    /// <summary>Air or earth: earth only where there is ground (above it, air).</summary>
+    private CanvasCell Grounded(CanvasCell c) => c with { Id = c.Id == Earth && Ground(c.X, c.Y, c.Z) ? Earth : 0, Meta = 0 };
+
+    /// <summary>The cells and their neighbours (above and the four sides): where an attached block may have lost or gained its wall.</summary>
+    private static HashSet<BlockPos> Near(IEnumerable<BlockPos> cells)
+    {
         var near = new HashSet<BlockPos>();
-        foreach (var p in changed.Keys)
+        foreach (var p in cells)
         {
             near.Add(p);
             near.Add(p.Up());
             foreach (var (dx, dz) in Sides) near.Add(new BlockPos(p.X + dx, p.Y, p.Z + dz));
         }
-        LastFixed = FixAttachments(near, changed);
-        if (changed.Count > 0) Rev++;
-        return changed.Values.ToList();
+        return near;
     }
 
     public List<CanvasCell> Apply(IEnumerable<CanvasCell> cells) => Apply(cells, out _);
@@ -150,9 +165,11 @@ public sealed class DesignerCanvas
 
     /// <summary>The side (dx, dz) of the block a wall torch (1..4) or a ladder (2..5) hangs on; null for anything else (a floor torch).</summary>
     public static (int Dx, int Dz)? WallOf(int id, int meta) =>
-        IsTorch(id) ? meta switch { 1 => (-1, 0), 2 => (1, 0), 3 => (0, -1), 4 => (0, 1), _ => null }
-        : id == MineClaw.Data.Blocks.Ladder ? meta switch { 2 => (0, 1), 3 => (0, -1), 4 => (1, 0), 5 => (-1, 0), _ => null }
-        : null;
+        IsTorch(id) ? TorchWall(meta) : id == MineClaw.Data.Blocks.Ladder ? LadderWall(meta) : null;
+
+    private static (int Dx, int Dz)? TorchWall(int meta) => meta switch { 1 => (-1, 0), 2 => (1, 0), 3 => (0, -1), 4 => (0, 1), _ => null };
+
+    private static (int Dx, int Dz)? LadderWall(int meta) => meta switch { 2 => (0, 1), 3 => (0, -1), 4 => (1, 0), 5 => (-1, 0), _ => null };
 
     /// <summary>A torch or a redstone torch (the same attachment rule).</summary>
     private static bool IsTorch(int id) => id is MineClaw.Data.Blocks.Torch or 76;
@@ -237,12 +254,18 @@ public sealed class DesignerCanvas
             var n = new BlockPos(c.X + dx, c.Y, c.Z + dz);
             if (!_blocks.TryGetValue(n, out var o) || o.Id != c.Id || DesignFacing.FacingOf(o.Id, o.Meta) is not { } f) continue;
             // Already paired with another chest: a third never joins.
-            if (Sides.Any(s => (s.Dx, s.Dz) != (-dx, -dz) && _blocks.TryGetValue(new BlockPos(n.X + s.Dx, n.Y, n.Z + s.Dz), out var t) && t.Id == c.Id)) continue;
-            bool across = dx != 0 ? f is Dir.North or Dir.South : f is Dir.East or Dir.West;
-            return across && c.Meta != o.Meta ? c with { Meta = o.Meta } : null;
+            if (PairedElsewhere(n, dx, dz, c.Id)) continue;
+            return Across(dx, f) && c.Meta != o.Meta ? c with { Meta = o.Meta } : null;
         }
         return null;
     }
+
+    /// <summary>The chest at <paramref name="n"/> already has a partner on another side than the one at (−dx, −dz).</summary>
+    private bool PairedElsewhere(BlockPos n, int dx, int dz, int id) =>
+        Sides.Any(s => (s.Dx, s.Dz) != (-dx, -dz) && _blocks.TryGetValue(new BlockPos(n.X + s.Dx, n.Y, n.Z + s.Dz), out var t) && t.Id == id);
+
+    /// <summary>A chest's facing runs across a pair joined along x (dx ≠ 0) when it faces north or south, along z when east or west.</summary>
+    private static bool Across(int dx, Dir f) => dx != 0 ? f is Dir.North or Dir.South : f is Dir.East or Dir.West;
 
     private void Set(CanvasCell c, Dictionary<BlockPos, CanvasCell> changed)
     {
@@ -250,23 +273,27 @@ public sealed class DesignerCanvas
         var old = State(p);
         if (old == (c.Id, c.Meta)) return;
         // Replacing one half of a two-cell block (a door, a double plant, a bed) drops the other half (never left half standing).
-        if (old.Id > 0 && DesignFacing.TwoCell(old.Item1) && c.Id != old.Item1)
-        {
-            BlockPos? other = DesignFacing.FirstHalf(old.Item1, old.Item2) is { } f ? new BlockPos(p.X + f.Dx, p.Y + f.Dy, p.Z + f.Dz)
-                : DesignFacing.Partner(old.Item1, old.Item2) is { } s ? new BlockPos(p.X + s.Dx, p.Y + s.Dy, p.Z + s.Dz) : null;
-            if (other is { } o && _blocks.TryGetValue(o, out var os) && os.Id == old.Item1)
-            {
-                _blocks.Remove(o);
-                if (Ground(o.X, o.Y, o.Z) && !Bedrock(o.X, o.Y, o.Z)) _dug.Add(o);
-                changed[o] = new CanvasCell(o.X, o.Y, o.Z, 0, 0);
-            }
-        }
+        if (old.Id > 0 && DesignFacing.TwoCell(old.Item1) && c.Id != old.Item1) DropOtherHalf(p, old, changed);
         _blocks.Remove(p);
         _dug.Remove(p);
         if (c.Id > 0) _blocks[p] = (c.Id, c.Meta);
-        else if (c.Id == 0 && Ground(p.X, p.Y, p.Z) && !Bedrock(p.X, p.Y, p.Z)) _dug.Add(p);
+        else if (c.Id == 0 && Diggable(p)) _dug.Add(p);
         changed[p] = c;
     }
+
+    /// <summary>The other half of the two-cell block at <paramref name="p"/> (state <paramref name="old"/>) removed with it.</summary>
+    private void DropOtherHalf(BlockPos p, (int Id, int Meta) old, Dictionary<BlockPos, CanvasCell> changed)
+    {
+        BlockPos? other = DesignFacing.FirstHalf(old.Id, old.Meta) is { } f ? new BlockPos(p.X + f.Dx, p.Y + f.Dy, p.Z + f.Dz)
+            : DesignFacing.Partner(old.Id, old.Meta) is { } s ? new BlockPos(p.X + s.Dx, p.Y + s.Dy, p.Z + s.Dz) : null;
+        if (other is not { } o || !_blocks.TryGetValue(o, out var os) || os.Id != old.Id) return;
+        _blocks.Remove(o);
+        if (Diggable(o)) _dug.Add(o);
+        changed[o] = new CanvasCell(o.X, o.Y, o.Z, 0, 0);
+    }
+
+    /// <summary>Ground that air there digs out (never a mine's bedrock).</summary>
+    private bool Diggable(BlockPos p) => Ground(p.X, p.Y, p.Z) && !Bedrock(p.X, p.Y, p.Z);
 
     /// <summary>Blocks and dug cells set as they are (a converted canvas: already whole, never re-paired or re-checked).</summary>
     public void Load(IEnumerable<KeyValuePair<BlockPos, (int Id, int Meta)>> blocks, IEnumerable<BlockPos> dug)
@@ -403,25 +430,46 @@ public sealed class DesignerCanvas
         var sb = new StringBuilder();
         int w = b.Max.X - b.Min.X + 1, h = b.Max.Y - b.Min.Y + 1, d = b.Max.Z - b.Min.Z + 1;
         sb.Append(CultureInfo.InvariantCulture, $"r{Rev} {_blocks.Count} blocks, box x{b.Min.X}..{b.Max.X} y{b.Min.Y}..{b.Max.Y} z{b.Min.Z}..{b.Max.Z} ({w}×{h}×{d})");
-        if (w > BlueprintParser.MaxSide || d > BlueprintParser.MaxSide || h > (Mine ? BlueprintParser.MaxMineHeight : BlueprintParser.MaxHeight))
-            sb.Append(Mine ? " OVER the 64 wide / 128 high limit" : " OVER the 32 limit");
+        sb.Append(OverLimit(w, h, d));
         var names = _blocks.Values.Where(s => !DesignFacing.SecondHalf(s.Id, s.Meta))
             .GroupBy(s => NameOf(s.Id, s.Meta)).OrderByDescending(g => g.Count()).ToList();
         sb.Append("; ").Append(string.Join(", ", names.Take(maxNames).Select(g => $"{g.Key} {g.Count()}"))).Append(names.Count > maxNames ? ", …" : "");
         if (_dug.Count > 0) sb.Append(CultureInfo.InvariantCulture, $"; dug {_dug.Count} {(Mine ? "to mine out" : "below ground")} (y{_dug.Min(p => p.Y)}..{_dug.Max(p => p.Y)})");
+        sb.Append("; ").Append(LayerSummary(b.Min.Y, b.Max.Y));
+        return sb.ToString();
+    }
+
+    /// <summary>" OVER the 32 limit" (a mine: 64 wide / 128 high) when the box is bigger than a design holds, else "".</summary>
+    private string OverLimit(int w, int h, int d)
+    {
+        if (w <= BlueprintParser.MaxSide && d <= BlueprintParser.MaxSide && h <= (Mine ? BlueprintParser.MaxMineHeight : BlueprintParser.MaxHeight)) return "";
+        return Mine ? " OVER the 64 wide / 128 high limit" : " OVER the 32 limit";
+    }
+
+    /// <summary>"y-4 49 cobblestone · y-3--1 28 cobblestone, 21 dug · y0 49 cobblestone" (layers with the same text merged).</summary>
+    private string LayerSummary(int y0, int y1)
+    {
         var layers = new List<(int Y0, int Y1, string Text)>();
-        for (int y = b.Min.Y; y <= b.Max.Y; y++)
+        for (int y = y0; y <= y1; y++)
         {
-            var at = _blocks.Where(kv => kv.Key.Y == y).ToList();
-            int dug = Mine || Underground(y) ? _dug.Count(p => p.Y == y) : 0;
-            var text = at.Count == 0 ? "0" : $"{at.Count} " + string.Join("+", at.GroupBy(kv => NameOf(kv.Value.Id, kv.Value.Meta)).OrderByDescending(g => g.Count()).Take(2).Select(g => g.Key));
-            if (dug > 0) text = (at.Count == 0 ? "" : text + ", ") + $"{dug} dug";
+            var text = LayerText(y);
             if (layers.Count > 0 && layers[^1].Text == text) layers[^1] = (layers[^1].Y0, y, text);
             else layers.Add((y, y, text));
         }
-        sb.Append("; ").Append(string.Join(" · ", layers.Select(l => (l.Y0 == l.Y1 ? $"y{l.Y0}" : $"y{l.Y0}-{l.Y1}") + " " + l.Text)));
-        return sb.ToString();
+        return string.Join(" · ", layers.Select(l => (l.Y0 == l.Y1 ? $"y{l.Y0}" : $"y{l.Y0}-{l.Y1}") + " " + l.Text));
     }
+
+    /// <summary>One layer's count and two most common names, and its dug cells: "28 cobblestone+planks, 21 dug".</summary>
+    private string LayerText(int y)
+    {
+        var at = _blocks.Where(kv => kv.Key.Y == y).ToList();
+        int dug = Mine || Underground(y) ? _dug.Count(p => p.Y == y) : 0;
+        var text = at.Count == 0 ? "0" : $"{at.Count} " + string.Join("+", at.GroupBy(kv => NameOf(kv.Value.Id, kv.Value.Meta)).OrderByDescending(g => g.Count()).Take(2).Select(g => g.Key));
+        if (dug > 0) text = (at.Count == 0 ? "" : text + ", ") + $"{dug} dug";
+        return text;
+    }
+
+    private const string LayerSymbols = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
 
     /// <summary>One layer as rows (north row first, west char first) over the canvas box, with a legend; '.' = air (below ground:
     /// dug out), '#' = undisturbed ground.</summary>
@@ -429,26 +477,26 @@ public sealed class DesignerCanvas
     {
         if (Bounds is not { } b) return "empty";
         var legend = new Dictionary<(int, int), char>();
-        const string Symbols = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
         var sb = new StringBuilder();
         sb.Append(CultureInfo.InvariantCulture, $"y{y}{(Mine ? "" : Underground(y) ? " (below ground)" : "")}, rows z{b.Min.Z}..{b.Max.Z}, cols x{b.Min.X}..{b.Max.X}:\n");
         for (int z = b.Min.Z; z <= b.Max.Z; z++)
         {
-            for (int x = b.Min.X; x <= b.Max.X; x++)
-            {
-                if (!_blocks.TryGetValue(new BlockPos(x, y, z), out var s)) { sb.Append(IsEarth(x, y, z) ? '#' : '.'); continue; }
-                if (!legend.TryGetValue(s, out var ch))
-                {
-                    ch = legend.Count < Symbols.Length ? Symbols[legend.Count] : '?';
-                    legend[s] = ch;
-                }
-                sb.Append(ch);
-            }
+            for (int x = b.Min.X; x <= b.Max.X; x++) sb.Append(LayerChar(x, y, z, legend));
             sb.Append('\n');
         }
         sb.Append(string.Join(" ", legend.Select(kv => $"{kv.Value}={Spec(kv.Key.Item1, kv.Key.Item2)}")));
         if (Mine || Underground(y)) sb.Append(legend.Count > 0 ? " " : "").Append("#=ground .=dug");
         return sb.ToString();
+    }
+
+    /// <summary>A cell's character on a layer: its block's legend symbol (a new one added), '#' undisturbed ground, '.' air.</summary>
+    private char LayerChar(int x, int y, int z, Dictionary<(int, int), char> legend)
+    {
+        if (!_blocks.TryGetValue(new BlockPos(x, y, z), out var s)) return IsEarth(x, y, z) ? '#' : '.';
+        if (legend.TryGetValue(s, out var ch)) return ch;
+        ch = legend.Count < LayerSymbols.Length ? LayerSymbols[legend.Count] : '?';
+        legend[s] = ch;
+        return ch;
     }
 
     /// <summary>"placed 12 planks, removed 3 glass; dug 20": what a change set did, for the AI's next turn and the transcript.</summary>

@@ -1,0 +1,1374 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`lib helpers (golden) > error text for every status and code 1`] = `
+[
+  "0 undefined → The server could not be reached. Check your connection.",
+  "0 csrf → The server could not be reached. Check your connection.",
+  "0 busy → The server could not be reached. Check your connection.",
+  "0 forbidden → The server could not be reached. Check your connection.",
+  "400 undefined → msg 400",
+  "400 csrf → msg 400",
+  "400 busy → msg 400",
+  "400 forbidden → msg 400",
+  "401 undefined → Your session has ended. Sign in again.",
+  "401 csrf → Your session has ended. Sign in again.",
+  "401 busy → Your session has ended. Sign in again.",
+  "401 forbidden → Your session has ended. Sign in again.",
+  "403 undefined → You do not have access to this.",
+  "403 csrf → Security token expired. Reload the page.",
+  "403 busy → You do not have access to this.",
+  "403 forbidden → You do not have access to this.",
+  "404 undefined → Not found.",
+  "404 csrf → Not found.",
+  "404 busy → Not found.",
+  "404 forbidden → Not found.",
+  "409 undefined → msg 409",
+  "409 csrf → msg 409",
+  "409 busy → msg 409",
+  "409 forbidden → msg 409",
+  "429 undefined → Too many requests. Wait a moment and try again.",
+  "429 csrf → Too many requests. Wait a moment and try again.",
+  "429 busy → Too many requests. Wait a moment and try again.",
+  "429 forbidden → Too many requests. Wait a moment and try again.",
+  "500 undefined → msg 500",
+  "500 csrf → msg 500",
+  "500 busy → msg 500",
+  "500 forbidden → msg 500",
+  "501 undefined → Not available yet on this server.",
+  "501 csrf → Not available yet on this server.",
+  "501 busy → Not available yet on this server.",
+  "501 forbidden → Not available yet on this server.",
+  "503 undefined → The bot is not reachable right now.",
+  "503 csrf → The bot is not reachable right now.",
+  "503 busy → The renderer is busy. Try again shortly.",
+  "503 forbidden → The bot is not reachable right now.",
+  "The server answered in an unexpected format.",
+  "plain",
+  "a string",
+  "42",
+]
+`;
+
+exports[`lib helpers (golden) > guards plain same-origin link clicks only 1`] = `
+[
+  "/memory?kind=facts#a",
+  null,
+  null,
+  null,
+  null,
+  null,
+  null,
+  null,
+  null,
+  null,
+  null,
+  null,
+  "/memory",
+  null,
+]
+`;
+
+exports[`lib helpers (golden) > merges entity deltas the same 1`] = `
+[
+  {
+    "at": 1,
+    "bots": [
+      {
+        "name": "b",
+      },
+    ],
+    "entities": [],
+    "full": false,
+    "removed": [],
+    "rev": 1,
+  },
+  {
+    "at": 1,
+    "bots": [
+      {
+        "name": "b",
+      },
+    ],
+    "entities": [],
+    "full": true,
+    "removed": [],
+    "rev": 6,
+  },
+  {
+    "at": 1,
+    "bots": [
+      {
+        "name": "b",
+      },
+    ],
+    "entities": [],
+    "full": false,
+    "removed": [],
+    "rev": 6,
+  },
+  {
+    "at": 10,
+    "bots": [
+      {
+        "name": "b",
+      },
+    ],
+    "entities": [
+      {
+        "dim": 0,
+        "id": 1,
+        "kind": "mob",
+        "x": 1,
+        "y": 0,
+        "z": 0,
+      },
+      {
+        "dim": 0,
+        "id": 2,
+        "kind": "mob",
+        "x": 2,
+        "y": 0,
+        "z": 0,
+      },
+      {
+        "dim": -1,
+        "id": null,
+        "kind": "mob",
+        "x": 3,
+        "y": 0,
+        "z": 0,
+      },
+    ],
+    "full": false,
+    "removed": [],
+    "rev": 5,
+  },
+  {
+    "at": 20,
+    "bots": [
+      {
+        "name": "c",
+      },
+    ],
+    "entities": [
+      {
+        "dim": 0,
+        "id": 1,
+        "kind": "mob",
+        "x": 1,
+        "y": 0,
+        "z": 0,
+      },
+      {
+        "dim": 0,
+        "id": 2,
+        "kind": "mob",
+        "x": 2,
+        "y": 0,
+        "z": 0,
+      },
+      {
+        "dim": -1,
+        "id": null,
+        "kind": "mob",
+        "x": 3,
+        "y": 0,
+        "z": 0,
+      },
+    ],
+    "full": false,
+    "removed": [],
+    "rev": 5,
+  },
+  {
+    "at": 10,
+    "bots": [
+      {
+        "name": "b",
+      },
+    ],
+    "entities": [
+      {
+        "dim": 0,
+        "id": 1,
+        "kind": "mob",
+        "x": 1,
+        "y": 0,
+        "z": 0,
+      },
+      {
+        "dim": 0,
+        "id": 2,
+        "kind": "mob",
+        "x": 2,
+        "y": 0,
+        "z": 0,
+      },
+      {
+        "dim": -1,
+        "id": null,
+        "kind": "mob",
+        "x": 3,
+        "y": 0,
+        "z": 0,
+      },
+    ],
+    "full": false,
+    "removed": [],
+    "rev": 5,
+  },
+  {
+    "at": 20,
+    "bots": [
+      {
+        "name": "b",
+      },
+    ],
+    "entities": [
+      {
+        "dim": 0,
+        "id": 2,
+        "kind": "mob",
+        "x": 9,
+        "y": 0,
+        "z": 0,
+      },
+      {
+        "dim": -1,
+        "id": null,
+        "kind": "mob",
+        "x": 3,
+        "y": 0,
+        "z": 0,
+      },
+      {
+        "dim": 0,
+        "id": 3,
+        "kind": "mob",
+        "x": 4,
+        "y": 0,
+        "z": 0,
+      },
+    ],
+    "full": false,
+    "removed": [],
+    "rev": 6,
+  },
+  {
+    "at": 20,
+    "bots": [
+      {
+        "name": "b",
+      },
+    ],
+    "entities": [
+      {
+        "dim": 0,
+        "id": 1,
+        "kind": "mob",
+        "x": 1,
+        "y": 0,
+        "z": 0,
+      },
+      {
+        "dim": 0,
+        "id": 2,
+        "kind": "mob",
+        "x": 2,
+        "y": 0,
+        "z": 0,
+      },
+      {
+        "dim": -1,
+        "id": null,
+        "kind": "mob",
+        "x": 3,
+        "y": 0,
+        "z": 0,
+      },
+      {
+        "dim": 0,
+        "id": 4,
+        "kind": "mob",
+        "x": 4,
+        "y": 0,
+        "z": 0,
+      },
+    ],
+    "full": false,
+    "removed": [],
+    "rev": null,
+  },
+  {
+    "at": 20,
+    "bots": [
+      {
+        "name": "b",
+      },
+    ],
+    "entities": [
+      {
+        "dim": 0,
+        "id": 1,
+        "kind": "mob",
+        "x": 1,
+        "y": 0,
+        "z": 0,
+      },
+      {
+        "dim": 0,
+        "id": 2,
+        "kind": "mob",
+        "x": 2,
+        "y": 0,
+        "z": 0,
+      },
+      {
+        "dim": -1,
+        "id": null,
+        "kind": "mob",
+        "x": 3,
+        "y": 0,
+        "z": 0,
+      },
+    ],
+    "full": false,
+    "removed": [],
+    "rev": 7,
+  },
+]
+`;
+
+exports[`lib helpers (golden) > stale time per route 1`] = `
+{
+  "admin.audit": "30000",
+  "admin.backup": "30000",
+  "admin.compact": "30000",
+  "admin.memoryEdit": "30000",
+  "admin.nodes": "30000",
+  "admin.ollamaModels": "30000",
+  "admin.rebuildCancel": "30000",
+  "admin.rebuildEstimate": "30000",
+  "admin.rebuildJob": "30000",
+  "admin.rebuildStart": "30000",
+  "admin.restart": "30000",
+  "admin.restartSafety": "30000",
+  "admin.schema": "Infinity",
+  "admin.settings": "30000",
+  "admin.settingsAudit": "30000",
+  "admin.settingsSave": "30000",
+  "admin.settingsTest": "30000",
+  "admin.shardImport": "30000",
+  "audit.list": "30000",
+  "auth.csrf": "30000",
+  "auth.login": "30000",
+  "auth.logout": "30000",
+  "auth.me": "300000",
+  "auth.stepUp": "30000",
+  "auth.totpEnroll": "30000",
+  "auth.totpVerify": "30000",
+  "blueprints.get": "30000",
+  "blueprints.list": "30000",
+  "bodies.controller": "30000",
+  "bodies.script": "0",
+  "bodies.scripts": "30000",
+  "bots.chat": "30000",
+  "bots.inventory": "30000",
+  "bots.list": "30000",
+  "bots.now": "Infinity",
+  "bots.tile": "30000",
+  "brains.context": "0",
+  "brains.turn": "30000",
+  "buildplans.get": "30000",
+  "designer.canvas": "30000",
+  "designer.create": "30000",
+  "designer.get": "30000",
+  "designer.message": "30000",
+  "designer.models": "30000",
+  "designer.save": "30000",
+  "designer.version": "30000",
+  "designs.diff": "600000",
+  "designs.get": "30000",
+  "designs.list": "30000",
+  "designs.picture": "30000",
+  "events": "Infinity",
+  "feed": "Infinity",
+  "groom.preview": "30000",
+  "health": "30000",
+  "hive.tree": "Infinity",
+  "live.stream": "30000",
+  "locate": "30000",
+  "memory.get": "30000",
+  "memory.kinds": "30000",
+  "memory.list": "30000",
+  "memoryActivity.cloud": "30000",
+  "memoryActivity.cloudDistance": "30000",
+  "memoryActivity.heat": "15000",
+  "memoryActivity.list": "Infinity",
+  "overview": "30000",
+  "personality": "30000",
+  "raptor.graph": "30000",
+  "raptor.leaves": "30000",
+  "raptor.node": "30000",
+  "scripts.diff": "300000",
+  "scripts.get": "300000",
+  "scripts.lint": "300000",
+  "scripts.list": "30000",
+  "search": "30000",
+  "setup.create": "30000",
+  "setup.status": "30000",
+  "shards.export": "30000",
+  "shards.exportPreview": "30000",
+  "shards.importPreview": "30000",
+  "shards.packs": "30000",
+  "status": "Infinity",
+  "story.architect": "30000",
+  "story.beds": "30000",
+  "story.bills": "30000",
+  "story.builds": "30000",
+  "story.create": "30000",
+  "story.designations": "30000",
+  "story.directive": "30000",
+  "story.directives": "30000",
+  "story.directives.list": "30000",
+  "story.draft": "30000",
+  "story.gear": "30000",
+  "story.get": "30000",
+  "story.home": "30000",
+  "story.list": "30000",
+  "story.materialRules": "30000",
+  "story.online": "30000",
+  "story.options": "30000",
+  "story.orders": "30000",
+  "story.pause": "30000",
+  "story.pawns": "30000",
+  "story.policies": "30000",
+  "story.priorities": "30000",
+  "story.recipes": "30000",
+  "story.release": "30000",
+  "story.resume": "30000",
+  "story.roles": "30000",
+  "story.schedule": "30000",
+  "story.storage": "30000",
+  "story.time": "30000",
+  "story.workbenches": "30000",
+  "story.zones": "30000",
+  "vision.list": "30000",
+  "vision.png": "30000",
+  "vision.render": "30000",
+  "vision.sheet": "30000",
+  "world.blockEntities": "30000",
+  "world.blocks": "30000",
+  "world.chunks": "30000",
+  "world.container": "30000",
+  "world.containers": "30000",
+  "world.entities": "Infinity",
+  "world.index": "30000",
+  "world.overlays": "30000",
+}
+`;
+
+exports[`lib helpers (golden) > the connection indicator for every stream and status 1`] = `
+[
+  [
+    "idle",
+    100,
+    {
+      "detail": "Opening the live stream…",
+      "label": "Connecting",
+      "level": "connecting",
+    },
+  ],
+  [
+    "idle",
+    100,
+    {
+      "detail": "Opening the live stream…",
+      "label": "Connecting",
+      "level": "connecting",
+    },
+  ],
+  [
+    "idle",
+    100,
+    {
+      "detail": "Opening the live stream…",
+      "label": "Connecting",
+      "level": "connecting",
+    },
+  ],
+  [
+    "idle",
+    100,
+    {
+      "detail": "Opening the live stream…",
+      "label": "Connecting",
+      "level": "connecting",
+    },
+  ],
+  [
+    "idle",
+    100,
+    {
+      "detail": "Opening the live stream…",
+      "label": "Connecting",
+      "level": "connecting",
+    },
+  ],
+  [
+    "idle",
+    100,
+    {
+      "detail": "Opening the live stream…",
+      "label": "Connecting",
+      "level": "connecting",
+    },
+  ],
+  [
+    "idle",
+    100,
+    {
+      "detail": "Opening the live stream…",
+      "label": "Connecting",
+      "level": "connecting",
+    },
+  ],
+  [
+    "idle",
+    100,
+    {
+      "detail": "Opening the live stream…",
+      "label": "Connecting",
+      "level": "connecting",
+    },
+  ],
+  [
+    "idle",
+    100,
+    {
+      "detail": "Opening the live stream…",
+      "label": "Connecting",
+      "level": "connecting",
+    },
+  ],
+  [
+    "idle",
+    100,
+    {
+      "detail": "Opening the live stream…",
+      "label": "Connecting",
+      "level": "connecting",
+    },
+  ],
+  [
+    "idle",
+    5000,
+    {
+      "detail": "Opening the live stream…",
+      "label": "Connecting",
+      "level": "connecting",
+    },
+  ],
+  [
+    "idle",
+    5000,
+    {
+      "detail": "Opening the live stream…",
+      "label": "Connecting",
+      "level": "connecting",
+    },
+  ],
+  [
+    "idle",
+    5000,
+    {
+      "detail": "Opening the live stream…",
+      "label": "Connecting",
+      "level": "connecting",
+    },
+  ],
+  [
+    "idle",
+    5000,
+    {
+      "detail": "Opening the live stream…",
+      "label": "Connecting",
+      "level": "connecting",
+    },
+  ],
+  [
+    "idle",
+    5000,
+    {
+      "detail": "Opening the live stream…",
+      "label": "Connecting",
+      "level": "connecting",
+    },
+  ],
+  [
+    "idle",
+    5000,
+    {
+      "detail": "Opening the live stream…",
+      "label": "Connecting",
+      "level": "connecting",
+    },
+  ],
+  [
+    "idle",
+    5000,
+    {
+      "detail": "Opening the live stream…",
+      "label": "Connecting",
+      "level": "connecting",
+    },
+  ],
+  [
+    "idle",
+    5000,
+    {
+      "detail": "Opening the live stream…",
+      "label": "Connecting",
+      "level": "connecting",
+    },
+  ],
+  [
+    "idle",
+    5000,
+    {
+      "detail": "Opening the live stream…",
+      "label": "Connecting",
+      "level": "connecting",
+    },
+  ],
+  [
+    "idle",
+    5000,
+    {
+      "detail": "Opening the live stream…",
+      "label": "Connecting",
+      "level": "connecting",
+    },
+  ],
+  [
+    "connecting",
+    100,
+    {
+      "detail": "Opening the live stream…",
+      "label": "Connecting",
+      "level": "connecting",
+    },
+  ],
+  [
+    "connecting",
+    100,
+    {
+      "detail": "Opening the live stream…",
+      "label": "Connecting",
+      "level": "connecting",
+    },
+  ],
+  [
+    "connecting",
+    100,
+    {
+      "detail": "Opening the live stream…",
+      "label": "Connecting",
+      "level": "connecting",
+    },
+  ],
+  [
+    "connecting",
+    100,
+    {
+      "detail": "Opening the live stream…",
+      "label": "Connecting",
+      "level": "connecting",
+    },
+  ],
+  [
+    "connecting",
+    100,
+    {
+      "detail": "Opening the live stream…",
+      "label": "Connecting",
+      "level": "connecting",
+    },
+  ],
+  [
+    "connecting",
+    100,
+    {
+      "detail": "Opening the live stream…",
+      "label": "Connecting",
+      "level": "connecting",
+    },
+  ],
+  [
+    "connecting",
+    100,
+    {
+      "detail": "Opening the live stream…",
+      "label": "Connecting",
+      "level": "connecting",
+    },
+  ],
+  [
+    "connecting",
+    100,
+    {
+      "detail": "Opening the live stream…",
+      "label": "Connecting",
+      "level": "connecting",
+    },
+  ],
+  [
+    "connecting",
+    100,
+    {
+      "detail": "Opening the live stream…",
+      "label": "Connecting",
+      "level": "connecting",
+    },
+  ],
+  [
+    "connecting",
+    100,
+    {
+      "detail": "Opening the live stream…",
+      "label": "Connecting",
+      "level": "connecting",
+    },
+  ],
+  [
+    "connecting",
+    5000,
+    {
+      "detail": "Opening the live stream…",
+      "label": "Connecting",
+      "level": "connecting",
+    },
+  ],
+  [
+    "connecting",
+    5000,
+    {
+      "detail": "Opening the live stream…",
+      "label": "Connecting",
+      "level": "connecting",
+    },
+  ],
+  [
+    "connecting",
+    5000,
+    {
+      "detail": "Opening the live stream…",
+      "label": "Connecting",
+      "level": "connecting",
+    },
+  ],
+  [
+    "connecting",
+    5000,
+    {
+      "detail": "Opening the live stream…",
+      "label": "Connecting",
+      "level": "connecting",
+    },
+  ],
+  [
+    "connecting",
+    5000,
+    {
+      "detail": "Opening the live stream…",
+      "label": "Connecting",
+      "level": "connecting",
+    },
+  ],
+  [
+    "connecting",
+    5000,
+    {
+      "detail": "Opening the live stream…",
+      "label": "Connecting",
+      "level": "connecting",
+    },
+  ],
+  [
+    "connecting",
+    5000,
+    {
+      "detail": "Opening the live stream…",
+      "label": "Connecting",
+      "level": "connecting",
+    },
+  ],
+  [
+    "connecting",
+    5000,
+    {
+      "detail": "Opening the live stream…",
+      "label": "Connecting",
+      "level": "connecting",
+    },
+  ],
+  [
+    "connecting",
+    5000,
+    {
+      "detail": "Opening the live stream…",
+      "label": "Connecting",
+      "level": "connecting",
+    },
+  ],
+  [
+    "connecting",
+    5000,
+    {
+      "detail": "Opening the live stream…",
+      "label": "Connecting",
+      "level": "connecting",
+    },
+  ],
+  [
+    "open",
+    100,
+    {
+      "detail": "Connected.",
+      "label": "Live",
+      "level": "live",
+    },
+  ],
+  [
+    "open",
+    100,
+    {
+      "detail": "Connected · 42 ms.",
+      "label": "Live",
+      "level": "live",
+    },
+  ],
+  [
+    "open",
+    100,
+    {
+      "detail": "Connected.",
+      "label": "Live",
+      "level": "live",
+    },
+  ],
+  [
+    "open",
+    100,
+    {
+      "detail": "Connected.",
+      "label": "Live",
+      "level": "live",
+    },
+  ],
+  [
+    "open",
+    100,
+    {
+      "detail": "gone",
+      "label": "Bridge down",
+      "level": "offline",
+    },
+  ],
+  [
+    "open",
+    100,
+    {
+      "detail": "The web server cannot reach the bridge.",
+      "label": "Bridge down",
+      "level": "offline",
+    },
+  ],
+  [
+    "open",
+    100,
+    {
+      "detail": "The bridge is reconnecting.",
+      "label": "Reconnecting",
+      "level": "reconnecting",
+    },
+  ],
+  [
+    "open",
+    100,
+    {
+      "detail": "m",
+      "label": "Reconnecting",
+      "level": "reconnecting",
+    },
+  ],
+  [
+    "open",
+    100,
+    {
+      "detail": "The bot is not reachable. Memory pages still work.",
+      "label": "Bot offline",
+      "level": "degraded",
+    },
+  ],
+  [
+    "open",
+    100,
+    {
+      "detail": "busy",
+      "label": "Bot offline",
+      "level": "degraded",
+    },
+  ],
+  [
+    "open",
+    5000,
+    {
+      "detail": "Connected.",
+      "label": "Live",
+      "level": "live",
+    },
+  ],
+  [
+    "open",
+    5000,
+    {
+      "detail": "Connected · 42 ms.",
+      "label": "Live",
+      "level": "live",
+    },
+  ],
+  [
+    "open",
+    5000,
+    {
+      "detail": "Connected.",
+      "label": "Live",
+      "level": "live",
+    },
+  ],
+  [
+    "open",
+    5000,
+    {
+      "detail": "Connected.",
+      "label": "Live",
+      "level": "live",
+    },
+  ],
+  [
+    "open",
+    5000,
+    {
+      "detail": "gone",
+      "label": "Bridge down",
+      "level": "offline",
+    },
+  ],
+  [
+    "open",
+    5000,
+    {
+      "detail": "The web server cannot reach the bridge.",
+      "label": "Bridge down",
+      "level": "offline",
+    },
+  ],
+  [
+    "open",
+    5000,
+    {
+      "detail": "The bridge is reconnecting.",
+      "label": "Reconnecting",
+      "level": "reconnecting",
+    },
+  ],
+  [
+    "open",
+    5000,
+    {
+      "detail": "m",
+      "label": "Reconnecting",
+      "level": "reconnecting",
+    },
+  ],
+  [
+    "open",
+    5000,
+    {
+      "detail": "The bot is not reachable. Memory pages still work.",
+      "label": "Bot offline",
+      "level": "degraded",
+    },
+  ],
+  [
+    "open",
+    5000,
+    {
+      "detail": "busy",
+      "label": "Bot offline",
+      "level": "degraded",
+    },
+  ],
+  [
+    "reconnecting",
+    100,
+    {
+      "detail": "Connected.",
+      "label": "Live",
+      "level": "live",
+    },
+  ],
+  [
+    "reconnecting",
+    100,
+    {
+      "detail": "Connected · 42 ms.",
+      "label": "Live",
+      "level": "live",
+    },
+  ],
+  [
+    "reconnecting",
+    100,
+    {
+      "detail": "Connected.",
+      "label": "Live",
+      "level": "live",
+    },
+  ],
+  [
+    "reconnecting",
+    100,
+    {
+      "detail": "Connected.",
+      "label": "Live",
+      "level": "live",
+    },
+  ],
+  [
+    "reconnecting",
+    100,
+    {
+      "detail": "gone",
+      "label": "Bridge down",
+      "level": "offline",
+    },
+  ],
+  [
+    "reconnecting",
+    100,
+    {
+      "detail": "The web server cannot reach the bridge.",
+      "label": "Bridge down",
+      "level": "offline",
+    },
+  ],
+  [
+    "reconnecting",
+    100,
+    {
+      "detail": "The bridge is reconnecting.",
+      "label": "Reconnecting",
+      "level": "reconnecting",
+    },
+  ],
+  [
+    "reconnecting",
+    100,
+    {
+      "detail": "m",
+      "label": "Reconnecting",
+      "level": "reconnecting",
+    },
+  ],
+  [
+    "reconnecting",
+    100,
+    {
+      "detail": "The bot is not reachable. Memory pages still work.",
+      "label": "Bot offline",
+      "level": "degraded",
+    },
+  ],
+  [
+    "reconnecting",
+    100,
+    {
+      "detail": "busy",
+      "label": "Bot offline",
+      "level": "degraded",
+    },
+  ],
+  [
+    "reconnecting",
+    5000,
+    {
+      "detail": "Lost the live stream; retrying.",
+      "label": "Reconnecting",
+      "level": "reconnecting",
+    },
+  ],
+  [
+    "reconnecting",
+    5000,
+    {
+      "detail": "Lost the live stream; retrying.",
+      "label": "Reconnecting",
+      "level": "reconnecting",
+    },
+  ],
+  [
+    "reconnecting",
+    5000,
+    {
+      "detail": "Lost the live stream; retrying.",
+      "label": "Reconnecting",
+      "level": "reconnecting",
+    },
+  ],
+  [
+    "reconnecting",
+    5000,
+    {
+      "detail": "Lost the live stream; retrying.",
+      "label": "Reconnecting",
+      "level": "reconnecting",
+    },
+  ],
+  [
+    "reconnecting",
+    5000,
+    {
+      "detail": "Lost the live stream; retrying.",
+      "label": "Reconnecting",
+      "level": "reconnecting",
+    },
+  ],
+  [
+    "reconnecting",
+    5000,
+    {
+      "detail": "Lost the live stream; retrying.",
+      "label": "Reconnecting",
+      "level": "reconnecting",
+    },
+  ],
+  [
+    "reconnecting",
+    5000,
+    {
+      "detail": "Lost the live stream; retrying.",
+      "label": "Reconnecting",
+      "level": "reconnecting",
+    },
+  ],
+  [
+    "reconnecting",
+    5000,
+    {
+      "detail": "Lost the live stream; retrying.",
+      "label": "Reconnecting",
+      "level": "reconnecting",
+    },
+  ],
+  [
+    "reconnecting",
+    5000,
+    {
+      "detail": "Lost the live stream; retrying.",
+      "label": "Reconnecting",
+      "level": "reconnecting",
+    },
+  ],
+  [
+    "reconnecting",
+    5000,
+    {
+      "detail": "Lost the live stream; retrying.",
+      "label": "Reconnecting",
+      "level": "reconnecting",
+    },
+  ],
+  [
+    "closed",
+    100,
+    {
+      "detail": "Connected.",
+      "label": "Live",
+      "level": "live",
+    },
+  ],
+  [
+    "closed",
+    100,
+    {
+      "detail": "Connected · 42 ms.",
+      "label": "Live",
+      "level": "live",
+    },
+  ],
+  [
+    "closed",
+    100,
+    {
+      "detail": "Connected.",
+      "label": "Live",
+      "level": "live",
+    },
+  ],
+  [
+    "closed",
+    100,
+    {
+      "detail": "Connected.",
+      "label": "Live",
+      "level": "live",
+    },
+  ],
+  [
+    "closed",
+    100,
+    {
+      "detail": "gone",
+      "label": "Bridge down",
+      "level": "offline",
+    },
+  ],
+  [
+    "closed",
+    100,
+    {
+      "detail": "The web server cannot reach the bridge.",
+      "label": "Bridge down",
+      "level": "offline",
+    },
+  ],
+  [
+    "closed",
+    100,
+    {
+      "detail": "The bridge is reconnecting.",
+      "label": "Reconnecting",
+      "level": "reconnecting",
+    },
+  ],
+  [
+    "closed",
+    100,
+    {
+      "detail": "m",
+      "label": "Reconnecting",
+      "level": "reconnecting",
+    },
+  ],
+  [
+    "closed",
+    100,
+    {
+      "detail": "The bot is not reachable. Memory pages still work.",
+      "label": "Bot offline",
+      "level": "degraded",
+    },
+  ],
+  [
+    "closed",
+    100,
+    {
+      "detail": "busy",
+      "label": "Bot offline",
+      "level": "degraded",
+    },
+  ],
+  [
+    "closed",
+    5000,
+    {
+      "detail": "The live stream is closed.",
+      "label": "Offline",
+      "level": "offline",
+    },
+  ],
+  [
+    "closed",
+    5000,
+    {
+      "detail": "The live stream is closed.",
+      "label": "Offline",
+      "level": "offline",
+    },
+  ],
+  [
+    "closed",
+    5000,
+    {
+      "detail": "The live stream is closed.",
+      "label": "Offline",
+      "level": "offline",
+    },
+  ],
+  [
+    "closed",
+    5000,
+    {
+      "detail": "The live stream is closed.",
+      "label": "Offline",
+      "level": "offline",
+    },
+  ],
+  [
+    "closed",
+    5000,
+    {
+      "detail": "The live stream is closed.",
+      "label": "Offline",
+      "level": "offline",
+    },
+  ],
+  [
+    "closed",
+    5000,
+    {
+      "detail": "The live stream is closed.",
+      "label": "Offline",
+      "level": "offline",
+    },
+  ],
+  [
+    "closed",
+    5000,
+    {
+      "detail": "The live stream is closed.",
+      "label": "Offline",
+      "level": "offline",
+    },
+  ],
+  [
+    "closed",
+    5000,
+    {
+      "detail": "The live stream is closed.",
+      "label": "Offline",
+      "level": "offline",
+    },
+  ],
+  [
+    "closed",
+    5000,
+    {
+      "detail": "The live stream is closed.",
+      "label": "Offline",
+      "level": "offline",
+    },
+  ],
+  [
+    "closed",
+    5000,
+    {
+      "detail": "The live stream is closed.",
+      "label": "Offline",
+      "level": "offline",
+    },
+  ],
+]
+`;

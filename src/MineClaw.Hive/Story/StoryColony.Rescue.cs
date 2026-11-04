@@ -139,8 +139,11 @@ public sealed partial class StoryColony
         public bool RestsOnlyThePawn => Stuck || Guard || Reach;
     }
 
+    /// <remarks>A drop collect that found nothing (its drop still in view, nothing written off: <see cref="DropMissed"/>) is no way
+    /// there too: the drop rests for this pawn, and for everyone only once <see cref="UnreachPawns"/> pawns missed it.</remarks>
     private PawnMiss MissOf(PawnState p, ActiveJob j, string why) =>
-        new(_stuck.ContainsKey(p.Name), j.Source == "guard", Unreachable(why) || OutOfReach(why), ReachOnly(why) && j.Source != "designation");
+        new(_stuck.ContainsKey(p.Name), j.Source == "guard", Unreachable(why) || OutOfReach(why) || DropMissed(j, why),
+            ReachOnly(why) && j.Source != "designation");
 
     /// <summary>The target rests for this pawn only (a guard's monster a short while, else longer each time); no way there is noted.</summary>
     private void RestForPawn(PawnState p, ActiveJob j, string why, bool guard)

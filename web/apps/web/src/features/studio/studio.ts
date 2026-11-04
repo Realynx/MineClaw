@@ -66,6 +66,22 @@ const stateOf = (c: Cell): number => (c[3] === EARTH ? -1 : c[3] * 16 + (c[4] & 
 
 const MAX_CELLS_PER_EDIT = 20_000;
 
+/** A chat message's request: the text, the canvas rev with the waiting edits, and the selection and model when given. */
+function messageRequest(
+  text: string,
+  rev: number,
+  edits: DesignerEdit[],
+  sel: DesignerMessageRequest['selection'] | null,
+  model: string | undefined,
+): DesignerMessageRequest {
+  return {
+    text,
+    canvas: { rev, ...(edits.length ? { edits } : {}) },
+    ...(sel ? { selection: sel } : {}),
+    ...(model ? { model } : {}),
+  };
+}
+
 export class Studio {
   readonly canvas = new Canvas();
   readonly history = new History();
@@ -334,10 +350,7 @@ export class Studio {
   ): Promise<DesignerMessageResponse | null> {
     const t = text.trim();
     if (!t || this.busy) return null;
-    if (this.flushTimer) {
-      clearTimeout(this.flushTimer);
-      this.flushTimer = null;
-    }
+    this.stopFlushTimer();
     const edits = this.take();
     const sel = opts.withSelection && this.selection ? { min: this.selection.min, max: this.selection.max } : null;
     const optimistic: DesignerMessage = {
@@ -354,13 +367,7 @@ export class Studio {
     this.error = null;
     this.changed();
     try {
-      const body: DesignerMessageRequest = {
-        text: t,
-        canvas: { rev: this.rev, ...(edits.length ? { edits } : {}) },
-        ...(sel ? { selection: sel } : {}),
-        ...(opts.model ? { model: opts.model } : {}),
-      };
-      const r = await this.api.message(this.id, body);
+      const r = await this.api.message(this.id, messageRequest(t, this.rev, edits, sel, opts.model));
       this.busy = false;
       this.messages = [...this.messages.filter((m) => m !== optimistic), r.userMessage, r.message];
       this.costUsd = r.sessionCostUsd;
@@ -378,6 +385,12 @@ export class Studio {
       void this.flush();
       throw e;
     }
+  }
+
+  private stopFlushTimer() {
+    if (!this.flushTimer) return;
+    clearTimeout(this.flushTimer);
+    this.flushTimer = null;
   }
 
   /** Saves the canvas as a design (a new one with `asNew`, else the next revision of the loaded one). */

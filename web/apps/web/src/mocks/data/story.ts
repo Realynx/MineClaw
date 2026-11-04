@@ -89,15 +89,15 @@ function aiBodies(): StoryAiBody[] {
   });
 }
 
+/** What a pawn does not stand on: air, leaves, logs, grass and flowers, wheat, torches, water. */
+const NOT_GROUND = new Set([0, 18, 17, 31, 37, 38, 59, 50, 8, 9]);
+
 export const storySim = new StorySim({
   defaultHome: STORY_HOME,
   world: {
     blockAt,
     ground: (x, z) => {
-      for (let y = 100; y > 0; y--) {
-        const [id] = blockAt(x, y, z);
-        if (id !== 0 && id !== 18 && id !== 17 && id !== 31 && id !== 37 && id !== 38 && id !== 59 && id !== 50 && id !== 8 && id !== 9) return y;
-      }
+      for (let y = 100; y > 0; y--) if (!NOT_GROUND.has(blockAt(x, y, z)[0])) return y;
       return surface(x, z);
     },
     entities: () => entityCache,

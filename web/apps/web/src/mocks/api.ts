@@ -663,11 +663,16 @@ function mockDesignBlocks(): Array<[number, number, number, number, number]> {
   const out: Array<[number, number, number, number, number]> = [];
   for (let x = 0; x < 5; x++)
     for (let z = 0; z < 5; z++) {
-      const edge = x === 0 || x === 4 || z === 0 || z === 4;
-      for (let y = 0; y < 3; y++) if (edge && !(x === 2 && z === 0 && y < 2)) out.push([x, y, z, 4, 0]);
+      for (let y = 0; y < 3; y++) if (hutWall(x, y, z)) out.push([x, y, z, 4, 0]);
       out.push([x, 3, z, 5, 0]);
     }
   return out;
+}
+
+/** The hut's walls: its edge, less the 2-high doorway in the middle of the north side. */
+function hutWall(x: number, y: number, z: number): boolean {
+  const edge = x === 0 || x === 4 || z === 0 || z === 4;
+  return edge && !(x === 2 && z === 0 && y < 2);
 }
 
 /** Story Mode: the shared mock director (mocks/data/story.ts); its errors become API errors. */

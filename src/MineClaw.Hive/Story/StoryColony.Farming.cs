@@ -350,7 +350,7 @@ public sealed partial class StoryColony
             {
                 var grass = TallGrassNear(w, zone, 24, 64);
                 if (grass.Count == 0) return (null, "no tall grass or ferns within 24 blocks of the zone");
-                var (res, derr) = Designate("add", "cut", null, grass, null);
+                var (res, derr) = AddDesignations("cut", null, grass, null, auto: true); // the colony picked these cells: cave grass is left alone
                 return derr != null ? (null, derr) : (new JsonObject { ["count"] = res?["count"]?.DeepClone(), ["kind"] = "cut" }, null);
             }
             if (plant.Harvest == "fruit")

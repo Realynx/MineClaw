@@ -112,6 +112,23 @@ function useChatLines(bots: string[], open: boolean): FeedLine[] {
   }, [feed.data, bots, open, now]);
 }
 
+function chatPlaceholder(canChat: boolean, hasTargets: boolean): string {
+  if (!canChat) return 'Your account cannot chat with the bots';
+  return hasTargets ? 'Say something (Enter sends; Enter on an empty line or clicking the world closes)' : 'Click a bot with the crosshair first';
+}
+
+/** After the bar closes: the bots a line could not be sent to, and why. */
+function FailedSends({ results }: { results: SendResult[] | null }) {
+  const failed = results?.filter((r) => !r.ok) ?? [];
+  if (!failed.length) return null;
+  return (
+    <div className="rounded-sm bg-black/60 px-2 py-0.5 font-mono text-[11px] text-[#ff5555]" role="alert">
+      Not sent to{' '}
+      {failed.map((r) => `${r.bot} (${r.error ?? 'error'})`).join(', ')}
+    </div>
+  );
+}
+
 /** The Minecraft-style chat: replies above, the input bar at the bottom while open. */
 export function ChatOverlay({
   open,
@@ -205,13 +222,7 @@ export function ChatOverlay({
               disabled={!canChat || targets.length === 0}
               maxLength={256}
               aria-label="Chat to the selected bots"
-              placeholder={
-                !canChat
-                  ? 'Your account cannot chat with the bots'
-                  : targets.length
-                    ? 'Say something (Enter sends; Enter on an empty line or clicking the world closes)'
-                    : 'Click a bot with the crosshair first'
-              }
+              placeholder={chatPlaceholder(canChat, targets.length > 0)}
               className="min-w-0 flex-1 bg-transparent text-white outline-none placeholder:text-white/40"
             />
             <button
@@ -225,15 +236,9 @@ export function ChatOverlay({
             </button>
           </div>
         </div>
-      ) : results && results.some((r) => !r.ok) ? (
-        <div className="rounded-sm bg-black/60 px-2 py-0.5 font-mono text-[11px] text-[#ff5555]" role="alert">
-          Not sent to{' '}
-          {results
-            .filter((r) => !r.ok)
-            .map((r) => `${r.bot} (${r.error ?? 'error'})`)
-            .join(', ')}
-        </div>
-      ) : null}
+      ) : (
+        <FailedSends results={results} />
+      )}
     </div>
   );
 }

@@ -76,91 +76,144 @@ public static partial class PerceptionVerifier
     public static VerifiedAnswer Verify(string question, PerceptionResult r, IBlockAccess world, RoleMap roles, (int X, int Y, int Z) focus, int radius)
     {
         if (!r.Ok) return new VerifiedAnswer(question, null, [], 0, 0, 0, 0, 0, $"[vision] perception failed ({r.Error}); use look map", r, r.Error);
-        var facts = new List<VerifiedFact>();
-        int checkedN = 0, mismatched = 0, dropped = 0, corrected = 0, unverified = 0;
-        var replace = new Dictionary<(int, int, int), (int, int, int)>();
-        var droppedSubjects = new List<string>();
-        bool refuted = false;
-        foreach (var f in r.Facts.Take(8))
+        var run = new VerifyRun(world, roles, focus, radius);
+        foreach (var f in r.Facts.Take(8)) run.Check(f);
+        string? answer = run.CheckAnswer(r.Answer);
+        var ordered = run.Facts.OrderByDescending(x => x.Status is FactStatus.Verified or FactStatus.Corrected).ThenByDescending(x => x.Confidence).ToList();
+        string modelText = Format(question, answer, ordered, run.Dropped, false);
+        return new VerifiedAnswer(question, answer, ordered, run.Checked, run.Mismatched, run.Dropped, run.Corrected, run.Unverified, modelText, r)
+            { ModelText = modelText };
+    }
+
+    /// <summary>What a claim says it is: the role/block it names (a negated role excluded), and whether it expects air or a solid
+    /// block. Unchecked when it names nothing the voxels can confirm.</summary>
+    private readonly record struct ClaimShape(string Subject, BlockRole? NegRole, BlockRole? Role, int? Block, bool ExpectAir, bool ExpectSolid)
+    {
+        public bool Checkable => Role != null || NegRole != null || Block != null || ExpectAir || ExpectSolid;
+
+        public static ClaimShape Of(PerceptionFact f)
         {
-            var subject = Subject(f.Claim);
+            var subject = PerceptionVerifier.Subject(f.Claim);
             var negRole = Negated(f.Claim);
             // "gap in the floor", "hole at": the cell itself is air, whatever surrounds it.
             bool airSubject = AirRx().IsMatch(subject);
-            var role = BlockRoles.Parse(f.Role) ?? (airSubject ? null : RoleFromClaim(subject));
-            if (role == negRole || (airSubject && role is BlockRole.Floor or BlockRole.Wall)) role = null;
+            var role = ClaimedRole(f, subject, airSubject, negRole);
             var block = airSubject ? null : BlockFromClaim(subject);
             bool expectAir = airSubject && role is null or BlockRole.Void or BlockRole.GenCell or BlockRole.None;
             bool expectSolid = SolidRx().IsMatch(f.Claim) && !expectAir && role is not (BlockRole.Void or BlockRole.None);
-            bool checkable = role != null || negRole != null || block != null || expectAir || expectSolid;
-            if (f.Coords.Count == 0)
-            {
-                if (f.Confidence >= 0.7) { facts.Add(new VerifiedFact(f.Claim, [], role, f.Confidence, FactStatus.Unverified)); unverified++; }
-                else dropped++;
-                continue;
-            }
-            if (!checkable)
-            {
-                // Coordinates with nothing to compare: the words may stay (uncertain), the coordinates never do (live 10-27: an
-                // unchecked cell from perception became clone 69's dig target).
-                var near = f.Coords.Where(c => Plausible(world, c, focus, radius)).ToList();
-                if (near.Count == 0 || f.Confidence < 0.7) { dropped++; continue; }
-                facts.Add(new VerifiedFact(f.Claim, [], role, f.Confidence, FactStatus.Unverified));
-                unverified++;
-                continue;
-            }
-            checkedN++;
-            var kept = new List<(int, int, int)>();
-            bool anyBad = false, anySnap = false, anyLost = false;
-            foreach (var c in f.Coords.Take(6))
-            {
-                bool ok = Plausible(world, c, focus, radius) && Matches(world, roles, c, role, block, expectAir, expectSolid, negRole);
-                if (ok) { kept.Add(c); continue; }
-                anyBad = true;
-                // Only a single-target claim is snapped (the classic floor-vs-feet misread); a list of faces is right or wrong per entry.
-                if (f.Coords.Count == 1 && Snap(world, roles, c, role, block, expectAir, expectSolid, negRole, focus, radius, f.Coords) is { } s && !kept.Contains(s))
-                {
-                    kept.Add(s);
-                    replace[c] = s;
-                    anySnap = true;
-                }
-                else anyLost = true;
-            }
-            if (anyBad) mismatched++;
-            if (kept.Count == 0) { dropped++; refuted = true; droppedSubjects.Add(subject.Trim().ToLowerInvariant()); continue; }
+            return new ClaimShape(subject, negRole, role, block, expectAir, expectSolid);
+        }
+
+        private static BlockRole? ClaimedRole(PerceptionFact f, string subject, bool airSubject, BlockRole? negRole)
+        {
+            var role = BlockRoles.Parse(f.Role) ?? (airSubject ? null : RoleFromClaim(subject));
+            return role == negRole || (airSubject && role is BlockRole.Floor or BlockRole.Wall) ? null : role;
+        }
+    }
+
+    /// <summary>One <see cref="Verify"/>: the facts kept, the coordinates snapped, and the counts.</summary>
+    private sealed class VerifyRun(IBlockAccess world, RoleMap roles, (int X, int Y, int Z) focus, int radius)
+    {
+        public readonly List<VerifiedFact> Facts = new();
+        public int Checked, Mismatched, Dropped, Corrected, Unverified;
+        private readonly Dictionary<(int, int, int), (int, int, int)> _replace = new();
+        private readonly List<string> _droppedSubjects = new();
+        private bool _refuted;
+
+        public void Check(PerceptionFact f)
+        {
+            var shape = ClaimShape.Of(f);
+            if (f.Coords.Count == 0) KeepWords(f, shape.Role);
+            else if (!shape.Checkable) KeepWordsIfNear(f, shape.Role);
+            else CheckCoords(f, shape);
+        }
+
+        /// <summary>No coordinates: a confident claim stays as unverified words, a vague one is dropped.</summary>
+        private void KeepWords(PerceptionFact f, BlockRole? role)
+        {
+            if (f.Confidence >= 0.7) { Facts.Add(new VerifiedFact(f.Claim, [], role, f.Confidence, FactStatus.Unverified)); Unverified++; }
+            else Dropped++;
+        }
+
+        /// <summary>Coordinates with nothing to compare: the words may stay (uncertain), the coordinates never do (live 10-27: an
+        /// unchecked cell from perception became clone 69's dig target).</summary>
+        private void KeepWordsIfNear(PerceptionFact f, BlockRole? role)
+        {
+            var near = f.Coords.Where(c => Plausible(world, c, focus, radius)).ToList();
+            if (near.Count == 0 || f.Confidence < 0.7) { Dropped++; return; }
+            Facts.Add(new VerifiedFact(f.Claim, [], role, f.Confidence, FactStatus.Unverified));
+            Unverified++;
+        }
+
+        private void CheckCoords(PerceptionFact f, ClaimShape shape)
+        {
+            Checked++;
+            var kept = KeepCoords(f, shape, out bool anySnap, out bool anyLost);
+            bool anyBad = anySnap || anyLost;
+            if (anyBad) Mismatched++;
+            if (kept.Count == 0) { Dropped++; _refuted = true; _droppedSubjects.Add(shape.Subject.Trim().ToLowerInvariant()); return; }
             var status = anyBad ? FactStatus.Corrected : FactStatus.Verified;
-            if (anyBad) corrected++;
+            if (anyBad) Corrected++;
             // Some of its coords were refuted: the claim's words ("gen cells in rows z7-z8 near x4-8") are not to be trusted,
             // only what the voxels confirm at the kept coords.
             string claim = f.Claim;
-            if (anyLost) { refuted = true; claim = Canonical(world, role, expectAir, expectSolid, kept[0]); }
-            facts.Add(new VerifiedFact(claim, kept, role, f.Confidence, status,
+            if (anyLost) { _refuted = true; claim = Canonical(world, shape.Role, shape.ExpectAir, shape.ExpectSolid, kept[0]); }
+            Facts.Add(new VerifiedFact(claim, kept, shape.Role, f.Confidence, status,
                 anySnap ? "coords corrected" : anyLost ? "some coords dropped" : null));
         }
 
-        // The answer line: every coordinate it names must belong to a kept fact (corrected ones are rewritten).
-        string? answer = r.Answer;
-        if (!string.IsNullOrWhiteSpace(answer))
+        /// <summary>The coordinates the voxels confirm; a wrong single target is snapped to the right cell nearby.</summary>
+        private List<(int, int, int)> KeepCoords(PerceptionFact f, ClaimShape shape, out bool anySnap, out bool anyLost)
         {
-            var keptCoords = facts.Where(x => x.Status is FactStatus.Verified or FactStatus.Corrected).SelectMany(x => x.Coords).ToHashSet();
+            var kept = new List<(int, int, int)>();
+            anySnap = anyLost = false;
+            foreach (var c in f.Coords.Take(6))
+            {
+                if (Plausible(world, c, focus, radius) && Matches(world, roles, c, shape.Role, shape.Block, shape.ExpectAir, shape.ExpectSolid, shape.NegRole))
+                {
+                    kept.Add(c);
+                    continue;
+                }
+                if (TrySnap(f, c, shape, kept)) anySnap = true;
+                else anyLost = true;
+            }
+            return kept;
+        }
+
+        /// <summary>Only a single-target claim is snapped (the classic floor-vs-feet misread); a list of faces is right or wrong per entry.</summary>
+        private bool TrySnap(PerceptionFact f, (int X, int Y, int Z) c, ClaimShape shape, List<(int, int, int)> kept)
+        {
+            if (f.Coords.Count != 1
+                || Snap(world, roles, c, shape.Role, shape.Block, shape.ExpectAir, shape.ExpectSolid, shape.NegRole, focus, radius, f.Coords) is not { } s
+                || kept.Contains(s))
+                return false;
+            kept.Add(s);
+            _replace[c] = s;
+            return true;
+        }
+
+        /// <summary>
+        /// The answer line: every coordinate it names must belong to a kept fact (corrected ones are rewritten), and it must not
+        /// repeat a claim the voxels just refuted ("glowstone floor east" when there's void). A model that just made refuted claims
+        /// doesn't get its free-text answer passed on either (live 21:14: "the water is about 8 blocks west, no water touching the
+        /// lava" rode along with one true coordinate): verified facts only.
+        /// </summary>
+        public string? CheckAnswer(string? answer)
+        {
+            if (string.IsNullOrWhiteSpace(answer)) return answer;
+            var keptCoords = Facts.Where(x => x.Status is FactStatus.Verified or FactStatus.Corrected).SelectMany(x => x.Coords).ToHashSet();
             bool bad = false;
             answer = TripleRx().Replace(answer, m =>
             {
                 var c = (int.Parse(m.Groups[1].Value), int.Parse(m.Groups[2].Value), int.Parse(m.Groups[3].Value));
-                if (replace.TryGetValue(c, out var s)) return $"{s.Item1},{s.Item2},{s.Item3}";
+                if (_replace.TryGetValue(c, out var s)) return $"{s.Item1},{s.Item2},{s.Item3}";
                 if (!keptCoords.Contains(c)) bad = true;
                 return m.Value;
             });
-            // ... and it must not repeat a claim the voxels just refuted ("glowstone floor east" when there's void).
-            bad |= droppedSubjects.Any(d => d.Length >= 8 && answer.Contains(d, StringComparison.OrdinalIgnoreCase));
-            if (bad) { answer = null; mismatched++; checkedN++; }
-            // A model that just made refuted claims doesn't get its free-text answer passed on either (live 21:14: "the water
-            // is about 8 blocks west, no water touching the lava" rode along with one true coordinate): verified facts only.
-            else if (refuted) answer = null;
+            bad |= _droppedSubjects.Any(d => d.Length >= 8 && answer.Contains(d, StringComparison.OrdinalIgnoreCase));
+            if (bad) { Mismatched++; Checked++; return null; }
+            return _refuted ? null : answer;
         }
-        var ordered = facts.OrderByDescending(x => x.Status is FactStatus.Verified or FactStatus.Corrected).ThenByDescending(x => x.Confidence).ToList();
-        string modelText = Format(question, answer, ordered, dropped, false);
-        return new VerifiedAnswer(question, answer, ordered, checkedN, mismatched, dropped, corrected, unverified, modelText, r) { ModelText = modelText };
     }
 
     /// <summary>"[vision] answer | facts: claim @x,y,z (role); ... | 1 dropped" within <see cref="MaxChars"/>.</summary>

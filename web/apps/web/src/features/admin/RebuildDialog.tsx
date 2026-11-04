@@ -14,6 +14,8 @@ import { compact, usd } from '@/lib/utils';
 import { Badge, Button, Checkbox, InlineError, KeyValues, Meter, SkeletonLines } from '@/components/ui/primitives';
 import { Dialog } from '@/components/ui/overlays';
 
+type Job = NonNullable<ReturnType<typeof useApi<'admin.rebuildJob'>>['data']>;
+
 export function JobProgress({ jobId, onDone }: { jobId: string; onDone?: () => void }) {
   const job = useApi('admin.rebuildJob', { params: { jobId } }, { refetchInterval: (q) => (q.state.data && q.state.data.state !== 'running' ? false : 1500) });
   const cancel = useApiMutation('admin.rebuildCancel');
@@ -25,41 +27,62 @@ export function JobProgress({ jobId, onDone }: { jobId: string; onDone?: () => v
   return (
     <div className="space-y-3">
       {j.state === 'running' && j.progress ? (
-        <div>
-          <div className="mb-1 flex justify-between text-xs">
-            <span className="text-muted">
-              {j.progress.stage} · {j.progress.done}/{j.progress.total}
-              {j.progress.message ? ` · ${j.progress.message}` : ''}
-            </span>
-            <Button size="sm" variant="ghost" loading={cancel.isPending} onClick={() => cancel.mutate({ params: { jobId }, body: {} })}>
-              Cancel
-            </Button>
+        <RunningBar progress={j.progress} cancelling={cancel.isPending} onCancel={() => cancel.mutate({ params: { jobId }, body: {} })} />
+      ) : null}
+      {j.state !== 'running' ? <JobOutcome j={j} /> : null}
+      {j.result?.diffs.length ? <JobDiffs diffs={j.result.diffs} /> : null}
+    </div>
+  );
+}
+
+/** A running job: its stage and count, a way to cancel, the progress bar. */
+function RunningBar({ progress, cancelling, onCancel }: { progress: NonNullable<Job['progress']>; cancelling: boolean; onCancel: () => void }) {
+  return (
+    <div>
+      <div className="mb-1 flex justify-between text-xs">
+        <span className="text-muted">
+          {progress.stage} · {progress.done}/{progress.total}
+          {progress.message ? ` · ${progress.message}` : ''}
+        </span>
+        <Button size="sm" variant="ghost" loading={cancelling} onClick={onCancel}>
+          Cancel
+        </Button>
+      </div>
+      <Meter value={progress.done} max={Math.max(1, progress.total)} label="rebuild progress" />
+    </div>
+  );
+}
+
+function outcomeText(j: Job): string {
+  if (j.state === 'cancelled') return 'Cancelled';
+  if (j.state === 'failed') return `Failed: ${j.error ?? j.result?.message ?? ''}`;
+  return j.result?.message ?? 'Done';
+}
+
+/** A finished job: done (ok), cancelled or failed, with what it spent and how long it took. */
+function JobOutcome({ j }: { j: Job }) {
+  return (
+    <div className="flex items-center gap-2 text-sm">
+      {j.state === 'done' && j.result?.ok ? <CheckCircle2 className="size-4 text-ok" /> : <XCircle className="size-4 text-danger" />}
+      <span className="text-fg">{outcomeText(j)}</span>
+      {j.result ? <span className="text-xs text-muted">· {usd(j.result.spentUsd)} · {String(j.result.elapsed).replace(/\.\d+$/, '')}</span> : null}
+    </div>
+  );
+}
+
+/** The summaries the rebuild rewrote: each one's layer and index, old text struck out, new text. */
+function JobDiffs({ diffs }: { diffs: NonNullable<Job['result']>['diffs'] }) {
+  return (
+    <div className="max-h-72 space-y-2 overflow-auto">
+      {diffs.map((d) => (
+        <div key={d.index} className="rounded-lg border border-border p-3 text-xs">
+          <div className="mb-1.5 font-medium text-muted">
+            L{d.layer} #{d.index} {d.old === null || d.old === undefined ? <Badge tone="ok">new</Badge> : null}
           </div>
-          <Meter value={j.progress.done} max={Math.max(1, j.progress.total)} label="rebuild progress" />
+          {d.old ? <p className="mb-1 text-danger line-through decoration-danger/50">{d.old}</p> : null}
+          {d.new ? <p className="text-ok">{d.new}</p> : null}
         </div>
-      ) : null}
-      {j.state !== 'running' ? (
-        <div className="flex items-center gap-2 text-sm">
-          {j.state === 'done' && j.result?.ok ? <CheckCircle2 className="size-4 text-ok" /> : <XCircle className="size-4 text-danger" />}
-          <span className="text-fg">
-            {j.state === 'cancelled' ? 'Cancelled' : j.state === 'failed' ? `Failed: ${j.error ?? j.result?.message ?? ''}` : (j.result?.message ?? 'Done')}
-          </span>
-          {j.result ? <span className="text-xs text-muted">· {usd(j.result.spentUsd)} · {String(j.result.elapsed).replace(/\.\d+$/, '')}</span> : null}
-        </div>
-      ) : null}
-      {j.result?.diffs.length ? (
-        <div className="max-h-72 space-y-2 overflow-auto">
-          {j.result.diffs.map((d) => (
-            <div key={d.index} className="rounded-lg border border-border p-3 text-xs">
-              <div className="mb-1.5 font-medium text-muted">
-                L{d.layer} #{d.index} {d.old === null || d.old === undefined ? <Badge tone="ok">new</Badge> : null}
-              </div>
-              {d.old ? <p className="mb-1 text-danger line-through decoration-danger/50">{d.old}</p> : null}
-              {d.new ? <p className="text-ok">{d.new}</p> : null}
-            </div>
-          ))}
-        </div>
-      ) : null}
+      ))}
     </div>
   );
 }

@@ -34,26 +34,27 @@ export type BoxMode = 'fill' | 'hollow' | 'walls' | 'outline';
 /** A box from a to b (inclusive): filled, a hollow shell (inside air), 4 walls (inside air, no floor or roof) or its edges. */
 export function boxCells(a: V3, b: V3, id: number, meta: number, mode: BoxMode = 'fill'): Cell[] {
   const { min, max } = boxOf(a, b);
+  const on = BOX_ON[mode] ?? BOX_ON.outline;
+  const keepAir = mode === 'hollow' || mode === 'walls';
   const out: Cell[] = [];
   for (let y = min[1]; y <= max[1]; y++)
     for (let z = min[2]; z <= max[2]; z++)
       for (let x = min[0]; x <= max[0]; x++) {
-        const ex = x === min[0] || x === max[0],
-          ey = y === min[1] || y === max[1],
-          ez = z === min[2] || z === max[2];
-        const on =
-          mode === 'fill'
-            ? true
-            : mode === 'hollow'
-              ? ex || ey || ez
-              : mode === 'walls'
-                ? ex || ez
-                : (ex ? 1 : 0) + (ey ? 1 : 0) + (ez ? 1 : 0) >= 2;
-        if (on) out.push([x, y, z, id, meta]);
-        else if (mode === 'hollow' || mode === 'walls') out.push([x, y, z, 0, 0]);
+        if (on(onEdge(x, min[0], max[0]), onEdge(y, min[1], max[1]), onEdge(z, min[2], max[2]))) out.push([x, y, z, id, meta]);
+        else if (keepAir) out.push([x, y, z, 0, 0]);
       }
   return out;
 }
+
+const onEdge = (v: number, lo: number, hi: number): boolean => v === lo || v === hi;
+
+/** Which cells of a box a mode keeps, from whether the cell is on an x, y or z face of the box. */
+const BOX_ON: Record<BoxMode, (ex: boolean, ey: boolean, ez: boolean) => boolean> = {
+  fill: () => true,
+  hollow: (ex, ey, ez) => ex || ey || ez,
+  walls: (ex, _ey, ez) => ex || ez,
+  outline: (ex, ey, ez) => (ex ? 1 : 0) + (ey ? 1 : 0) + (ez ? 1 : 0) >= 2,
+};
 
 /** A straight line of blocks (3D DDA, both ends). */
 export function lineCells(a: V3, b: V3, id: number, meta: number): Cell[] {
@@ -109,45 +110,61 @@ export function brush(
   target?: number,
   dig = false,
 ): Cell[] {
-  const cells = brushCells(centre, size, shape);
+  const rule = BRUSH[mode];
+  if (!rule) return [];
+  const stroke: Stroke = { id, meta, target };
   const out: Cell[] = [];
-  for (const [x, y, z] of cells) {
+  for (const [x, y, z] of brushCells(centre, size, shape)) {
     const cur = c.id(x, y, z);
     if (cur === EARTH && !dig) continue; // the ground is only sculpted in underground mode
-    switch (mode) {
-      case 'add':
-        if (cur === 0) out.push([x, y, z, id, meta]);
-        break;
-      case 'remove':
-        if (cur !== 0) out.push([x, y, z, 0, 0]);
-        break;
-      case 'paint':
-        if (cur !== 0) out.push([x, y, z, id, meta]);
-        break;
-      case 'replace':
-        if (cur !== 0 && cur === target) out.push([x, y, z, id, meta]);
-        break;
-      case 'smooth': {
-        let filled = 0;
-        const votes = new Map<number, number>();
-        for (let dy = -1; dy <= 1; dy++)
-          for (let dz = -1; dz <= 1; dz++)
-            for (let dx = -1; dx <= 1; dx++) {
-              if ((dx === 0 && dy === 0 && dz === 0) || !inside(x + dx, y + dy, z + dz)) continue;
-              const v = c.blocks.get(keyOf(x + dx, y + dy, z + dz));
-              if (v === undefined) continue;
-              filled++;
-              votes.set(v, (votes.get(v) ?? 0) + 1);
-            }
-        if (filled >= 14 && cur === 0 && votes.size) {
-          const best = [...votes.entries()].sort((a, b) => b[1] - a[1])[0]![0];
-          out.push([x, y, z, best >> 4, best & 15]);
-        } else if (filled < 10 && cur !== 0) out.push([x, y, z, 0, 0]);
-        break;
-      }
-    }
+    const cell = rule(c, x, y, z, cur, stroke);
+    if (cell) out.push(cell);
   }
   return out;
+}
+
+/** A stroke's block and, for replace, the block it replaces. */
+interface Stroke {
+  id: number;
+  meta: number;
+  target: number | undefined;
+}
+
+/** What a brush mode makes of one covered cell (`cur` its block id), or null to leave it. */
+type BrushRule = (c: Canvas, x: number, y: number, z: number, cur: number, s: Stroke) => Cell | null;
+
+const BRUSH: Record<BrushMode, BrushRule> = {
+  add: (_c, x, y, z, cur, s) => (cur === 0 ? [x, y, z, s.id, s.meta] : null),
+  remove: (_c, x, y, z, cur) => (cur !== 0 ? [x, y, z, 0, 0] : null),
+  paint: (_c, x, y, z, cur, s) => (cur !== 0 ? [x, y, z, s.id, s.meta] : null),
+  replace: (_c, x, y, z, cur, s) => (cur !== 0 && cur === s.target ? [x, y, z, s.id, s.meta] : null),
+  smooth: smoothCell,
+};
+
+/** Smooth: 14+ of the 26 neighbours filled fills an air cell with their commonest block; under 10 empties a block. */
+function smoothCell(c: Canvas, x: number, y: number, z: number, cur: number): Cell | null {
+  const votes = new Map<number, number>();
+  const filled = neighbourVotes(c, x, y, z, votes);
+  if (filled >= 14 && cur === 0 && votes.size) {
+    const best = [...votes.entries()].sort((a, b) => b[1] - a[1])[0]![0];
+    return [x, y, z, best >> 4, best & 15];
+  }
+  return filled < 10 && cur !== 0 ? [x, y, z, 0, 0] : null;
+}
+
+/** Counts the cell's filled neighbours (of 26, inside the plot) and tallies their states into `votes`. */
+function neighbourVotes(c: Canvas, x: number, y: number, z: number, votes: Map<number, number>): number {
+  let filled = 0;
+  for (let dy = -1; dy <= 1; dy++)
+    for (let dz = -1; dz <= 1; dz++)
+      for (let dx = -1; dx <= 1; dx++) {
+        if ((dx === 0 && dy === 0 && dz === 0) || !inside(x + dx, y + dy, z + dz)) continue;
+        const v = c.blocks.get(keyOf(x + dx, y + dy, z + dz));
+        if (v === undefined) continue;
+        filled++;
+        votes.set(v, (votes.get(v) ?? 0) + 1);
+      }
+  return filled;
 }
 
 // ---------------------------------------------------------------------------------------------------------- selection edits
@@ -197,31 +214,35 @@ export function replaceIn(c: Canvas, s: Selection, from: number | 'any', id: num
 export function faceArea(c: Canvas, hit: V3, face: number, same = true, limit = 4096): V3[] {
   const n = FACE_NORMAL[face];
   if (!n || c.id(...hit) === 0) return [];
-  const want = c.id(...hit);
-  const axis = n[0] !== 0 ? 0 : n[1] !== 0 ? 1 : 2;
-  const exposed = (p: V3) => {
-    const f: V3 = [p[0] + n[0], p[1] + n[1], p[2] + n[2]];
-    return !inside(...f) || c.id(...f) === 0;
-  };
+  const want = same ? c.id(...hit) : null;
+  const axis = normalAxis(n);
   const out: V3[] = [];
   const seen = new Set<number>([keyOf(...hit)]);
   const stack: V3[] = [hit];
+  const visit = (q: V3) => {
+    if (!inside(...q)) return;
+    const k = keyOf(...q);
+    if (seen.has(k)) return;
+    seen.add(k);
+    if (onFace(c, q, n, want)) stack.push(q);
+  };
   while (stack.length && out.length < limit) {
     const p = stack.pop()!;
     out.push(p);
-    for (const d of N6) {
-      if (d[axis] !== 0) continue;
-      const q: V3 = [p[0] + d[0], p[1] + d[1], p[2] + d[2]];
-      if (!inside(...q)) continue;
-      const k = keyOf(...q);
-      if (seen.has(k)) continue;
-      seen.add(k);
-      const id = c.id(...q);
-      if (id === 0 || (same && id !== want) || !exposed(q)) continue;
-      stack.push(q);
-    }
+    for (const d of N6) if (d[axis] === 0) visit([p[0] + d[0], p[1] + d[1], p[2] + d[2]]);
   }
   return out;
+}
+
+/** The axis a face normal points along (0 x, 1 y, 2 z). */
+const normalAxis = (n: readonly number[]): number => (n[0] !== 0 ? 0 : n[1] !== 0 ? 1 : 2);
+
+/** A block of the face area: solid (of type `want` when given) with its face toward `n` exposed (air or the plot's edge). */
+function onFace(c: Canvas, q: V3, n: readonly number[], want: number | null): boolean {
+  const id = c.id(...q);
+  if (id === 0 || (want !== null && id !== want)) return false;
+  const f: V3 = [q[0] + n[0]!, q[1] + n[1]!, q[2] + n[2]!];
+  return !inside(...f) || c.id(...f) === 0;
 }
 
 /** Flood fill of a face area: those blocks become (id, meta). */

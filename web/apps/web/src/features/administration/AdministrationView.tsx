@@ -129,29 +129,7 @@ export function AdministrationView() {
       <PageHeader
         title="Administration"
         subtitle="The bot's own settings. Changes go to the node's override file; secrets are write-only and never come back."
-        actions={
-          <label className="flex items-center gap-2 text-xs text-muted">
-            <Server className="size-3.5" aria-hidden />
-            <span>Node</span>
-            <Select
-              aria-label="Node"
-              value={node}
-              onChange={(e) => setNode(e.target.value)}
-              disabled={nodeList.length <= 1}
-              className="h-8 min-w-36 text-xs"
-            >
-              {nodeList.length ? (
-                nodeList.map((n) => (
-                  <option key={n.id} value={n.id}>
-                    {n.name} ({n.id})
-                  </option>
-                ))
-              ) : (
-                <option value="local">local</option>
-              )}
-            </Select>
-          </label>
-        }
+        actions={<NodePicker node={node} setNode={setNode} nodeList={nodeList} />}
       />
       {q.isPending ? (
         <Card className="p-5">
@@ -164,19 +142,7 @@ export function AdministrationView() {
       ) : (
         <>
           <NodeSummary data={q.data} />
-          {lastSave ? (
-            <p role="status" className="mb-4 flex flex-wrap items-center gap-2 text-sm text-ok">
-              <CheckCircle2 className="size-4" /> Saved.
-              {lastSave.applied.length ? (
-                <span className="text-muted">
-                  Running now: {lastSave.applied.map((k) => labels[k] ?? k).join(', ')}.
-                </span>
-              ) : null}
-              {lastSave.backup ? (
-                <span className="text-xs text-subtle">Previous file kept as {lastSave.backup}.</span>
-              ) : null}
-            </p>
-          ) : null}
+          {lastSave ? <SavedNote save={lastSave} labels={labels} /> : null}
           <RestartNotice
             node={node}
             keys={restartKeys}
@@ -260,6 +226,38 @@ export function AdministrationView() {
       )}
       {stepUp.dialog}
     </AdminFormContext.Provider>
+  );
+}
+
+/** Which node's settings (a choice only when there are several). */
+function NodePicker({ node, setNode, nodeList }: { node: string; setNode: (n: string) => void; nodeList: ReadonlyArray<{ id: string; name: string }> }) {
+  return (
+    <label className="flex items-center gap-2 text-xs text-muted">
+      <Server className="size-3.5" aria-hidden />
+      <span>Node</span>
+      <Select aria-label="Node" value={node} onChange={(e) => setNode(e.target.value)} disabled={nodeList.length <= 1} className="h-8 min-w-36 text-xs">
+        {nodeList.length ? (
+          nodeList.map((n) => (
+            <option key={n.id} value={n.id}>
+              {n.name} ({n.id})
+            </option>
+          ))
+        ) : (
+          <option value="local">local</option>
+        )}
+      </Select>
+    </label>
+  );
+}
+
+/** Saved: what runs now, and where the previous file was kept. */
+function SavedNote({ save, labels }: { save: AdminSettingsSaveResponse; labels: Record<string, string> }) {
+  return (
+    <p role="status" className="mb-4 flex flex-wrap items-center gap-2 text-sm text-ok">
+      <CheckCircle2 className="size-4" /> Saved.
+      {save.applied.length ? <span className="text-muted">Running now: {save.applied.map((k) => labels[k] ?? k).join(', ')}.</span> : null}
+      {save.backup ? <span className="text-xs text-subtle">Previous file kept as {save.backup}.</span> : null}
+    </p>
   );
 }
 
