@@ -298,8 +298,6 @@ public sealed class LiveSupervisorWorld : ISupervisorWorld
     {
         var now = _time.GetUtcNow();
         var leases = Leases();
-        IReadOnlyList<string> Claims(string name) =>
-            leases.Where(l => l.Owner.Equals(name, StringComparison.OrdinalIgnoreCase)).Select(l => HiveVision.Lease(l.Key).Text).ToList();
         var live = Bodies().ToDictionary(b => b.Name, StringComparer.OrdinalIgnoreCase);
         var list = new List<WorldBot>();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -308,32 +306,43 @@ public sealed class LiveSupervisorWorld : ISupervisorWorld
         foreach (var hb in hive)
         {
             if (!seen.Add(hb.Name)) continue;
-            if (live.TryGetValue(hb.Name, out var lb) || (hb.IsMain && live.TryGetValue(_main, out lb))) list.Add(LiveBot(lb, hb, Claims(lb.Name)));
-            else
-            {
-                var p = Pose(hb.Name, now);
-                bool usePose = p != null && p.Dim == hb.Dim && Math.Abs(p.X - hb.X) + Math.Abs(p.Z - hb.Z) < 24;
-                list.Add(new WorldBot(hb.Name, hb.Short, hb.IsMain, hb.Dim, R(usePose ? p!.X : hb.X), R(usePose ? p!.Y : hb.Y), R(usePose ? p!.Z : hb.Z),
-                    p?.Yaw, p?.Pitch, p != null ? Math.Round(Math.Max(0, (now - p.At).TotalSeconds), 1) : null, hb.Hp, hb.Food, hb.Job, hb.Brain, null,
-                    Claims(hb.Name), false, Math.Round(Math.Max(0, (now - hb.At).TotalSeconds), 1)));
-            }
+            if (live.TryGetValue(hb.Name, out var lb) || (hb.IsMain && live.TryGetValue(_main, out lb))) list.Add(LiveBot(lb, hb, ClaimsOf(leases, lb.Name)));
+            else list.Add(HubBot(hb, now, ClaimsOf(leases, hb.Name)));
         }
         foreach (var lb in live.Values)
-            if (seen.Add(lb.Name)) list.Add(LiveBot(lb, null, Claims(lb.Name)));
-        if (AllBodies is not { } all) return list;
+            if (seen.Add(lb.Name)) list.Add(LiveBot(lb, null, ClaimsOf(leases, lb.Name)));
+        if (AllBodies is { } all) AddBodyRows(all, now, leases, list, seen);
+        return list;
+    }
+
+    private static IReadOnlyList<string> ClaimsOf(IReadOnlyList<HiveLease> leases, string name) =>
+        leases.Where(l => l.Owner.Equals(name, StringComparison.OrdinalIgnoreCase)).Select(l => HiveVision.Lease(l.Key).Text).ToList();
+
+    /// <summary>A hive bot this process doesn't drive: where the hub last saw it, or its eye pose when that is fresh and close by.</summary>
+    private WorldBot HubBot(HiveBotState hb, DateTimeOffset now, IReadOnlyList<string> claims)
+    {
+        var p = Pose(hb.Name, now);
+        bool usePose = p != null && p.Dim == hb.Dim && Math.Abs(p.X - hb.X) + Math.Abs(p.Z - hb.Z) < 24;
+        return new WorldBot(hb.Name, hb.Short, hb.IsMain, hb.Dim, R(usePose ? p!.X : hb.X), R(usePose ? p!.Y : hb.Y), R(usePose ? p!.Z : hb.Z),
+            p?.Yaw, p?.Pitch, p != null ? Math.Round(Math.Max(0, (now - p.At).TotalSeconds), 1) : null, hb.Hp, hb.Food, hb.Job, hb.Brain, null,
+            claims, false, Math.Round(Math.Max(0, (now - hb.At).TotalSeconds), 1));
+    }
+
+    /// <summary>Each bot's kind, owner and online state from the body list; then a hive's subhive bodies (their hive streams their
+    /// positions with its snapshot) and bodies whose position is known but that the hub doesn't list; a body with no position yet
+    /// isn't drawn.</summary>
+    private void AddBodyRows(HiveBodyList all, DateTimeOffset now, IReadOnlyList<HiveLease> leases, List<WorldBot> list, HashSet<string> seen)
+    {
         IReadOnlyList<BodyRow> rows = [];
         try { rows = all.Rows(); } catch (Exception ex) { _log?.LogDebug(ex, "supervisor world: body list unavailable"); }
         var byName = rows.GroupBy(r => r.Name, StringComparer.OrdinalIgnoreCase).ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
         for (int i = 0; i < list.Count; i++)
             if (byName.TryGetValue(list[i].Name, out var r)) list[i] = list[i] with { Kind = r.Kind, Owner = r.Owner, Online = r.Online };
             else if (list[i].Main) list[i] = list[i] with { Kind = "main", Online = true };
-        // a hive's subhive bodies (their hive streams their positions with its snapshot) and bodies whose position is known but
-        // that the hub doesn't list; a body with no position yet isn't drawn
         foreach (var r in rows)
             if (r.HasPos && seen.Add(r.Name))
                 list.Add(new WorldBot(r.Name, r.Short, r.IsMain, r.Dim, R(r.X), R(r.Y), R(r.Z), null, null, null, r.Hp, r.Food, r.Job, r.Brain, null,
-                    Claims(r.Name), false, Math.Round(Math.Max(0, (now - r.At).TotalSeconds), 1), r.Kind, r.Owner, r.Online));
-        return list;
+                    ClaimsOf(leases, r.Name), false, Math.Round(Math.Max(0, (now - r.At).TotalSeconds), 1), r.Kind, r.Owner, r.Online));
     }
 
     private static double R(double v) => Math.Round(v, 2);

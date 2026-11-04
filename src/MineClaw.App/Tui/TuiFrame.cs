@@ -108,6 +108,13 @@ public static class TuiFrame
 
     private static IEnumerable<string> HeaderLines(FrameInput f, int w)
     {
+        yield return StatusLine(f, w);
+        yield return StripLine(f, w);
+    }
+
+    /// <summary>The selected bot: status, name, position, vitals, task, budget, brain and the flash message.</summary>
+    private static string StatusLine(FrameInput f, int w)
+    {
         var s = f.Selected;
         var l1 = new MLine(w);
         l1.Add(StatusDot(s.Status, f.Unicode) + " ", StatusStyle(s.Status)).Add(s.Status.ToString().ToLowerInvariant() + "  ", StatusStyle(s.Status));
@@ -118,9 +125,12 @@ public static class TuiFrame
         l1.Add("budget: ", "grey").Add(s.BudgetMode, ModeStyle(s.BudgetMode));
         if (s.Brain != null) l1.Add("  brain: ", "grey").Add(s.Brain, s.Brain.StartsWith("asleep", StringComparison.Ordinal) ? "aqua" : null);
         if (f.State.Flash != null) l1.Add("  " + f.State.Flash, "italic aqua");
-        yield return l1.ToString();
+        return l1.ToString();
+    }
 
-        // Bot strip: as much detail as fits (task → hp/food → short names), so every hive member stays visible.
+    /// <summary>Bot strip: as much detail as fits (task → hp/food → short names), so every hive member stays visible; then the clock.</summary>
+    private static string StripLine(FrameInput f, int w)
+    {
         string clock = DateTimeOffset.Now.ToString("HH:mm:ss");
         List<string> entries = [];
         for (int detail = 3; detail >= 0; detail--)
@@ -136,7 +146,7 @@ public static class TuiFrame
             l2.Add(entries[i], i == f.State.Selected ? "black on aqua" : off ? "grey" : StatusStyle(b.Status)).Add(" ");
         }
         l2.Add(clock, "grey");
-        yield return l2.ToString();
+        return l2.ToString();
     }
 
     private static string StripEntry(BotSnapshot b, int i, int detail, bool unicode)
@@ -167,39 +177,60 @@ public static class TuiFrame
         bool nether = s.Dimension == -1;
         bool iso = st.View == ViewMode.Iso && s.Voxels != null && s.Viewport != null;
         var view = st.View == ViewMode.Iso && !iso ? ViewMode.Top : st.View;
-        string mode = view switch
-        {
-            ViewMode.Iso => "iso " + (f.Unicode ? "N" + IsoProjection.Arrows[st.Iso.Rotation & 3] : "N:" + IsoProjection.AsciiArrows[st.Iso.Rotation & 3])
-                + (st.Iso.Cutaway && s.Voxels is { } vx ? (f.Unicode ? " · cut y≤" : " - cut y<=") + (vx.Cy + 1) : "")
-                + (st.Iso.Zoom != 1 ? (f.Unicode ? " · zoom " : " - zoom ") + st.Iso.Zoom : ""),
-            ViewMode.Side => "side, looking north",
-            _ => st.View == ViewMode.Iso ? "top (no 3D data yet)" : "top",
-        };
-        string sep = f.Unicode ? " · " : " - ";
-        string title = $"Viewport {dash} {s.Name}" + (s.Pos is { } p ? $" (@ {p})" : "") + sep + mode + (nether ? sep + "nether" : "");
+        string title = ViewportTitle(f, view, nether, dash);
         int iw = w - 2, ih = h - 2;
-        var lines = new List<string>();
         if (s.Viewport is not { } grid)
-        {
-            lines.Add(Markup.Escape(s.Status == BotStatus.Offline ? "offline / not spawned" : "no world data yet"));
-            return Box(title, lines, w, h, dim: true);
-        }
+            return Box(title, [Markup.Escape(s.Status == BotStatus.Offline ? "offline / not spawned" : "no world data yet")], w, h, dim: true);
         bool legend = ih >= 12;
         int mapH = ih - (legend ? 1 : 0);
         if (iso) return IsoPanel(f, s, grid, title, w, h, iw, mapH, legend, nether);
+        var lines = MapLines(f, grid, view, iw, mapH);
+        if (legend) lines.Add(TopLegend(f, iw));
+        return Box(title, lines, w, h);
+    }
 
+    /// <summary>"Viewport — name (@ x,y,z) · mode · nether".</summary>
+    private static string ViewportTitle(FrameInput f, ViewMode view, bool nether, string dash)
+    {
+        var s = f.Selected;
+        string sep = f.Unicode ? " · " : " - ";
+        return $"Viewport {dash} {s.Name}" + (s.Pos is { } p ? $" (@ {p})" : "") + sep + ViewModeLabel(f, view) + (nether ? sep + "nether" : "");
+    }
+
+    /// <summary>The viewport title's mode: iso (compass, cutaway, zoom), side, or top (saying so when iso has no 3D data yet).</summary>
+    private static string ViewModeLabel(FrameInput f, ViewMode view) => view switch
+    {
+        ViewMode.Iso => IsoModeLabel(f),
+        ViewMode.Side => "side, looking north",
+        _ => f.State.View == ViewMode.Iso ? "top (no 3D data yet)" : "top",
+    };
+
+    private static string IsoModeLabel(FrameInput f)
+    {
+        var iso = f.State.Iso;
+        bool u = f.Unicode;
+        return "iso " + (u ? "N" + IsoProjection.Arrows[iso.Rotation & 3] : "N:" + IsoProjection.AsciiArrows[iso.Rotation & 3])
+            + (iso.Cutaway && f.Selected.Voxels is { } vx ? (u ? " · cut y≤" : " - cut y<=") + (vx.Cy + 1) : "")
+            + (iso.Zoom != 1 ? (u ? " · zoom " : " - zoom ") + iso.Zoom : "");
+    }
+
+    /// <summary>The top/side map, centred in the panel and padded to <paramref name="mapH"/> lines.</summary>
+    private static List<string> MapLines(FrameInput f, ViewportGrid grid, ViewMode view, int iw, int mapH)
+    {
+        var lines = new List<string>();
         var cells = ViewportRenderer.Render(grid, view, iw, mapH, f.Roster.Glyph);
         int padTop = Math.Max(0, (mapH - cells.Length) / 2);
         int padLeft = cells.Length > 0 ? Math.Max(0, (iw - cells[0].Length) / 2) : 0;
         for (int i = 0; i < padTop; i++) lines.Add("");
         foreach (var row in cells) lines.Add(new string(' ', padLeft) + CellsMarkup(row));
         while (lines.Count < mapH) lines.Add("");
-        if (legend)
-        {
-            var hive = string.Join("", f.Roster.Names.Select(n => f.Roster.Glyph(n)).OfType<char>());
-            lines.Add(new MLine(iw).Add("# stone . dirt ~ water ! lava T log * leaves C chest F furnace W bench + solid  @ me " + hive + " hive m mob i item  v: view", "grey").ToString());
-        }
-        return Box(title, lines, w, h);
+        return lines;
+    }
+
+    private static string TopLegend(FrameInput f, int iw)
+    {
+        var hive = string.Join("", f.Roster.Names.Select(n => f.Roster.Glyph(n)).OfType<char>());
+        return new MLine(iw).Add("# stone . dirt ~ water ! lava T log * leaves C chest F furnace W bench + solid  @ me " + hive + " hive m mob i item  v: view", "grey").ToString();
     }
 
     /// <summary>The isometric viewport: an <see cref="IsoRenderer"/> canvas plus a one-line key/legend.</summary>
@@ -256,44 +287,52 @@ public static class TuiFrame
         int iw = w - 2;
         var u = f.Selected.Usage;
         var lines = new List<string>();
-        if (u == null)
+        if (u == null) lines.Add(Markup.Escape("no usage data"));
+        else AddUsageLines(lines, u, iw, f.Unicode);
+        lines.Add(HiveLine(f, iw));
+        return Box($"Tokens {dash} {f.Selected.Name}", lines, w, h);
+    }
+
+    /// <summary>The caps, a row per tier, the cache, the last call (and its prompt sections), calls per hour and the latency medians.</summary>
+    private static void AddUsageLines(List<string> lines, UsageSnapshot u, int iw, bool unicode)
+    {
+        int barW = Math.Clamp(iw - 34, 6, 30);
+        lines.Add(CapLine("today", u.TodayUsd, u.DailyCapUsd, barW, iw, unicode).Add("  " + u.Mode, ModeStyle(u.Mode)).ToString());
+        lines.Add(CapLine("month", u.MonthUsd, u.MonthlyCapUsd, barW, iw, unicode).ToString());
+        lines.Add(new MLine(iw).Add($"{"tier",-7}{"today",9}{"calls",7}{"cache",7}{"month",10}", "grey").ToString());
+        foreach (var tier in UsageTiers(u))
         {
-            lines.Add(Markup.Escape("no usage data"));
+            var t = u.Today.FirstOrDefault(x => x.Tier == tier);
+            var m = u.Month.FirstOrDefault(x => x.Tier == tier);
+            if (t != null || m != null) lines.Add(TierLine(tier, t, m, iw));
         }
-        else
+        var last = u.Last;
+        lines.Add(new MLine(iw).Add("cache ", "grey").Add($"today {Percent.Of(u.TodayCacheHit)}").Add(" · last ", "grey")
+            .Add(last != null ? Percent.Of(last.CacheHit) : "-").Add(" · ", "grey").Add($"{u.CallsLastHour} calls/h").ToString());
+        if (last != null)
         {
-            int barW = Math.Clamp(iw - 34, 6, 30);
-            lines.Add(CapLine("today", u.TodayUsd, u.DailyCapUsd, barW, iw, f.Unicode).Add("  " + u.Mode, ModeStyle(u.Mode)).ToString());
-            lines.Add(CapLine("month", u.MonthUsd, u.MonthlyCapUsd, barW, iw, f.Unicode).ToString());
-            lines.Add(new MLine(iw).Add($"{"tier",-7}{"today",9}{"calls",7}{"cache",7}{"month",10}", "grey").ToString());
-            foreach (var tier in UsageTiers(u))
-            {
-                var t = u.Today.FirstOrDefault(x => x.Tier == tier);
-                var m = u.Month.FirstOrDefault(x => x.Tier == tier);
-                if (t == null && m == null) continue;
-                lines.Add(new MLine(iw).Add($"{tier,-7}", TierStyle(tier))
-                    .Add($"{"$" + (t?.Usd ?? 0).ToString("0.000"),9}{t?.Calls ?? 0,7}{Percent.Of(t?.CacheHit ?? 0),7}{"$" + (m?.Usd ?? 0).ToString("0.00"),10}").ToString());
-            }
-            var last = u.Last;
-            lines.Add(new MLine(iw).Add("cache ", "grey").Add($"today {Percent.Of(u.TodayCacheHit)}").Add(" · last ", "grey")
-                .Add(last != null ? Percent.Of(last.CacheHit) : "-").Add(" · ", "grey").Add($"{u.CallsLastHour} calls/h").ToString());
-            if (last != null)
-            {
-                lines.Add(new MLine(iw).Add("last ", "grey").Add(last.Tier + " ", TierStyle(last.Tier)).Add($"{last.Purpose} r{last.Round} ")
-                    .Add($"{K(last.PromptTokens)}→{last.OutputTokens} ${last.CostUsd:0.0000} {last.LatencyMs / 1000.0:0.0}s ctx {Percent.Of(last.ContextPct)}", "grey").ToString());
-                lines.Add(SectionBar(last, iw, f.Unicode));
-                lines.Add(SectionLegend(last, iw));
-            }
-            lines.Add(new MLine(iw).Add("calls/h ", "grey").Add(Sparkline(u.CallsPerHour, f.Unicode), "aqua").Add(" 24h", "grey").ToString());
-            // Chat latency p50 (zero-token telemetry): first visible reaction, first game action, first move, model rounds before it.
-            if (u.Latency is { Turns: > 0 } lat) lines.Add(new MLine(iw).Add("p50 ", "grey").Add(lat.Line()).ToString());
+            lines.Add(new MLine(iw).Add("last ", "grey").Add(last.Tier + " ", TierStyle(last.Tier)).Add($"{last.Purpose} r{last.Round} ")
+                .Add($"{K(last.PromptTokens)}→{last.OutputTokens} ${last.CostUsd:0.0000} {last.LatencyMs / 1000.0:0.0}s ctx {Percent.Of(last.ContextPct)}", "grey").ToString());
+            lines.Add(SectionBar(last, iw, unicode));
+            lines.Add(SectionLegend(last, iw));
         }
+        lines.Add(new MLine(iw).Add("calls/h ", "grey").Add(Sparkline(u.CallsPerHour, unicode), "aqua").Add(" 24h", "grey").ToString());
+        // Chat latency p50 (zero-token telemetry): first visible reaction, first game action, first move, model rounds before it.
+        if (u.Latency is { Turns: > 0 } lat) lines.Add(new MLine(iw).Add("p50 ", "grey").Add(lat.Line()).ToString());
+    }
+
+    private static string TierLine(string tier, TierUsage? t, TierUsage? m, int iw) =>
+        new MLine(iw).Add($"{tier,-7}", TierStyle(tier))
+            .Add($"{"$" + (t?.Usd ?? 0).ToString("0.000"),9}{t?.Calls ?? 0,7}{Percent.Of(t?.CacheHit ?? 0),7}{"$" + (m?.Usd ?? 0).ToString("0.00"),10}").ToString();
+
+    /// <summary>The whole hive: bodies up, and the spend and calls of those with usage.</summary>
+    private static string HiveLine(FrameInput f, int iw)
+    {
         var online = f.Bots.Where(b => b.Usage != null).ToList();
         decimal hd = online.Sum(b => b.Usage!.TodayUsd), hm = online.Sum(b => b.Usage!.MonthUsd);
         int hc = online.Sum(b => b.Usage!.CallsLastHour);
         int up = f.Bots.Count(b => b.Status != BotStatus.Offline);
-        lines.Add(new MLine(iw).Add("hive ", "bold").Add($"{up}/{f.Bots.Count} up · today ${hd:0.000} · month ${hm:0.00} · {hc} calls/h").ToString());
-        return Box($"Tokens {dash} {f.Selected.Name}", lines, w, h);
+        return new MLine(iw).Add("hive ", "bold").Add($"{up}/{f.Bots.Count} up · today ${hd:0.000} · month ${hm:0.00} · {hc} calls/h").ToString();
     }
 
     private static IEnumerable<string> UsageTiers(UsageSnapshot u) =>
@@ -309,42 +348,61 @@ public static class TuiFrame
     private static Panel BrainPanel(FrameInput f, int w, int h, string dash)
     {
         int iw = w - 2, ih = h - 2;
-        var t = f.Selected.Thought;
-        var raw = new List<(string Text, string? Style, string Prefix)>();
-        if (t == null || t == ThoughtSnapshot.Empty || (t.TurnAt == null && t.Output.Length == 0 && t.Delegate == null))
-            raw.Add(("no turn yet", "grey", ""));
-        else
-        {
-            if (t.TurnAt is { } at) raw.Add(($"turn {at.ToLocalTime():HH:mm:ss}  {t.Header}", "grey", ""));
-            if (t.Events.Length > 0) raw.Add((t.Events, null, "events "));
-            if (t.Digest.Length > 0) raw.Add((t.Digest, "aqua", "digest "));
-            if (t.Memory.Length > 0) raw.Add((t.Memory, "green", "memory "));
-            if (t.Thinking.Length > 0) raw.Add((t.Thinking, "italic grey", "think  "));
-            if (t.Output.Length > 0) raw.Add((t.Output, "bold", "said   "));
-            foreach (var c in t.Tools)
-            {
-                string mark = c.Result == null ? (f.Unicode ? "…" : "~") : c.Ok ? (f.Unicode ? "✓" : "+") : (f.Unicode ? "✗" : "x");
-                raw.Add(($"{mark} {c.Name}({c.Args})" + (c.Result != null ? " → " + c.Result : ""), c.Result == null ? "yellow" : c.Ok ? null : "red", "tool   "));
-            }
-            raw.Add((t.Task ?? "idle", null, "task   "));
-            if (t.Delegate != null) raw.Add((t.Delegate, "teal", "worker "));
-            if (t.Journal != null) raw.Add((t.Journal, "grey", "journal"));
-        }
         var lines = new List<string>();
-        foreach (var (text, style, prefix) in raw)
-        {
-            var wrapped = Wrap(text.Replace('\n', ' '), Math.Max(10, iw - prefix.Length - (prefix.Length > 0 ? 1 : 0)));
-            for (int i = 0; i < wrapped.Count; i++)
-            {
-                var ml = new MLine(iw);
-                if (prefix.Length > 0) ml.Add((i == 0 ? prefix : new string(' ', prefix.Length)) + " ", "grey");
-                lines.Add(ml.Add(wrapped[i], style).ToString());
-            }
-        }
+        foreach (var (text, style, prefix) in BrainEntries(f.Selected.Thought, f.Unicode)) AddWrapped(lines, text, style, prefix, iw);
         int scroll = Math.Clamp(f.State.BrainScroll, 0, Math.Max(0, lines.Count - ih));
         f.State.BrainScroll = scroll;
         var view = lines.Skip(Math.Max(0, lines.Count - ih - scroll)).Take(ih).ToList();
         return Box($"Brain {dash} {f.Selected.Name}" + (scroll > 0 ? $" (scrolled {scroll})" : ""), view, w, h);
+    }
+
+    /// <summary>The brain panel's entries (text, style, label) in order; "no turn yet" before the first turn.</summary>
+    private static List<(string Text, string? Style, string Prefix)> BrainEntries(ThoughtSnapshot? t, bool unicode)
+    {
+        var raw = new List<(string Text, string? Style, string Prefix)>();
+        if (NoTurnYet(t))
+        {
+            raw.Add(("no turn yet", "grey", ""));
+            return raw;
+        }
+        if (t.TurnAt is { } at) raw.Add(($"turn {at.ToLocalTime():HH:mm:ss}  {t.Header}", "grey", ""));
+        AddIfAny(raw, t.Events, null, "events ");
+        AddIfAny(raw, t.Digest, "aqua", "digest ");
+        AddIfAny(raw, t.Memory, "green", "memory ");
+        AddIfAny(raw, t.Thinking, "italic grey", "think  ");
+        AddIfAny(raw, t.Output, "bold", "said   ");
+        foreach (var c in t.Tools) raw.Add(ToolEntry(c, unicode));
+        raw.Add((t.Task ?? "idle", null, "task   "));
+        if (t.Delegate != null) raw.Add((t.Delegate, "teal", "worker "));
+        if (t.Journal != null) raw.Add((t.Journal, "grey", "journal"));
+        return raw;
+    }
+
+    private static bool NoTurnYet([System.Diagnostics.CodeAnalysis.NotNullWhen(false)] ThoughtSnapshot? t) =>
+        t == null || t == ThoughtSnapshot.Empty || (t.TurnAt == null && t.Output.Length == 0 && t.Delegate == null);
+
+    private static void AddIfAny(List<(string Text, string? Style, string Prefix)> raw, string text, string? style, string prefix)
+    {
+        if (text.Length > 0) raw.Add((text, style, prefix));
+    }
+
+    /// <summary>One tool call: a mark (running, ok, failed), its name and args, and its result once in.</summary>
+    private static (string Text, string? Style, string Prefix) ToolEntry(ThoughtToolCall c, bool unicode)
+    {
+        string mark = c.Result == null ? (unicode ? "…" : "~") : c.Ok ? (unicode ? "✓" : "+") : (unicode ? "✗" : "x");
+        return ($"{mark} {c.Name}({c.Args})" + (c.Result != null ? " → " + c.Result : ""), c.Result == null ? "yellow" : c.Ok ? null : "red", "tool   ");
+    }
+
+    /// <summary>An entry wrapped to the panel, its label on the first line and blank under it on the rest.</summary>
+    private static void AddWrapped(List<string> lines, string text, string? style, string prefix, int iw)
+    {
+        var wrapped = Wrap(text.Replace('\n', ' '), Math.Max(10, iw - prefix.Length - (prefix.Length > 0 ? 1 : 0)));
+        for (int i = 0; i < wrapped.Count; i++)
+        {
+            var ml = new MLine(iw);
+            if (prefix.Length > 0) ml.Add((i == 0 ? prefix : new string(' ', prefix.Length)) + " ", "grey");
+            lines.Add(ml.Add(wrapped[i], style).ToString());
+        }
     }
 
     private static string InputLine(FrameInput f, int iw)
@@ -383,26 +441,18 @@ public static class TuiFrame
 
     private static readonly string[] PlayerColours = ["aqua", "lime", "fuchsia", "orange1", "deepskyblue1", "hotpink"];
 
-    internal static string? CellStyle(ViewCell c) => c.Kind switch
+    /// <summary>Each cell kind's style, by <see cref="CellKind"/> value (players take theirs by name: <see cref="CellStyle"/>).</summary>
+    private static readonly string?[] KindStyles =
+    [
+        null, "grey", "olive", "blue", "bold red", "darkorange3", "green", "bold yellow", "silver", "orange3", "white", "bold black on yellow",
+        "bold black on fuchsia", null, "bold red", "yellow",
+    ];
+
+    internal static string? CellStyle(ViewCell c)
     {
-        CellKind.Void => null,
-        CellKind.Stone => "grey",
-        CellKind.Dirt => "olive",
-        CellKind.Water => "blue",
-        CellKind.Lava => "bold red",
-        CellKind.Log => "darkorange3",
-        CellKind.Leaves => "green",
-        CellKind.Chest => "bold yellow",
-        CellKind.Furnace => "silver",
-        CellKind.Workbench => "orange3",
-        CellKind.Other => "white",
-        CellKind.Self => "bold black on yellow",
-        CellKind.Hive => "bold black on fuchsia",
-        CellKind.Player => "bold " + PlayerColours[StableHash(c.Name ?? "") % PlayerColours.Length],
-        CellKind.Mob => "bold red",
-        CellKind.Item => "yellow",
-        _ => null,
-    };
+        if (c.Kind == CellKind.Player) return "bold " + PlayerColours[StableHash(c.Name ?? "") % PlayerColours.Length];
+        return (uint)c.Kind < (uint)KindStyles.Length ? KindStyles[(int)c.Kind] : null;
+    }
 
     private static readonly (string Key, string Short, string Colour)[] Sections =
     [

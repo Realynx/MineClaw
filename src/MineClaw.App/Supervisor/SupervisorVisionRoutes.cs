@@ -62,41 +62,53 @@ public sealed class SupervisorVisionRoutes(IVisionSupervisorData data, string? t
         var tail = rest[(slash + 1)..]["vision".Length..].TrimStart('/');
         try
         {
-            if (tail.Length == 0)
-            {
-                long since = long.TryParse(Q(r, "since"), NumberStyles.Integer, CultureInfo.InvariantCulture, out var s) ? s : 0;
-                var list = await data.ListAsync(body, since, ct).ConfigureAwait(false);
-                return list is { } l ? Json(200, new { at = _time.GetUtcNow(), body = l.Body, capacity = l.Capacity, note = l.Note, sheets = l.Sheets })
-                    : Json(404, new { error = $"no body '{body}' online" });
-            }
-            if (tail.Equals("render", StringComparison.OrdinalIgnoreCase))
-            {
-                var see = Q(r, "see") ?? "{}";
-                try { using var _ = JsonDocument.Parse(see); }
-                catch (JsonException) { return Json(400, new { error = "see must be the see tool's input JSON, e.g. {\"views\":[\"iso yaw=200\"]}" }); }
-                var img = await data.RenderAsync(body, see, gate, ct).ConfigureAwait(false);
-                if (img == null) return Json(404, new { error = $"no body '{body}' online" });
-                if (img.Png.Length == 0) return Json(400, new { error = img.Note ?? "nothing rendered" });
-                if (Q(r, "meta") is "1" or "true")
-                    return Json(200, new { width = img.Width, height = img.Height, tokens = img.Tokens, bytes = img.Png.Length, legend = img.Legend, note = img.Note });
-                return Png(img.Png, img.Width, img.Height, img.Tokens);
-            }
-            bool png = tail.EndsWith(".png", StringComparison.OrdinalIgnoreCase);
-            if (!long.TryParse(png ? tail[..^4] : tail, NumberStyles.Integer, CultureInfo.InvariantCulture, out var id)) return Json(404, new { error = "not found" });
-            if (png)
-            {
-                var bytes = await data.PngAsync(body, id, ct).ConfigureAwait(false);
-                if (bytes == null) return Json(404, new { error = $"sheet {id} is no longer kept for '{body}'" });
-                var (w, h) = Size(bytes);
-                return Png(bytes, w, h, (w * h + 749) / 750);
-            }
-            var all = await data.ListAsync(body, 0, ct).ConfigureAwait(false);
-            if (all == null) return Json(404, new { error = $"no body '{body}' online" });
-            return all.Sheets.FirstOrDefault(x => x.Id == id) is { } info ? Json(200, info) : Json(404, new { error = $"sheet {id} is no longer kept for '{body}'" });
+            if (tail.Length == 0) return await ListAsync(r, body, ct).ConfigureAwait(false);
+            if (tail.Equals("render", StringComparison.OrdinalIgnoreCase)) return await RenderAsync(r, body, ct).ConfigureAwait(false);
+            return await SheetAsync(body, tail, ct).ConfigureAwait(false);
         }
         catch (RenderBusyException) { return Json(503, new { error = "renderer busy, retry" }, new Dictionary<string, string> { ["Retry-After"] = "1" }); }
         catch (OperationCanceledException) { return Json(503, new { error = "cancelled" }); }
         catch (Exception ex) { return Json(500, new { error = ex.Message }); }
+    }
+
+    /// <summary>GET /api/bodies/{body}/vision[?since=]: the body's kept sheets.</summary>
+    private async Task<SupervisorReply> ListAsync(SupervisorRequest r, string body, CancellationToken ct)
+    {
+        long since = long.TryParse(Q(r, "since"), NumberStyles.Integer, CultureInfo.InvariantCulture, out var s) ? s : 0;
+        var list = await data.ListAsync(body, since, ct).ConfigureAwait(false);
+        return list is { } l ? Json(200, new { at = _time.GetUtcNow(), body = l.Body, capacity = l.Capacity, note = l.Note, sheets = l.Sheets })
+            : Json(404, new { error = $"no body '{body}' online" });
+    }
+
+    /// <summary>GET /api/bodies/{body}/vision/render?see=&amp;meta=: a fresh render (the PNG, or its numbers with meta).</summary>
+    private async Task<SupervisorReply> RenderAsync(SupervisorRequest r, string body, CancellationToken ct)
+    {
+        var see = Q(r, "see") ?? "{}";
+        try { using var _ = JsonDocument.Parse(see); }
+        catch (JsonException) { return Json(400, new { error = "see must be the see tool's input JSON, e.g. {\"views\":[\"iso yaw=200\"]}" }); }
+        var img = await data.RenderAsync(body, see, gate, ct).ConfigureAwait(false);
+        if (img == null) return Json(404, new { error = $"no body '{body}' online" });
+        if (img.Png.Length == 0) return Json(400, new { error = img.Note ?? "nothing rendered" });
+        if (Q(r, "meta") is "1" or "true")
+            return Json(200, new { width = img.Width, height = img.Height, tokens = img.Tokens, bytes = img.Png.Length, legend = img.Legend, note = img.Note });
+        return Png(img.Png, img.Width, img.Height, img.Tokens);
+    }
+
+    /// <summary>GET /api/bodies/{body}/vision/{id}[.png]: one kept sheet's info, or its PNG.</summary>
+    private async Task<SupervisorReply> SheetAsync(string body, string tail, CancellationToken ct)
+    {
+        bool png = tail.EndsWith(".png", StringComparison.OrdinalIgnoreCase);
+        if (!long.TryParse(png ? tail[..^4] : tail, NumberStyles.Integer, CultureInfo.InvariantCulture, out var id)) return Json(404, new { error = "not found" });
+        if (png)
+        {
+            var bytes = await data.PngAsync(body, id, ct).ConfigureAwait(false);
+            if (bytes == null) return Json(404, new { error = $"sheet {id} is no longer kept for '{body}'" });
+            var (w, h) = Size(bytes);
+            return Png(bytes, w, h, (w * h + 749) / 750);
+        }
+        var all = await data.ListAsync(body, 0, ct).ConfigureAwait(false);
+        if (all == null) return Json(404, new { error = $"no body '{body}' online" });
+        return all.Sheets.FirstOrDefault(x => x.Id == id) is { } info ? Json(200, info) : Json(404, new { error = $"sheet {id} is no longer kept for '{body}'" });
     }
 
     /// <summary>Width/height from the PNG's IHDR (no decode).</summary>

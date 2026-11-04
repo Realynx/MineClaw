@@ -65,28 +65,36 @@ public sealed class SupervisorScriptRoutes(IScriptSupervisorData data, string? t
                 return Json(200, new { at = _time.GetUtcNow(), scripts = data.Library() });
             if (path.Equals("/api/bodies/scripts", StringComparison.OrdinalIgnoreCase))
                 return Json(200, new { at = _time.GetUtcNow(), bodies = data.Running() });
-            if (path.StartsWith("/api/scripts/", StringComparison.OrdinalIgnoreCase))
-            {
-                var parts = path["/api/scripts/".Length..].Split('/', StringSplitOptions.RemoveEmptyEntries).Select(Uri.UnescapeDataString).ToArray();
-                if (parts.Length is 0 or > 2) return Json(404, new { error = "not found" });
-                int? v = null;
-                if (parts.Length == 2)
-                {
-                    var vs = parts[1].TrimStart('v', 'V');
-                    if (!int.TryParse(vs, NumberStyles.Integer, CultureInfo.InvariantCulture, out var vi) || vi < 1) return Json(400, new { error = "version must be a number (3 or v3)" });
-                    v = vi;
-                }
-                return data.Version(parts[0], v) is { } d ? Json(200, d) : Json(404, new { error = v is { } x ? $"no v{x} of script '{parts[0]}'" : $"no saved script '{parts[0]}'" });
-            }
-            // /api/bodies/{name}/script
-            var body = Uri.UnescapeDataString(path["/api/bodies/".Length..^"/script".Length]);
-            if (body.Length == 0) return Json(404, new { error = "not found" });
-            bool code = r.Query.TryGetValue("code", out var c) && c is "1" or "true";
-            var reply = await data.LiveAsync(body, code, ct).ConfigureAwait(false);
-            return reply is { } rep ? Json(200, rep) : Json(404, new { error = $"no body '{body}' online" });
+            if (path.StartsWith("/api/scripts/", StringComparison.OrdinalIgnoreCase)) return SavedScript(path);
+            return await LiveScriptAsync(r, path, ct).ConfigureAwait(false);
         }
         catch (OperationCanceledException) { return Json(503, new { error = "cancelled" }); }
         catch (Exception ex) { return Json(500, new { error = ex.Message }); }
+    }
+
+    /// <summary>GET /api/scripts/{name}[/{version}]: a saved script (its newest version, or v3 / 3).</summary>
+    private SupervisorReply SavedScript(string path)
+    {
+        var parts = path["/api/scripts/".Length..].Split('/', StringSplitOptions.RemoveEmptyEntries).Select(Uri.UnescapeDataString).ToArray();
+        if (parts.Length is 0 or > 2) return Json(404, new { error = "not found" });
+        int? v = null;
+        if (parts.Length == 2)
+        {
+            var vs = parts[1].TrimStart('v', 'V');
+            if (!int.TryParse(vs, NumberStyles.Integer, CultureInfo.InvariantCulture, out var vi) || vi < 1) return Json(400, new { error = "version must be a number (3 or v3)" });
+            v = vi;
+        }
+        return data.Version(parts[0], v) is { } d ? Json(200, d) : Json(404, new { error = v is { } x ? $"no v{x} of script '{parts[0]}'" : $"no saved script '{parts[0]}'" });
+    }
+
+    /// <summary>GET /api/bodies/{name}/script[?code=1]: the script a body runs now.</summary>
+    private async Task<SupervisorReply> LiveScriptAsync(SupervisorRequest r, string path, CancellationToken ct)
+    {
+        var body = Uri.UnescapeDataString(path["/api/bodies/".Length..^"/script".Length]);
+        if (body.Length == 0) return Json(404, new { error = "not found" });
+        bool code = r.Query.TryGetValue("code", out var c) && c is "1" or "true";
+        var reply = await data.LiveAsync(body, code, ct).ConfigureAwait(false);
+        return reply is { } rep ? Json(200, rep) : Json(404, new { error = $"no body '{body}' online" });
     }
 
     private bool Authorized(SupervisorRequest r)

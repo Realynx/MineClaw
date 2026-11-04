@@ -132,41 +132,58 @@ public sealed class LiveViewerData : IViewerData
             // A hive's subhive body has no telemetry source and isn't a slot of main's: what its hive streams about it.
             var br = Bodies?.Find(bot);
             if (snap == null && info == null && br == null) return null;
-
-            ViewerInFlight? inFlight = null;
-            if (info?.Brain is { } brain)
-            {
-                // Pass the last version back: an unchanged capture answers with no turns, only the in-flight line.
-                var page = await SafeContextAsync(brain, _versions.GetValueOrDefault(brain), ct).ConfigureAwait(false);
-                if (page != null)
-                {
-                    _versions[brain] = page.Version;
-                    if (page.InFlight is { } f) inFlight = new ViewerInFlight(f.Purpose, f.Model, f.Since);
-                }
-            }
-            var t = snap?.Thought;
-            var thought = t != null && (t.Output.Length > 0 || t.Thinking.Length > 0) ? new ViewerThought(t.Output, t.Thinking, t.UpdatedAt) : null;
-            var tool = t?.Tools.Count > 0 ? t.Tools[^1] : null;
-            var shortName = Regex.Match(bot, @"(\d+)$") is { Success: true } m ? m.Groups[1].Value : bot;
-            var row = _scripts.Running().FirstOrDefault(s => s.Body.Equals(bot, StringComparison.OrdinalIgnoreCase)
-                || (IsMain(bot) ? s.Short == "main" : s.Short.Equals(shortName, StringComparison.OrdinalIgnoreCase)));
-            ViewerBody? body = snap is { Status: not BotStatus.Offline }
-                ? new ViewerBody(snap.Hp, snap.Food, snap.Pos is { } p ? string.Create(CultureInfo.InvariantCulture, $"{Math.Floor(p.X):0},{Math.Floor(p.Y):0},{Math.Floor(p.Z):0}") : null,
-                    snap.Dimension, snap.Header is { } h && HeldIn.Match(h) is { Success: true } hm ? hm.Groups["held"].Value : null)
-                : br is { Online: true, HasPos: true }
-                    ? new ViewerBody(br.Hp, br.Food, string.Create(CultureInfo.InvariantCulture, $"{Math.Floor(br.X):0},{Math.Floor(br.Y):0},{Math.Floor(br.Z):0}"), br.Dim, null)
-                    : null;
-            var script = row != null ? new ViewerScript(row.Script, row.Version, row.Status, row.Line, row.Paused)
-                : br?.Script is { } bs ? new ViewerScript(bs.Name, bs.Version, bs.Status, bs.Line, bs.Paused) : null;
-            bool hiveBody = snap == null && br is { IsMain: false }; // no stream of its own: its brain is its owner's
-            return new ViewerNow(bot, DateTimeOffset.UtcNow, snap?.Brain ?? br?.Brain, hiveBody ? null : inFlight, thought,
-                tool != null ? new ViewerTool(tool.Name, tool.Args, tool.At) : null, snap?.Task ?? br?.Job, script, body, br?.Kind, br?.Owner);
+            var inFlight = info?.Brain is { } brain ? await InFlightAsync(brain, ct).ConfigureAwait(false) : null;
+            return NowOf(bot, snap, br, inFlight);
         }
         catch (Exception ex)
         {
             _log?.LogDebug(ex, "viewer: now for {Bot} failed", bot);
             return null;
         }
+    }
+
+    private ViewerNow NowOf(string bot, BotSnapshot? snap, BodyRow? br, ViewerInFlight? inFlight)
+    {
+        bool hiveBody = snap == null && br is { IsMain: false }; // no stream of its own: its brain is its owner's
+        return new ViewerNow(bot, DateTimeOffset.UtcNow, snap?.Brain ?? br?.Brain, hiveBody ? null : inFlight, ThoughtOf(snap?.Thought),
+            ToolOf(snap?.Thought), snap?.Task ?? br?.Job, ScriptOf(bot, br), BodyOf(snap, br), br?.Kind, br?.Owner);
+    }
+
+    /// <summary>The brain's last words or thinking; null when it has neither.</summary>
+    private static ViewerThought? ThoughtOf(ThoughtSnapshot? t) =>
+        t != null && (t.Output.Length > 0 || t.Thinking.Length > 0) ? new ViewerThought(t.Output, t.Thinking, t.UpdatedAt) : null;
+
+    /// <summary>The brain's latest tool call.</summary>
+    private static ViewerTool? ToolOf(ThoughtSnapshot? t) => t?.Tools.Count > 0 && t.Tools[^1] is { } tool ? new ViewerTool(tool.Name, tool.Args, tool.At) : null;
+
+    /// <summary>The brain's call in flight. Passes the last version back: an unchanged capture answers with no turns, only that line.</summary>
+    private async Task<ViewerInFlight?> InFlightAsync(string brain, CancellationToken ct)
+    {
+        var page = await SafeContextAsync(brain, _versions.GetValueOrDefault(brain), ct).ConfigureAwait(false);
+        if (page == null) return null;
+        _versions[brain] = page.Version;
+        return page.InFlight is { } f ? new ViewerInFlight(f.Purpose, f.Model, f.Since) : null;
+    }
+
+    /// <summary>The script the bot runs: its running row (by login, else its short name or "main"), else what its hive streams.</summary>
+    private ViewerScript? ScriptOf(string bot, BodyRow? br)
+    {
+        var shortName = Regex.Match(bot, @"(\d+)$") is { Success: true } m ? m.Groups[1].Value : bot;
+        var row = _scripts.Running().FirstOrDefault(s => s.Body.Equals(bot, StringComparison.OrdinalIgnoreCase)
+            || (IsMain(bot) ? s.Short == "main" : s.Short.Equals(shortName, StringComparison.OrdinalIgnoreCase)));
+        return row != null ? new ViewerScript(row.Script, row.Version, row.Status, row.Line, row.Paused)
+            : br?.Script is { } bs ? new ViewerScript(bs.Name, bs.Version, bs.Status, bs.Line, bs.Paused) : null;
+    }
+
+    /// <summary>Its vitals and position: from its snapshot when in game, else from its hive's stream when online with a position.</summary>
+    private static ViewerBody? BodyOf(BotSnapshot? snap, BodyRow? br)
+    {
+        if (snap is { Status: not BotStatus.Offline })
+            return new ViewerBody(snap.Hp, snap.Food, snap.Pos is { } p ? string.Create(CultureInfo.InvariantCulture, $"{Math.Floor(p.X):0},{Math.Floor(p.Y):0},{Math.Floor(p.Z):0}") : null,
+                snap.Dimension, snap.Header is { } h && HeldIn.Match(h) is { Success: true } hm ? hm.Groups["held"].Value : null);
+        return br is { Online: true, HasPos: true }
+            ? new ViewerBody(br.Hp, br.Food, string.Create(CultureInfo.InvariantCulture, $"{Math.Floor(br.X):0},{Math.Floor(br.Y):0},{Math.Floor(br.Z):0}"), br.Dim, null)
+            : null;
     }
 
     private bool IsMain(string name) => name.Equals("main", StringComparison.OrdinalIgnoreCase) || name.Equals(_main, StringComparison.OrdinalIgnoreCase);

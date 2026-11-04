@@ -23,11 +23,21 @@ public sealed record WorldBlockEntityColumn(int Cx, int Cz, long Hash, IReadOnly
 public static class BlockEntityColumns
 {
     /// <summary>Block id → the block entity kind it carries.</summary>
-    public static string? KindOf(int blockId) => blockId switch
+    public static string? KindOf(int blockId) => (uint)blockId < (uint)Kinds.Length ? Kinds[blockId] : null;
+
+    private static readonly string?[] Kinds = KindTable();
+
+    private static string?[] KindTable()
     {
-        63 or 68 => "sign", 26 => "bed", 176 or 177 => "banner", 144 => "skull", 140 => "flower_pot", 54 => "chest", 146 => "trapped_chest",
-        130 => "ender_chest", 52 => "mob_spawner", 84 => "jukebox", 25 => "note_block", _ => null,
-    };
+        var t = new string?[256];
+        foreach (var (id, kind) in new[]
+                 {
+                     (63, "sign"), (68, "sign"), (26, "bed"), (176, "banner"), (177, "banner"), (144, "skull"), (140, "flower_pot"), (54, "chest"),
+                     (146, "trapped_chest"), (130, "ender_chest"), (52, "mob_spawner"), (84, "jukebox"), (25, "note_block"),
+                 })
+            t[id] = kind;
+        return t;
+    }
 
     public static WorldBlockEntityColumn Build(int cx, int cz, IEnumerable<WorldState> worlds)
     {
@@ -38,23 +48,27 @@ public static class BlockEntityColumns
             live ??= w.GetColumn(cx, cz) is { HasData: true } c ? c : null;
             foreach (var (pos, info) in w.BlockEntities.InColumn(cx, cz)) described.TryAdd(pos, info);
         }
-        var list = new List<WorldBlockEntity>();
-        if (live != null)
-        {
-            for (int lx = 0; lx < 16; lx++)
-            for (int lz = 0; lz < 16; lz++)
-            for (int y = 0; y < live.Height; y++)
-            {
-                int id = live.GetBlock(lx, y, lz);
-                if (KindOf(id) is not { } kind) continue;
-                var pos = new BlockPos(cx * 16 + lx, y, cz * 16 + lz);
-                var info = described.TryGetValue(pos, out var d) && SameFamily(d.Kind, kind) ? d with { Kind = kind } : new BlockEntityInfo(kind);
-                if (kind == "jukebox" && info.Record is null && live.GetMeta(lx, y, lz) != 0) info = info with { Data = 1 }; // has a record
-                list.Add(Wire(pos, info));
-            }
-        }
-        else list.AddRange(described.OrderBy(kv => kv.Key.X).ThenBy(kv => kv.Key.Y).ThenBy(kv => kv.Key.Z).Select(kv => Wire(kv.Key, kv.Value)));
+        var list = live != null ? FromBlocks(cx, cz, live, described)
+            : described.OrderBy(kv => kv.Key.X).ThenBy(kv => kv.Key.Y).ThenBy(kv => kv.Key.Z).Select(kv => Wire(kv.Key, kv.Value)).ToList();
         return new WorldBlockEntityColumn(cx, cz, Hash(list), list);
+    }
+
+    /// <summary>Every block entity the loaded column's blocks carry, with what was described for it when it is of the same family.</summary>
+    private static List<WorldBlockEntity> FromBlocks(int cx, int cz, ChunkColumn live, Dictionary<BlockPos, BlockEntityInfo> described)
+    {
+        var list = new List<WorldBlockEntity>();
+        for (int lx = 0; lx < 16; lx++)
+        for (int lz = 0; lz < 16; lz++)
+        for (int y = 0; y < live.Height; y++)
+        {
+            int id = live.GetBlock(lx, y, lz);
+            if (KindOf(id) is not { } kind) continue;
+            var pos = new BlockPos(cx * 16 + lx, y, cz * 16 + lz);
+            var info = described.TryGetValue(pos, out var d) && SameFamily(d.Kind, kind) ? d with { Kind = kind } : new BlockEntityInfo(kind);
+            if (kind == "jukebox" && info.Record is null && live.GetMeta(lx, y, lz) != 0) info = info with { Data = 1 }; // has a record
+            list.Add(Wire(pos, info));
+        }
+        return list;
     }
 
     private static bool SameFamily(string described, string block) =>

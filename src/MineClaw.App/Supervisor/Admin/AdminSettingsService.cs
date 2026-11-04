@@ -127,22 +127,23 @@ public sealed class AdminSettingsService
         int overrideAt = providers.IndexOf(_layer);
         bool list = d.Kind == SettingKind.List;
         for (int i = providers.Count - 1; i >= 0; i--)
-        {
-            var p = providers[i];
-            bool has = list ? p.TryGet(d.Key + ":0", out _) || (p == _layer && _layer.Lists.Contains(d.Key)) : p.TryGet(d.Key, out var v) && v != null;
-            if (!has) continue;
-            return p switch
-            {
-                SettingsOverrideProvider => "override",
-                EnvironmentVariablesConfigurationProvider => "env",
-                JsonConfigurationProvider => "config",
-                MemoryConfigurationProvider when i > overrideAt => "cli",
-                MemoryConfigurationProvider => "env",
-                _ => "config",
-            };
-        }
+            if (Holds(providers[i], d.Key, list)) return LayerName(providers[i], i > overrideAt);
         return "default";
     }
+
+    private bool Holds(IConfigurationProvider p, string key, bool list) =>
+        list ? p.TryGet(key + ":0", out _) || (p == _layer && _layer.Lists.Contains(key)) : p.TryGet(key, out var v) && v != null;
+
+    /// <summary>A provider's layer name; an in-memory one above the override is the command line, below it the environment.</summary>
+    private static string LayerName(IConfigurationProvider p, bool aboveOverride) => p switch
+    {
+        SettingsOverrideProvider => "override",
+        EnvironmentVariablesConfigurationProvider => "env",
+        JsonConfigurationProvider => "config",
+        MemoryConfigurationProvider when aboveOverride => "cli",
+        MemoryConfigurationProvider => "env",
+        _ => "config",
+    };
 
     /// <summary>GET /api/admin/settings.</summary>
     public object View()
@@ -155,34 +156,7 @@ public sealed class AdminSettingsService
             catch (Exception ex) when (ex is JsonException or InvalidDataException or IOException) { file = []; }
             var pending = new List<string>();
             var rows = new List<object>();
-            foreach (var d in SettingsRegistry.All)
-            {
-                var value = ValueOf(d, bound);
-                var source = SourceOf(d);
-                bool isPending = !d.Live && _running.TryGetValue(d.Key, out var fp) && fp != Fingerprint(value);
-                if (isPending) pending.Add(d.Key);
-                object? secretState = null;
-                if (d.Secret)
-                {
-                    var s = value as string;
-                    if (string.IsNullOrEmpty(s) && d.Key.Equals("Agent:Llm:ApiKey", StringComparison.OrdinalIgnoreCase) && _env("ANTHROPIC_API_KEY") is { Length: > 0 } envKey)
-                    {
-                        s = envKey;
-                        source = "env";
-                    }
-                    secretState = new { set = !string.IsNullOrEmpty(s), hint = Hint(s) };
-                }
-                rows.Add(new
-                {
-                    key = d.Key, group = d.Group, section = d.Section, label = d.Label, description = d.Description, type = KindName(d.Kind),
-                    apply = d.Live ? "live" : "restart", secret = d.Secret, editable = d.ReadOnly == null, read_only_reason = d.ReadOnly,
-                    @default = d.Secret ? null : Plain(DefaultOf(d)), value = d.Secret ? null : Plain(value), secret_state = secretState,
-                    source, overridden = SettingsOverrideStore.Get(file, d.Key) != null, pending_restart = isPending,
-                    nullable = d.Nullable ? true : (bool?)null,
-                    options = d.Kind == SettingKind.Model ? ModelProfiles.CurrentGeneration : d.Options,
-                    min = d.Min, max = d.Max, unit = d.Unit, provider_key = d.ProviderKey,
-                });
-            }
+            foreach (var d in SettingsRegistry.All) rows.Add(Row(d, bound, file, pending));
             return new
             {
                 node = NodeView(),
@@ -193,6 +167,38 @@ public sealed class AdminSettingsService
                 @override = new { path = _store.Path, exists = _store.Exists, updated_at = _store.UpdatedAt, backups = _store.BackupCount },
             };
         }
+    }
+
+    /// <summary>One setting's row of <see cref="View"/> (a restart-pending key is added to <paramref name="pending"/>).</summary>
+    private object Row(SettingDef d, Dictionary<string, object> bound, JsonObject file, List<string> pending)
+    {
+        var value = ValueOf(d, bound);
+        var source = SourceOf(d);
+        bool isPending = !d.Live && _running.TryGetValue(d.Key, out var fp) && fp != Fingerprint(value);
+        if (isPending) pending.Add(d.Key);
+        object? secretState = d.Secret ? SecretState(d, value, ref source) : null;
+        return new
+        {
+            key = d.Key, group = d.Group, section = d.Section, label = d.Label, description = d.Description, type = KindName(d.Kind),
+            apply = d.Live ? "live" : "restart", secret = d.Secret, editable = d.ReadOnly == null, read_only_reason = d.ReadOnly,
+            @default = d.Secret ? null : Plain(DefaultOf(d)), value = d.Secret ? null : Plain(value), secret_state = secretState,
+            source, overridden = SettingsOverrideStore.Get(file, d.Key) != null, pending_restart = isPending,
+            nullable = d.Nullable ? true : (bool?)null,
+            options = d.Kind == SettingKind.Model ? ModelProfiles.CurrentGeneration : d.Options,
+            min = d.Min, max = d.Max, unit = d.Unit, provider_key = d.ProviderKey,
+        };
+    }
+
+    /// <summary>A secret's state (set or not, a hint); the API key unset in config but in the environment reads as set from env.</summary>
+    private object SecretState(SettingDef d, object? value, ref string source)
+    {
+        var s = value as string;
+        if (string.IsNullOrEmpty(s) && d.Key.Equals("Agent:Llm:ApiKey", StringComparison.OrdinalIgnoreCase) && _env("ANTHROPIC_API_KEY") is { Length: > 0 } envKey)
+        {
+            s = envKey;
+            source = "env";
+        }
+        return new { set = !string.IsNullOrEmpty(s), hint = Hint(s) };
     }
 
     public object NodeView() => new { id = Node.Id, name = Node.Name, version = Node.Version, started_at = Node.StartedAt, game_version = Node.GameVersion };
@@ -209,76 +215,112 @@ public sealed class AdminSettingsService
     {
         lock (_lock)
         {
-            var errors = new List<SettingError>();
-            var normalized = new List<(SettingDef Def, JsonNode? Node)>();
-            if (changes.Count == 0) errors.Add(new SettingError("", "no changes"));
-            foreach (var group in changes.GroupBy(c => c.Key, StringComparer.OrdinalIgnoreCase))
-                if (group.Count() > 1) errors.Add(new SettingError(group.Key, "changed twice in one save"));
-            foreach (var (key, value) in changes)
-            {
-                var d = SettingsRegistry.Find(key);
-                if (d == null) { errors.Add(new SettingError(key, "not a setting this page manages")); continue; }
-                if (d.ReadOnly != null) { errors.Add(new SettingError(d.Key, "read-only: " + d.ReadOnly)); continue; }
-                if (Normalize(d, value, out var node) is { } err) { errors.Add(new SettingError(d.Key, err)); continue; }
-                normalized.Add((d, node));
-            }
-            JsonObject current;
-            try { current = _store.Read(); }
-            catch (Exception ex) when (ex is JsonException or InvalidDataException or IOException)
-            {
-                errors.Add(new SettingError("", "the override file on the bot can't be read; fix or remove it by hand"));
-                current = [];
-            }
+            var (errors, normalized) = Validate(changes);
+            var current = ReadOverride(errors);
             if (errors.Count > 0) return Refused(errors, who, changes, reason);
-
-            // The startup rules on the whole candidate config (the override with these changes), against today's.
-            var candidate = (JsonObject)current.DeepClone();
-            foreach (var (d, node) in normalized) SettingsOverrideStore.Set(candidate, d.Key, node?.DeepClone());
-            var candidateConfig = WithOverride(candidate);
-            Dictionary<string, object> before, after;
-            try
-            {
-                before = Bind(_config);
-                after = Bind(candidateConfig);
-            }
-            catch (InvalidOperationException ex)
-            {
-                errors.Add(new SettingError("", "the result would not bind: " + ex.Message));
-                return Refused(errors, who, changes, reason);
-            }
-            foreach (var (d, _) in normalized)
-                if (d.Kind == SettingKind.Model && ModelProblem(d, after) is { } mp) errors.Add(new SettingError(d.Key, mp));
-            var was = Problems(before).ToHashSet(StringComparer.Ordinal);
-            foreach (var p in Problems(after).Where(p => !was.Contains(p)))
-            {
-                var owner = SettingsRegistry.All.FirstOrDefault(d => p.Contains(d.Key + " ", StringComparison.OrdinalIgnoreCase) || p.Contains(d.Key + "'", StringComparison.OrdinalIgnoreCase)
-                    || p.EndsWith(d.Key, StringComparison.OrdinalIgnoreCase) || p.Contains(d.Key + ":", StringComparison.OrdinalIgnoreCase) || p.Contains(d.Key + " is", StringComparison.OrdinalIgnoreCase));
-                if (errors.All(e => e.Message != p)) errors.Add(new SettingError(owner?.Key ?? "", p));
-            }
-            if (errors.Count > 0) return Refused(errors, who, changes, reason);
+            if (CandidateErrors(current, normalized) is { } bad) return Refused(bad, who, changes, reason);
 
             var backup = _store.Write(normalized.Select(n => (n.Def.Key, n.Node)).ToList());
             _layer.Load();
-            var now = Bind(_config);
-            var applied = new List<string>();
-            var restart = new List<string>();
-            foreach (var (d, _) in normalized)
-            {
-                var v = ValueOf(d, now);
-                if (d.Live && ApplyLive(d, v))
-                {
-                    applied.Add(d.Key);
-                    _running[d.Key] = Fingerprint(v);
-                }
-                else if (_running.TryGetValue(d.Key, out var fp) && fp != Fingerprint(v)) restart.Add(d.Key);
-                else applied.Add(d.Key); // back to what runs
-            }
+            var (applied, restart) = ApplySaved(normalized);
             var keys = normalized.Select(n => n.Def.Key).ToList();
             Audit(new SettingsAuditLine(_time.GetUtcNow(), who, "update", keys, Clip(reason), true,
                 restart.Count > 0 ? $"{applied.Count} live, {restart.Count} after a restart" : $"{applied.Count} live"));
             _log.LogInformation("admin settings: {Who} changed {Keys} ({Restart} need a restart)", who, string.Join(", ", keys), restart.Count);
             return new SaveOutcome(true, applied, restart, backup, []);
         }
+    }
+
+    /// <summary>Each change checked on its own (a known, writable setting with a valid value, changed once): the errors, and the
+    /// normalized values of the good ones.</summary>
+    private static (List<SettingError> Errors, List<(SettingDef Def, JsonNode? Node)> Normalized) Validate(IReadOnlyList<(string Key, JsonElement Value)> changes)
+    {
+        var errors = new List<SettingError>();
+        var normalized = new List<(SettingDef Def, JsonNode? Node)>();
+        if (changes.Count == 0) errors.Add(new SettingError("", "no changes"));
+        foreach (var group in changes.GroupBy(c => c.Key, StringComparer.OrdinalIgnoreCase))
+            if (group.Count() > 1) errors.Add(new SettingError(group.Key, "changed twice in one save"));
+        foreach (var (key, value) in changes)
+        {
+            if (ChangeError(key, value, out var d, out var node) is { } err) errors.Add(err);
+            else normalized.Add((d!, node));
+        }
+        return (errors, normalized);
+    }
+
+    private static SettingError? ChangeError(string key, JsonElement value, out SettingDef? d, out JsonNode? node)
+    {
+        node = null;
+        d = SettingsRegistry.Find(key);
+        if (d == null) return new SettingError(key, "not a setting this page manages");
+        if (d.ReadOnly != null) return new SettingError(d.Key, "read-only: " + d.ReadOnly);
+        return Normalize(d, value, out node) is { } err ? new SettingError(d.Key, err) : null;
+    }
+
+    /// <summary>The override file as it is (empty, with an error, when it can't be read).</summary>
+    private JsonObject ReadOverride(List<SettingError> errors)
+    {
+        try { return _store.Read(); }
+        catch (Exception ex) when (ex is JsonException or InvalidDataException or IOException)
+        {
+            errors.Add(new SettingError("", "the override file on the bot can't be read; fix or remove it by hand"));
+            return [];
+        }
+    }
+
+    /// <summary>The startup rules on the whole candidate config (the override with these changes), against today's: only the
+    /// problems this save would add count. Null = none.</summary>
+    private List<SettingError>? CandidateErrors(JsonObject current, List<(SettingDef Def, JsonNode? Node)> normalized)
+    {
+        var errors = new List<SettingError>();
+        var candidate = (JsonObject)current.DeepClone();
+        foreach (var (d, node) in normalized) SettingsOverrideStore.Set(candidate, d.Key, node?.DeepClone());
+        var candidateConfig = WithOverride(candidate);
+        Dictionary<string, object> before, after;
+        try
+        {
+            before = Bind(_config);
+            after = Bind(candidateConfig);
+        }
+        catch (InvalidOperationException ex)
+        {
+            errors.Add(new SettingError("", "the result would not bind: " + ex.Message));
+            return errors;
+        }
+        foreach (var (d, _) in normalized)
+            if (d.Kind == SettingKind.Model && ModelProblem(d, after) is { } mp) errors.Add(new SettingError(d.Key, mp));
+        var was = Problems(before).ToHashSet(StringComparer.Ordinal);
+        foreach (var p in Problems(after).Where(p => !was.Contains(p)))
+            if (errors.All(e => e.Message != p)) errors.Add(new SettingError(ProblemOwner(p)?.Key ?? "", p));
+        return errors.Count > 0 ? errors : null;
+    }
+
+    /// <summary>The setting a startup problem names (by its key followed by a space, quote, colon or " is", or at the end).</summary>
+    private static SettingDef? ProblemOwner(string p) => SettingsRegistry.All.FirstOrDefault(d => Names(p, d.Key));
+
+    private static bool Names(string p, string key) =>
+        p.Contains(key + " ", StringComparison.OrdinalIgnoreCase) || p.Contains(key + "'", StringComparison.OrdinalIgnoreCase)
+        || p.EndsWith(key, StringComparison.OrdinalIgnoreCase) || p.Contains(key + ":", StringComparison.OrdinalIgnoreCase)
+        || p.Contains(key + " is", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Applies the saved settings that are live; the rest take effect after a restart (unless back to what runs).</summary>
+    private (List<string> Applied, List<string> Restart) ApplySaved(List<(SettingDef Def, JsonNode? Node)> normalized)
+    {
+        var now = Bind(_config);
+        var applied = new List<string>();
+        var restart = new List<string>();
+        foreach (var (d, _) in normalized)
+        {
+            var v = ValueOf(d, now);
+            if (d.Live && ApplyLive(d, v))
+            {
+                applied.Add(d.Key);
+                _running[d.Key] = Fingerprint(v);
+            }
+            else if (_running.TryGetValue(d.Key, out var fp) && fp != Fingerprint(v)) restart.Add(d.Key);
+            else applied.Add(d.Key); // back to what runs
+        }
+        return (applied, restart);
     }
 
     private SaveOutcome Refused(List<SettingError> errors, string who, IReadOnlyList<(string Key, JsonElement Value)> changes, string reason)

@@ -33,7 +33,18 @@ public static class ViewportRenderer
         int centreRow = mode == ViewMode.Top ? grid.Radius : grid.SideTopY - grid.Cy; // feet row in the side slice
         int col0 = Math.Clamp(centreCol - cols / 2, 0, n - cols);
         int row0 = Math.Clamp(centreRow - rows / 2, 0, srcRows - rows);
+        var cells = Crop(src, row0, col0, rows, cols, cellW);
+        Overlay(cells, grid, mode, row0, col0, cellW, hiveGlyph);
+        // The bot itself (side view: feet and head).
+        Put(cells, centreRow - row0, centreCol - col0, cellW, new ViewCell('@', CellKind.Self));
+        if (mode == ViewMode.Side) Put(cells, centreRow - 1 - row0, centreCol - col0, cellW, new ViewCell('@', CellKind.Self));
+        return cells;
+    }
 
+    /// <summary>The <paramref name="rows"/> × <paramref name="cols"/> window of the slice from (row0, col0), each column
+    /// <paramref name="cellW"/> characters wide (void past a short line).</summary>
+    private static ViewCell[][] Crop(string[] src, int row0, int col0, int rows, int cols, int cellW)
+    {
         var cells = new ViewCell[rows][];
         for (int i = 0; i < rows; i++)
         {
@@ -47,8 +58,12 @@ public static class ViewportRenderer
             }
             cells[i] = outRow;
         }
+        return cells;
+    }
 
-        // Markers, lowest priority first so higher ones overwrite.
+    /// <summary>Markers, lowest priority first so higher ones overwrite (the side view shows only the slice's own rows ±1).</summary>
+    private static void Overlay(ViewCell[][] cells, ViewportGrid grid, ViewMode mode, int row0, int col0, int cellW, Func<string, char?>? hiveGlyph)
+    {
         foreach (var m in grid.Markers.OrderBy(m => Priority(m, hiveGlyph)))
         {
             int sr, sc = m.Dx + grid.Radius;
@@ -60,10 +75,6 @@ public static class ViewportRenderer
             }
             Put(cells, sr - row0, sc - col0, cellW, MarkerCell(m, hiveGlyph));
         }
-        // The bot itself (side view: feet and head).
-        Put(cells, centreRow - row0, centreCol - col0, cellW, new ViewCell('@', CellKind.Self));
-        if (mode == ViewMode.Side) Put(cells, centreRow - 1 - row0, centreCol - col0, cellW, new ViewCell('@', CellKind.Self));
-        return cells;
     }
 
     /// <summary>Plain-text rendering (tests, <c>--frame</c> dumps).</summary>
@@ -97,12 +108,23 @@ public static class ViewportRenderer
         }
     }
 
-    public static CellKind KindOf(char g) => g switch
+    public static CellKind KindOf(char g) => g < GlyphKinds.Length ? GlyphKinds[g] : CellKind.Other;
+
+    /// <summary>Map glyph (ASCII) → cell kind; anything not listed is <see cref="CellKind.Other"/>.</summary>
+    private static readonly CellKind[] GlyphKinds = GlyphTable();
+
+    private static CellKind[] GlyphTable()
     {
-        '#' => CellKind.Stone, '.' => CellKind.Dirt, '~' => CellKind.Water, '!' => CellKind.Lava, 'T' => CellKind.Log,
-        '*' => CellKind.Leaves, 'C' => CellKind.Chest, 'F' => CellKind.Furnace, 'W' => CellKind.Workbench,
-        ' ' => CellKind.Void, _ => CellKind.Other,
-    };
+        var t = new CellKind[128];
+        Array.Fill(t, CellKind.Other);
+        foreach (var (g, k) in new[]
+                 {
+                     ('#', CellKind.Stone), ('.', CellKind.Dirt), ('~', CellKind.Water), ('!', CellKind.Lava), ('T', CellKind.Log),
+                     ('*', CellKind.Leaves), ('C', CellKind.Chest), ('F', CellKind.Furnace), ('W', CellKind.Workbench), (' ', CellKind.Void),
+                 })
+            t[g] = k;
+        return t;
+    }
 }
 
 /// <summary>Hive members in display order (index 0 = main bot) and their map glyphs.</summary>

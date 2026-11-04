@@ -122,8 +122,7 @@ public sealed class TuiApp
         var enc = new UTF8Encoding(false);
         void Write(string s) { var b = enc.GetBytes(s); stdout.Write(b, 0, b.Length); stdout.Flush(); }
 
-        bool treatCtrlC = false;
-        try { treatCtrlC = Console.TreatControlCAsInput; Console.TreatControlCAsInput = true; } catch (Exception) { }
+        bool treatCtrlC = TakeCtrlC();
         Write("\x1b[?1049h\x1b[?25l\x1b[2J");
         try
         {
@@ -132,29 +131,13 @@ public sealed class TuiApp
             var next = DateTime.UtcNow;
             while (!ct.IsCancellationRequested && !_stop)
             {
-                bool dirty = false;
-                try
-                {
-                    while (Console.KeyAvailable) { HandleKey(Console.ReadKey(intercept: true)); dirty = true; }
-                }
-                catch (InvalidOperationException) { }
+                bool dirty = ReadKeys();
                 int w = SafeWidth(), h = SafeHeight();
                 if (w != lastW || h != lastH) { Write("\x1b[2J"); lastW = w; lastH = h; dirty = true; }
                 if (_stop) break;
                 if (dirty || DateTime.UtcNow >= next)
                 {
-                    string frame;
-                    try
-                    {
-                        // One column short: writing the last cell of a line can trigger auto-wrap/scroll on some terminals.
-                        frame = FrameRenderer.Render(BuildFrame(w - 1, h, unicode, isoColours), w - 1, h, ansi: true, colours, unicode);
-                    }
-                    catch (Exception ex)
-                    {
-                        _log?.LogWarning("tui frame failed: {Error}", ex.Message);
-                        frame = "TUI render error: " + ex.Message;
-                    }
-                    Write("\x1b[H" + frame.Replace("\n", "\x1b[K\r\n") + "\x1b[K\x1b[J");
+                    Write("\x1b[H" + RenderSafely(w, h, unicode, isoColours, colours).Replace("\n", "\x1b[K\r\n") + "\x1b[K\x1b[J");
                     next = DateTime.UtcNow + period;
                 }
                 Thread.Sleep(30);
@@ -163,7 +146,44 @@ public sealed class TuiApp
         finally
         {
             Write("\x1b[0m\x1b[?25h\x1b[?1049l");
-            try { Console.TreatControlCAsInput = treatCtrlC; } catch (Exception) { }
+            RestoreCtrlC(treatCtrlC);
+        }
+    }
+
+    /// <summary>Ctrl+C becomes a key (q/ctrl+c quit through <see cref="HandleKey"/>); the old setting, to restore.</summary>
+    private static bool TakeCtrlC()
+    {
+        bool treatCtrlC = false;
+        try { treatCtrlC = Console.TreatControlCAsInput; Console.TreatControlCAsInput = true; } catch (Exception) { }
+        return treatCtrlC;
+    }
+
+    private static void RestoreCtrlC(bool treatCtrlC)
+    {
+        try { Console.TreatControlCAsInput = treatCtrlC; } catch (Exception) { }
+    }
+
+    /// <summary>Handles every key waiting; true = any (the frame is redrawn).</summary>
+    private bool ReadKeys()
+    {
+        bool dirty = false;
+        try
+        {
+            while (Console.KeyAvailable) { HandleKey(Console.ReadKey(intercept: true)); dirty = true; }
+        }
+        catch (InvalidOperationException) { }
+        return dirty;
+    }
+
+    /// <summary>One frame, a column short: writing the last cell of a line can trigger auto-wrap/scroll on some terminals. A failure
+    /// renders as its message.</summary>
+    private string RenderSafely(int w, int h, bool unicode, IsoColours isoColours, ColorSystemSupport colours)
+    {
+        try { return FrameRenderer.Render(BuildFrame(w - 1, h, unicode, isoColours), w - 1, h, ansi: true, colours, unicode); }
+        catch (Exception ex)
+        {
+            _log?.LogWarning("tui frame failed: {Error}", ex.Message);
+            return "TUI render error: " + ex.Message;
         }
     }
 

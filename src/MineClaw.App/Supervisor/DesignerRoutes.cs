@@ -209,46 +209,67 @@ public sealed class DesignerRoutes
     private SupervisorReply Create(SupervisorRequest r)
     {
         var b = Parse<CreateBody>(r.Body) ?? new CreateBody(null, null, null, null, null, null, null, null, null);
-        var (kind, kindErr) = KindOf(b.Kind);
-        if (kindErr != null) return Reply(400, new { error = kindErr });
-        if (b.Seed is { Length: > 32 }) return Reply(400, new { error = "seed over 32 chars" });
-        var model = DesignerModels.Resolve(_llm, b.Model);
-        if (model == null) return Reply(400, new { error = b.Model is { Length: > 0 } ? $"model '{b.Model}' isn't configured" : "no model is configured" });
-        string? version = null, convertTo = null;
-        if (b.Version is { Length: > 0 } && (version = DesignVersions.Normalize(b.Version)) == null) return Reply(400, new { error = BadVersion(b.Version) });
-        if (b.ConvertTo is { Length: > 0 } && (convertTo = DesignVersions.Normalize(b.ConvertTo)) == null) return Reply(400, new { error = BadVersion(b.ConvertTo) });
-        var s = new DesignerSessionRecord { Owner = Requester(b.Player, b.Who), Model = model.Id, Name = "new design" };
-        s.Canvas.Version = version ?? DesignVersions.Server;
-        if (kind == DesignerCanvas.KindMine)
-        {
-            s.Canvas.Kind = DesignerCanvas.KindMine;
-            s.Canvas.Seed = MineTerrain.NormalizeSeed(b.Seed is { Length: > 0 } seed ? seed : MineTerrain.RandomSeed());
-            s.Name = "new mine";
-        }
+        if (CreateRefusal(b, out var kind, out var model, out var version, out var convertTo) is { } refused) return refused;
+        var s = NewSession(b, kind, model!, version);
         string? note = null;
         ConvertReport? compat = null;
         if (b.Rev is < 1) return Reply(400, new { error = "rev must be 1 or more" });
         if (b.DesignId is { } did)
         {
             if (_service() is not { } svc) return Reply(503, new { error = "designs are unavailable (Bot:Blueprints off)" });
-            // A revision (rev) opens that one: saving it again is a revert.
-            var l = DesignerSave.LoadDesign(svc, did, b.Rev);
-            if (l.Canvas is not { } canvas) return Reply(404, new { error = l.Why ?? "no such design" });
-            var (off, rec, why) = (l.Offset, l.Design, l.Why);
-            s.Canvas = canvas;
-            s.Offset = off;
-            s.DesignId = did;
-            s.Name = rec?.Name ?? s.Name;
-            s.Anchor = l.Anchor;
-            s.PreferredFor = l.PreferredFor;
-            note = why ?? (b.Rev is { } rv && l.Rev != 0 ? $"Opened r{rv} of #{did}: saving it makes it the newest revision again (a revert)." : null);
-            // "Use it in a world of another version" (Story): the design's cells converted, with the report (missing ones left out).
-            if (convertTo != null && convertTo != canvas.Version) compat = Convert(s, convertTo);
-            using (DesignVersions.Use(s.Version)) Settle(s);
+            if (OpenDesign(svc, s, did, b.Rev, convertTo, out note, out compat) is { } missing) return missing;
         }
         _store.Insert(s);
         if (note != null) _store.AddMessage(s.Id, "assistant", note);
         return Reply(200, SessionJson(s, compat));
+    }
+
+    /// <summary>Why the body can't start a session (kind, seed, model, versions); null = fine, with what it asks for.</summary>
+    private SupervisorReply? CreateRefusal(CreateBody b, out string? kind, out DesignerModel? model, out string? version, out string? convertTo)
+    {
+        model = null;
+        version = convertTo = null;
+        (kind, var kindErr) = KindOf(b.Kind);
+        if (kindErr != null) return Reply(400, new { error = kindErr });
+        if (b.Seed is { Length: > 32 }) return Reply(400, new { error = "seed over 32 chars" });
+        model = DesignerModels.Resolve(_llm, b.Model);
+        if (model == null) return Reply(400, new { error = b.Model is { Length: > 0 } ? $"model '{b.Model}' isn't configured" : "no model is configured" });
+        if (b.Version is { Length: > 0 } && (version = DesignVersions.Normalize(b.Version)) == null) return Reply(400, new { error = BadVersion(b.Version) });
+        if (b.ConvertTo is { Length: > 0 } && (convertTo = DesignVersions.Normalize(b.ConvertTo)) == null) return Reply(400, new { error = BadVersion(b.ConvertTo) });
+        return null;
+    }
+
+    /// <summary>A new session: a build in the asked version, or a mine with its (given or random) terrain seed.</summary>
+    private DesignerSessionRecord NewSession(CreateBody b, string? kind, DesignerModel model, string? version)
+    {
+        var s = new DesignerSessionRecord { Owner = Requester(b.Player, b.Who), Model = model.Id, Name = "new design" };
+        s.Canvas.Version = version ?? DesignVersions.Server;
+        if (kind != DesignerCanvas.KindMine) return s;
+        s.Canvas.Kind = DesignerCanvas.KindMine;
+        s.Canvas.Seed = MineTerrain.NormalizeSeed(b.Seed is { Length: > 0 } seed ? seed : MineTerrain.RandomSeed());
+        s.Name = "new mine";
+        return s;
+    }
+
+    /// <summary>Opens a saved design (a revision, rev: saving it again is a revert) in the session, converted when asked
+    /// ("use it in a world of another version", Story: the design's cells converted, with the report, missing ones left out).
+    /// The 404 when there is no such design; else null, with the note for the chat and the conversion report.</summary>
+    private SupervisorReply? OpenDesign(BlueprintService svc, DesignerSessionRecord s, long did, int? rev, string? convertTo, out string? note, out ConvertReport? compat)
+    {
+        note = null;
+        compat = null;
+        var l = DesignerSave.LoadDesign(svc, did, rev);
+        if (l.Canvas is not { } canvas) return Reply(404, new { error = l.Why ?? "no such design" });
+        s.Canvas = canvas;
+        s.Offset = l.Offset;
+        s.DesignId = did;
+        s.Name = l.Design?.Name ?? s.Name;
+        s.Anchor = l.Anchor;
+        s.PreferredFor = l.PreferredFor;
+        note = l.Why ?? (rev is { } rv && l.Rev != 0 ? $"Opened r{rv} of #{did}: saving it makes it the newest revision again (a revert)." : null);
+        if (convertTo != null && convertTo != canvas.Version) compat = Convert(s, convertTo);
+        using (DesignVersions.Use(s.Version)) Settle(s);
+        return null;
     }
 
     private static string BadVersion(string v) => $"version '{v}': use {string.Join(" or ", DesignVersions.All)}";
@@ -468,23 +489,34 @@ public sealed class DesignerRoutes
         fixedCells = [];
         if (ops == null || ops.Length == 0) return null;
         if (ops.Length > 256) return "at most 256 ops per request";
-        var all = new List<CanvasCell>();
-        foreach (var op in ops)
-        {
-            if (op.Cells == null) continue;
-            if (op.Cells.Any(c => c == null || c.Length != 5)) return "a cell is [x, y, z, id, meta]";
-            all.AddRange(op.Cells.Select(c => new CanvasCell(c[0], c[1], c[2], c[3], c[4])));
-        }
+        var (all, bad) = CellsOf(ops);
+        if (bad != null) return bad;
         if (all.Count > DesignerCanvas.MaxCellsPerOp) return $"at most {DesignerCanvas.MaxCellsPerOp} cells per request";
         var changed = s.Canvas.Apply(all);
         applied = changed.Count;
         fixedCells = s.Canvas.LastFixed;
-        if (changed.Count > 0)
-        {
-            var line = DesignerCanvas.Summarize(changed, on: s.Canvas) + (DesignerCanvas.FixText(fixedCells) is { Length: > 0 } fix ? $" ({fix})" : "");
-            s.PendingEdits = s.PendingEdits.Length == 0 ? line : Clip(s.PendingEdits + "; " + line, 600);
-        }
+        if (changed.Count > 0) NotePendingEdits(s, changed, fixedCells);
         return null;
+    }
+
+    /// <summary>Every op's cells ([x, y, z, id, meta] each); the error when one isn't.</summary>
+    private static (List<CanvasCell> Cells, string? Error) CellsOf(OpBody[] ops)
+    {
+        var all = new List<CanvasCell>();
+        foreach (var op in ops)
+        {
+            if (op.Cells == null) continue;
+            if (op.Cells.Any(c => c == null || c.Length != 5)) return (all, "a cell is [x, y, z, id, meta]");
+            all.AddRange(op.Cells.Select(c => new CanvasCell(c[0], c[1], c[2], c[3], c[4])));
+        }
+        return (all, null);
+    }
+
+    /// <summary>The user's edits (and the attachment rule's fixes), summarised for the model's next turn (capped at 600 chars).</summary>
+    private static void NotePendingEdits(DesignerSessionRecord s, List<CanvasCell> changed, List<CanvasCell> fixedCells)
+    {
+        var line = DesignerCanvas.Summarize(changed, on: s.Canvas) + (DesignerCanvas.FixText(fixedCells) is { Length: > 0 } fix ? $" ({fix})" : "");
+        s.PendingEdits = s.PendingEdits.Length == 0 ? line : Clip(s.PendingEdits + "; " + line, 600);
     }
 
     private SupervisorReply Canvas(long id, SupervisorRequest r)
@@ -506,15 +538,9 @@ public sealed class DesignerRoutes
         using var scope = DesignVersions.Use(s.Version);
         var b = Parse<MessageBody>(r.Body);
         var text = b?.Text?.Trim() ?? "";
-        if (text.Length == 0) return Reply(400, new { error = "text is empty" });
-        if (text.Length > MaxText) return Reply(400, new { error = $"text over {MaxText} chars" });
-        if (b!.Model is { Length: > 0 } wanted)
-        {
-            if (DesignerModels.Resolve(_llm, wanted) is not { } picked) return Reply(400, new { error = $"model '{wanted}' isn't configured" });
-            s.Model = picked.Id;
-        }
-        var model = DesignerModels.Resolve(_llm, s.Model);
-        if (model == null) return Reply(400, new { error = "no model is configured" });
+        if (MessageError(text) is { } bad) return Reply(400, new { error = bad });
+        var (model, modelErr) = PickModel(s, b!.Model);
+        if (model == null) return Reply(400, new { error = modelErr });
         if (ApplyEdits(s, b.Canvas?.Edits, out _, out var editFixes) is { } err) return Reply(400, new { error = err });
         if (_agent.BudgetRefusal(model) is { } refusal)
         {
@@ -544,13 +570,31 @@ public sealed class DesignerRoutes
         {
             reply,
             // The user's own cells the attachment rule corrected come first (the browser applies them like the AI's).
-            ops = (editFixes.Count > 0 ? [new DesignerOp("fix", DesignerCanvas.FixText(editFixes), editFixes)] : Array.Empty<DesignerOp>()).Concat(turn.Ops).Select(OpJson),
+            ops = WithFixes(editFixes, turn.Ops).Select(OpJson),
             rev = s.Canvas.Rev, cost_usd = (double)turn.CostUsd, session_cost_usd = (double)s.CostUsd,
             model = turn.Model, calls = turn.Calls,
             usage = new { input = turn.Usage.InputTokens, output = turn.Usage.OutputTokens, cache_read = turn.Usage.CacheReadTokens, cache_write = turn.Usage.CacheWriteTokens },
             message = MessageJson(msg), user_message = MessageJson(userLine), refusal = turn.Refusal,
         });
     }
+
+    private static string? MessageError(string text) =>
+        text.Length == 0 ? "text is empty" : text.Length > MaxText ? $"text over {MaxText} chars" : null;
+
+    /// <summary>The session's model: the one asked for (it becomes the session's), else the session's own; null with why when neither is configured.</summary>
+    private (DesignerModel? Model, string? Error) PickModel(DesignerSessionRecord s, string? wanted)
+    {
+        if (wanted is { Length: > 0 })
+        {
+            if (DesignerModels.Resolve(_llm, wanted) is not { } picked) return (null, $"model '{wanted}' isn't configured");
+            s.Model = picked.Id;
+        }
+        return DesignerModels.Resolve(_llm, s.Model) is { } model ? (model, null) : (null, "no model is configured");
+    }
+
+    /// <summary>The user's own cells the attachment rule corrected come first (the browser applies them like the AI's).</summary>
+    private static IEnumerable<DesignerOp> WithFixes(List<CanvasCell> editFixes, IEnumerable<DesignerOp> ops) =>
+        (editFixes.Count > 0 ? [new DesignerOp("fix", DesignerCanvas.FixText(editFixes), editFixes)] : Array.Empty<DesignerOp>()).Concat(ops);
 
     private SupervisorReply Save(long id, SupervisorRequest r)
     {
