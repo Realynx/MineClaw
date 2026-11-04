@@ -346,6 +346,19 @@ export class WorldRuntime {
     this.chatOff = null;
     const chat = this.source.chat?.bind(this.source);
     if (chat) this.chatOff = chat((l: ChatSay) => void this.say(l.from, l.text, { kind: l.kind }));
+    this.listenEntities();
+  }
+
+  private entitiesOff: (() => void) | null = null;
+
+  /** A push source (the shared stream's `entities` frames): each frame is read at once, so bodies glide at the stream's pace
+   * instead of the beat of two 200 ms loops (the bridge's poll and ours); the poll slows to a backstop. */
+  private listenEntities(): void {
+    this.entitiesOff?.();
+    this.entitiesOff = null;
+    const on = this.source.onEntities?.bind(this.source);
+    this.entityPoller.periodMs = on ? (this.opts.entityPollMs ?? 1000) : (this.opts.entityPollMs ?? 200);
+    if (on) this.entitiesOff = on(() => this.entityPoller.kick());
   }
 
   // ------------------------------------------------------------------------------------------------------------ lifetime
@@ -500,6 +513,8 @@ export class WorldRuntime {
     this.holoViews.clear();
     this.chatOff?.();
     this.chatOff = null;
+    this.entitiesOff?.();
+    this.entitiesOff = null;
     this.bubbles.dispose();
     for (const s of this.sections.values()) s.dispose();
     this.sections.clear();

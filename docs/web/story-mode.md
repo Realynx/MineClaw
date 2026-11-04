@@ -128,7 +128,9 @@ That holds for `ghosts.blocks` too: a delta lists only the ghosts that changed (
 what it holds by build and cell, and a build in `removed.builds` takes its ghosts with it (fixed 2026-11-04: the web replaced
 the whole list with each delta's, so the holograms and flat ghosts vanished a few seconds after the page loaded).
 Pass the answer's `rev` back as the next `since`. This is the `story` event source the bridge polls, at 2 Hz while a client
-watches.
+watches. Every answer also carries `architect_key` (the Architect palette's inputs as one number: fetch the palette again when it
+moves). The page's own `since=rev` catch-up (every 3 s) runs only while no `story` frame arrived for 5 s (a quiet colony or a
+reconnecting stream); while frames flow it would fetch the same delta again.
 
 The **Pawn** object:
 
@@ -1171,6 +1173,11 @@ have, craftable, from, short}`.
   table when its chain has a 3×3 step). Else `reason`: "Needs a crafting table — place one or designate an existing one".
 - `have` = unreserved stock, `craftable` = how many (up to 64) the unreserved stock makes now, `from` = what one takes, `short`
   = what one is short of when neither.
+- **Fetched when it changes (2026-11-04).** The colony state carries `architect_key`: everything the palette reads (the free stock
+  after reservations, the designated benches by kind, the version) folded to one number. The bot keeps the palette it built for a
+  key and answers from it until the key moves (the recipe chain per placeable is planned once per version); the web keys its
+  query on it and fetches only while the Architect (or a material selector) is open. Live 11-04 the web refetched every ~4 s
+  (the colony revision / 20), ~200 ms each under the colony lock.
 
 The web's Architect (B) has tabs Orders, Zones, Structure, Furniture, Production, Storage, Lighting, Misc. The build tools stay
 where they were; beside them, the tab's placeables: icon, name, tier and "have N" / "craftable N from …" / "short: …". Locked ones

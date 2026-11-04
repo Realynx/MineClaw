@@ -110,7 +110,8 @@ public sealed class TokenBucket(double perSecond, double burst, TimeProvider tim
 
 /// <summary>
 /// The Live Hive's read-only world routes (GET, token-gated by the server like everything else, rate-capped per route with
-/// 429 + Retry-After, cached briefly, at most two in flight):
+/// 429 + Retry-After, cached briefly, at most two heavy reads in flight, and the live ones (entities, one container) on their
+/// own two slots beside them):
 /// <list type="bullet">
 /// <item><c>/api/world/index?dim&amp;x&amp;z&amp;r[&amp;light=1]</c> (block centre, radius 16..256) → JSON <c>{dim, at, columns:[{cx,cz,hash,seen,by,live}],
 /// version, time}</c> (the game version and the world time; <c>light=1</c>: live hashes include the light)</item>
@@ -145,7 +146,11 @@ public sealed class SupervisorWorldRoutes
     private readonly TimeProvider _time;
     private readonly Dictionary<string, TokenBucket> _buckets;
     private readonly RenderCache<SupervisorReply> _cache;
+    /// <summary>The heavy reads (chunk batches, the index, block entities, overlays, container boxes): at most two at once.</summary>
     private readonly SemaphoreSlim _work = new(2);
+    /// <summary>The live lane (the 5 Hz entity delta, one container): its own two slots, so it never queues behind a chunk batch
+    /// (live 11-04: the bridge's entity poll waited on two 64-column batches, players moved in steps or stopped for a second).</summary>
+    private readonly SemaphoreSlim _live = new(2);
     private readonly EntityDeltaLog _entityLog;
 
     public SupervisorWorldRoutes(ISupervisorWorld world, WorldRouteLimits? limits = null, TimeProvider? time = null)
@@ -219,14 +224,14 @@ public sealed class SupervisorWorldRoutes
                         if (Q(r, "since") is { Length: > 0 } sinceText)
                         {
                             long since = long.TryParse(sinceText, NumberStyles.Integer, CultureInfo.InvariantCulture, out var sv) ? sv : 0;
-                            return await Work(() =>
+                            return await Work(_live, () =>
                             {
                                 var d = _entityLog.Since(since, () => _world.Entities(null), _world.EntityEvents);
                                 return Json(200, new { at = _time.GetUtcNow().ToUnixTimeMilliseconds(), rev = d.Rev, full = d.Full, bots = _world.Bots(), entities = d.Entities, removed = d.Removed,
                                     events = d.Events });
                             }, ct).ConfigureAwait(false);
                         }
-                        return await _cache.GetAsync($"entities:{edim}", EntitiesCache, () => Work(() =>
+                        return await _cache.GetAsync($"entities:{edim}", EntitiesCache, () => Work(_live, () =>
                             Json(200, new { at = _time.GetUtcNow().ToUnixTimeMilliseconds(), bots = _world.Bots(), entities = _world.Entities(edim) }), ct))
                             .ConfigureAwait(false);
                     }
@@ -264,7 +269,7 @@ public sealed class SupervisorWorldRoutes
                         }
                         if (I(Q(r, "x")) is not { } cx || I(Q(r, "y")) is not { } cy || I(Q(r, "z")) is not { } cz)
                             return Json(400, new { error = "containers needs x, y, z (or a box x0..z1)" });
-                        return await Work(() => _world.Container(dim, new BlockPos(cx, cy, cz)) is { } view
+                        return await Work(_live, () => _world.Container(dim, new BlockPos(cx, cy, cz)) is { } view
                             ? Json(200, view)
                             : Json(404, new { error = $"no container at {cx},{cy},{cz}" }), ct).ConfigureAwait(false);
                     }
@@ -278,12 +283,15 @@ public sealed class SupervisorWorldRoutes
     }
 
     /// <summary>Runs the read on the pool (never the caller's or the game's thread), at most two at once; busy = 503.</summary>
-    private async Task<SupervisorReply> Work(Func<SupervisorReply> f, CancellationToken ct)
+    private Task<SupervisorReply> Work(Func<SupervisorReply> f, CancellationToken ct) => Work(_work, f, ct);
+
+    /// <summary>The same on <paramref name="lane"/> (the heavy lane or the live one).</summary>
+    private static async Task<SupervisorReply> Work(SemaphoreSlim lane, Func<SupervisorReply> f, CancellationToken ct)
     {
-        if (!await _work.WaitAsync(TimeSpan.FromSeconds(1), ct).ConfigureAwait(false)) throw new RenderBusyException();
+        if (!await lane.WaitAsync(TimeSpan.FromSeconds(1), ct).ConfigureAwait(false)) throw new RenderBusyException();
         try { return await Task.Run(f, ct).ConfigureAwait(false); }
         catch (Exception ex) when (ex is not (OperationCanceledException or RenderBusyException)) { return Json(500, new { error = ex.Message }); }
-        finally { _work.Release(); }
+        finally { lane.Release(); }
     }
 
     internal static List<(int, int)>? ParseCols(string? s)

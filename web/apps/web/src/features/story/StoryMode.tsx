@@ -228,7 +228,7 @@ export function StoryMode() {
   const [tab, setTab] = useState<TabId | null>(null);
   // The material selector: a structure tool's materials (the palette is fetched while one is in hand, too).
   const matTool = materialToolOf(tool);
-  const architect = useArchitect(id, state?.rev, tab === 'architect' || matTool !== null);
+  const architect = useArchitect(id, state?.rev, tab === 'architect' || matTool !== null, state?.architectKey);
   const [matMemory, setMatMemory] = useState<MaterialMemory>(() => ({ last: {}, recent: [] }));
   useEffect(() => setMatMemory(loadMaterialMemory()), []);
   const [matQuery, setMatQuery] = useState('');

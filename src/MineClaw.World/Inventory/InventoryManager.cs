@@ -81,6 +81,18 @@ public sealed partial class InventoryManager
     public event Action<Window>? WindowClosed;
     /// <summary>Fired after any slot/cursor change from the server or a predicted click.</summary>
     public event Action? Changed;
+
+    private long _version;
+
+    /// <summary>Bumped on every slot/cursor change, just before <see cref="Changed"/> (never reset): a reader that read the same
+    /// version before and after its reads saw one consistent inventory (Story's pawn reads cache their totals by it).</summary>
+    public long Version => Interlocked.Read(ref _version);
+
+    private void RaiseChanged()
+    {
+        Interlocked.Increment(ref _version);
+        Changed?.Invoke();
+    }
     /// <summary>A container window's full contents arrived (0x68 for a window other than the player's): its real state.</summary>
     public event Action<int>? WindowItemsSet;
 
@@ -137,7 +149,7 @@ public sealed partial class InventoryManager
             else if (_open is not null && _open.Id == windowId) _open.Set(slot, item);
             else return;
         }
-        Changed?.Invoke();
+        RaiseChanged();
     }
 
     /// <summary>0x68 Window Items.</summary>
@@ -149,7 +161,7 @@ public sealed partial class InventoryManager
             if (w is null) return;
             for (int i = 0; i < items.Count && i < w.SlotCount; i++) w.Set(i, items[i]);
         }
-        Changed?.Invoke();
+        RaiseChanged();
         if (windowId != 0) WindowItemsSet?.Invoke(windowId);
     }
 
@@ -207,7 +219,7 @@ public sealed partial class InventoryManager
                 Button = button,
             };
         }
-        Changed?.Invoke();
+        RaiseChanged();
         return r;
     }
 
@@ -221,7 +233,7 @@ public sealed partial class InventoryManager
             int main = 36 + Math.Clamp(hotbarSlot, 0, 8);
             (_player[main], _player[InventoryModel.OffhandSlot]) = (_player[InventoryModel.OffhandSlot], _player[main]);
         }
-        Changed?.Invoke();
+        RaiseChanged();
         return true;
     }
 

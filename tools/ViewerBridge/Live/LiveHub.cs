@@ -165,15 +165,27 @@ public sealed class LiveHub : IDisposable
         _ = Loop("events", TimeSpan.FromMilliseconds(500), PollCursor("api/events", "event", "events"), ct);
         _ = Loop("feed", TimeSpan.FromMilliseconds(500), PollCursor("api/viewer/feed", "feed", "lines"), ct);
         _ = Loop("now", TimeSpan.FromMilliseconds(500), PollNow(), ct);
-        _ = Loop("entities", TimeSpan.FromMilliseconds(200), PollEntities(), ct);
+        // The motion topics back off briefly: a busy answer (503) or a slow one is retried within half a second, never after 15 s
+        // (live 11-04: one 503 on the entity poll froze every player for 1, 2, 4… seconds).
+        _ = Loop("entities", TimeSpan.FromMilliseconds(200), PollEntities(), ct, FastBackoff);
         _ = Loop("hive", TimeSpan.FromSeconds(3), PollChanged("api/hive/tree", "hive", "hive", TimeSpan.FromSeconds(3)), ct);
         _ = Loop("memoryActivity", TimeSpan.FromSeconds(1), PollMemory(), ct);
-        _ = Loop("blocks", TimeSpan.FromMilliseconds(200), PollBlocks(), ct);
+        _ = Loop("blocks", TimeSpan.FromMilliseconds(200), PollBlocks(), ct, FastBackoff);
         _ = Loop("story", TimeSpan.FromMilliseconds(500), PollStory(), ct);
     }
 
-    private async Task Loop(string name, TimeSpan every, Func<CancellationToken, Task> poll, CancellationToken ct)
+    /// <summary>The back-off after a failed poll: first, and the cap it doubles up to.</summary>
+    internal readonly record struct BackoffPolicy(TimeSpan First, TimeSpan Max)
     {
+        public TimeSpan Next(TimeSpan prev) => prev == TimeSpan.Zero ? First : TimeSpan.FromTicks(Math.Min(Max.Ticks, prev.Ticks * 2));
+    }
+
+    internal static readonly BackoffPolicy SlowBackoff = new(TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(15));
+    internal static readonly BackoffPolicy FastBackoff = new(TimeSpan.FromMilliseconds(100), TimeSpan.FromMilliseconds(500));
+
+    private async Task Loop(string name, TimeSpan every, Func<CancellationToken, Task> poll, CancellationToken ct, BackoffPolicy? policy = null)
+    {
+        var p = policy ?? SlowBackoff;
         var backoff = TimeSpan.Zero;
         while (!ct.IsCancellationRequested)
         {
@@ -186,7 +198,7 @@ public sealed class LiveHub : IDisposable
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { break; }
             catch (Exception ex)
             {
-                backoff = backoff == TimeSpan.Zero ? TimeSpan.FromSeconds(1) : TimeSpan.FromSeconds(Math.Min(15, backoff.TotalSeconds * 2));
+                backoff = p.Next(backoff);
                 _log.LogDebug("live poll {Name} failed: {Message}", name, ex.Message);
             }
             var wait = every + backoff - (DateTimeOffset.UtcNow - started);
@@ -234,7 +246,7 @@ public sealed class LiveHub : IDisposable
             if (node is not JsonObject o) return;
             var online = (o["bots"] as JsonArray ?? []).OfType<JsonObject>().Where(b => (string?)b["status"] == "online").ToList();
             _onlineBots = online.Select(b => (string?)b["name"]).OfType<string>().ToList();
-            _slowBots = online.Where(b => (string?)b["kind"] == "subhive").Select(b => (string?)b["name"]).OfType<string>()
+            _slowBots = online.Where(b => (string?)b["kind"] is "subhive" or "script").Select(b => (string?)b["name"]).OfType<string>()
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
             var key = Normalized(o, "at", "age_seconds", "updated_at");
             if (key == prev) return;
@@ -289,7 +301,7 @@ public sealed class LiveHub : IDisposable
             var slow = _slowBots;
             foreach (var bot in _onlineBots.ToList())
             {
-                if (!slowTick && slow.Contains(bot)) continue; // a subhive body: every other tick (1 Hz)
+                if (!slowTick && slow.Contains(bot)) continue; // a subhive or script-only body (Story pawns): every other tick (1 Hz)
                 JsonNode? node;
                 try { node = await GetJson($"api/viewer/now?bot={Uri.EscapeDataString(bot)}", TimeSpan.FromSeconds(3), ct); }
                 catch (SupervisorUnavailableException) { continue; }

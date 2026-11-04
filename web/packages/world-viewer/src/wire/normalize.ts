@@ -51,6 +51,7 @@ function bot(b: Partial<BotDto>): BotDto {
 export function normalizeEntities(raw: unknown): EntityDelta {
   const r = camelize<Partial<EntityDelta>>(raw) ?? {};
   return {
+    ...(typeof r.frame === 'number' ? { frame: r.frame } : {}),
     at: r.at,
     rev: num(r.rev),
     full: r.full ?? true,

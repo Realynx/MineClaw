@@ -58,7 +58,15 @@ public sealed class ChunkColumn
 
     /// <summary>The 256 biome ids of a full chunk (index <c>lz · 16 + lx</c>, 1.12.2 <c>Chunk.blockBiomeArray</c>), or null: b1.8.1's
     /// map chunk carries none (its biomes come from the seed) and a partial update leaves them as they were.</summary>
-    public byte[]? Biomes { get; internal set; }
+    public byte[]? Biomes { get => _biomes; internal set { _biomes = value; Interlocked.Increment(ref _version); } }
+    private byte[]? _biomes;
+
+    private long _version;
+
+    /// <summary>Bumped after every write to the column's blocks, metadata, light or biomes (never reset): a reader that saw the same
+    /// version before and after its read saw the same content, so a hash or an encoded payload kept with the version stays good
+    /// until it moves (the viewer's index and chunk payloads; a write racing the read only means the next read recomputes).</summary>
+    public long Version => Interlocked.Read(ref _version);
 
     /// <summary>The biome id of a local column, or −1 when the column has no biome data (b1.8.1).</summary>
     public int GetBiome(int lx, int lz) => Biomes is { } b ? b[(lz & 15) << 4 | (lx & 15)] : -1;
@@ -103,10 +111,20 @@ public sealed class ChunkColumn
         int sec = y >> 4, i = Local(lx, y, lz);
         Put(_ids, sec, i, (byte)id, 0);
         Put(_meta, sec, i, (byte)(meta & 0x0F), 0);
+        Interlocked.Increment(ref _version);
     }
 
-    internal void SetBlockLight(int lx, int y, int lz, int v) => Put(_blockLight, y >> 4, Local(lx, y, lz), (byte)v, 0);
-    internal void SetSkyLight(int lx, int y, int lz, int v) => Put(_skyLight, y >> 4, Local(lx, y, lz), (byte)v, SkyDefault);
+    internal void SetBlockLight(int lx, int y, int lz, int v)
+    {
+        Put(_blockLight, y >> 4, Local(lx, y, lz), (byte)v, 0);
+        Interlocked.Increment(ref _version);
+    }
+
+    internal void SetSkyLight(int lx, int y, int lz, int v)
+    {
+        Put(_skyLight, y >> 4, Local(lx, y, lz), (byte)v, SkyDefault);
+        Interlocked.Increment(ref _version);
+    }
 
     private static void Put(byte[]?[] layer, int sec, int i, byte v, byte def)
     {
@@ -137,6 +155,7 @@ public sealed class ChunkColumn
         PutRun(_meta, lx, lz, y0, meta, ids.Length, 0, 0x0F);
         PutRun(_blockLight, lx, lz, y0, blockLight, ids.Length, 0, 0x0F);
         PutRun(_skyLight, lx, lz, y0, skyLight, ids.Length, SkyDefault, 0x0F);
+        Interlocked.Increment(ref _version);
     }
 
     private static void PutRun(byte[]?[] layer, int lx, int lz, int y0, ReadOnlySpan<byte> src, int count, byte def, int mask)
