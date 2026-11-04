@@ -109,12 +109,15 @@ export function indexGraph(g: Pick<RaptorGraph, 'nodes' | 'edges'>): GraphIndex 
 
 /** Keyboard walk: up = parent, down = first child, left/right = previous/next sibling. */
 export function walk(idx: GraphIndex, from: number | null, dir: 'up' | 'down' | 'left' | 'right'): number | null {
-  const n = from === null ? undefined : idx.byId.get(from);
-  if (from === null || !n) return idx.roots[0] ?? null;
+  if (from === null) return firstRoot(idx);
+  const n = idx.byId.get(from);
+  if (!n) return firstRoot(idx);
   if (dir === 'up') return n.parent ?? from;
   if (dir === 'down') return idx.children.get(from)?.[0] ?? from;
   return sibling(idx, n, from, dir === 'left' ? -1 : 1);
 }
+
+const firstRoot = (idx: GraphIndex): number | null => idx.roots[0] ?? null;
 
 /** The previous (-1) or next (+1) sibling (among the roots for a root), or the node itself at the end. */
 function sibling(idx: GraphIndex, n: GraphNode, from: number, step: number): number {
