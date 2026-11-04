@@ -265,7 +265,7 @@ public sealed partial class StoryColony
             case WorkTypes.Cook:
                 return BillJob(p, live, WorkTypes.Cook);
             case WorkTypes.Craft:
-                return BillJob(p, live, WorkTypes.Craft);
+                return BillJob(p, live, WorkTypes.Craft) ?? SupplyJob(p, live); // the builds' own crafts (a bench to place, a 2×2 craft)
             case WorkTypes.Hunt:
             {
                 var ents = World?.Entities().ToDictionary(e => e.Id) ?? new Dictionary<int, StoryEntity>();
@@ -461,6 +461,9 @@ public sealed partial class StoryColony
                 break;
             case "order":
                 OrderDone(p, j, ok: true, note);
+                break;
+            case "station" or "hand":
+                SupplyDone(p, j);
                 break;
             case "zone" or "crop":
                 _zoneScan.Remove(j.SourceId ?? "");

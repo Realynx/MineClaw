@@ -15,7 +15,8 @@ namespace MineClaw.App.Supervisor;
 /// <list type="bullet">
 /// <item><c>GET /api/story</c> → <c>{colonies:[…], ai:[…], directives:[…]}</c>; <c>GET /api/story/recipes?workbench=</c> → <c>[Recipe]</c></item>
 /// <item><c>POST /api/story/colonies</c> <c>{name, pawns, home?}</c> → <c>{id}</c>; <c>GET /api/story/colonies/{id}?since=rev</c> → the state (delta with since)</item>
-/// <item><c>POST /api/story/colonies/{id}/release|resume|online|pause|home|priorities|schedule|draft|orders|zones|designations|builds|storage|bills</c></item>
+/// <item><c>POST /api/story/colonies/{id}/release|resume|online|pause|home|priorities|schedule|draft|orders|zones|designations|builds|storage|bills|workbenches|options</c></item>
+/// <item><c>GET /api/story/colonies/{id}/architect</c> → <c>{entries:[…], benches, tabs}</c> (the Architect palette with tiers)</item>
 /// <item><c>POST /api/story/time</c> <c>{time}</c> → <c>{time, by}</c> (409 no op account, 429 over one a second)</item>
 /// <item><c>POST /api/story/directives</c> → <c>{id, delivered}</c>; <c>GET /api/story/directives[/{id}]</c></item>
 /// </list>
@@ -125,6 +126,14 @@ public sealed class SupervisorStoryRoutes(SupervisorOptions o, StoryColonies col
                     st["time_control"] = TimeControl();
                     st["directives"] = directives?.Json() ?? new JsonArray();
                     return Reply(200, st);
+                }
+                case ["colonies", var id, "architect"]:
+                {
+                    // The Architect palette: every placeable with its tier, unlock state and the colony's stock of it.
+                    if (!get) return NotAllowed("GET, HEAD");
+                    if (colonies.Get(id) is not { } c) return NoColony();
+                    if (colonies.Host.World == null) return Reply(503, new JsonObject { ["error"] = "no world view yet" });
+                    return Reply(200, c.Architect());
                 }
                 case ["colonies", var id, var action]:
                 {
@@ -310,6 +319,25 @@ public sealed class SupervisorStoryRoutes(SupervisorOptions o, StoryColonies col
             }
             case "bills":
                 return Result(c.BillsOp(S(b, "op") ?? "", b));
+            case "workbenches":
+            {
+                // {op: designate|release, pos:[x,y,z]} → {pos, kind, designated}
+                if (P3.Parse(b["pos"]) is not { } pos) return Bad("pos must be [x,y,z]");
+                return Result(c.WorkbenchOp(S(b, "op") ?? "", pos));
+            }
+            case "options":
+            {
+                // {auto_place_benches?: bool, detect_benches?: bool} → the options
+                bool? Flag(string k)
+                {
+                    if (b[k] is null) return null;
+                    return b[k] is JsonValue v && v.TryGetValue<bool>(out var f) ? f : throw new FormatException($"{k} must be true|false");
+                }
+                var auto = Flag("auto_place_benches");
+                var detect = Flag("detect_benches");
+                if (auto == null && detect == null) return Bad("auto_place_benches or detect_benches required");
+                return Reply(200, c.SetOptions(auto, detect));
+            }
             default:
                 return Reply(404, new JsonObject { ["error"] = "not found" });
         }
