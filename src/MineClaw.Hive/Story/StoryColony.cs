@@ -27,6 +27,8 @@ public sealed class ActiveJob
     public List<(P3 Chest, List<Stack> Stacks)> Puts { get; } = new();
     public double Xp { get; init; } = 20;
     public int Count { get; init; }
+    /// <summary>Further targets the job holds besides <see cref="Lease"/> (a hauler's batch of drops), leased and released with it.</summary>
+    public List<string> MoreLeases { get; } = new();
 }
 
 /// <summary>
@@ -215,6 +217,7 @@ public sealed partial class StoryColony : IStoryPort
             var live = Host.Live(body);
             var job = Pick(p, live);
             if (job.Lease != null) _leases[job.Lease] = (body, Now + LeaseTtl);
+            foreach (var k in job.MoreLeases) _leases[k] = (body, Now + LeaseTtl);
             _current[body] = job;
             p.Rev = Bump();
             return job.Json;
@@ -293,6 +296,7 @@ public sealed partial class StoryColony : IStoryPort
 
     private void Release(ActiveJob j)
     {
+        foreach (var k in j.MoreLeases) _leases.Remove(k);
         if (j.Lease == null) return;
         _leases.Remove(j.Lease);
         if (j.Source == "ghost" && FindGhost(j.SourceId) is { } g && g.State == "leased") { g.State = "todo"; g.Rev = Touch(); }
@@ -368,7 +372,10 @@ public sealed partial class StoryColony : IStoryPort
             foreach (var (owner, cur) in _current)
                 if (cur.Lease != null && Now - cur.Since < JobMax && _leases.TryGetValue(cur.Lease, out var l) && string.Equals(l.Owner, owner, StringComparison.OrdinalIgnoreCase)
                     && l.Until - Now < LeaseTtl / 2 && Host.Live(owner) is { Online: true, ScriptRunning: true })
+                {
                     _leases[cur.Lease] = (owner, Now + LeaseTtl);
+                    foreach (var k in cur.MoreLeases) _leases[k] = (owner, Now + LeaseTtl);
+                }
             foreach (var k in _leases.Where(l => l.Value.Until <= Now).Select(l => l.Key).ToList())
             {
                 var owner = _leases[k].Owner;
@@ -398,6 +405,7 @@ public sealed partial class StoryColony : IStoryPort
             if (Now - _benchScan > TimeSpan.FromSeconds(30)) { _benchScan = Now; ScanBenches(); RetrySuspended(); } // missing ingredients may be stored by now
             WakeWanderers(); // idle legs: real work takes them back at once (StoryColony.Idle.cs)
             WakeNow();
+            HaulTick(); // a drop about to despawn may take a hauler off lesser work (StoryColony.Hauling.cs)
             // A pawn that (re)joined: brought home when it came online far away (founding, resume, a reconnect).
             foreach (var p in Pawns.Values)
             {

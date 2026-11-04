@@ -130,4 +130,14 @@ describe('conditions from the colony state', () => {
     expect(conditions(st({ storages: [chest([])], pawns: [pawn('ann', { inventory: [[297, 0, 1]] })] })).map((x) => x.key)).toEqual([]);
     expect(conditions(undefined)).toEqual([]);
   });
+
+  it('kinds with no storage and stuck pawns are conditions while they last', () => {
+    const c = conditions(st({ unstoredKinds: ['Oak Wood', 'Dirt'], pawns: [pawn('ann', { stuck: 'stuck in a pit at 1,62,1' }), pawn('bob')] }));
+    expect(c.map((x) => [x.key, x.text])).toEqual([
+      ['unstored', 'No storage for: Oak Wood, Dirt'],
+      ['stuck', 'ANN is stuck'],
+    ]);
+    expect(c[1]!.pawns).toEqual(['ann']);
+    expect(conditions(st({ unstoredKinds: [], pawns: [pawn('ann')] }))).toEqual([]);
+  });
 });

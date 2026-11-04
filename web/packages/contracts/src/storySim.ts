@@ -490,7 +490,7 @@ export class StorySim {
         ['280:0', 16],
         ['263:0', 8],
       ]),
-      options: { autoPlaceBenches: true, detectBenches: false },
+      options: { autoPlaceBenches: true, detectBenches: false, rescueTeleport: true, unfilteredStorageTakesAnything: true, keepDisallowed: false },
     };
     for (let i = 0; i < req.pawns; i++) {
       const display = NAMES[(i + n * 3) % NAMES.length]!;
@@ -1655,10 +1655,13 @@ export class StorySim {
   /** POST …/options. */
   options(id: string, body: StoryOptionsRequest): StoryColonyOptions {
     const c = this.colony(id);
-    if (body.autoPlaceBenches === undefined && body.detectBenches === undefined)
-      throw Object.assign(new Error('autoPlaceBenches or detectBenches required'), { status: 400 });
+    if (Object.values(body).every((v) => v === undefined))
+      throw Object.assign(new Error('autoPlaceBenches, detectBenches, rescueTeleport, unfilteredStorageTakesAnything or keepDisallowed required'), { status: 400 });
     if (body.autoPlaceBenches !== undefined) c.options.autoPlaceBenches = body.autoPlaceBenches;
     if (body.detectBenches !== undefined) c.options.detectBenches = body.detectBenches;
+    if (body.rescueTeleport !== undefined) c.options.rescueTeleport = body.rescueTeleport;
+    if (body.unfilteredStorageTakesAnything !== undefined) c.options.unfilteredStorageTakesAnything = body.unfilteredStorageTakesAnything;
+    if (body.keepDisallowed !== undefined) c.options.keepDisallowed = body.keepDisallowed;
     this.bump(c);
     this.plan(c);
     return { ...c.options };

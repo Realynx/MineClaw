@@ -46,7 +46,7 @@ There is one per colony. It holds:
   - `anything` means work, eat or rest as needed.
 
   The hour comes from the world time, at 1000 ticks per hour, with 0 = 06:00.
-- **Zones,** painted as areas: chop, mine, farm, home, forbidden. Storage is chests with their own settings (see "Storage").
+- **Zones,** painted as areas: chop, mine, farm, home, forbidden, dump (the drop spot when there is no storage). Storage is chests with their own settings (see "Storage").
 - **Designations,** per block or area: chop this tree, mine these blocks, harvest, haul these drops, build design N here,
   deconstruct.
 - **Orders,** per pawn or group: move to, attack, chop, mine, haul, build, hold position, stop, and queued orders
@@ -87,7 +87,7 @@ work, so viewers can watch). JSON is snake_case with nulls written. Errors are `
 | POST | `/api/story/colonies/{id}/schedule` | `{pawns:[name], hours:{"0".."23": "work"|"sleep"|"anything"|"free"}}` → `{ok}` |
 | POST | `/api/story/colonies/{id}/draft` | `{pawns:[name], drafted}` → `{ok}` |
 | POST | `/api/story/colonies/{id}/orders` | `{pawns:[name], order:{kind: move|attack|chop|mine|haul|build|hold|stop, target?:{x,y,z}|{entity:id}|{area:[x1,y1,z1,x2,y2,z2]}, design?:id}, queue?:bool}` → `{ids:[order id]}` |
-| POST | `/api/story/colonies/{id}/zones` | `{op: add, kind: chop|mine|farm|home|forbidden, area, name?, plant?, sow?, harvest?}` → `{id, warnings?}`; `{op: update, id, plant?, sow?, harvest?}` → `{id, warnings}`; `{op: seek_seeds, id}` → `{count, kind: cut|bill}` (see "Farming"); `{op: remove, kind?, area}` → `{removed:[id]}` (every zone of that kind, or of any kind, that overlaps the area); `{op: remove, id}` → `{removed:[id]}`; `{op: rename, id, name}` → `{id, name}` (name ≤ 40 chars, empty clears it) |
+| POST | `/api/story/colonies/{id}/zones` | `{op: add, kind: chop|mine|farm|home|forbidden|dump, area, name?, plant?, sow?, harvest?}` → `{id, warnings?}`; `{op: update, id, plant?, sow?, harvest?}` → `{id, warnings}`; `{op: seek_seeds, id}` → `{count, kind: cut|bill}` (see "Farming"); `{op: remove, kind?, area}` → `{removed:[id]}` (every zone of that kind, or of any kind, that overlaps the area); `{op: remove, id}` → `{removed:[id]}`; `{op: rename, id, name}` → `{id, name}` (name ≤ 40 chars, empty clears it) |
 | POST | `/api/story/colonies/{id}/beds` | `{op:"assign", bed:{x,y,z}, pawn}` or `{op:"unassign", bed:{x,y,z}}` → `{beds:[Bed]}`; 400 on a bad body or no bed there, 404 for an unknown colony or pawn. See "Homes and beds" |
 | POST | `/api/story/colonies/{id}/designations` | See "Designations" → `{count, targets}` or `{count, removed}` |
 | POST | `/api/story/colonies/{id}/builds` | See "Construction" |
@@ -284,6 +284,59 @@ on it" ×6, and the bot at ~70% CPU. Fixed:
   targets; forbidden cells, drops and zones as sets) and the world's entities once per pick. Benchmark (`StoryPickerBenchmarkTests`,
   10 pawns, 500 mine designations): a pick round of all 10 pawns 15.7 → 2.0 ms; a director tick with every pawn finishing a job, the
   watchdog tick and a state delta 6.7 → 3.1 ms.
+
+### Stuck pawns (added 2026-11-04)
+
+Live 11-04 (release 20261103-204549, `story-1`): maid_chan_114 stood in a hole two deep ("no path … it's 2 blocks up; unreachable even
+by pillaring/bridging" ×5) and failed grass after grass. Each failure rested that grass for the whole colony (and counted against it),
+so the other pawns stood idle in front of a field of work. Fox also saw pawns stuck in waterfalls and in caves.
+
+- **A failure is the pawn's own** when the target is out of reach from where it stands: "no path", "no route", "unreachable", or a
+  monster it couldn't find ("no skeleton within 16"). The target rests for that pawn only (30 s, 1 min, then 5 min) and the others take
+  it. Only when 3 different pawns couldn't reach it (fewer when fewer are online) is it the target's failure, with its reason, fail
+  count and alert as before. "can't reach" at the target (a soft refusal) rests it 15 s for that pawn only. A stuck pawn's failures
+  never count against a target, and an escape job never counts as a failure.
+- **Getting out is the pawn's.** `story.go(at, d)` is the usual `go`; when it finds no way, `story.escape(at)` runs before the job's own
+  retry, and then the walk is tried again. `story.escape` reads `storyPit` (zero tokens): **pit** (nothing over the body, and walking
+  reaches at most 30 cells and never 8 blocks away; a room under a build's roof is never a pit), **cave** (natural ground over the
+  body) or **water**. Then, in order:
+  1. walk to the exit, if there is one (the nearest bank out of the water; the nearest cell with open sky in a cave);
+  2. dig a staircase: the blocks in the way of a 1-block jump onto a neighbour, toward the target first. Never below the feet, never a
+     block with liquid beside or over it, never one with sand or gravel on top, never a container or anything as hard as obsidian;
+  3. nerd-pole with blocks it carries (cobblestone, dirt, planks, stone, netherrack, sandstone, stone bricks, logs): `place(block,
+     <its own feet>)` is a pillar step (jump, place under itself, land on it);
+  4. with no blocks, dig the pit's walls for some (dirt by hand; stone, cobble, netherrack with a pickaxe), head height first, then
+     pole;
+  5. ask the colony for help (`story.stuck`).
+- **The colony sees what the pawn can't.** Three unreachable targets in a row within a minute, or a pawn under ground (three blocks of
+  natural ground over it) with no mining, deconstructing or build within 16 blocks, outside a home zone and with no queued order: the
+  pawn's next job is `escape` (label "stuck: getting out", "stuck? heading home", "under ground: heading back up"). It gets out by
+  itself, else walks home, else asks for help. A pawn that moved more than 4 blocks from where it got stuck is free again.
+- **Help.** While another online pawn can bring blocks (from what it carries, or from storage), that pawn's next job is a rescue: kind
+  `give`, label "rescuing Nils: bringing cobblestone", 8 blocks tossed to the stuck pawn from the rim, fetched from storage first when
+  needed. The stuck pawn's escape job waits and tries again. After 90 s, or once the blocks came, or with nobody to help, the colony
+  **teleports it home** (option `rescue_teleport`, default on) through the op command path (never on b1.8.1, whose `/tp` takes no
+  coordinates). Each teleport is logged and said in an alert. When nothing can be done, one warning (at most every 10 minutes) says
+  why.
+- **Water and caves in pathing.** Every `goto` plan pays for flowing water in the body's cells (+4 a step: a stream is crossed, not
+  followed) and much more for a waterfall column (+30). A walk that starts under the sky pays +3 a step for cells the sky doesn't reach,
+  from the light the server sent, so a surface route wins over a cave one.
+- **Caves in picking.** Idle cells are never cave cells. A home zone's own floors still count, such as a basement at the zone's height.
+  Cut and harvest targets in a cave under the box wait; mine designations are explicit and still go. Guard targets in a cave are
+  ignored (see Defending).
+- The pawn's row carries `stuck` (why, or null).
+
+### Defending (added 2026-11-04)
+
+Live 11-04: "attack failed: no skeleton within 16" ×15, creeper ×8, zombie ×7 for one pawn (82 failures). The merged view showed every
+body's monsters, including cave mobs under home, and each one sent a pawn walking for nothing. A guard goes only after a monster
+that meets all of these:
+- **Fresh:** some body had news of it in the last 45 s (`seen_at`, the freshest copy across bodies).
+- **At home:** in a home area.
+- **Reachable:** within 8 blocks of home's ground level, or within 3 of the pawn, and not under ground.
+- **Not just missed by this pawn.** One it couldn't find rests 60 s for that pawn only. That is not a failure: no alert, no rest.
+
+Among guards with nothing better to do (idle or wandering), the nearest goes. Drafted pawns' attack orders are separate and unchanged.
 
 ### Idle behaviour (added 2026-11-03)
 
@@ -502,7 +555,8 @@ Execution:
 
 ## Storage
 
-Storage is chests; there are no ground stockpiles. `POST …/storage`:
+Storage is chests; there are no ground stockpiles (a `dump` zone is only where loot goes when the colony has no storage at all, see
+"Hauling"). `POST …/storage`:
 - `{op:"set", chests:[[x,y,z]], filter?:{allow:[…], deny:[…]}, priority?, label?}`. A double chest is one storage: its other half
   is found from the world.
 - `{op:"remove", chests}`, `{op:"copy", from:[x,y,z], to:[[x,y,z]]}` or `{op:"assign_area", area, filter?, priority?, label?}`
@@ -534,13 +588,40 @@ Categories come in the full state as `categories`: `{id, label, children:[Catego
   - ores_metals: ores, ingots, nuggets, metal & gem blocks
   - gems_minerals, tools, weapons, armour, mob_drops, redstone_mech, misc
 
-Hauling:
-- A pawn that carries loot (after chopping, mining, harvesting, hunting or picking up drops) delivers each stack to the
-  accepting chest with the highest priority, then the nearest, that has room. A full chest is skipped.
-- When nothing accepts a stack, the colony gets an alert "No storage accepts X" and the pawn keeps it. Loot is never dropped.
-- Tools, weapons, armour and one food stack stay with the pawn.
-- Background haul jobs, after every other haul: higher-priority chests pull matching items out of lower-priority ones, and a
-  chest whose filter changed gives up what it no longer accepts.
+Hauling (reworked 2026-11-04; Fox: "Dropped items should be auto-hauled by pawns that have hauling with high priority" and "if I
+limit the types of items allowed in a chest, pawns … should rearrange … Otherwise they end up dropped on the ground"):
+- **Where a stack goes:** the accepting chest with the highest priority, then the nearest, that has room (a full chest is skipped).
+  Else, with the option `unfiltered_storage_takes_anything` (default on), any chest with room whose filter doesn't *deny* it: open
+  (`"*"`) chests first, then the lowest priority, then the nearest. Else, when the colony has no storage at all, the **drop spot**: the
+  nearest `dump` zone (a zone kind), else a standable spot by home. Else nowhere.
+- **Nowhere** is a condition, not a stream of alerts: one alert "No storage for: Oak Wood, Dirt…" when the first kind has nowhere to go,
+  and the state's `unstored_kinds` lists them (a kind drops off the list as soon as a chest takes it). A pawn keeps loot that has
+  nowhere to go.
+- **Deliveries:** a pawn that carries loot (after chopping, mining, harvesting, hunting or picking up drops) takes every stack to
+  its chest in one trip (`stash` lists each chest, filter-accepted ones first). With no storage at all it drops them at the drop spot
+  (job kind `dump`, `drop:[{item, n}]`). Tools, weapons, armour and one food stack stay with the pawn.
+- **Drops on the ground** are a standing haul task when they meet all of these:
+  - Not forbidden.
+  - At home, or within 48 blocks of home or of colony work (a designation, a zone, a build).
+  - Within 12 blocks of the pawn's or home's height, and not under ground.
+  - Not within 4 blocks of a monster.
+  - Not dropped by a player (not a pawn) at their feet in the last 10 s.
+  - Not lying at the drop spot with nowhere better to go.
+  - Somewhere to go.
+  Designated drops come first. Then come drops at despawn risk: older than 3 of their 5 minutes (age from the first sighting by any
+  body), labelled "hauling Oak Wood (despawns in 95s)". Then the nearest.
+- **Priority:** hauling follows the pawn's Haul priority like any work type. Within one priority, a drop at despawn risk is hauled
+  before the other work types of that priority. A working pawn is cut for a haul only when a drop despawns within 30 s, nobody hauls it,
+  and the pawn's Haul priority is at least as important as its current work's. This never cuts an order, a need, an escape or a haul.
+  It is the nearest such pawn, once per drop, at most one every 5 s.
+- **Batching:** a trip picks up the drops within 6 blocks of the first one that go to the same place, up to the pawn's free slots
+  (`collect` with a radius; each drop is leased, so no other pawn is sent to them; label "(+2 more)").
+- **Re-sorting** (background, after drops): a stack a chest's filter no longer allows goes to a chest that takes it. A stack a
+  better-priority chest accepts moves up. One trip takes as many stacks out of one chest as the pawn has room for, each to its own
+  chest. With no chest for it, the fallback chest takes it (option on). What the fallback put somewhere stays there. Else the stack is
+  dropped beside its chest (job kind `dump`) and the condition alert names it. Like the genre, it then despawns unless a chest takes it
+  and a hauler picks it up. Option `keep_disallowed` (default off) leaves it in the chest instead.
+- Options (`POST …/options`): `rescue_teleport`, `unfiltered_storage_takes_anything`, `keep_disallowed` (booleans, in `options`).
 
 ## Workbenches & bills
 

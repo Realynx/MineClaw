@@ -51,7 +51,7 @@ export const StoryOrderKind = z.enum(STORY_ORDER_KINDS);
 export type StoryOrderKind = z.infer<typeof StoryOrderKind>;
 
 /** Zone kinds. Loot goes into chests with storage settings (`storage`): the director refuses a `stockpile` zone. */
-export const STORY_ZONE_KINDS = ['chop', 'mine', 'farm', 'home', 'forbidden'] as const;
+export const STORY_ZONE_KINDS = ['chop', 'mine', 'farm', 'home', 'forbidden', 'dump'] as const;
 export const StoryZoneKind = z.enum(STORY_ZONE_KINDS);
 export type StoryZoneKind = z.infer<typeof StoryZoneKind>;
 
@@ -289,6 +289,7 @@ export const StoryPawn = z.object({
   drafted: z.boolean().nullish(),
   state: z.string().nullish().describe(STORY_PAWN_STATES.join(' | ')),
   leaving: z.boolean().nullish().describe('removed from the colony: storing its things, then it logs out'),
+  stuck: z.string().nullish().describe('why the colony takes it for stuck (a pit, a cave, out-of-reach targets), else null'),
   offlineReason: z
     .string()
     .nullish()
@@ -673,6 +674,7 @@ export const StoryColonyState = z.object({
   workTypes: z.array(z.string()).default([...STORY_WORK_TYPES]),
   pawns: z.array(StoryPawn).default([]),
   seats: z.lazy(() => StorySeats).nullish(),
+  unstoredKinds: z.array(z.string()).nullish().describe('item kinds no storage takes (a condition: "No storage for: …")'),
   zones: z.array(StoryZone).default([]),
   plants: z.array(StoryPlant).nullish().describe('what growing zones can grow here (full state only)'),
   designations: z.array(StoryDesignation).default([]),
@@ -1074,13 +1076,25 @@ export type StoryWorkbenchesResponse = z.infer<typeof StoryWorkbenchesResponse>;
 export const StoryColonyOptions = z.object({
   autoPlaceBenches: z.boolean().default(true),
   detectBenches: z.boolean().default(false),
+  /** A pawn stuck where nothing gets it out is teleported home (op). */
+  rescueTeleport: z.boolean().default(true),
+  /** Loot no filter takes goes into any chest with room that doesn't deny it. */
+  unfilteredStorageTakesAnything: z.boolean().default(true),
+  /** A chest keeps what its filter no longer allows (off: dropped beside it, like the genre). */
+  keepDisallowed: z.boolean().default(false),
 });
 export type StoryColonyOptions = z.infer<typeof StoryColonyOptions>;
 /** POST /api/story/colonies/{id}/options: either or both flags. */
 export const StoryOptionsRequest = z
-  .object({ autoPlaceBenches: z.boolean().optional(), detectBenches: z.boolean().optional() })
+  .object({
+    autoPlaceBenches: z.boolean().optional(),
+    detectBenches: z.boolean().optional(),
+    rescueTeleport: z.boolean().optional(),
+    unfilteredStorageTakesAnything: z.boolean().optional(),
+    keepDisallowed: z.boolean().optional(),
+  })
   .strict()
-  .describe('either or both (the bot answers 400 for neither)');
+  .describe('any of the flags (the bot answers 400 for none)');
 export type StoryOptionsRequest = z.infer<typeof StoryOptionsRequest>;
 
 export const STORY_ARCHITECT_TABS = ['structure', 'furniture', 'production', 'storage', 'lighting', 'misc'] as const;

@@ -28,6 +28,19 @@ internal sealed partial class JsRuntime
             if (status is not ("progress" or "done" or "failed")) throw ScriptSession.Bug("story.report status is progress|done|failed");
             return port.Report(s.Host.Username, job, status, Str(a, 2), Num(a, 3)) ? JsBoolean.True : JsBoolean.False;
         });
+        // story.escape's eyes (Story/PitScan.cs): is this body in a pit, a cave or water, and the next move out. Zero tokens, no action.
+        H(h, "storyPit", a =>
+        {
+            s.SafePoint();
+            var toward = Str(a, 0) is { } t ? ScriptSession.PosOf(JsonValue.Create(t)) : null;
+            return V(Story.PitScan.Scan(s.Host.World, s.Host.Data, s.Host.World.Player.Position, toward));
+        });
+        // story.escape found no way out by itself: the colony sends help (blocks, a rescuer) or teleports it home. → what happens.
+        H(h, "storyStuck", a =>
+        {
+            var port = StoryPort ?? throw ScriptSession.Bug("story.escape(): this body isn't a Story Mode pawn");
+            return new JsString(port.Stuck(s.Host.Username, Str(a, 0) ?? "stuck"));
+        });
         // story.during(job, fn): fn while the job is still this pawn's; cut at once when the director takes it back (an idle leg when
         // real work comes up) → {ok:false, cancelled:true}. Not a failure: the next story.next() has the new job.
         H(h, "storyDuring", a =>

@@ -537,5 +537,10 @@ public sealed partial class StoryColony
         lock (_lock) return OptionsJson();
     }
 
-    internal JsonObject OptionsJson() => new() { ["auto_place_benches"] = Meta.AutoPlaceBenches, ["detect_benches"] = Meta.DetectBenches };
+    internal JsonObject OptionsJson()
+    {
+        var o = new JsonObject { ["auto_place_benches"] = Meta.AutoPlaceBenches, ["detect_benches"] = Meta.DetectBenches };
+        HaulOptionsJson(o); // rescue teleport, unfiltered storage, keeping disallowed items (StoryColony.Hauling.cs)
+        return o;
+    }
 }

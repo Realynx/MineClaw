@@ -267,6 +267,7 @@ public sealed class StoryFakeServerTests(ITestOutputHelper output)
         Assert.Null(c.StorageOp("set", [FoodChest], new StorageFilter { Allow = ["food"] }, "critical", "Food").Error);
         Assert.Equal(1, c.Designate("add", "chop", Area.Of(10, 60, 6, 14, 72, 10), null, null).Result!["count"]!.GetValue<int>());
         Only(x, WorkTypes.Chop, WorkTypes.Haul);
+        c.SetHaulOptions(null, false, null); // no fallback chest: what no filter takes stays with the pawn
         // It chops, then carries the logs to the Wood chest (the director's record, kept after each deposit; the 1.12.2 fake
         // server keeps the chest's slots too).
         Assert.True(await Until(() => c.StorageAt(WoodChest)!.Contents.Any(s => s.Id == Blocks.Log), 90_000), "logs stored: " + x.Diag());
@@ -276,7 +277,7 @@ public sealed class StoryFakeServerTests(ITestOutputHelper output)
         Assert.Equal(0, InChest(srv, FoodChest, _ => true));
         Assert.Contains(srv.Dug, d => d.Id == Blocks.Log && d.X == 12 && d.Z == 8);
         Assert.Empty(c.Designations); // the tree's job is done
-        Assert.Contains(c.Alerts, a => a.Text.StartsWith("No storage accepts Cobblestone")); // kept, never dropped
+        Assert.Contains(c.Alerts, a => a.Text.StartsWith("No storage for:") && a.Text.Contains("Cobblestone")); // kept, never dropped
         var chop = c.Pawns[pawn].Skills[WorkTypes.Chop];
         Assert.True(chop.Xp > 0 || chop.Level > StoryCharacter.Generate(pawn).Skills[WorkTypes.Chop].Level, "chop experience");
     });
@@ -378,6 +379,28 @@ public sealed class StoryFakeServerTests(ITestOutputHelper output)
         s.Blocks[(5, 64, 4)] = 59; s.Metas[(5, 64, 4)] = 7;   // ripe wheat
         s.Blocks[(6, 64, 4)] = Blocks.Dirt;                   // a dirt block to mine
         s.Blocks[(7, 64, 4)] = Blocks.Planks;                 // a built block to deconstruct
+    });
+
+    /// <summary>Live 11-04: maid_chan_114 stood for good in a hole two deep ("no path … it's 2 blocks up"). Now it digs a stair out
+    /// (no blocks on it) and goes on to its job.</summary>
+    [Fact]
+    public Task An_empty_handed_pawn_in_a_two_deep_hole_digs_a_stair_out_and_cuts_its_grass() => Colony("1.12.2", 1, async x =>
+    {
+        var c = x.C;
+        var srv = x.Servers[x.Pawns[0]];
+        Only(x, WorkTypes.Chop);
+        Assert.Equal(1, c.Designate("add", "cut", null, [new P3(16, 64, 8)], null).Result!["count"]!.GetValue<int>());
+        Assert.True(await Until(() => c.Designations.Count == 0, 120_000),
+            "cut: " + string.Join(", ", c.Designations.Select(d => $"{d.Kind} {d.Fails} {d.Reason}")) + " | " + x.Diag());
+        Assert.Equal(0, srv.Blocks.GetValueOrDefault((16, 64, 8)));
+        Assert.Contains(srv.Dug, d => d.Y >= 62 && Math.Abs(d.X - 8) + Math.Abs(d.Z - 8) == 1); // a stair step out of the hole
+        Assert.DoesNotContain(srv.Dug, d => d.X == 8 && d.Z == 8 && d.Y < 62);                // never down
+        Assert.DoesNotContain(c.Alerts, a => a.Level == "warn");
+    }, s =>
+    {
+        EmptyHanded(s);
+        s.Blocks[(8, 62, 8)] = 0; s.Blocks[(8, 63, 8)] = 0;    // a 1×1 hole two deep where the pawns come in
+        s.Blocks[(16, 64, 8)] = 31; s.Metas[(16, 64, 8)] = 1;  // tall grass to cut
     });
 
     [Fact]

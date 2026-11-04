@@ -355,8 +355,14 @@ public sealed class SupervisorStoryRoutes(SupervisorOptions o, StoryColonies col
                 }
                 var auto = Flag("auto_place_benches");
                 var detect = Flag("detect_benches");
-                if (auto == null && detect == null) return Bad("auto_place_benches or detect_benches required");
-                return Reply(200, c.SetOptions(auto, detect));
+                // {rescue_teleport?, unfiltered_storage_takes_anything?, keep_disallowed?: bool} (StoryColony.Hauling.cs)
+                var rescue = Flag("rescue_teleport");
+                var unfiltered = Flag("unfiltered_storage_takes_anything");
+                var keep = Flag("keep_disallowed");
+                if (auto == null && detect == null && rescue == null && unfiltered == null && keep == null)
+                    return Bad("auto_place_benches, detect_benches, rescue_teleport, unfiltered_storage_takes_anything or keep_disallowed required");
+                if (rescue != null || unfiltered != null || keep != null) c.SetHaulOptions(rescue, unfiltered, keep);
+                return Reply(200, auto == null && detect == null ? c.SetHaulOptions(null, null, null) : c.SetOptions(auto, detect));
             }
             default:
                 return Reply(404, new JsonObject { ["error"] = "not found" });

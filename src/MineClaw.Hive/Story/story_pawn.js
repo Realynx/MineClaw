@@ -7,7 +7,7 @@ const each = (list, f) => {
 // Walk over first: a block out of view reads as air.
 function reach(a, d) {
   if (!a || dist(pos(a)) <= d + 2) return { ok: true }
-  return go(a, d)
+  return story.go(a, d)
 }
 // THAT tree (" only"); some logs down: planks (clutch/pillar), once more at the lowest log left; the rest is partial.
 function chopTree(j) {
@@ -48,7 +48,7 @@ function digAt(j) {
 function work(j) {
   const a = j.at
   switch (j.kind) {
-    case 'go': return go(a, j.dist || 1)
+    case 'go': return story.go(a, j.dist || 1)
     case 'chop': return chopTree(j)
     case 'dig': {
       const there = reach(a, 3)
@@ -88,7 +88,7 @@ function work(j) {
     case 'hold':
       if (a) go(a, j.dist ?? 2)
       return wait(j.s || 5)
-    default: return { ok: true }
+    default: return story.run(j)
   }
 }
 function pawn() {

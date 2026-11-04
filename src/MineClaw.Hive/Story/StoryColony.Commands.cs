@@ -5,7 +5,7 @@ namespace MineClaw.Hive.Story;
 /// <summary>What the browser asks of a colony: priorities, schedules, drafting, orders, zones and designations.</summary>
 public sealed partial class StoryColony
 {
-    public static readonly IReadOnlyList<string> ZoneKinds = ["chop", "mine", "farm", "home", "forbidden"];
+    public static readonly IReadOnlyList<string> ZoneKinds = ["chop", "mine", "farm", "home", "forbidden", "dump"];
     public static readonly IReadOnlyList<string> OrderKinds = ["move", "attack", "chop", "mine", "haul", "build", "hold", "stop"];
     public static readonly IReadOnlyList<string> DesignationKinds = ["chop", "cut", "harvest", "mine", "haul", "hunt", "deconstruct", "forbid", "allow"];
 
@@ -260,6 +260,7 @@ public sealed partial class StoryColony
                     _skip.Remove(key);
                     _leaseFails.Remove(key);
                     _softFails.Remove(key);
+                    ForgetPawnFails(key);
                     d.Status = "open";
                     d.Rev = Touch();
                 }
@@ -292,6 +293,7 @@ public sealed partial class StoryColony
                 _skip.Remove(key);
                 _leaseFails.Remove(key);
                 _softFails.Remove(key);
+                ForgetPawnFails(key);
                 d.Status = "open";
                 d.Rev = Touch();
                 revived++;

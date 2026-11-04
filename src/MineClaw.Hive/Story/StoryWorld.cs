@@ -3,9 +3,10 @@ using MineClaw.World;
 
 namespace MineClaw.Hive.Story;
 
-/// <summary>Something the colony sees: a drop, an animal or monster, a player.</summary>
+/// <summary>Something the colony sees: a drop, an animal or monster, a player. <paramref name="SeenAt"/>: the last update any body got for
+/// it (null = unknown: counts as fresh); <paramref name="FirstSeen"/>: when a body first tracked it (a drop's age: it despawns at 5 min).</summary>
 public sealed record StoryEntity(int Id, string Kind, string Name, double X, double Y, double Z, bool Hostile = false, int ItemId = -1, int ItemMeta = 0,
-    int Count = 0)
+    int Count = 0, DateTimeOffset? SeenAt = null, DateTimeOffset? FirstSeen = null)
 {
     public P3 Block => new((int)Math.Floor(X), (int)Math.Floor(Y), (int)Math.Floor(Z));
 }
@@ -99,16 +100,19 @@ public sealed class WorldStateStoryWorld(Func<WorldState?> world, IGameData data
         var list = new List<StoryEntity>();
         foreach (var e in w.Entities.All())
         {
+            DateTimeOffset seen = DateTime.SpecifyKind(e.UpdatedAt, DateTimeKind.Utc), first = DateTime.SpecifyKind(e.SpawnedAt, DateTimeKind.Utc);
             switch (e.Kind)
             {
                 case EntityKind.Item when e.Item is { IsEmpty: false } it:
-                    list.Add(new StoryEntity(e.Id, "item", data.Item(it.Id).Name, e.Position.X, e.Position.Y, e.Position.Z, false, it.Id, it.Damage, it.Count));
+                    list.Add(new StoryEntity(e.Id, "item", data.Item(it.Id).Name, e.Position.X, e.Position.Y, e.Position.Z, false, it.Id, it.Damage, it.Count,
+                        seen, first));
                     break;
                 case EntityKind.Mob:
-                    list.Add(new StoryEntity(e.Id, "mob", e.DisplayName.ToLowerInvariant(), e.Position.X, e.Position.Y, e.Position.Z, e.IsHostileMob));
+                    list.Add(new StoryEntity(e.Id, "mob", e.DisplayName.ToLowerInvariant(), e.Position.X, e.Position.Y, e.Position.Z, e.IsHostileMob,
+                        SeenAt: seen, FirstSeen: first));
                     break;
                 case EntityKind.Player:
-                    list.Add(new StoryEntity(e.Id, "player", e.DisplayName, e.Position.X, e.Position.Y, e.Position.Z));
+                    list.Add(new StoryEntity(e.Id, "player", e.DisplayName, e.Position.X, e.Position.Y, e.Position.Z, SeenAt: seen, FirstSeen: first));
                     break;
             }
         }
@@ -159,14 +163,21 @@ public sealed class MergedStoryWorld(Func<WorldState?> main, Func<IReadOnlyList<
 
     public int? NightLight(int x, int y, int z) => At(x, z) is { } w ? w.Light.LightLevel(x, y, z, LightEngine.NightSubtracted) : null;
 
+    /// <summary>Every body's entities by id: the freshest copy (the body nearest it gets its moves) with the earliest first sighting
+    /// (a drop's age). A mob only one body's tracker still holds keeps that body's last update, so the colony can tell it is stale.</summary>
     public IReadOnlyList<StoryEntity> Entities()
     {
-        var seen = new HashSet<int>();
+        var byId = new Dictionary<int, int>();
         var list = new List<StoryEntity>();
         void Add(WorldState w)
         {
             foreach (var e in new WorldStateStoryWorld(() => w, data).Entities())
-                if (seen.Add(e.Id)) list.Add(e);
+            {
+                if (!byId.TryGetValue(e.Id, out var i)) { byId[e.Id] = list.Count; list.Add(e); continue; }
+                var old = list[i];
+                var first = old.FirstSeen is { } a && e.FirstSeen is { } b ? (a < b ? a : b) : old.FirstSeen ?? e.FirstSeen;
+                list[i] = (e.SeenAt > old.SeenAt ? e : old) with { FirstSeen = first };
+            }
         }
         if (main() is { } m) Add(m);
         foreach (var w in Others()) Add(w);

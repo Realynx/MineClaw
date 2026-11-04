@@ -380,4 +380,13 @@ public sealed class ColonyMeta
     /// <summary>Workbenches near home and in houses join the colony by themselves. Off by default: only designated benches (the owner's
     /// "Use as colony crafting table", a bill added at a bench, a bench the colony placed) are used, never another player's.</summary>
     public bool DetectBenches { get; set; }
+    /// <summary>A pawn stuck where nothing gets it out (no stairs to dig, no blocks to pillar, nobody to bring some) is teleported home
+    /// through the op command path (default on; never on b1.8.1, whose /tp takes no coordinates).</summary>
+    public bool RescueTeleport { get; set; } = true;
+    /// <summary>Loot no chest's filter accepts goes into any chest with room that doesn't deny it (default on). Off: it stays with the
+    /// pawn (or on the ground) until a chest accepts it.</summary>
+    public bool UnfilteredTakesAnything { get; set; } = true;
+    /// <summary>A chest keeps what its filter no longer allows until a compatible chest exists (default off: like the genre, the haulers
+    /// take it out and drop it by the chest, where it despawns unless it is hauled).</summary>
+    public bool KeepDisallowed { get; set; }
 }

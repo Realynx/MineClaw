@@ -202,7 +202,8 @@ public sealed class StoryLiveFixTests
             var j = c.Next();
             Assert.Equal("dig", j["kind"]!.GetValue<string>());
             tried.Add(j["at"]!.GetValue<string>());
-            c.Report(c.P(), j["id"]!.GetValue<string>(), "failed", "no route", null);
+            // (A run of "no route" failures is a stuck pawn now: an escape job, StoryStuckPawnTests. Any other failure: a rest.)
+            c.Report(c.P(), j["id"]!.GetValue<string>(), "failed", "too hard to dig", null);
             clock.Now += TimeSpan.FromSeconds(1);
         }
         Assert.Equal(3, tried.Distinct().Count()); // never the one that just failed

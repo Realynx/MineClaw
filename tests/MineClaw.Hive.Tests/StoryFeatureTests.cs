@@ -81,7 +81,7 @@ public sealed class StoryFeatureTests
         var area = Area.Of(0, 60, 0, 15, 80, 15);
         w.Set(13, 64, 1, 5); w.Set(13, 65, 1, 20); w.Set(14, 64, 1, 2); w.Set(2, 64, 2, 64, 1); w.Set(2, 65, 2, 64, 8);
         w.Ents.Add(new StoryEntity(1, "item", "log", 4.5, 64, 4.5, ItemId: 17, Count: 3));
-        w.Ents.Add(new StoryEntity(2, "item", "log", 40.5, 64, 4.5, ItemId: 17, Count: 3));
+        w.Ents.Add(new StoryEntity(2, "item", "log", 90.5, 64, 4.5, ItemId: 17, Count: 3)); // far from the colony: never hauled
         w.Ents.Add(new StoryEntity(3, "mob", "cow", 5.5, 64, 5.5));
         w.Ents.Add(new StoryEntity(4, "mob", "zombie", 6.5, 64, 6.5, Hostile: true));
         var haul = c.Designate("add", "haul", area, null, null).Result!;
@@ -281,7 +281,9 @@ public sealed class StoryFeatureTests
         var stash = c.Next();
         Assert.Equal(far.ToString(), stash["stash"]![0]!["to"]!.GetValue<string>());
         Assert.Equal(["log"], stash["stash"]![0]!["items"]!.AsArray().Select(x => x!.GetValue<string>()));
-        Assert.Contains(c.Alerts, a => a.Text.StartsWith("No storage accepts")); // the sapling: kept, never dropped
+        // The sapling no filter takes: "unfiltered storage takes anything" puts it in the general (lowest-priority) chest with room.
+        Assert.Equal(near.ToString(), stash["stash"]![1]!["to"]!.GetValue<string>());
+        Assert.Equal(["sapling"], stash["stash"]![1]!["items"]!.AsArray().Select(x => x!.GetValue<string>()));
         c.Report(c.P(), stash["id"]!.GetValue<string>(), "done", null, null);
         Assert.Equal(5, c.StorageAt(far)!.Contents.Single(s => s.Id == 17).Count);
         Assert.Empty(c.StorageAt(food)!.Contents);
