@@ -546,7 +546,7 @@ export class StorySim {
         ['280:0', 16],
         ['263:0', 8],
       ]),
-      options: { autoPlaceBenches: true, detectBenches: false, idle: 'recreation', autoCraftTools: true, spareTools: { count: 0, kinds: [] }, rescueTeleport: true, unfilteredStorageTakesAnything: true, keepDisallowed: false, speed: 'normal', speedEffect: true, allowLava: false },
+      options: { autoPlaceBenches: true, detectBenches: false, idle: 'recreation', autoCraftTools: true, spareTools: { count: 0, kinds: [] }, rescueTeleport: true, unfilteredStorageTakesAnything: true, keepDisallowed: false, stuckTeleportAfterS: 20, speed: 'normal', speedEffect: true, allowLava: false },
       gear: newSimGear(),
       roles: defaultRoles(),
     };
@@ -2223,6 +2223,7 @@ export class StorySim {
     if (body.rescueTeleport !== undefined) c.options.rescueTeleport = body.rescueTeleport;
     if (body.unfilteredStorageTakesAnything !== undefined) c.options.unfilteredStorageTakesAnything = body.unfilteredStorageTakesAnything;
     if (body.keepDisallowed !== undefined) c.options.keepDisallowed = body.keepDisallowed;
+    if (body.stuckTeleportAfterS !== undefined) c.options.stuckTeleportAfterS = body.stuckTeleportAfterS;
     if (body.allowLava !== undefined) c.options.allowLava = body.allowLava;
     if (body.speedEffect !== undefined) c.options.speedEffect = body.speedEffect;
     if (body.speed !== undefined) {

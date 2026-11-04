@@ -207,12 +207,18 @@ public sealed class StoryLiveFixTests
             clock.Now += TimeSpan.FromSeconds(1);
         }
         Assert.Equal(3, tried.Distinct().Count()); // never the one that just failed
+        // Fox 11-04: "never idle on a work schedule if there are things to be done": the back-off rests the failed blocks, not the
+        // pawn; the fourth block is open, so it digs that.
+        var fourth = c.Next();
+        Assert.Equal("dig", fourth["kind"]!.GetValue<string>());
+        c.Report(c.P(), fourth["id"]!.GetValue<string>(), "failed", "too hard to dig", null);
+        // Every block resting now: the pawn rests on its feet, an idle leg about home (StoryIdleTests).
         var rest = c.Next();
-        Assert.Equal("idle", rest["kind"]!.GetValue<string>()); // it rests on its feet: an idle leg about home (StoryIdleTests)
+        Assert.Equal("idle", rest["kind"]!.GetValue<string>());
         Assert.StartsWith("Resting", rest["label"]!.GetValue<string>());
         c.Report(c.P(), rest["id"]!.GetValue<string>(), "done", null, null);
-        clock.Now += StoryColony.FailRest;
-        Assert.Equal("dig", c.Next()["kind"]!.GetValue<string>()); // rested: back to work (the fourth block)
+        clock.Now += TimeSpan.FromSeconds(31); // the first blocks' back-off is over
+        Assert.Equal("dig", c.Next()["kind"]!.GetValue<string>()); // back to work
     }
 
     [Fact]

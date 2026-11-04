@@ -34,6 +34,7 @@ public sealed partial class ScriptBridge
         AcquireTool.ToolName, // hidden tool: ensure{} / acquire{"pickaxe"} through the acquisition planner
         EquipTool.ToolName, // hidden tool: equip(item, mode, from, ench) — hold / wear / unwear / take one exact stack
         FaceTool.ToolName, // hidden: face{at} (turn the head; Story pawns' recreation)
+        EscapeDigTool.ToolName, // hidden: escape_dig{at} (a Story pawn getting out: any tool, the drop may be lost)
         FishingTool.ToolName, // hidden tool: fish(at, seconds) with a rod
         Blueprints.BlueprintWiring.BuildTool, Blueprints.BlueprintWiring.InfoTool, // hidden: build{bp, part, of, layer} / blueprint(id)
     ];
@@ -41,7 +42,7 @@ public sealed partial class ScriptBridge
     /// <summary>Never cut short by a pause/cancel: click sequences and single block actions finish, then the script stops.</summary>
     private static readonly HashSet<string> AtomicTools = new(StringComparer.OrdinalIgnoreCase)
     {
-        "craft", "smelt", "collect_furnace", "deposit", "withdraw", "organize_chest", "place", "dig", "use_block", "eat", EquipTool.ToolName,
+        "craft", "smelt", "collect_furnace", "deposit", "withdraw", "organize_chest", "place", "dig", "use_block", "eat", EquipTool.ToolName, EscapeDigTool.ToolName,
     };
 
     private static readonly AsyncLocal<bool> InWorker = new();

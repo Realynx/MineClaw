@@ -172,8 +172,10 @@ Every target is leased: `b:x,y,z`, `e:<entity>`, `g:<build>|x,y,z` or `bench:x,y
 - A pawn keeps its job until it is done, fails, or an order (or draft, pause, stop) replaces it. New work never cuts a working pawn.
 - A failed target rests before anyone takes it again: 30 s, then 1 min, then 10 min after each further failure. A failed delivery
   rests the same way for that pawn.
-- A pawn whose last 3 jobs failed within 20 s rests 15 s before it picks again (orders and urgent needs still come first). It rests
-  on its feet: idle legs about home (see "Idle behaviour"), never cutting the 15 s short.
+- A pawn whose last 3 jobs failed within 20 s rests 15 s before it picks again, but only when it has nothing else to do: the back-off
+  rests the failed targets, never the pawn (Fox 11-04: "never idle on a work schedule if there are things to be done"). Orders and
+  urgent needs still come first. It rests on its feet: idle legs about home (see "Idle behaviour"). Work for it ends a resting leg at
+  once.
 - A designation that failed is kept on the map with `reason` and `fails`. Its first failure raises an alert saying why. After 3
   failures its `status` is `failed` and an alert says so (again every 3 failures). It is still retried after its rest until it is
   done or cancelled.
@@ -398,14 +400,27 @@ so the other pawns stood idle in front of a field of work. Fox also saw pawns st
      same safe rules as above. Pillar when the wall can't be cut, dig for blocks when it has none. It stops level with home, and then
      walks home again;
   4. nothing works: `story.stuck`.
-- **Help.** While another online pawn can bring blocks (from what it carries, or from storage), that pawn's next job is a rescue: kind
-  `give`, label "rescuing Nils: bringing cobblestone", 8 blocks tossed to the stuck pawn from the rim, fetched from storage first when
-  needed. The stuck pawn's escape job waits and tries again. After 90 s, or once the blocks came, or with nobody to help, the colony
+- **Help, fast (Fox 11-04: "they should teleport sooner").** A stuck pawn gets an escape budget: option `stuck_teleport_after_s`
+  (default 20 s, at least 5) from when the colony first saw it stuck, or 2 failed escape steps, whichever comes first. Then the colony
   **teleports it home** (option `rescue_teleport`, default on) through the op command path (never on b1.8.1, whose `/tp` takes no
-  coordinates). Each teleport is logged and said in an alert. When nothing can be done, one warning (at most every 10 minutes) says
-  why. Blocks are thrown into a pit only: a pawn with no way home from a ravine or a canyon is teleported at once, because a rescuer
-  would only walk in after it. A teleport counts once the pawn shows up at home. When it hasn't within 20 s (the server refused the
-  `/tp`), one warning says so and the colony doesn't try again.
+  coordinates). Blocks are tossed into a pit (kind `give`, 8 blocks, fetched from storage first when needed) only by a pawn that is idle
+  and within 16 blocks, and only within the budget. Otherwise the teleport comes straight away, as it does for a pawn with no way home
+  from a ravine or a canyon. A teleport counts once the pawn shows up at home. When it hasn't within 10 s (the server refused the
+  `/tp`), one warning says so and the colony doesn't try again. A teleport that can't be sent (option off, no op path) is said at most
+  every 10 minutes, and the pawn keeps trying to get out by itself. Each teleport is logged and said in an alert.
+- **Getting out beats a drop.** The no-tool rule ("needs a wooden pickaxe: digging stone … would lose the drop") is for work targets.
+  An escape that is refused for it digs with whatever the pawn holds (the hidden `escape_dig{at}`). Every other rule (protection, the
+  floor under someone, lava, the void) still holds, and the client logs the lost drop. In a pit, a pillar step with the blocks it
+  carries comes before any stair dig. Live 11-04: three pawns waited for the teleport in a stone hole they could have dug out of.
+- **Stuck spots keep work away.** For 5 minutes after a pawn gets stuck, no other pawn is sent to a target within 3 blocks of the spot
+  (4 up or down). Live 11-04: maid_chan_126, _118 and _105 were stuck in one hole, each sent after the work by it.
+- **Idle with work (the idle audit).** Every second the director checks each pawn in a work or anything hour that holds, wanders or
+  rests while the colony has work of a kind it does: designations, builds with cells to do, or bills that run. Such a pawn gets a
+  reason (`idle_reason` on its row): `stuck`, `back-off rest`, `work not taken yet` (an idle leg the next wake hands over),
+  `all targets leased`, `tool waiting`, `targets backing off`, `no reachable target` or `build or bill waiting`. When there is work
+  only of kinds it doesn't do, the reason is `priority 0`. The supervisor's per-minute perf line adds
+  `idle-with-work N: <reason> <pawn-seconds>, …`. A pawn whose top work type is all leased, or waiting for a tool, takes its next
+  work type.
 - **Water and caves in pathing.** Every `goto` plan pays for flowing water in the body's cells (+4 a step: a stream is crossed, not
   followed) and much more for a waterfall column (+30). A walk that starts under the sky pays +3 a step for cells the sky doesn't reach,
   from the light the server sent, so a surface route wins over a cave one.

@@ -228,7 +228,7 @@ public sealed partial class StoryColony
             if (!live.Online) continue;
             var block = p.Schedule.Length == 24 && ScheduleBlocks.Known(p.Schedule[hour]) ? p.Schedule[hour] : ScheduleBlocks.Anything;
             bool workHours = block is ScheduleBlocks.Work or ScheduleBlocks.Anything;
-            // A resting pawn's leg lasts while its back-off does (the rest is never cut short); then it asks again and works.
+            // A resting leg ends with the back-off, or the moment there is work for it (a rest never holds a pawn back from work).
             bool resting = cur.SourceId == "rest";
             bool stillItsHours = resting ? RestLeft(p) != null : cur.SourceId == "free" ? block == ScheduleBlocks.Free : workHours;
             if (!stillItsHours || p.Queue.Count > 0)
@@ -237,7 +237,7 @@ public sealed partial class StoryColony
                 p.Rev = Bump();
                 continue;
             }
-            var job = Urgent(p, live) ?? (workHours && !resting ? Work(p, live) : null);
+            var job = Urgent(p, live) ?? (workHours ? Work(p, live) : null); // a resting leg too: work never waits for a rest
             if (job == null) continue;
             if (job.Lease != null) _leases[job.Lease] = (p.Name, Now + LeaseTtl);
             foreach (var k in job.MoreLeases) _leases[k] = (p.Name, Now + LeaseTtl);
