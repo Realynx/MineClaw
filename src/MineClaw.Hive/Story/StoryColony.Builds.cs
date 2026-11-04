@@ -482,7 +482,10 @@ public sealed partial class StoryColony
     private bool Modern => World?.Data.VersionId != "b1.8.1";
 
     /// <summary>Blocks that hold items: never broken for their rotation (a wrong chest or furnace is said, not emptied onto the floor).</summary>
-    private static bool KeepsItems(int id) => id is 54 or 146 or 61 or 62 or 23 or 158 or 154 or 117 or 84 or (>= 219 and <= 234);
+    internal static bool KeepsItems(int id) => ItemHolders.Contains(id) || id is >= 219 and <= 234; // + shulker boxes
+
+    /// <summary>Chest, trapped chest, furnace and lit furnace, dispenser, dropper, hopper, brewing stand, jukebox.</summary>
+    private static readonly HashSet<int> ItemHolders = [54, 146, 61, 62, 23, 158, 154, 117, 84];
 
     /// <summary>Cells taken back once for a wrong rotation (<c>g:build|x,y,z</c>): the second time the cell is left misrotated.</summary>
     private readonly Dictionary<string, int> _turnRedo = new(StringComparer.Ordinal);
@@ -531,22 +534,29 @@ public sealed partial class StoryColony
         {
             var st = s.Contents.FirstOrDefault(c => c.Id == key.Id && c.Meta == key.Meta);
             if (st == null) continue;
-            int inFlight = 0, fetchers = 0;
-            foreach (var j in _current.Values)
-            {
-                bool any = false;
-                foreach (var (chest, t) in j.Takes)
-                    if (chest == s.Chest || chest == s.DoubleWith)
-                    {
-                        any = true;
-                        if (t.Id == key.Id && t.Meta == key.Meta) inFlight += t.Count;
-                    }
-                if (any) fetchers++;
-            }
-            int n = s.Contents.Where(c => c.Id == key.Id && c.Meta == key.Meta).Sum(c => c.Count) - inFlight;
+            var (inFlight, fetchers) = InFlightFrom(s, key);
+            int n =s.Contents.Where(c => c.Id == key.Id && c.Meta == key.Meta).Sum(c => c.Count) - inFlight;
             if (n > 0) list.Add((s, st, n, fetchers));
         }
         return list.OrderBy(x => x.Fetchers).ThenBy(x => x.S.Chest.Dist(near)).Select(x => (x.S, x.St, x.N)).ToList();
+    }
+
+    /// <summary>What the jobs at work are still on their way to take of an item from a storage, and how many jobs fetch from it.</summary>
+    private (int InFlight, int Fetchers) InFlightFrom(StorageState s, (int Id, int Meta) key)
+    {
+        int inFlight = 0, fetchers = 0;
+        foreach (var j in _current.Values)
+        {
+            bool any = false;
+            foreach (var (chest, t) in j.Takes)
+            {
+                if (chest != s.Chest && chest != s.DoubleWith) continue;
+                any = true;
+                if (t.Id == key.Id && t.Meta == key.Meta) inFlight += t.Count;
+            }
+            if (any) fetchers++;
+        }
+        return (inFlight, fetchers);
     }
 
     private static double EyeDist(P3 stand, P3 cell)
@@ -564,23 +574,40 @@ public sealed partial class StoryColony
     /// </summary>
     private (List<GhostState> Cells, P3? Stand) Batch(IStoryWorld w, BuildState b, GhostState seed, int cap, P3 from, string pawn, int clearId)
     {
-        // One level: the next goes up once this one stands (b1.8.1 FakeServer: a roof row laid early, over a wall still going up, had
-        // no visible support face, and its builder climbed onto the wall and was shut in).
         var cand = new List<GhostState>();
         if (cap > 1)
             foreach (var x in b.Ghosts)
-            {
-                if (x == seed || !x.Job || x.Remove || x.State != "todo" || x.Item != seed.Item || x.Facing != seed.Facing) continue;
-                if (Math.Abs(x.At.X - seed.At.X) > WalkRadius || Math.Abs(x.At.Z - seed.At.Z) > WalkRadius || x.At.Y != seed.At.Y) continue;
-                if (!Open($"g:{b.Id}|{x.At}", pawn, x.At) || Occupied(x.At)) continue;
-                var (cur, curMeta) = w.Block(x.At.X, x.At.Y, x.At.Z);
-                if (cur != 0 && Matches(x, cur, curMeta, Modern)) { CellDone(b, x); continue; }
-                if (cur != 0 && WrongTurn(x, cur, curMeta, Modern) && (_turnRedo.GetValueOrDefault($"g:{b.Id}|{x.At}") >= 1 || KeepsItems(cur)))
-                { Misrotated(b, x, curMeta); continue; }
-                if (!StoryBlocks.Replaceable.Contains(cur) && cur != clearId) continue; // another block to clear: another tool, another job
-                cand.Add(x);
-            }
+                if (BatchTakes(w, b, seed, x, pawn, clearId)) cand.Add(x);
         var stand = StandFor(w, b, seed, cand.Where(x => Math.Abs(x.At.X - seed.At.X) <= StandRadius && Math.Abs(x.At.Z - seed.At.Z) <= StandRadius).ToList(), from);
+        return (OrderBatch(b, seed, cand, stand, cap), stand);
+    }
+
+    /// <summary>
+    /// Whether an open cell joins the seed's batch: the same item and facing, its level (one level: the next goes up once this one
+    /// stands; b1.8.1 FakeServer: a roof row laid early, over a wall still going up, had no visible support face, and its builder
+    /// climbed onto the wall and was shut in), free, not already built (done, or left misrotated), nothing else to clear in it.
+    /// </summary>
+    private bool BatchTakes(IStoryWorld w, BuildState b, GhostState seed, GhostState x, string pawn, int clearId)
+    {
+        if (!BatchKin(seed, x) || !NearSeedLevel(seed, x)) return false;
+        var key = $"g:{b.Id}|{x.At}";
+        if (!Open(key, pawn, x.At) || Occupied(x.At)) return false;
+        var (cur, curMeta) = w.Block(x.At.X, x.At.Y, x.At.Z);
+        if (CellSettled(b, x, key, cur, curMeta)) return false;
+        return StoryBlocks.Replaceable.Contains(cur) || cur == clearId; // another block to clear: another tool, another job
+    }
+
+    /// <summary>Another open job cell of the seed's item and facing.</summary>
+    private static bool BatchKin(GhostState seed, GhostState x) =>
+        x != seed && x.Job && !x.Remove && x.State == "todo" && x.Item == seed.Item && x.Facing == seed.Facing;
+
+    /// <summary>Within walking distance of the seed, on its level.</summary>
+    private static bool NearSeedLevel(GhostState seed, GhostState x) =>
+        Math.Abs(x.At.X - seed.At.X) <= WalkRadius && Math.Abs(x.At.Z - seed.At.Z) <= WalkRadius && x.At.Y == seed.At.Y;
+
+    /// <summary>The batch's cells from the seed on, each with support when its turn comes (see <see cref="Batch"/>).</summary>
+    private List<GhostState> OrderBatch(BuildState b, GhostState seed, List<GhostState> cand, P3? stand, int cap)
+    {
         var inBatch = new HashSet<P3> { seed.At };
         var batch = new List<GhostState> { seed };
         // The stand may be an open cell of the batch's patch (the pawn stands in the middle of it): that cell is left for later.
@@ -604,7 +631,7 @@ public sealed partial class StoryColony
             inBatch.Add(next.At);
             rest.Remove(next);
         }
-        return (batch, stand);
+        return batch;
     }
 
     /// <summary>
@@ -619,10 +646,8 @@ public sealed partial class StoryColony
         var cells = cand.Select(c => c.At).ToHashSet();
         cells.Add(seed.At);
         var pending = b.Ghosts.Where(g => g.Job && g.State != "done").Select(g => g.At).ToHashSet();
-        var (walled, x1, z1, x2, z2) = Footprint(b);
-        var taken = new HashSet<P3>();
-        foreach (var j in _current.Values)
-            if (j.Source == "ghost" && j.Json["stand"] is JsonValue tv && tv.TryGetValue<string>(out var ts) && ParseCell(ts) is { } tp) taken.Add(tp);
+        var fp = Footprint(b);
+        var taken = TakenStands();
         P3? best = null;
         double bestScore = double.MaxValue;
         for (int dx = -StandRadius - 2; dx <= StandRadius + 2; dx++)
@@ -630,18 +655,43 @@ public sealed partial class StoryColony
                 for (int dy = -3; dy <= 1; dy++) // a roof or a wall's top row is laid from the ground below it
                 {
                     var s = seed.At.Add(dx, dy, dz);
-                    if (s == seed.At || s.Add(0, 1, 0) == seed.At || cells.Contains(s.Add(0, -1, 0))) continue;
-                    if (EyeDist(s, seed.At) > BuildReach) continue;
-                    if (walled && s.X >= x1 && s.X <= x2 && s.Z >= z1 && s.Z <= z2) continue; // never on or inside the walls
-                    if (!w.Loaded(s.X, s.Z) || !Standable(w, s)) continue;
-                    int reach = 0;
-                    foreach (var c in cells) if (c != s && c != s.Add(0, 1, 0) && EyeDist(s, c) <= BuildReach) reach++;
-                    double score = -10.0 * reach + 0.05 * s.Dist(from)
-                        + (pending.Contains(s) || pending.Contains(s.Add(0, 1, 0)) ? 4 : 0)
-                        + (taken.Contains(s) ? 25 : 0);
+                    if (!StandAllowed(w, seed.At, cells, fp, s)) continue;
+                    double score = StandScore(s, cells, pending, taken, from);
                     if (score < bestScore) { bestScore = score; best = s; }
                 }
         return best;
+    }
+
+    /// <summary>The stands other builders' batches are using now.</summary>
+    private HashSet<P3> TakenStands()
+    {
+        var taken = new HashSet<P3>();
+        foreach (var j in _current.Values)
+            if (j.Source == "ghost" && j.Json["stand"] is JsonValue tv && tv.TryGetValue<string>(out var ts) && ParseCell(ts) is { } tp) taken.Add(tp);
+        return taken;
+    }
+
+    /// <summary>A spot the seed can be built from: not the seed's cell nor on a batch cell, the seed in reach, outside a wall ring's
+    /// footprint (never on or inside the walls), loaded and standable.</summary>
+    private static bool StandAllowed(IStoryWorld w, P3 seed, HashSet<P3> cells, (bool Walled, int X1, int Z1, int X2, int Z2) fp, P3 s)
+    {
+        if (s == seed || s.Add(0, 1, 0) == seed || cells.Contains(s.Add(0, -1, 0))) return false;
+        if (EyeDist(s, seed) > BuildReach || InsideFootprint(fp, s)) return false;
+        return w.Loaded(s.X, s.Z) && Standable(w, s);
+    }
+
+    private static bool InsideFootprint((bool Walled, int X1, int Z1, int X2, int Z2) fp, P3 s) =>
+        fp.Walled && s.X >= fp.X1 && s.X <= fp.X2 && s.Z >= fp.Z1 && s.Z <= fp.Z2;
+
+    /// <summary>Lower is better: the most batch cells in reach, then near, avoiding still-open build cells and other builders' spots.</summary>
+    private static double StandScore(P3 s, HashSet<P3> cells, HashSet<P3> pending, HashSet<P3> taken, P3 from)
+    {
+        var head = s.Add(0, 1, 0);
+        int reach = 0;
+        foreach (var c in cells) if (c != s && c != head && EyeDist(s, c) <= BuildReach) reach++;
+        return -10.0 * reach + 0.05 * s.Dist(from)
+            + (pending.Contains(s) || pending.Contains(head) ? 4 : 0)
+            + (taken.Contains(s) ? 25 : 0);
     }
 
     /// <summary>A build's footprint (its cells' x/z box), and whether it encloses ground (a wall or fence ring): its builders stay out.</summary>
@@ -709,7 +759,7 @@ public sealed partial class StoryColony
     /// <summary>The cells a job hasn't reported go back (it ended, failed or was cut): their leases and their "leased" state.</summary>
     private void ReleaseCells(ActiveJob j)
     {
-        foreach (var id in (IEnumerable<string>?)j.Cells ?? (j.SourceId != null ? [j.SourceId] : []))
+        foreach (var id in JobCells(j))
         {
             var key = "g:" + id;
             if (j.Lease != key && _leases.TryGetValue(key, out var l) && _current.TryGetValue(l.Owner, out var holder) && holder != j && holder.Cells?.Contains(id) == true)
@@ -737,34 +787,68 @@ public sealed partial class StoryColony
     {
         RenewCells(p.Name, j);
         if (note == null) return;
-        if (note == "fetched")
-        {
-            foreach (var (chest, s) in j.Takes) if (StorageAt(chest) is { } st) TakeContents(st, s.Id, s.Meta, s.Count);
-            j.Takes.Clear();
-            MaterialsChanged();
-            return;
-        }
+        if (note == "fetched") { BatchFetched(j); return; }
         if (note.StartsWith("fill failed at ", StringComparison.Ordinal)) { FillFailed(p, note); return; } // StoryColony.Water.cs
-        if (!note.StartsWith("cell ", StringComparison.Ordinal) || j.Cells == null) return;
+        if (ReportedCell(j, note) is not { } cell) return;
+        j.Cells!.Remove(cell.Id);
+        var key = "g:" + cell.Id;
+        if (j.Lease != key && _leases.TryGetValue(key, out var l) && string.Equals(l.Owner, p.Name, StringComparison.OrdinalIgnoreCase)) _leases.Remove(key);
+        CellReported(p, cell.B, cell.G, cell.Id, cell.Status);
+    }
+
+    /// <summary>The batch's items left the chests: the ledger says so now, not when the batch ends.</summary>
+    private void BatchFetched(ActiveJob j)
+    {
+        foreach (var (chest, s) in j.Takes) if (StorageAt(chest) is { } st) TakeContents(st, s.Id, s.Meta, s.Count);
+        j.Takes.Clear();
+        MaterialsChanged();
+    }
+
+    /// <summary>A <c>cell x,y,z status</c> note about one of the job's own cells.</summary>
+    private readonly record struct CellNote(string Id, GhostState G, BuildState B, string Status);
+
+    private CellNote? ReportedCell(ActiveJob j, string note)
+    {
+        if (!note.StartsWith("cell ", StringComparison.Ordinal) || j.Cells == null) return null;
         int sp = note.IndexOf(' ', 5);
-        if (sp < 0 || ParseCell(note[5..sp]) is not { } at) return;
+        if (sp < 0 || ParseCell(note[5..sp]) is not { } at) return null;
         var id = j.Cells.FirstOrDefault(c => c.EndsWith("|" + at, StringComparison.Ordinal));
-        if (id == null || FindGhost(id) is not { } g || Builds.FirstOrDefault(x => x.Ghosts.Contains(g)) is not { } b) return;
-        j.Cells.Remove(id);
-        if (j.Lease != "g:" + id && _leases.TryGetValue("g:" + id, out var l) && string.Equals(l.Owner, p.Name, StringComparison.OrdinalIgnoreCase)) _leases.Remove("g:" + id);
-        var status = note[(sp + 1)..];
-        // Done when the world agrees, or doesn't know yet (its copy of the block change can come a moment later); a cell that holds
-        // something else (another variant: the script saw the block's name) still has to be cleared and built.
-        if (Built(p.Name, g) || status == "done" && View(p.Name, g) is var (vid, _) && (StoryConstruction.IsLiquid(g) ? vid == 0 : OpenCell(vid))) { CellDone(b, g); return; }
+        if (id == null || OpenGhost(id, anyState: true) is not (var g, var b)) return null;
+        return new CellNote(id, g, b, note[(sp + 1)..]);
+    }
+
+    /// <summary>The ghost behind a cell id and its build; null when either is gone, or (unless <paramref name="anyState"/>) it is done.</summary>
+    private (GhostState G, BuildState B)? OpenGhost(string id, bool anyState = false)
+    {
+        if (FindGhost(id) is not { } g || !anyState && g.State == "done") return null;
+        return Builds.FirstOrDefault(x => x.Ghosts.Contains(g)) is { } b ? (g, b) : null;
+    }
+
+    /// <summary>One cell's report: built (done), turned the wrong way (misrotated), else a failure of that cell.</summary>
+    private void CellReported(PawnState p, BuildState b, GhostState g, string id, string status)
+    {
+        if (ReportedBuilt(p.Name, g, status)) { CellDone(b, g); return; }
         // Placed, but turned the wrong way: the client already took it back and tried once more (or couldn't): the cell says so.
         if (View(p.Name, g) is var (tid, tmeta) && WrongTurn(g, tid, tmeta, Modern)
             && (status.Contains("wrong rotation", StringComparison.OrdinalIgnoreCase) || status == "done"))
         { Misrotated(b, g, tmeta); return; }
-        if (status == "done")
-            status = $"failed: {g.At} is occupied by {(World?.Data is { } d && d.BlockExists(View(p.Name, g).Id) ? d.Block(View(p.Name, g).Id).Name : "another block")}";
+        if (status == "done") status = $"failed: {g.At} is occupied by {BlockNameOr(View(p.Name, g).Id, "another block")}";
         if (g.State == "leased") { g.State = "todo"; g.Rev = Touch(); }
         CellFailed(p, b, g, id, status.StartsWith("failed: ", StringComparison.Ordinal) ? status[8..] : status);
     }
+
+    /// <summary>Done when the world agrees, or doesn't know yet (its copy of the block change can come a moment later); a cell that
+    /// holds something else (another variant: the script saw the block's name) still has to be cleared and built.</summary>
+    private bool ReportedBuilt(string pawn, GhostState g, string status)
+    {
+        if (Built(pawn, g)) return true;
+        if (status != "done") return false;
+        var vid = View(pawn, g).Id;
+        return StoryConstruction.IsLiquid(g) ? vid == 0 : OpenCell(vid);
+    }
+
+    /// <summary>A block's id name in the colony's version, else <paramref name="fallback"/>.</summary>
+    private string BlockNameOr(int id, string fallback) => World?.Data is { } d && d.BlockExists(id) ? d.Block(id).Name : fallback;
 
     /// <summary>The job ended "done": each cell it didn't report is checked against the world (built = done, else back to the queue, no
     /// failure). An older pawn script reports only the whole job (no <c>batch</c> note, no cell lines): its first cell is built.</summary>
@@ -774,28 +858,29 @@ public sealed partial class StoryColony
         bool legacy = !(note ?? "").StartsWith("batch", StringComparison.Ordinal) && (j.Json["cells"] as JsonArray)?.Count == j.Cells.Count;
         foreach (var id in j.Cells.ToList())
         {
-            if (FindGhost(id) is not { } g || g.State == "done" || Builds.FirstOrDefault(x => x.Ghosts.Contains(g)) is not { } b) continue;
+            if (OpenGhost(id) is not (var g, var b)) continue;
             // A dig job is one cell, and its "done" is taken as before.
             if (g.Remove || Built(p.Name, g) || legacy && id == j.SourceId) CellDone(b, g);
         }
         j.Cells.Clear();
     }
 
+    /// <summary>A job's cells: its batch, else its one cell.</summary>
+    private static IEnumerable<string> JobCells(ActiveJob j) => (IEnumerable<string>?)j.Cells ?? (j.SourceId != null ? [j.SourceId] : []);
+
     /// <summary>The job failed as a whole (a fetch, a script error): cells that are built still count; the failure counts against its
     /// first open cell.</summary>
     private void BatchFailed(PawnState p, ActiveJob j, string why)
     {
-        GhostState? first = null;
-        BuildState? fb = null;
-        string? firstId = null;
-        foreach (var id in (IEnumerable<string>?)j.Cells ?? (j.SourceId != null ? [j.SourceId] : []))
+        (GhostState G, BuildState B, string Id)? first = null;
+        foreach (var id in JobCells(j))
         {
-            if (FindGhost(id) is not { } g || g.State == "done" || Builds.FirstOrDefault(x => x.Ghosts.Contains(g)) is not { } b) continue;
+            if (OpenGhost(id) is not (var g, var b)) continue;
             if (!g.Remove && Built(p.Name, g)) { CellDone(b, g); continue; }
-            if (first == null) { first = g; fb = b; firstId = id; }
+            first ??= (g, b, id);
         }
         j.Cells?.Clear();
-        if (first != null) CellFailed(p, fb!, first, firstId!, why, counted: true);
+        if (first is (var fg, var fb, var fid)) CellFailed(p, fb, fg, fid, why, counted: true);
     }
 
     private void CellDone(BuildState b, GhostState g)
@@ -826,12 +911,10 @@ public sealed partial class StoryColony
     private void CellFailed(PawnState p, BuildState b, GhostState g, string id, string why, bool counted = false)
     {
         var key = "g:" + id;
-        if (!counted) _log.LogInformation("story {Colony}: {Pawn} cell {At} failed: {Why}", Id, p.Name, g.At, why);
-        if (!counted && (Transient(why) || why.Contains("is occupied by", StringComparison.OrdinalIgnoreCase)))
+        if (!counted)
         {
-            int soft = _softFails[key] = _softFails.GetValueOrDefault(key) + 1;
-            if (soft < SoftLimit) { _skip[key] = Now + SoftRest; return; }
-            _softFails.Remove(key);
+            _log.LogInformation("story {Colony}: {Pawn} cell {At} failed: {Why}", Id, p.Name, g.At, why);
+            if (CellRested(key, why)) return;
         }
         // A pour cell with nothing to pour against won't take a retry either (live 11-04: 371 of them, each tried 6 times): blocked at once.
         if (StoryConstruction.IsLiquid(g) && why.Contains("nothing beside or under", StringComparison.Ordinal)) _ghostFails[id] = Math.Max(_ghostFails.GetValueOrDefault(id), 2);
@@ -846,5 +929,15 @@ public sealed partial class StoryColony
             b.Rev = Touch();
             Alert("warn", $"Build {b.Id}: {b.Reason}", p.Name);
         }
+    }
+
+    /// <summary>A "not now" failure rests the cell a little instead of counting, up to <see cref="SoftLimit"/> in a row.</summary>
+    private bool CellRested(string key, string why)
+    {
+        if (!Transient(why) && !why.Contains("is occupied by", StringComparison.OrdinalIgnoreCase)) return false;
+        int soft = _softFails[key] = _softFails.GetValueOrDefault(key) + 1;
+        if (soft < SoftLimit) { _skip[key] = Now + SoftRest; return true; }
+        _softFails.Remove(key);
+        return false;
     }
 }

@@ -114,4 +114,11 @@ public sealed class StoryBuildGoldenTests
 
     [Fact]
     public void Batches_progress_and_ends_1122() => Golden("builds-progress-1122", Run(Release1122GameData.Instance));
+
+    [Fact]
+    public void Item_holder_table_matches_the_old_pattern_for_every_id()
+    {
+        static bool Old(int id) => id is 54 or 146 or 61 or 62 or 23 or 158 or 154 or 117 or 84 or (>= 219 and <= 234);
+        for (int id = -1; id <= 4096; id++) Assert.Equal(Old(id), StoryColony.KeepsItems(id));
+    }
 }
