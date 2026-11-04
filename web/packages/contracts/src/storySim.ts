@@ -490,7 +490,7 @@ export class StorySim {
         ['280:0', 16],
         ['263:0', 8],
       ]),
-      options: { autoPlaceBenches: true, detectBenches: false },
+      options: { autoPlaceBenches: true, detectBenches: false, idle: 'recreation' },
     };
     for (let i = 0; i < req.pawns; i++) {
       const display = NAMES[(i + n * 3) % NAMES.length]!;
@@ -1655,8 +1655,9 @@ export class StorySim {
   /** POST …/options. */
   options(id: string, body: StoryOptionsRequest): StoryColonyOptions {
     const c = this.colony(id);
-    if (body.autoPlaceBenches === undefined && body.detectBenches === undefined)
-      throw Object.assign(new Error('autoPlaceBenches or detectBenches required'), { status: 400 });
+    if (body.autoPlaceBenches === undefined && body.detectBenches === undefined && body.idle === undefined)
+      throw Object.assign(new Error('autoPlaceBenches, detectBenches or idle required'), { status: 400 });
+    if (body.idle !== undefined) c.options.idle = body.idle;
     if (body.autoPlaceBenches !== undefined) c.options.autoPlaceBenches = body.autoPlaceBenches;
     if (body.detectBenches !== undefined) c.options.detectBenches = body.detectBenches;
     this.bump(c);

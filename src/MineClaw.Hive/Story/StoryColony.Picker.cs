@@ -57,7 +57,7 @@ public sealed partial class StoryColony
         if (p.Drafted) return OrderJob(p, live) ?? Hold("drafted: waiting for orders", "drafted", s: 3, type: "order");
         if (p.Queue.Count > 0 && OrderJob(p, live) is { } order) return order;
         if (Urgent(p, live) is { } need) return need;
-        if (Resting(p) is { } rest) return rest;
+        if (Resting(p, live) is { } rest) return rest;
         if (Deliver(p, live) is { } deliver) return deliver;
         int hour = HourNow;
         var block = p.Schedule.Length == 24 && ScheduleBlocks.Known(p.Schedule[hour]) ? p.Schedule[hour] : ScheduleBlocks.Anything;
@@ -92,12 +92,20 @@ public sealed partial class StoryColony
     public const int FailBurst = 3;
 
     /// <summary>A pawn whose last <see cref="FailBurst"/> jobs all failed within <see cref="FailWindow"/> holds a while (orders and needs still win).</summary>
-    private ActiveJob? Resting(PawnState p)
+    private ActiveJob? Resting(PawnState p, PawnLive live)
+    {
+        if (RestLeft(p) is not { } left) return null;
+        // It rests on its feet: idle legs about the home area (StoryColony.Recreation.cs) for as long as the back-off lasts.
+        return IdleJob(p, live, "rest", HourNow) ?? Hold("resting: the last jobs failed", "idle", null, (int)Math.Ceiling(left.TotalSeconds));
+    }
+
+    /// <summary>How long this pawn's back-off still lasts (null = not resting).</summary>
+    private TimeSpan? RestLeft(PawnState p)
     {
         if (!_fails.TryGetValue(p.Name, out var f) || f.Count < FailBurst) return null;
         var last = f[^1];
         if (last - f[^FailBurst] > FailWindow || Now - last >= FailRest) return null;
-        return Hold("resting: the last jobs failed", "idle", null, (int)Math.Ceiling((FailRest - (Now - last)).TotalSeconds));
+        return FailRest - (Now - last);
     }
 
     private void NoteFailure(PawnState p)

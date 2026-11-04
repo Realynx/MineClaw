@@ -152,7 +152,8 @@ Every target is leased: `b:x,y,z`, `e:<entity>`, `g:<build>|x,y,z` or `bench:x,y
 - A pawn keeps its job until it is done, fails, or an order (or draft, pause, stop) replaces it. New work never cuts a working pawn.
 - A failed target rests before anyone takes it again: 30 s, then 1 min, then 10 min after each further failure. A failed delivery
   rests the same way for that pawn.
-- A pawn whose last 3 jobs failed within 20 s rests 15 s before it picks again (orders and urgent needs still come first).
+- A pawn whose last 3 jobs failed within 20 s rests 15 s before it picks again (orders and urgent needs still come first). It rests
+  on its feet: idle legs about home (see "Idle behaviour"), never cutting the 15 s short.
 - A designation that failed is kept on the map with `reason` and `fails`. Its first failure raises an alert saying why. After 3
   failures its `status` is `failed` and an alert says so (again every 3 failures). It is still retried after its rest until it is
   done or cancelled.
@@ -311,11 +312,35 @@ one spot, so the pawns stood in a pile there.
   columns only, the colony's dimension only. Never on, over or under a designated or build cell, never right in front of a storage
   chest or a workbench, never in a forbidden area.
 - **Night.** After dark (19:00–06:00) idle pawns wander only cells that are inside (roofed, in a home zone) or lit (light 8 or more
-  after dark). With none, each stands at its own spread spot by home ("Idle (at home)") and stays there. Sleep hours are beds as
-  before.
+  after dark). With none, they potter about within 5 blocks of home (or stargaze there). Sleep hours are beds as before.
 - **No home** (or another dimension): the pawn holds where it is ("idle: nothing to do"); new work cuts that hold as before.
 - **Spread spots.** A no-bed rest, a flight home and a teleport home (founding, migration, a join far away) each get the pawn's own
   free cell nearest home, never one cell for all.
+
+**Resting and recreation (added 2026-11-03, late).** Fox: "If a pawn is idle or resting, it should do recreation or something else
+instead of sitting in the same place."
+
+- **Resting wanders too.** The back-off after three failures ("resting") is idle legs about home (label "Resting (wandering)" or
+  "Resting: …"), not a hold. The legs never shorten it: work isn't handed to a resting pawn, and the leg in progress is taken back the
+  tick the back-off ends, so the pawn works at once. No other hold left a pawn standing still: blocked builds and missing materials
+  just mean no job, which is idle.
+- **Recreation** (the colony's `idle` option, default `recreation`) in free hours, when idle and while resting. Each leg is one
+  pastime, never the same one twice in a row when another is possible, all with the safe-cell and personal-space rules, all cut the
+  moment work comes up (the same step that hands the work over):
+
+  | `act` | where | looks at | label |
+  |---|---|---|---|
+  | `wander` | a cell 3–12 blocks off | a glance about | "Idle (wandering)", "Free time (wandering)", "Resting (wandering)" |
+  | `socialise` | 2–3 blocks from another idle pawn (never closer than 2 to anyone) | that pawn, which turns to it on its next leg | "Recreation: socialising with Dara" |
+  | `stargaze` | at night, under open sky (nothing overhead), within 8 of home or in a home zone | up, slowly round | "Recreation: stargazing" |
+  | `sit` | beside a chair (a stairs block), else two blocks from a colony workbench or chest (never in front of it) | the chair or table | "Recreation: resting by a chair" / "sitting by the crafting table" |
+  | `garden` | 1–2 blocks outside a growing zone, or beside flowers | the zone's middle or the flower | "Recreation: visiting the garden" |
+  | `sunset` | at dusk (18:00), the west edge of the home area | west | "Recreation: watching the sunset" |
+
+  The job carries `act`, `look:["x,y,z"]` (where it looks while it lingers, 8–16 s; strolls 4–12 s) and `with` (socialise). The
+  director only offers the pastimes; the SDK's `story.idle` walks, turns (`face`) and lingers.
+- **The option.** `POST …/options {idle: recreation|wander|stay}` (state `options.idle`): pastimes, strolls only, or hold where they
+  are (the old behaviour). The Colony tab has an "Idle pawns" picker beside the bench options.
 
 ### Adding and removing pawns (added 2026-11-03)
 
@@ -349,7 +374,9 @@ Fox 11-03: "+ and − buttons to add or remove pawns in Story Mode."
   - `story.report(job, 'done'|'failed'|'progress', note?)` reports on it.
   - `story.during(job, fn)` runs `fn` while the job is still the pawn's; the moment the director takes it back the running action
     is cut (`{ok:false, cancelled:true}`; the stale report that follows is ignored, never a failure).
-  - `story.idle(job)` is an idle leg (walk to its cell, linger) inside `story.during`.
+  - `story.idle(job)` is an idle leg inside `story.during`: walk to its cell, then linger looking at each point of `look` in turn
+    (with the hidden `face{at}` action: turn the head, nothing else).
+  - `story.till(job)` holds the hoe and uses it on the block (walking over first when it is far).
 - **A job** is `{id, type, kind, label, at?:"x,y,z", fetch?:[{from, item, n}], stash?:[{to, items}], ...}`.
   - Kinds: `go|chop|dig|harvest|till|collect|place|attack|eat|craft|smelt|collect_furnace|give|blueprint|sleep|idle|hold|end`.
   - The script withdraws the `fetch` items, runs the kind with the existing primitives (`go`, `chop`, `dig`, `collect`, `place`,
@@ -612,7 +639,7 @@ Build state gains `materials: [{item, label, need, have, crafting, short, via: c
 `no_craft: [item]` and `station: {kind, pos}|null`. The web's build queue shows have/need, crafting and short per item, the
 recipe chain and the raw shortfall on hover; the bench inspector lists the auto bills tagged "for build #N", cancel only.
 
-`POST …/options` `{auto_place_benches?, detect_benches?}` → the options; the colony state carries `options`.
+`POST …/options` `{auto_place_benches?, detect_benches?, idle?: recreation|wander|stay}` → the options (see "Idle behaviour" for `idle`); the colony state carries `options`.
 
 ### Architect palette and tiers (added 2026-11-03)
 
