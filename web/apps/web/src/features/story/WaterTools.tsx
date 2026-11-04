@@ -28,11 +28,15 @@ export interface PendingWater {
 export function pendingHolo(p: PendingWater): Array<[number, number, number, number, number]> {
   const out: Array<[number, number, number, number, number]> = [];
   for (const it of p.items) if (it.kind === 'remove') for (const [x, y, z] of expandBuildItem(it)) out.push([x, y, z, 0, 0]);
-  for (const it of p.items)
-    if (it.kind === 'water')
-      for (const [x, y, z] of it.blocks ?? []) out.push([x, y, z, it.material === 'lava' ? 11 : 9, 0]);
+  for (const it of p.items) if (it.kind === 'water') pushSources(out, it);
   for (const [x, y, z] of p.flow?.cells ?? []) out.push([x, y, z, 8, 4]);
   return out.slice(0, 4096);
+}
+
+/** A water item's sources (lava: still lava). */
+function pushSources(out: Array<[number, number, number, number, number]>, it: StoryBuildItem): void {
+  const id = it.material === 'lava' ? 11 : 9;
+  for (const [x, y, z] of it.blocks ?? []) out.push([x, y, z, id, 0]);
 }
 
 /** The line a pending placement shows: cells, and how far the water would run. */

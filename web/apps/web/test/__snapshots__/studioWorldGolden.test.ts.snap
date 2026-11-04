@@ -1,0 +1,17 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`the studio world encoding (golden, pinned before encode was split) > encodes a mine plot over its terrain the same 1`] = `
+[
+  "11038:3061497157",
+  "11713:452648120",
+]
+`;
+
+exports[`the studio world encoding (golden, pinned before encode was split) > encodes the grassland plot the same in both versions 1`] = `
+[
+  "1297:3402364461",
+  "46:1141999255",
+  "1576:2747229357",
+  "46:1141999255",
+]
+`;

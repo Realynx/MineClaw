@@ -84,53 +84,70 @@ const N6: ReadonlyArray<[number, number, number]> = [
 
 /** The design's dig estimate over the terrain (dug cells as [x, y, z]). */
 export function mineStats(terrain: MineTerrain, dug: Iterable<readonly [number, number, number]>): MineStats {
-  const version = terrain.version;
   const set = new Set<string>();
   const cells: Array<readonly [number, number, number]> = [];
   for (const p of dug) {
     set.add(`${p[0]},${p[1]},${p[2]}`);
     cells.push(p);
   }
-  const materials = new Map<string, number>();
-  const mined = new Map<string, number>();
-  const exposed = new Set<string>();
-  const exposedBy = new Map<string, number>();
-  let toMine = 0,
-    lo = Infinity,
-    hi = -Infinity;
-  for (const [x, y, z] of cells) {
-    lo = Math.min(lo, y);
-    hi = Math.max(hi, y);
-    const v = terrain.state(x, y, z);
+  const tally = new DigTally(terrain, set);
+  for (const [x, y, z] of cells) tally.add(x, y, z);
+  return tally.result(cells.length > 0);
+}
+
+const bump = (m: Map<string, number>, k: string) => m.set(k, (m.get(k) ?? 0) + 1);
+
+/** Counts a dig cell by cell: blocks to mine by material, ores mined, ores exposed in the walls (once each), the y range. */
+class DigTally {
+  private readonly materials = new Map<string, number>();
+  private readonly mined = new Map<string, number>();
+  private readonly exposed = new Set<string>();
+  private readonly exposedBy = new Map<string, number>();
+  private toMine = 0;
+  private lo = Infinity;
+  private hi = -Infinity;
+
+  constructor(
+    private readonly terrain: MineTerrain,
+    private readonly dug: ReadonlySet<string>,
+  ) {}
+
+  add(x: number, y: number, z: number) {
+    this.lo = Math.min(this.lo, y);
+    this.hi = Math.max(this.hi, y);
+    const version = this.terrain.version;
+    const v = this.terrain.state(x, y, z);
     const id = v >> 4,
       meta = v & 15;
-    if (id === 0 || id === 7) continue;
-    toMine++;
-    const name = terrainName(version, id, meta);
-    materials.set(name, (materials.get(name) ?? 0) + 1);
+    if (id === 0 || id === 7) return;
+    this.toMine++;
+    bump(this.materials, terrainName(version, id, meta));
     const ore = oreOf(version, id, meta);
-    if (ore) mined.set(ore.id, (mined.get(ore.id) ?? 0) + 1);
-    for (const [dx, dy, dz] of N6) {
-      const nx = x + dx,
-        ny = y + dy,
-        nz = z + dz;
-      const k = `${nx},${ny},${nz}`;
-      if (set.has(k) || exposed.has(k)) continue;
-      const nv = terrain.state(nx, ny, nz);
-      const no = nv ? oreOf(version, nv >> 4, nv & 15) : null;
-      if (!no) continue;
-      exposed.add(k);
-      exposedBy.set(no.id, (exposedBy.get(no.id) ?? 0) + 1);
-    }
+    if (ore) bump(this.mined, ore.id);
+    for (const [dx, dy, dz] of N6) this.expose(x + dx, y + dy, z + dz);
   }
-  return {
-    toMine,
-    materials: [...materials].map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count),
-    ores: terrain.table.ores
-      .filter((o) => o.veins > 0)
-      .map((o) => ({ ore: o, mined: mined.get(o.id) ?? 0, exposed: exposedBy.get(o.id) ?? 0 })),
-    yRange: cells.length ? { min: lo, max: hi } : null,
-  };
+
+  /** A wall cell next to a dug one: counted once if it is an ore and not dug itself. */
+  private expose(x: number, y: number, z: number) {
+    const k = `${x},${y},${z}`;
+    if (this.dug.has(k) || this.exposed.has(k)) return;
+    const v = this.terrain.state(x, y, z);
+    const ore = v ? oreOf(this.terrain.version, v >> 4, v & 15) : null;
+    if (!ore) return;
+    this.exposed.add(k);
+    bump(this.exposedBy, ore.id);
+  }
+
+  result(any: boolean): MineStats {
+    return {
+      toMine: this.toMine,
+      materials: [...this.materials].map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count),
+      ores: this.terrain.table.ores
+        .filter((o) => o.veins > 0)
+        .map((o) => ({ ore: o, mined: this.mined.get(o.id) ?? 0, exposed: this.exposedBy.get(o.id) ?? 0 })),
+      yRange: any ? { min: this.lo, max: this.hi } : null,
+    };
+  }
 }
 
 /** The colour of an ore as a number (the table's "#rrggbb"; grey when none). */
@@ -151,17 +168,30 @@ export function xrayCells(
   for (let y = lo; y <= hi; y++)
     for (let z = 0; z < SIZE; z++)
       for (let x = 0; x < SIZE; x++) {
-        const v = terrain.state(x, y, z);
-        if (v === 0) continue;
-        const o = oreOf(terrain.version, v >> 4, v & 15);
-        if (!o || (!window && o.id === 'coal')) continue;
-        let list = byOre.get(o.id);
-        if (!list) byOre.set(o.id, (list = []));
-        list.push([x, y, z, oreColour(o)]);
+        const o = xrayOre(terrain, x, y, z, !window);
+        if (o) pushTo(byOre, o.id, [x, y, z, oreColour(o)]);
       }
-  const out: Array<[number, number, number, number]> = [];
-  // Rarest first: the cap drops coal and iron before diamonds.
-  for (const list of [...byOre.values()].sort((a, b) => a.length - b.length)) {
+  return rarestFirst(byOre, max);
+}
+
+/** The ore at a cell the X-ray shows (coal left out without a window). */
+function xrayOre(terrain: MineTerrain, x: number, y: number, z: number, skipCoal: boolean): OreBand | null {
+  const v = terrain.state(x, y, z);
+  if (v === 0) return null;
+  const o = oreOf(terrain.version, v >> 4, v & 15);
+  return !o || (skipCoal && o.id === 'coal') ? null : o;
+}
+
+function pushTo<T>(m: Map<string, T[]>, k: string, v: T) {
+  let list = m.get(k);
+  if (!list) m.set(k, (list = []));
+  list.push(v);
+}
+
+/** Every list's cells, rarest list first, up to `max`: the cap drops coal and iron before diamonds. */
+function rarestFirst<T>(byKind: Map<string, T[]>, max: number): T[] {
+  const out: T[] = [];
+  for (const list of [...byKind.values()].sort((a, b) => a.length - b.length)) {
     for (const c of list) {
       if (out.length >= max) return out;
       out.push(c);

@@ -23,33 +23,40 @@ export function outlineOf(cells: Set<number>): number[] {
   for (const k of cells) {
     const x = cellX(k),
       z = cellZ(k);
-    if (!has(x, z - 1)) (hz.get(z) ?? hz.set(z, []).get(z)!).push(x);
-    if (!has(x, z + 1)) (hz.get(z + 1) ?? hz.set(z + 1, []).get(z + 1)!).push(x);
-    if (!has(x - 1, z)) (vx.get(x) ?? vx.set(x, []).get(x)!).push(z);
-    if (!has(x + 1, z)) (vx.get(x + 1) ?? vx.set(x + 1, []).get(x + 1)!).push(z);
+    if (!has(x, z - 1)) addEdge(hz, z, x);
+    if (!has(x, z + 1)) addEdge(hz, z + 1, x);
+    if (!has(x - 1, z)) addEdge(vx, x, z);
+    if (!has(x + 1, z)) addEdge(vx, x + 1, z);
   }
   const seg: number[] = [];
-  const runs = (m: Map<number, number[]>, horiz: boolean) => {
-    for (const [line, list] of m) {
-      list.sort((a, b) => a - b);
-      let s = list[0]!,
-        e = s;
-      for (let i = 1; i <= list.length; i++) {
-        const v = list[i];
-        if (v === e + 1) {
-          e = v;
-          continue;
-        }
-        if (horiz) seg.push(s, line, e + 1, line);
-        else seg.push(line, s, line, e + 1);
-        if (v !== undefined) s = e = v;
-      }
-    }
-  };
-  runs(hz, true);
-  runs(vx, false);
+  mergeRuns(hz, true, seg);
+  mergeRuns(vx, false, seg);
   outlines.set(cells, seg);
   return seg;
+}
+
+/** A unit edge on a grid line. */
+function addEdge(m: Map<number, number[]>, line: number, at: number): void {
+  (m.get(line) ?? m.set(line, []).get(line)!).push(at);
+}
+
+/** Each line's unit edges merged into runs, pushed as segments [x1, z1, x2, z2]. */
+function mergeRuns(m: Map<number, number[]>, horiz: boolean, seg: number[]): void {
+  for (const [line, list] of m) {
+    list.sort((a, b) => a - b);
+    let s = list[0]!,
+      e = s;
+    for (let i = 1; i <= list.length; i++) {
+      const v = list[i];
+      if (v === e + 1) {
+        e = v;
+        continue;
+      }
+      if (horiz) seg.push(s, line, e + 1, line);
+      else seg.push(line, s, line, e + 1);
+      if (v !== undefined) s = e = v;
+    }
+  }
 }
 
 /** Fills the cells' row runs (one path). Rows: [z, x1, x2]. */
@@ -124,37 +131,49 @@ export function drawZones(
   const order = [...zones].sort((a, b) => layer(a.kind) - layer(b.kind));
   let houseNo = 0;
   for (const z of order) {
-    const home = z.kind === 'home';
-    const keepOut = z.kind === 'forbidden';
-    if (home) houseNo++;
+    if (z.kind === 'home') houseNo++;
     const y = z.area[1] + 1.02;
     const col = zoneColor(z.kind);
     if (fillRows(ctx, rowsOfZone(z), y, proj)) {
-      ctx.fillStyle = keepOut ? (keepOutPattern(ctx) ?? `${col}33`) : home ? `${col}38` : `${col}2e`;
+      ctx.fillStyle = zoneFill(ctx, z.kind, col);
       ctx.fill();
     }
-    ctx.strokeStyle = home || keepOut ? col : `${col}cc`;
-    ctx.lineWidth = home ? 2 : 1.5;
-    if (!home && !keepOut) ctx.setLineDash([6, 4]);
-    strokeOutline(ctx, outlineOf(zoneCellSet(z)), y, proj);
-    ctx.setLineDash([]);
+    strokeZone(ctx, z, y, proj, col);
     const name = px > 3 ? label(z, houseNo) : null;
-    if (name) {
-      // At the zone's first cell (its top-left run).
-      const r0 = rowsOfZone(z)[0];
-      const at = r0 ? proj(r0[1]!, y, r0[0]!) : null;
-      if (at) {
-        ctx.font = '600 11px system-ui, sans-serif';
-        ctx.textAlign = 'left';
-        ctx.textBaseline = 'top';
-        const w = ctx.measureText(name).width;
-        ctx.fillStyle = 'rgba(10,12,16,0.7)';
-        ctx.fillRect(at.x + 3, at.y + 3, w + 8, 15);
-        ctx.fillStyle = home ? '#cfe3ff' : '#e8f5dc';
-        ctx.fillText(name, at.x + 7, at.y + 4.5);
-      }
-    }
+    if (name) drawZoneName(ctx, z, y, proj, name);
   }
+}
+
+/** A zone's fill: keep-out stripes, a stronger tint for home areas, a light one for work zones. */
+function zoneFill(ctx: CanvasRenderingContext2D, kind: string, col: string): string | CanvasPattern {
+  if (kind === 'forbidden') return keepOutPattern(ctx) ?? `${col}33`;
+  return kind === 'home' ? `${col}38` : `${col}2e`;
+}
+
+/** A zone's outline: solid for the overlay layers (home thicker), dashed for work zones. */
+function strokeZone(ctx: CanvasRenderingContext2D, z: StoryZone, y: number, proj: Proj, col: string): void {
+  const home = z.kind === 'home';
+  const overlay = home || z.kind === 'forbidden';
+  ctx.strokeStyle = overlay ? col : `${col}cc`;
+  ctx.lineWidth = home ? 2 : 1.5;
+  if (!overlay) ctx.setLineDash([6, 4]);
+  strokeOutline(ctx, outlineOf(zoneCellSet(z)), y, proj);
+  ctx.setLineDash([]);
+}
+
+/** The zone's name tag at its first cell (its top-left run). */
+function drawZoneName(ctx: CanvasRenderingContext2D, z: StoryZone, y: number, proj: Proj, name: string): void {
+  const r0 = rowsOfZone(z)[0];
+  const at = r0 ? proj(r0[1]!, y, r0[0]!) : null;
+  if (!at) return;
+  ctx.font = '600 11px system-ui, sans-serif';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'top';
+  const w = ctx.measureText(name).width;
+  ctx.fillStyle = 'rgba(10,12,16,0.7)';
+  ctx.fillRect(at.x + 3, at.y + 3, w + 8, 15);
+  ctx.fillStyle = z.kind === 'home' ? '#cfe3ff' : '#e8f5dc';
+  ctx.fillText(name, at.x + 7, at.y + 4.5);
 }
 
 /** A zone's label on the map: a house's name; a growing zone's active plant (and name); other zones their name. */
@@ -164,12 +183,15 @@ export function zoneLabel(
   plants: ReadonlyArray<{ id: string; label: string }> | null | undefined,
 ): string | null {
   if (z.kind === 'home') return z.name || z.label || `House ${houseNo}`;
-  if (z.kind === 'farm' && (z.plant || z.bills)) {
-    const p = plants?.find((x) => x.id === (z.activePlant ?? null));
-    const what = p ? p.label : z.activePlant ? z.activePlant : 'idle: bills met';
-    return z.name ? `${z.name} · ${what}` : what;
-  }
+  if (z.kind === 'farm' && (z.plant || z.bills)) return farmLabel(z, plants);
   return z.name || null;
+}
+
+/** A growing zone's label: what it sows now (its name first when it has one). */
+function farmLabel(z: StoryZone, plants: ReadonlyArray<{ id: string; label: string }> | null | undefined): string {
+  const p = plants?.find((x) => x.id === (z.activePlant ?? null));
+  const what = p ? p.label : z.activePlant ? z.activePlant : 'idle: bills met';
+  return z.name ? `${z.name} · ${what}` : what;
 }
 
 const layer = (kind: string) => (kind === 'home' ? 2 : kind === 'forbidden' ? 3 : 1);

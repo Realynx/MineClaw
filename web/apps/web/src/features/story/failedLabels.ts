@@ -83,57 +83,74 @@ export interface FailedCluster {
  * clusters, largest first.
  */
 export function clusterFailed(marks: readonly FailedMark[], reach = 2): FailedCluster[] {
+  const out: FailedCluster[] = [];
+  for (const list of byReason(marks).values()) {
+    const seen = new Set<number>();
+    for (let i = 0; i < list.length; i++) if (!seen.has(i)) out.push(clusterOf(grow(list, i, seen, reach)));
+  }
+  return out.sort((a, b) => b.ids.length - a.ids.length);
+}
+
+/** The marks by kind, tone and short reason (in the order first seen). */
+function byReason(marks: readonly FailedMark[]): Map<string, FailedMark[]> {
   const groups = new Map<string, FailedMark[]>();
   for (const m of marks) {
     const s = shortReason(m.reason);
     const key = `${m.kind}|${m.tone ?? 'fail'}|${s.tag}`;
     (groups.get(key) ?? groups.set(key, []).get(key)!).push(m);
   }
-  const out: FailedCluster[] = [];
-  for (const list of groups.values()) {
-    const seen = new Set<number>();
-    for (let i = 0; i < list.length; i++) {
-      if (seen.has(i)) continue;
-      seen.add(i);
-      const members = [list[i]!];
-      for (let q = 0; q < members.length; q++) {
-        const a = members[q]!.cell;
-        for (let j = 0; j < list.length; j++) {
-          if (seen.has(j)) continue;
-          const b = list[j]!.cell;
-          if (Math.abs(a[0] - b[0]) <= reach && Math.abs(a[2] - b[2]) <= reach && Math.abs(a[1] - b[1]) <= 2) {
-            seen.add(j);
-            members.push(list[j]!);
-          }
-        }
-      }
-      const short = shortReason(members[0]!.reason);
-      const kind = members[0]!.kind;
-      const [one, many] = NOUNS[kind] ?? ['target', 'targets'];
-      const n = members.length;
-      const mid = (k: 0 | 1 | 2) => members.reduce((s, m) => s + m.cell[k], 0) / n;
-      // The member nearest the middle: the label sits on a real designation.
-      const cx = mid(0),
-        cy = mid(1),
-        cz = mid(2);
-      const anchor = members.reduce((best, m) =>
-        Math.hypot(m.cell[0] - cx, m.cell[1] - cy, m.cell[2] - cz) <
-        Math.hypot(best.cell[0] - cx, best.cell[1] - cy, best.cell[2] - cz)
-          ? m
-          : best,
-      ).cell;
-      out.push({
-        ids: members.map((m) => m.id),
-        kind,
-        reason: members[0]!.reason,
-        tone: members[0]!.tone ?? 'fail',
-        short,
-        text: n === 1 ? short.title : `${n} ${n === 1 ? one : many}: ${short.tag}`,
-        anchor,
-      });
+  return groups;
+}
+
+/** Within `reach` blocks horizontally and 2 vertically. */
+function touches(a: FailedMark['cell'], b: FailedMark['cell'], reach: number): boolean {
+  return Math.abs(a[0] - b[0]) <= reach && Math.abs(a[2] - b[2]) <= reach && Math.abs(a[1] - b[1]) <= 2;
+}
+
+/** The marks connected to `list[i]` through touching ones not yet in a cluster (they join it: `seen`). */
+function grow(list: readonly FailedMark[], i: number, seen: Set<number>, reach: number): FailedMark[] {
+  seen.add(i);
+  const members = [list[i]!];
+  for (let q = 0; q < members.length; q++) {
+    const a = members[q]!.cell;
+    for (let j = 0; j < list.length; j++) {
+      if (seen.has(j) || !touches(a, list[j]!.cell, reach)) continue;
+      seen.add(j);
+      members.push(list[j]!);
     }
   }
-  return out.sort((a, b) => b.ids.length - a.ids.length);
+  return members;
+}
+
+/** The member nearest the middle: the label sits on a real designation. */
+function anchorOf(members: readonly FailedMark[]): [number, number, number] {
+  const n = members.length;
+  const mid = (k: 0 | 1 | 2) => members.reduce((s, m) => s + m.cell[k], 0) / n;
+  const cx = mid(0),
+    cy = mid(1),
+    cz = mid(2);
+  return members.reduce((best, m) =>
+    Math.hypot(m.cell[0] - cx, m.cell[1] - cy, m.cell[2] - cz) <
+    Math.hypot(best.cell[0] - cx, best.cell[1] - cy, best.cell[2] - cz)
+      ? m
+      : best,
+  ).cell;
+}
+
+function clusterOf(members: FailedMark[]): FailedCluster {
+  const first = members[0]!;
+  const short = shortReason(first.reason);
+  const [one, many] = NOUNS[first.kind] ?? ['target', 'targets'];
+  const n = members.length;
+  return {
+    ids: members.map((m) => m.id),
+    kind: first.kind,
+    reason: first.reason,
+    tone: first.tone ?? 'fail',
+    short,
+    text: n === 1 ? short.title : `${n} ${n === 1 ? one : many}: ${short.tag}`,
+    anchor: anchorOf(members),
+  };
 }
 
 /** A label placed on screen (top-centre anchored), or skipped when it would overlap one already placed. */

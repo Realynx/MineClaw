@@ -117,20 +117,26 @@ public sealed class BuildPlanStore
                 r => (r.GetInt32(0), ParseRow(r.GetString(1))), ("$id", bp.BlueprintId), ("$s", bp.SliceId));
         lock (bp)
             foreach (var (laneIx, row) in rows)
-            {
-                if (row == null) continue;
-                foreach (var st in row.Status)
-                    if (st.Length == 2 && st[0] >= 0 && st[0] < bp.Steps.Count && !bp.Steps[st[0]].Finished)
-                    {
-                        var s = bp.Steps[st[0]];
-                        s.Status = (StepStatus)st[1];
-                        if (s.Action == StepAction.PickupWater && s.Finished) foreach (var c in bp.Columns.Where(c => c.Source == s.Target)) c.Removed = true;
-                    }
-                foreach (var p in row.Placed) if (!bp.Placed.Contains(p)) bp.Placed.Add(p);
-                foreach (var p in row.Scaffold) if (!bp.ScaffoldUp.Contains(p)) bp.ScaffoldUp.Add(p);
-                if (laneIx >= 0 && laneIx < bp.Lanes.Count) { bp.Lanes[laneIx].State = row.State; bp.Lanes[laneIx].Note = row.Note; }
-            }
+                if (row != null) MergeLane(bp, laneIx, row);
         return rows.Count;
+    }
+
+    /// <summary>One lane's row: its steps' status, placed blocks and scaffold up, and the lane's state.</summary>
+    private static void MergeLane(BuildPlan bp, int laneIx, LaneRow row)
+    {
+        foreach (var st in row.Status) MergeStatus(bp, st);
+        foreach (var p in row.Placed) if (!bp.Placed.Contains(p)) bp.Placed.Add(p);
+        foreach (var p in row.Scaffold) if (!bp.ScaffoldUp.Contains(p)) bp.ScaffoldUp.Add(p);
+        if (laneIx >= 0 && laneIx < bp.Lanes.Count) { bp.Lanes[laneIx].State = row.State; bp.Lanes[laneIx].Note = row.Note; }
+    }
+
+    /// <summary>[step, status] for a step not finished yet; water taken back marks its column removed.</summary>
+    private static void MergeStatus(BuildPlan bp, int[] st)
+    {
+        if (st.Length != 2 || st[0] < 0 || st[0] >= bp.Steps.Count || bp.Steps[st[0]].Finished) return;
+        var s = bp.Steps[st[0]];
+        s.Status = (StepStatus)st[1];
+        if (s.Action == StepAction.PickupWater && s.Finished) foreach (var c in bp.Columns.Where(c => c.Source == s.Target)) c.Removed = true;
     }
 
     private static LaneRow? ParseRow(string json)

@@ -109,60 +109,92 @@ public sealed class DesignerAgent(ILlmClient llm, LlmOptions llmOptions, UsageTr
         // A mine canvas gets its own compact prompt and the mine templates (only then: a build turn costs nothing more).
         var system = s.Canvas.Mine ? DesignerTools.MineSystem(player, s.Canvas) : DesignerTools.System(player, s.Canvas.Version);
         var tools = DesignerTools.For(s.Canvas);
+        var messages = Conversation(history);
+        messages.Add(LlmMessage.User(Brief(s, text, selection)));
+        var turn = new Turn { Model = m.Model };
+        for (int round = 0; round < Math.Max(1, _o.MaxRounds); round++)
+            if (!await RoundAsync(s, m, system, tools, messages, turn, ct).ConfigureAwait(false)) break;
+        return turn.Result();
+    }
+
+    /// <summary>What one designer turn gathered: the canvas ops, usage, cost, calls, the last reply and model.</summary>
+    private sealed class Turn
+    {
+        public readonly List<DesignerOp> Ops = [];
+        public LlmUsage Total = LlmUsage.Zero;
+        public decimal Cost;
+        public int Calls;
+        public string Reply = "";
+        public string Model = "";
+
+        public DesignerTurnResult Result()
+        {
+            var reply = Reply.Length > 0 ? Reply
+                : Ops.Count > 0 ? "Done: " + string.Join("; ", Ops.Select(o => o.Label).Distinct().Take(4)) + "." : "(no changes)";
+            return new DesignerTurnResult(reply, Ops, Cost, Total, Model, Calls);
+        }
+    }
+
+    /// <summary>The last turns of the session, starting with the user (the API wants alternating turns starting with the user:
+    /// drop a leading assistant line, merge none, we always add pairs).</summary>
+    private List<LlmMessage> Conversation(IReadOnlyList<DesignerMessageRecord> history)
+    {
         var messages = new List<LlmMessage>();
         foreach (var h in history.TakeLast(Math.Max(0, _o.HistoryTurns) * 2))
             messages.Add(h.Role == "assistant" ? LlmMessage.Assistant(h.Text.Length == 0 ? "(done)" : h.Text) : LlmMessage.User(h.Text));
-        // The API wants alternating turns starting with the user: drop a leading assistant line, merge none (we always add pairs).
         while (messages.Count > 0 && messages[0].Role != LlmRole.User) messages.RemoveAt(0);
-        messages.Add(LlmMessage.User(Brief(s, text, selection)));
-        var ops = new List<DesignerOp>();
-        var total = LlmUsage.Zero;
-        decimal cost = 0;
-        int calls = 0;
-        string reply = "", model = m.Model;
-        for (int round = 0; round < Math.Max(1, _o.MaxRounds); round++)
+        return messages;
+    }
+
+    /// <summary>One model call and its tool calls run on the canvas; false when the turn ends (no tool use, the cost cap).</summary>
+    private async Task<bool> RoundAsync(DesignerSessionRecord s, DesignerModel m, string system, IReadOnlyList<LlmToolDefinition> tools, List<LlmMessage> messages,
+        Turn turn, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        LlmResponse resp;
+        try { resp = await llm.CompleteAsync(Request(m, system, tools, messages), ct).ConfigureAwait(false); }
+        catch (LlmCostCapException cc)
         {
-            ct.ThrowIfCancellationRequested();
-            LlmResponse resp;
-            try
-            {
-                resp = await llm.CompleteAsync(new LlmRequest
-                {
-                    Tier = m.Tier, Model = m.Model, Profile = m.Profile, MaxTokens = Math.Max(256, _o.MaxTokens), Purpose = "designer",
-                    System = [new LlmSystemBlock(system, Cache: true)], Tools = tools, Messages = messages.ToList(),
-                    CacheHistory = true, Effort = string.IsNullOrWhiteSpace(_o.Effort) ? null : _o.Effort,
-                }, ct).ConfigureAwait(false);
-            }
-            catch (LlmCostCapException cc)
-            {
-                cost += Book(cc.Model, cc.PartialUsage, m.Tier);
-                total = total.Add(cc.PartialUsage);
-                break;
-            }
-            calls++;
-            model = resp.Model;
-            total = total.Add(resp.Usage);
-            cost += Book(resp.Model, resp.Usage, m.Tier);
-            if (resp.Text.Trim() is { Length: > 0 } t) reply = t;
-            var uses = resp.ToolUses.ToList();
-            if (uses.Count == 0 || resp.StopReason != StopReasons.ToolUse) break;
-            messages.Add(new LlmMessage(LlmRole.Assistant, resp.Content));
-            var results = new List<LlmBlock>();
-            foreach (var u in uses)
-            {
-                var (res, op, err) = DesignerTools.Run(s.Canvas, u.Name, u.Input);
-                if (op != null) ops.Add(op);
-                results.Add(new LlmToolResult(u.Id, res, err));
-            }
-            if (cost >= _o.MaxUsdPerMessage)
-            {
-                reply = reply.Length > 0 ? reply : $"I stopped at the per-message cost cap (${_o.MaxUsdPerMessage:0.00}); say \"go on\" to continue.";
-                break;
-            }
-            messages.Add(new LlmMessage(LlmRole.User, results));
+            turn.Cost += Book(cc.Model, cc.PartialUsage, m.Tier);
+            turn.Total = turn.Total.Add(cc.PartialUsage);
+            return false;
         }
-        if (reply.Length == 0) reply = ops.Count > 0 ? "Done: " + string.Join("; ", ops.Select(o => o.Label).Distinct().Take(4)) + "." : "(no changes)";
-        return new DesignerTurnResult(reply, ops, cost, total, model, calls);
+        turn.Calls++;
+        turn.Model = resp.Model;
+        turn.Total = turn.Total.Add(resp.Usage);
+        turn.Cost += Book(resp.Model, resp.Usage, m.Tier);
+        if (resp.Text.Trim() is { Length: > 0 } t) turn.Reply = t;
+        var uses = resp.ToolUses.ToList();
+        if (uses.Count == 0 || resp.StopReason != StopReasons.ToolUse) return false;
+        messages.Add(new LlmMessage(LlmRole.Assistant, resp.Content));
+        var results = RunTools(s, uses, turn.Ops);
+        if (turn.Cost >= _o.MaxUsdPerMessage)
+        {
+            turn.Reply = turn.Reply.Length > 0 ? turn.Reply : $"I stopped at the per-message cost cap (${_o.MaxUsdPerMessage:0.00}); say \"go on\" to continue.";
+            return false;
+        }
+        messages.Add(new LlmMessage(LlmRole.User, results));
+        return true;
+    }
+
+    private LlmRequest Request(DesignerModel m, string system, IReadOnlyList<LlmToolDefinition> tools, List<LlmMessage> messages) => new()
+    {
+        Tier = m.Tier, Model = m.Model, Profile = m.Profile, MaxTokens = Math.Max(256, _o.MaxTokens), Purpose = "designer",
+        System = [new LlmSystemBlock(system, Cache: true)], Tools = tools, Messages = messages.ToList(),
+        CacheHistory = true, Effort = string.IsNullOrWhiteSpace(_o.Effort) ? null : _o.Effort,
+    };
+
+    /// <summary>Runs the model's tool calls on the canvas (each change an op): the tool results, in order.</summary>
+    private static List<LlmBlock> RunTools(DesignerSessionRecord s, List<LlmToolUse> uses, List<DesignerOp> ops)
+    {
+        var results = new List<LlmBlock>();
+        foreach (var u in uses)
+        {
+            var (res, op, err) = DesignerTools.Run(s.Canvas, u.Name, u.Input);
+            if (op != null) ops.Add(op);
+            results.Add(new LlmToolResult(u.Id, res, err));
+        }
+        return results;
     }
 
     private decimal Book(string model, LlmUsage u, ModelTier tier)
