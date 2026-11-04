@@ -32,7 +32,7 @@ import { isHandheld, itemLookById, itemLookByName, itemName, parseHeld, type Ite
 import { createEntityMaterials, GHOST_FLAG, GHOST_LEVEL, GHOST_PLAYER, GHOST_SELECTED, GLINT_FLAG, defaultWorldUniforms, glintTexture, sheetTexture, type EntityMaterials, type WorldUniforms } from './entities/material';
 import { cubeGeometry, InstancedDraw, modelGeometry, ShadowDraw, spriteGeometry, type InstanceData } from './entities/meshes';
 import { attackOffProgress, attackProgress, DEATH_GONE_MS, DEATH_SHRINK_MS, deathAngle, deathScale, eatProgress, hurtAmount, newMotion, stepMotion, wrapDeg, type Motion } from './entities/motion';
-import { identity, invert, mul, partLocal, rootMatrix, ROW_FLOATS, Skeleton, type Affine } from './entities/pose';
+import { identity, invert, mul, partLocal, rootMatrix, ROW_FLOATS, Skeleton, type Affine, type RootParams } from './entities/pose';
 import { canonical, MOB_NAMES, MODEL_BY_ID, mobLook, mobName, objectLook, objectName, playerLook } from './entities/registry';
 import type { Look, PoseCtx } from './entities/types';
 import { Variant } from './entities/variant';
@@ -1001,48 +1001,60 @@ export class EntityLayer {
   }
 
   private poseModel(d: Drawn, now: number, off: number): void {
-    const e = d.model!, look = d.look!, def = e.built.def, m = d.motion;
-    const layout = d.baby && def.baby ? true : false;
-    const s0 = def.scale ?? 1, k = (look.scale ?? 1) * (d.baby && !def.baby ? 0.5 : 1) * deathScale(m, now) * (d.display?.scale ?? 1);
-    const sc: [number, number, number] = typeof s0 === 'number' ? [s0 * k, s0 * k, s0 * k] : [s0[0] * k, s0[1] * k, s0[2] * k];
-    if (d.fuseAt) {
-      // RenderCreeper.preRenderCallback: the swell scale(h, i, h) from the flash intensity.
-      const f = creeperFlash(d.fuseAt, now), g = 1 + Math.sin(f * 100) * f * 0.01, f4 = Math.min(1, Math.max(0, f)) ** 4;
-      const h = (1 + f4 * 0.4) * g, i = (1 + f4 * 0.1) / g;
-      sc[0] *= h;
-      sc[1] *= i;
-      sc[2] *= h;
-    }
-    const flags = d.ent?.flags ?? (d.botView?.dto as { flags?: number } | undefined)?.flags ?? 0;
+    const e = d.model!;
+    const flags = poseFlags(d);
     const sneaking = (flags & FLAG_SNEAKING) !== 0;
-    const isPlayer = d.bot || d.ent?.kind === 'player';
-    const body = d.fixedYaw ?? m.body;
-    // RenderEnderman: a screaming enderman jitters (gaussian 0.02 on x and z); RenderZombieVillager: a converting one shakes
-    // its yaw by cos(ticks · 3.25) · π/4 degrees.
+    const body = d.fixedYaw ?? d.motion.body;
+    this.placeRoot(d, this.rootFor(d, now, body, sneaking), sneaking);
+    turnHead(d, body);
+    this.fillMotionPose(d, now, body);
+    this.fillStatePose(d, now, flags, sneaking);
+    e.skel.pose(this.ctx, this.root, this.bones, off, d.baby && e.built.def.baby ? true : false);
+    this.poseAttachments(d, e, off, body, sneaking);
+  }
+
+  /** The model root: position (a screaming enderman jitters), yaw (a converting zombie villager shakes), death roll, scale,
+   * the sneaking player's sink and a display mob's tilt. */
+  private rootFor(d: Drawn, now: number, body: number, sneaking: boolean): RootParams {
+    const def = d.model!.built.def;
+    // RenderEnderman: a screaming enderman jitters (gaussian 0.02 on x and z).
     const screaming = d.look?.model === 'enderman' && d.v.has('screaming');
-    const jx = screaming ? gaussian() * 0.02 : 0, jz = screaming ? gaussian() * 0.02 : 0;
-    const shake = d.look?.model === 'zombie_villager' && d.v.has('converting') ? Math.cos((now / 50) * 3.25) * Math.PI * 0.25 : 0;
-    const root = {
-      x: d.x + jx,
+    const isPlayer = d.bot || d.ent?.kind === 'player';
+    return {
+      x: d.x + (screaming ? gaussian() * 0.02 : 0),
       y: d.y,
-      z: d.z + jz,
-      yaw: body + shake,
-      death: deathAngle(m, now),
-      scale: sc,
+      z: d.z + (screaming ? gaussian() * 0.02 : 0),
+      yaw: body + convertingShake(d, now),
+      death: deathAngle(d.motion, now),
+      scale: this.modelScale(d, now),
       offset: def.offset ?? ZERO3,
       lift: sneaking && isPlayer ? -0.125 : 0,
       tilt: d.display ? -d.display.tilt : 0,
     };
+  }
+
+  /** The look's scale (babies of adult-only models at half size, a display mob's own), shrinking in death, a fusing
+   * creeper's swell. */
+  private modelScale(d: Drawn, now: number): [number, number, number] {
+    const def = d.model!.built.def, look = d.look!;
+    const s0 = def.scale ?? 1, k = (look.scale ?? 1) * (d.baby && !def.baby ? 0.5 : 1) * deathScale(d.motion, now) * (d.display?.scale ?? 1);
+    const sc: [number, number, number] = typeof s0 === 'number' ? [s0 * k, s0 * k, s0 * k] : [s0[0] * k, s0[1] * k, s0[2] * k];
+    if (d.fuseAt) creeperSwell(sc, creeperFlash(d.fuseAt, now));
+    return sc;
+  }
+
+  /** Writes the root matrix (and the root without the sneaking sink, for the elytra layer and riders). */
+  private placeRoot(d: Drawn, root: RootParams, sneaking: boolean): void {
     // 1.12.2 ModelBiped.render sinks a sneaking adult's parts 0.2 (3.2 px) after the pose (its layers follow: armour, held
     // items, the custom head); the elytra layer does not.
     const sneakSink = sneaking && !d.baby && !this.beta && d.armorLayer;
     if (sneakSink || d.elytra || d.riders) rootMatrix(this.rootBase, root);
     rootMatrix(this.root, sneakSink ? { ...root, offset: [root.offset[0], root.offset[1] + 3.2, root.offset[2]] } : root);
-    const c = this.ctx;
-    // Head yaw: the wire's own when it sends one (1.12.2 head look), else the look yaw; smoothed toward it.
-    const wireHead = d.ent?.dto.headYaw ?? (d.botView?.dto as { headYaw?: number | null } | undefined)?.headYaw ?? null;
-    const lookYaw = wireHead ?? (d.botView ? d.botView.yaw : d.ent?.yaw ?? body);
-    m.head = Number.isNaN(m.head) ? lookYaw : m.head + wrapDeg(lookYaw - m.head) * 0.35;
+  }
+
+  /** The pose context's motion: limb swing, age, head angles, swings and eating. */
+  private fillMotionPose(d: Drawn, now: number, body: number): void {
+    const c = this.ctx, m = d.motion;
     c.swing = d.display ? 0 : m.swing;
     c.amount = m.deadAt || d.display ? 0 : m.amount;
     c.age = now / 50 + m.seed * 1000;
@@ -1051,6 +1063,11 @@ export class EntityLayer {
     c.attack = attackProgress(m, now);
     c.attackOff = attackOffProgress(m, now);
     c.eat = eatProgress(m, now);
+  }
+
+  /** The pose context's state: age, variant, flags, what it holds and does, the stand pose, the golem's rose. */
+  private fillStatePose(d: Drawn, now: number, flags: number, sneaking: boolean): void {
+    const c = this.ctx, m = d.motion;
     c.baby = d.baby;
     c.v = d.v;
     c.variant = d.v.num;
@@ -1067,20 +1084,31 @@ export class EntityLayer {
     c.speed = m.speed;
     c.carrying = !!d.carried;
     c.rose = d.roseAt ? Math.max(0, 400 - (now - d.roseAt) / 50) : 0;
-    e.skel.pose(c, this.root, this.bones, off, layout);
-    if (e.built.parts.length <= CONTENT_SLOT) {
-      if (d.held) this.poseHeld(d, e, off, false);
-      if (d.heldOff) this.poseHeld(d, e, off, true);
-      if (d.skull >= 0 || d.headBlock || d.headItem) this.poseHead(d, e, off, m.swing);
-      else if (this.snowPumpkin(d)) this.poseSnowPumpkin(e, off);
-      if (d.item) this.poseContents(d, off, body);
-    }
-    if (this.mushrooms(d) && e.built.parts.length <= MUSHROOM_SLOT) this.poseMushrooms(e, off);
-    if (d.carried && e.built.parts.length <= MUSHROOM_SLOT) this.poseCarried(d, off);
-    if (c.rose && e.built.parts.length <= MUSHROOM_SLOT) this.poseRose(e, off);
-    if (d.elytra && e.built.parts.length <= ELYTRA_SLOT) this.poseElytra(d, off, sneaking, this.rootBase);
+  }
+
+  /** Held and worn items, minecart contents, mooshroom mushrooms, the enderman's block, the golem's rose, elytra, fire and
+   * riders, each where the model has room for its bone slots. */
+  private poseAttachments(d: Drawn, e: ModelEntry, off: number, body: number, sneaking: boolean): void {
+    const parts = e.built.parts.length;
+    if (parts <= CONTENT_SLOT) this.poseContentSlots(d, e, off, body);
+    if (parts <= MUSHROOM_SLOT) this.poseMushroomSlots(d, e, off);
+    if (d.elytra && parts <= ELYTRA_SLOT) this.poseElytra(d, off, sneaking, this.rootBase);
     if (d.burning) this.poseFire(d, off);
     if (d.riders) this.poseRiders(d, e, sneaking);
+  }
+
+  private poseContentSlots(d: Drawn, e: ModelEntry, off: number, body: number): void {
+    if (d.held) this.poseHeld(d, e, off, false);
+    if (d.heldOff) this.poseHeld(d, e, off, true);
+    if (d.skull >= 0 || d.headBlock || d.headItem) this.poseHead(d, e, off, d.motion.swing);
+    else if (this.snowPumpkin(d)) this.poseSnowPumpkin(e, off);
+    if (d.item) this.poseContents(d, off, body);
+  }
+
+  private poseMushroomSlots(d: Drawn, e: ModelEntry, off: number): void {
+    if (this.mushrooms(d)) this.poseMushrooms(e, off);
+    if (d.carried) this.poseCarried(d, off);
+    if (this.ctx.rose) this.poseRose(e, off);
   }
 
   // ------------------------------------------------------------------------------------------------------- held blocks
@@ -2104,6 +2132,37 @@ export class EntityLayer {
 /** EntityCreeper.getCreeperFlashIntensity: the fuse's progress over fuseTime − 2 = 28 ticks since it began (0 = not fusing). */
 function creeperFlash(fuseAt: number, now: number): number {
   return fuseAt ? Math.min(1, Math.max(0, (now - fuseAt) / (28 * 50))) : 0;
+}
+
+/** RenderCreeper.preRenderCallback: the swell scale(h, i, h) from the flash intensity `f`. */
+function creeperSwell(sc: [number, number, number], f: number): void {
+  const g = 1 + Math.sin(f * 100) * f * 0.01, f4 = Math.min(1, Math.max(0, f)) ** 4;
+  const h = (1 + f4 * 0.4) * g, i = (1 + f4 * 0.1) / g;
+  sc[0] *= h;
+  sc[1] *= i;
+  sc[2] *= h;
+}
+
+/** RenderZombieVillager: a converting one shakes its yaw by cos(ticks · 3.25) · π/4 degrees. */
+function convertingShake(d: Drawn, now: number): number {
+  return d.look?.model === 'zombie_villager' && d.v.has('converting') ? Math.cos((now / 50) * 3.25) * Math.PI * 0.25 : 0;
+}
+
+/** The entity's (or bot's) wire flags. */
+function poseFlags(d: Drawn): number {
+  return d.ent?.flags ?? (d.botView?.dto as { flags?: number } | undefined)?.flags ?? 0;
+}
+
+/** The wire's own head yaw (1.12.2 head look), or null. */
+function wireHeadYaw(d: Drawn): number | null {
+  return d.ent?.dto.headYaw ?? (d.botView?.dto as { headYaw?: number | null } | undefined)?.headYaw ?? null;
+}
+
+/** Head yaw: the wire's own when it sends one, else the look yaw; smoothed toward it. */
+function turnHead(d: Drawn, body: number): void {
+  const m = d.motion;
+  const lookYaw = wireHeadYaw(d) ?? (d.botView ? d.botView.yaw : d.ent?.yaw ?? body);
+  m.head = Number.isNaN(m.head) ? lookYaw : m.head + wrapDeg(lookYaw - m.head) * 0.35;
 }
 
 /** A standard normal sample (Box–Muller), for java.util.Random.nextGaussian jitter. */
