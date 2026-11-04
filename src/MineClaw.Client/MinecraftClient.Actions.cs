@@ -789,67 +789,77 @@ public sealed partial class MinecraftClient
 
     /// <summary>Keeps within <paramref name="distance"/> blocks of a player until cancelled/stopped or the player is lost.</summary>
     public Task<ActionResult> FollowPlayerAsync(string name, double distance = 3, CancellationToken ct = default) =>
-        RunActionAsync("follow", ct, async c =>
+        RunActionAsync("follow", ct, c => FollowPlayerCoreAsync(name, distance, c));
+
+    private async Task<ActionResult> FollowPlayerCoreAsync(string name, double distance, CancellationToken c)
+    {
+        var o = GotoOptions.Default with { MaxReplans = 1, PlanTimeout = TimeSpan.FromMilliseconds(500) };
+        int lostTicks = 0;
+        try
         {
-            var o = GotoOptions.Default with { MaxReplans = 1, PlanTimeout = TimeSpan.FromMilliseconds(500) };
-            int lostTicks = 0;
-            try
+            while (true)
             {
-                while (true)
+                c.ThrowIfCancellationRequested();
+                var target = World.Entities.FindPlayer(name);
+                if (target is null)
                 {
-                    c.ThrowIfCancellationRequested();
-                    var target = World.Entities.FindPlayer(name);
-                    if (target is null)
-                    {
-                        if (++lostTicks > 100) return ActionResult.Fail($"lost sight of {name}");
-                        await WaitTicksAsync(1, c).ConfigureAwait(false);
-                        continue;
-                    }
-                    lostTicks = 0;
-                    await SurvivalWindowAsync(c).ConfigureAwait(false);
-                    var me = World.Player.Position;
-                    double d = me.DistanceTo(target.Position);
-                    if (d <= distance + 0.5)
-                    {
-                        var (yaw, pitch) = PlayerPhysics.YawPitchTo(World.Player.EyePosition, target.Position + new Vec3d(0, 1.6, 0));
-                        _lookYaw = yaw;
-                        _lookPitch = pitch;
-                        await WaitTicksAsync(5, c).ConfigureAwait(false);
-                        continue;
-                    }
-                    // Plan to the target's current spot, follow for up to ~2 s, then re-plan as it moves. Keep a margin
-                    // from the void: only stop on cells at least 2 from any edge and prefer paths away from edges, so a
-                    // player walking along the rim is followed from the inside rather than mirrored.
-                    var goal = GoalFiltered.AwayFromEdge(World, new GoalNearPosition(target.Position, distance + 1));
-                    var popts = BuildPathOptions(o) with { EdgeCostMultiplier = 8 };
-                    var path = await PathfindGate.RunAsync(() => Pathfinder.FindPath(World, me, goal, popts, c), c).ConfigureAwait(false);
-                    var steps = path.Steps;
-                    if (path.Status != PathStatus.Found)
-                    {
-                        // A partial path must still end away from the edge: cut it back to the last safe cell.
-                        int keep = -1;
-                        for (int i = 0; i < steps.Count; i++)
-                            if (Safety.EdgeDistance(World, steps[i].X, steps[i].Y, steps[i].Z, 2) >= 2) keep = i;
-                        steps = steps.Take(keep + 1).ToList();
-                    }
-                    if (steps.Count == 0)
-                    {
-                        await WaitTicksAsync(10, c).ConfigureAwait(false);
-                        continue;
-                    }
-                    using var slice = CancellationTokenSource.CreateLinkedTokenSource(c);
-                    slice.CancelAfter(TimeSpan.FromSeconds(2));
-                    try
-                    {
-                        var r = await FollowPathAsync(steps, o, slice.Token).ConfigureAwait(false);
-                        if (r is not null && r.Contains("void", StringComparison.Ordinal)) return ActionResult.Fail(r);
-                    }
-                    catch (OperationCanceledException) when (!c.IsCancellationRequested) { /* re-plan */ }
+                    if (++lostTicks > 100) return ActionResult.Fail($"lost sight of {name}");
+                    await WaitTicksAsync(1, c).ConfigureAwait(false);
+                    continue;
                 }
+                lostTicks = 0;
+                if (await FollowTowardAsync(target, distance, o, c).ConfigureAwait(false) is { } stop) return stop;
             }
-            catch (OperationCanceledException) when (_abortReason == "stopped")
-            {
-                return ActionResult.Success($"stopped following {name}");
-            }
-        });
+        }
+        catch (OperationCanceledException) when (_abortReason == "stopped")
+        {
+            return ActionResult.Success($"stopped following {name}");
+        }
+    }
+
+    /// <summary>One round of following: near enough, look at the target; else plan to its current spot and follow for up to ~2 s
+    /// (then re-plan as it moves). Keeps a margin from the void: only stops on cells at least 2 from any edge and prefers paths away
+    /// from edges, so a player walking along the rim is followed from the inside rather than mirrored. Null = go on.</summary>
+    private async Task<ActionResult?> FollowTowardAsync(Entity target, double distance, GotoOptions o, CancellationToken c)
+    {
+        await SurvivalWindowAsync(c).ConfigureAwait(false);
+        var me = World.Player.Position;
+        if (me.DistanceTo(target.Position) <= distance + 0.5)
+        {
+            var (yaw, pitch) = PlayerPhysics.YawPitchTo(World.Player.EyePosition, target.Position + new Vec3d(0, 1.6, 0));
+            _lookYaw = yaw;
+            _lookPitch = pitch;
+            await WaitTicksAsync(5, c).ConfigureAwait(false);
+            return null;
+        }
+        var goal = GoalFiltered.AwayFromEdge(World, new GoalNearPosition(target.Position, distance + 1));
+        var popts = BuildPathOptions(o) with { EdgeCostMultiplier = 8 };
+        var path = await PathfindGate.RunAsync(() => Pathfinder.FindPath(World, me, goal, popts, c), c).ConfigureAwait(false);
+        var steps = SafeFollowSteps(path);
+        if (steps.Count == 0)
+        {
+            await WaitTicksAsync(10, c).ConfigureAwait(false);
+            return null;
+        }
+        using var slice = CancellationTokenSource.CreateLinkedTokenSource(c);
+        slice.CancelAfter(TimeSpan.FromSeconds(2));
+        try
+        {
+            var r = await FollowPathAsync(steps, o, slice.Token).ConfigureAwait(false);
+            if (r is not null && r.Contains("void", StringComparison.Ordinal)) return ActionResult.Fail(r);
+        }
+        catch (OperationCanceledException) when (!c.IsCancellationRequested) { /* re-plan */ }
+        return null;
+    }
+
+    /// <summary>The path's steps; a partial path must still end away from the edge: cut back to the last safe cell.</summary>
+    private IReadOnlyList<PathStep> SafeFollowSteps(PathResult path)
+    {
+        var steps = path.Steps;
+        if (path.Status == PathStatus.Found) return steps;
+        int keep = -1;
+        for (int i = 0; i < steps.Count; i++)
+            if (Safety.EdgeDistance(World, steps[i].X, steps[i].Y, steps[i].Z, 2) >= 2) keep = i;
+        return steps.Take(keep + 1).ToList();
+    }
 }

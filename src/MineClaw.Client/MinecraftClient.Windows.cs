@@ -206,8 +206,7 @@ public sealed partial class MinecraftClient
     {
         int id = World.GetBlock(pos);
         // 1.12.2's trapped chest is a chest window too (was: "trapped chest ... is not a container", so no deposit ever reached one).
-        if (id is not (Blocks.Chest or ChestPairs.TrappedChest or Blocks.Furnace or Blocks.LitFurnace or Blocks.Workbench or Blocks.Dispenser)
-            && !StationBlocks.Contains(id))
+        if (!OpensWindow(id))
             return ActionResult.Fail($"{BlockName(id, 0)} at {Fmt(pos)} is not a container");
         var open = World.Inventory.OpenWindow;
         if (open is not null) await EnsureNoWindowAsync(ct).ConfigureAwait(false);
@@ -222,6 +221,11 @@ public sealed partial class MinecraftClient
         _lastContainerPos = pos;
         return ActionResult.Success("opened " + DescribeOpenWindow());
     }
+
+    /// <summary>Containers, stations and tables that open a window.</summary>
+    private static bool OpensWindow(int id) =>
+        id is Blocks.Chest or ChestPairs.TrappedChest or Blocks.Furnace or Blocks.LitFurnace or Blocks.Workbench or Blocks.Dispenser
+        || StationBlocks.Contains(id);
 
     private BlockPos? _lastContainerPos;
 

@@ -216,33 +216,41 @@ public sealed partial class MinecraftClient
     /// face only shows when leaning out (sneaking: never over the void).
     /// </summary>
     public Task<ActionResult> PourWaterAsync(BlockPos source, BlockFace face, CancellationToken ct = default) =>
-        RunActionAsync("pour", ct, async c =>
+        RunActionAsync("pour", ct, c => PourWaterCoreAsync(source, face, c));
+
+    /// <summary>Settles a pour before anything moves: no bucket, the nether, a source already there (success), an occupied cell.</summary>
+    private ActionResult? PourPrecheck(BlockPos source)
+    {
+        if (World.Inventory.CountItem(Items.WaterBucket) == 0) return ActionResult.Fail("no water bucket");
+        if (World.Dimension == -1) return ActionResult.Fail("water evaporates in the nether");
+        if (BlockShapes.IsWater(World.GetBlock(source)) && World.GetMeta(source) == 0) return ActionResult.Success($"water source already at {Fmt(source)}");
+        return Aiming.IsReplaceable(World, World.GetBlock(source)) ? null : ActionResult.Fail($"{Fmt(source)} isn't empty");
+    }
+
+    private async Task<ActionResult> PourWaterCoreAsync(BlockPos source, BlockFace face, CancellationToken c)
+    {
+        if (PourPrecheck(source) is { } settled) return settled;
+        var n = face.Normal();
+        var against = new BlockPos(source.X - n.X, source.Y - n.Y, source.Z - n.Z);
+        await EnsureNoWindowAsync(c).ConfigureAwait(false);
+        DigAim? Aim() => FaceAim.Find(World, World.Player.EyePosition, against, face, Options.Reach) is { } a
+                         && BucketHit(World.Player.EyePosition, a.Point, liquids: false) == against ? a : null;
+        bool sneakBefore = _idleSneak;
+        _idleSneak = true;
+        try
         {
-            if (World.Inventory.CountItem(Items.WaterBucket) == 0) return ActionResult.Fail("no water bucket");
-            if (World.Dimension == -1) return ActionResult.Fail("water evaporates in the nether");
-            if (BlockShapes.IsWater(World.GetBlock(source)) && World.GetMeta(source) == 0) return ActionResult.Success($"water source already at {Fmt(source)}");
-            if (!Aiming.IsReplaceable(World, World.GetBlock(source))) return ActionResult.Fail($"{Fmt(source)} isn't empty");
-            var n = face.Normal();
-            var against = new BlockPos(source.X - n.X, source.Y - n.Y, source.Z - n.Z);
-            await EnsureNoWindowAsync(c).ConfigureAwait(false);
-            DigAim? Aim() => FaceAim.Find(World, World.Player.EyePosition, against, face, Options.Reach) is { } a
-                             && BucketHit(World.Player.EyePosition, a.Point, liquids: false) == against ? a : null;
-            bool sneakBefore = _idleSneak;
-            _idleSneak = true;
-            try
-            {
-                var aim = Aim();
-                if (aim is null && await LeanForPlaceAsync(source, c).ConfigureAwait(false)) aim = Aim();
-                if (aim is not { } a) return ActionResult.Fail($"can't see the {face.ToString().ToLowerInvariant()} face of {Fmt(against)} to pour against");
-                if (await SelectItemAsync(Items.WaterBucket, null, c).ConfigureAwait(false) < 0) return ActionResult.Fail("couldn't hold the water bucket");
-                await LookCoreAsync(a.Yaw, a.Pitch, c).ConfigureAwait(false);
-                Send(PlayerBlockPlacementPacket.UseItem(HeldStack()));
-                if (!await WaitUntilAsync(() => BlockShapes.IsWater(World.GetBlock(source)), TimeSpan.FromMilliseconds(2000), c).ConfigureAwait(false))
-                    return ActionResult.Fail($"water didn't appear at {Fmt(source)}");
-                return ActionResult.Success($"poured water at {Fmt(source)}");
-            }
-            finally { _idleSneak = sneakBefore; }
-        });
+            var aim = Aim();
+            if (aim is null && await LeanForPlaceAsync(source, c).ConfigureAwait(false)) aim = Aim();
+            if (aim is not { } a) return ActionResult.Fail($"can't see the {face.ToString().ToLowerInvariant()} face of {Fmt(against)} to pour against");
+            if (await SelectItemAsync(Items.WaterBucket, null, c).ConfigureAwait(false) < 0) return ActionResult.Fail("couldn't hold the water bucket");
+            await LookCoreAsync(a.Yaw, a.Pitch, c).ConfigureAwait(false);
+            Send(PlayerBlockPlacementPacket.UseItem(HeldStack()));
+            if (!await WaitUntilAsync(() => BlockShapes.IsWater(World.GetBlock(source)), TimeSpan.FromMilliseconds(2000), c).ConfigureAwait(false))
+                return ActionResult.Fail($"water didn't appear at {Fmt(source)}");
+            return ActionResult.Success($"poured water at {Fmt(source)}");
+        }
+        finally { _idleSneak = sneakBefore; }
+    }
 
     /// <summary>
     /// Placing a full bucket must pour liquid: ItemBucket has no onItemUse, so the block-placement click (0x0F with a face / 1.12.2

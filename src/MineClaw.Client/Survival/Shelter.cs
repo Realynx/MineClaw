@@ -55,6 +55,19 @@ public static class Shelter
             return false;
         }
 
+        // A cap beside the roof cell, on top of a head-level wall, when the roof has nothing to click yet.
+        void Roof(List<BlockPos> headSides)
+        {
+            var roof = feet.Up().Up();
+            if (Try(roof)) return;
+            foreach (var c in headSides.Where(S))
+            {
+                var cap = c.Up();
+                if (!Replaceable(w, cap) && !S(cap)) continue;
+                if (Try(cap) && Try(roof)) break;
+            }
+        }
+
         var feetSides = Sides.Select(f => feet + f.Normal()).ToList();
         var headSides = Sides.Select(f => feet.Up() + f.Normal()).ToList();
         foreach (var c in feetSides)
@@ -67,14 +80,7 @@ public static class Shelter
                 Try(c);
             }
         foreach (var c in headSides) Try(c);
-        var roof = feet.Up().Up();
-        if (!Try(roof))
-            foreach (var c in headSides.Where(S))
-            {
-                var cap = c.Up(); // beside the roof cell, on top of a head-level wall
-                if (!Replaceable(w, cap) && !S(cap)) continue;
-                if (Try(cap) && Try(roof)) break;
-            }
+        Roof(headSides);
         return plan;
     }
 
