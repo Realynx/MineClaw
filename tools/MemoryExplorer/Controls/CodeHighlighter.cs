@@ -59,84 +59,136 @@ public static class CodeHighlighter
 
     private static IReadOnlyList<CodeSpan> Line(string s, bool lua, ref State state)
     {
-        var spans = new List<CodeSpan>();
-        var kw = lua ? LuaKeywords : JsKeywords;
-        int i = 0;
-        void Add(int from, int to, CodeKind k)
+        var lexer = new LineLexer(s, lua, state);
+        lexer.Run();
+        state = lexer.State;
+        return lexer.Spans;
+    }
+
+    /// <summary>One line's tokenizer: the cursor, the multi-line construct still open, and the spans so far.</summary>
+    private sealed class LineLexer(string s, bool lua, State state)
+    {
+        private readonly HashSet<string> _keywords = lua ? LuaKeywords : JsKeywords;
+        private int _i;
+
+        public State State { get; private set; } = state;
+        public List<CodeSpan> Spans { get; } = [];
+
+        public void Run()
+        {
+            while (_i < s.Length)
+            {
+                bool more = State switch
+                {
+                    State.BlockComment or State.LuaBlock => CloseBlock(),
+                    State.Template => CloseTemplate(),
+                    _ => Token(),
+                };
+                if (!more) return;
+            }
+        }
+
+        private void Add(int from, int to, CodeKind k)
         {
             if (to <= from) return;
             var text = s[from..to];
-            if (spans.Count > 0 && spans[^1].Kind == k) spans[^1] = spans[^1] with { Text = spans[^1].Text + text };
-            else spans.Add(new CodeSpan(text, k));
+            if (Spans.Count > 0 && Spans[^1].Kind == k) Spans[^1] = Spans[^1] with { Text = Spans[^1].Text + text };
+            else Spans.Add(new CodeSpan(text, k));
         }
-        while (i < s.Length)
+
+        private bool At(int offset, char ch) => _i + offset < s.Length && s[_i + offset] == ch;
+
+        /// <summary>Inside a block comment: up to its end, or the rest of the line (false).</summary>
+        private bool CloseBlock()
         {
-            if (state == State.BlockComment || state == State.LuaBlock)
-            {
-                var close = state == State.BlockComment ? "*/" : "]]";
-                int end = s.IndexOf(close, i, StringComparison.Ordinal);
-                if (end < 0) { Add(i, s.Length, CodeKind.Comment); return spans; }
-                Add(i, end + 2, CodeKind.Comment);
-                i = end + 2;
-                state = State.None;
-                continue;
-            }
-            if (state == State.Template)
-            {
-                int end = s.IndexOf('`', i);
-                if (end < 0) { Add(i, s.Length, CodeKind.String); return spans; }
-                Add(i, end + 1, CodeKind.String);
-                i = end + 1;
-                state = State.None;
-                continue;
-            }
-            char c = s[i];
-            if (!lua && c == '/' && i + 1 < s.Length && s[i + 1] == '/') { Add(i, s.Length, CodeKind.Comment); break; }
-            if (!lua && c == '/' && i + 1 < s.Length && s[i + 1] == '*') { state = State.BlockComment; Add(i, i + 2, CodeKind.Comment); i += 2; continue; }
-            if (lua && c == '-' && i + 1 < s.Length && s[i + 1] == '-')
-            {
-                if (i + 3 < s.Length && s[i + 2] == '[' && s[i + 3] == '[') { state = State.LuaBlock; Add(i, i + 4, CodeKind.Comment); i += 4; continue; }
-                Add(i, s.Length, CodeKind.Comment);
-                break;
-            }
-            if (c is '"' or '\'' || (c == '`' && !lua))
-            {
-                if (c == '`') { state = State.Template; Add(i, i + 1, CodeKind.String); i++; continue; }
-                int j = i + 1;
-                while (j < s.Length && s[j] != c) j += s[j] == '\\' ? 2 : 1;
-                j = Math.Min(s.Length, j + 1);
-                Add(i, j, CodeKind.String);
-                i = j;
-                continue;
-            }
-            if (char.IsDigit(c) || (c == '.' && i + 1 < s.Length && char.IsDigit(s[i + 1])))
-            {
-                int j = i + 1;
-                while (j < s.Length && (char.IsLetterOrDigit(s[j]) || s[j] == '.' || s[j] == '_')) j++;
-                Add(i, j, CodeKind.Number);
-                i = j;
-                continue;
-            }
-            if (char.IsLetter(c) || c is '_' or '$')
-            {
-                int j = i + 1;
-                while (j < s.Length && (char.IsLetterOrDigit(s[j]) || s[j] is '_' or '$')) j++;
-                var word = s[i..j];
-                bool member = i > 0 && s[i - 1] == '.';
-                int k = j;
-                while (k < s.Length && s[k] == ' ') k++;
-                bool call = k < s.Length && s[k] == '(';
-                var kind = kw.Contains(word) && !member ? CodeKind.Keyword
-                    : !member && SdkNames.Contains(word) ? CodeKind.Sdk
-                    : call ? CodeKind.Call : CodeKind.Plain;
-                Add(i, j, kind);
-                i = j;
-                continue;
-            }
-            Add(i, i + 1, char.IsWhiteSpace(c) ? CodeKind.Plain : CodeKind.Punct);
-            i++;
+            var close = State == State.BlockComment ? "*/" : "]]";
+            int end = s.IndexOf(close, _i, StringComparison.Ordinal);
+            if (end < 0) { Add(_i, s.Length, CodeKind.Comment); return false; }
+            Add(_i, end + 2, CodeKind.Comment);
+            _i = end + 2;
+            State = State.None;
+            return true;
         }
-        return spans;
+
+        /// <summary>Inside a template string: up to its closing backtick, or the rest of the line (false).</summary>
+        private bool CloseTemplate()
+        {
+            int end = s.IndexOf('`', _i);
+            if (end < 0) { Add(_i, s.Length, CodeKind.String); return false; }
+            Add(_i, end + 1, CodeKind.String);
+            _i = end + 1;
+            State = State.None;
+            return true;
+        }
+
+        /// <summary>One token at the cursor; false when it took the rest of the line (a line comment).</summary>
+        private bool Token()
+        {
+            char c = s[_i];
+            if (lua ? c == '-' && At(1, '-') : c == '/' && (At(1, '/') || At(1, '*'))) return Comment();
+            if (c is '"' or '\'' || (c == '`' && !lua)) Quoted(c);
+            else if (char.IsDigit(c) || (c == '.' && _i + 1 < s.Length && char.IsDigit(s[_i + 1]))) Number();
+            else if (char.IsLetter(c) || c is '_' or '$') Word();
+            else { Add(_i, _i + 1, char.IsWhiteSpace(c) ? CodeKind.Plain : CodeKind.Punct); _i++; }
+            return true;
+        }
+
+        /// <summary>At "//", "/*" (JS) or "--" (Lua): a block comment opens ("/*", "--[["), else the rest of the line is one.</summary>
+        private bool Comment()
+        {
+            if (lua && At(2, '[') && At(3, '[')) return Open(State.LuaBlock, 4);
+            if (!lua && At(1, '*')) return Open(State.BlockComment, 2);
+            Add(_i, s.Length, CodeKind.Comment);
+            return false;
+        }
+
+        private bool Open(State block, int length)
+        {
+            State = block;
+            Add(_i, _i + length, CodeKind.Comment);
+            _i += length;
+            return true;
+        }
+
+        private void Quoted(char quote)
+        {
+            if (quote == '`') { State = State.Template; Add(_i, _i + 1, CodeKind.String); _i++; return; }
+            int j = _i + 1;
+            while (j < s.Length && s[j] != quote) j += s[j] == '\\' ? 2 : 1;
+            j = Math.Min(s.Length, j + 1);
+            Add(_i, j, CodeKind.String);
+            _i = j;
+        }
+
+        private void Number()
+        {
+            int j = _i + 1;
+            while (j < s.Length && (char.IsLetterOrDigit(s[j]) || s[j] == '.' || s[j] == '_')) j++;
+            Add(_i, j, CodeKind.Number);
+            _i = j;
+        }
+
+        private void Word()
+        {
+            int j = _i + 1;
+            while (j < s.Length && (char.IsLetterOrDigit(s[j]) || s[j] is '_' or '$')) j++;
+            var word = s[_i..j];
+            bool member = _i > 0 && s[_i - 1] == '.';
+            Add(_i, j, WordKind(word, member, CallFollows(j)));
+            _i = j;
+        }
+
+        /// <summary>A '(' after the word (spaces allowed).</summary>
+        private bool CallFollows(int j)
+        {
+            while (j < s.Length && s[j] == ' ') j++;
+            return j < s.Length && s[j] == '(';
+        }
+
+        private CodeKind WordKind(string word, bool member, bool call) =>
+            _keywords.Contains(word) && !member ? CodeKind.Keyword
+            : !member && SdkNames.Contains(word) ? CodeKind.Sdk
+            : call ? CodeKind.Call : CodeKind.Plain;
     }
 
     /// <summary>The plain text of highlighted spans (tests, copy).</summary>

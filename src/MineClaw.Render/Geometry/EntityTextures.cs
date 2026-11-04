@@ -53,96 +53,149 @@ public static class EntityTextures
 
     private static string ModelOf(string tex) => tex switch { "sheep_fur" => "sheep", "char" => "player", _ => tex };
 
-    private static uint PartColour(string tex, string part) => tex switch
+    private static bool IsHead(string part) => part is "head" or "hat";
+    private static bool IsArm(string part) => part is "rarm" or "larm";
+
+    /// <summary>The base colour of a model part in a procedural texture, per texture.</summary>
+    private static readonly Dictionary<string, Func<string, uint>> PartColours = new(StringComparer.Ordinal)
     {
-        "char" => part is "head" or "hat" ? 0xc69680u : part == "body" ? 0x2f9fb0u : part is "rarm" or "larm" ? 0xc69680u : 0x3a3a90u,
-        "zombie" => part is "head" or "hat" or "rarm" or "larm" ? 0x5f9a46u : part == "body" ? 0x2b8a8fu : 0x3b3e8fu,
-        "pigzombie" => part is "head" or "hat" ? 0xe3a2a0u : part is "rarm" or "larm" ? 0xd8968eu : part == "body" ? 0x7a5634u : 0x5b4226u,
-        "skeleton" => 0xc9c9c4u,
-        "creeper" => 0x5cb84au,
-        "spider" => part == "head" ? 0x2c241eu : part == "body" ? 0x3a3028u : 0x332a22u,
-        "pig" => 0xefa5a3u,
-        "cow" => part == "head" ? 0x4a3326u : part == "body" ? 0x433024u : 0x4f3a2cu,
-        "sheep" => part == "head" ? 0xc9b59cu : 0xd8cab4u,
-        "sheep_fur" => 0xefefefu,
-        "chicken" => part.StartsWith("leg") ? 0xf2b030u : 0xf3f3f3u,
-        "enderman" => 0x141414u,
-        "slime" => part == "inner" ? 0x4a9a3au : 0x72c45cu,
-        "wolf" => 0xd9d2c8u,
-        "squid" => 0x2c3d5eu,
-        "ghast" => 0xefefefu,
-        "silverfish" => 0x8c8c8cu,
-        _ => 0x808080u,
+        ["char"] = part => IsHead(part) ? 0xc69680u : part == "body" ? 0x2f9fb0u : IsArm(part) ? 0xc69680u : 0x3a3a90u,
+        ["zombie"] = part => IsHead(part) || IsArm(part) ? 0x5f9a46u : part == "body" ? 0x2b8a8fu : 0x3b3e8fu,
+        ["pigzombie"] = part => IsHead(part) ? 0xe3a2a0u : IsArm(part) ? 0xd8968eu : part == "body" ? 0x7a5634u : 0x5b4226u,
+        ["skeleton"] = _ => 0xc9c9c4u,
+        ["creeper"] = _ => 0x5cb84au,
+        ["spider"] = part => part == "head" ? 0x2c241eu : part == "body" ? 0x3a3028u : 0x332a22u,
+        ["pig"] = _ => 0xefa5a3u,
+        ["cow"] = part => part == "head" ? 0x4a3326u : part == "body" ? 0x433024u : 0x4f3a2cu,
+        ["sheep"] = part => part == "head" ? 0xc9b59cu : 0xd8cab4u,
+        ["sheep_fur"] = _ => 0xefefefu,
+        ["chicken"] = part => part.StartsWith("leg") ? 0xf2b030u : 0xf3f3f3u,
+        ["enderman"] = _ => 0x141414u,
+        ["slime"] = part => part == "inner" ? 0x4a9a3au : 0x72c45cu,
+        ["wolf"] = _ => 0xd9d2c8u,
+        ["squid"] = _ => 0x2c3d5eu,
+        ["ghast"] = _ => 0xefefefu,
+        ["silverfish"] = _ => 0x8c8c8cu,
     };
 
-    private static (int W, int H, uint[] Px) Paint(int id)
+    private static uint PartColour(string tex, string part) => PartColours.TryGetValue(tex, out var c) ? c(part) : 0x808080u;
+
+    /// <summary>A 64×32 procedural texture being painted: noisy rectangles from a seeded generator (the order of the calls is
+    /// part of the picture).</summary>
+    private sealed class Painter(int seed)
     {
-        string tex = Name(id);
-        const int W = 64, H = 32;
-        var px = new uint[W * H];
-        var rnd = new Random(1000 + id);
-        void Rect(int x, int y, int w, int h, uint c, bool noise = true)
+        public const int W = 64, H = 32;
+        public readonly uint[] Px = new uint[W * H];
+        public readonly Random Rnd = new(seed);
+
+        public void Rect(int x, int y, int w, int h, uint c, bool noise = true)
         {
             for (int j = y; j < y + h; j++)
                 for (int i = x; i < x + w; i++)
                 {
                     if ((uint)i >= W || (uint)j >= H) continue;
-                    float k = noise ? 0.88f + (float)rnd.NextDouble() * 0.2f : 1f;
-                    px[j * W + i] = 0xff000000 | Lighting.Scale(c, Math.Min(1f, k)) & 0xffffff;
+                    float k = noise ? 0.88f + (float)Rnd.NextDouble() * 0.2f : 1f;
+                    Px[j * W + i] = 0xff000000 | Lighting.Scale(c, Math.Min(1f, k)) & 0xffffff;
                 }
         }
+    }
+
+    private static (int W, int H, uint[] Px) Paint(int id)
+    {
+        string tex = Name(id);
+        var p = new Painter(1000 + id);
         var model = EntityGeometry.Create(ModelOf(tex));
-        foreach (var part in model.Parts)
-        {
-            bool fur = part.Name.StartsWith("wool");
-            if (tex == "sheep_fur" != fur && model.Kind == "sheep") continue;
-            if (part.Name == "hat") continue; // the hat layer stays transparent (an overlay, not a second head)
-            foreach (var b in part.Boxes)
-            {
-                uint c = PartColour(tex, part.Name);
-                // A head's extra boxes are the snout / beak / horns: colour them apart.
-                if (part.Name == "head" && b != part.Boxes[0]) c = tex switch { "pig" => 0xd88a88, "chicken" => b.V == 4 ? 0xd02020u : 0xf2b030u, "cow" => 0xd8d6c8, "wolf" => 0xc9c2b8, _ => c };
-                if (tex == "cow" && part.Name == "body" && b != part.Boxes[0]) c = 0xe8a0a0;
-                Rect(b.U, b.V, 2 * (b.D + b.W), b.D + b.H, c);
-            }
-        }
+        foreach (var part in model.Parts) PaintPart(p, tex, model, part);
         // Faces on the head's front (u+d, v+d, w×h): eyes and the like, so a mob's facing is readable.
-        var headPart = model.Parts.FirstOrDefault(p => p.Name == "head");
-        if (headPart != null && tex != "sheep_fur")
+        var headPart = model.Parts.FirstOrDefault(part => part.Name == "head");
+        if (headPart != null && tex != "sheep_fur" && Faces.TryGetValue(tex, out var face))
         {
             var hb = headPart.Boxes[0];
-            int fx = hb.U + hb.D, fy = hb.V + hb.D, fw = hb.W, fh = hb.H;
-            switch (tex)
-            {
-                case "char": Rect(fx, fy, fw, 2, 0x3b2a1a); Rect(fx + 1, fy + 4, 2, 1, 0xffffff, false); Rect(fx + 2, fy + 4, 1, 1, 0x4a3aa0, false);
-                    Rect(fx + 5, fy + 4, 2, 1, 0xffffff, false); Rect(fx + 5, fy + 4, 1, 1, 0x4a3aa0, false); Rect(fx + 3, fy + 6, 2, 1, 0x8a4a3a, false); break;
-                case "zombie" or "pigzombie": Rect(fx + 1, fy + 4, 2, 1, 0x101010, false); Rect(fx + 5, fy + 4, 2, 1, 0x101010, false); Rect(fx + 2, fy + 6, 4, 1, 0x2a4a20, false); break;
-                case "skeleton": Rect(fx + 1, fy + 3, 2, 2, 0x202020, false); Rect(fx + 5, fy + 3, 2, 2, 0x202020, false); Rect(fx + 2, fy + 6, 4, 1, 0x303030, false); break;
-                case "creeper":
-                    Rect(fx + 1, fy + 2, 2, 2, 0x0a0a0a, false); Rect(fx + 5, fy + 2, 2, 2, 0x0a0a0a, false);
-                    Rect(fx + 3, fy + 4, 2, 3, 0x0a0a0a, false); Rect(fx + 2, fy + 5, 1, 3, 0x0a0a0a, false); Rect(fx + 5, fy + 5, 1, 3, 0x0a0a0a, false); break;
-                case "spider":
-                    foreach (var (ex, ey) in new[] { (1, 2), (6, 2), (2, 3), (5, 3), (3, 2), (4, 2), (1, 4), (6, 4) }) Rect(fx + ex, fy + ey, 1, 1, 0xd01818, false);
-                    break;
-                case "pig": Rect(fx + 1, fy + 2, 1, 1, 0xffffff, false); Rect(fx + 6, fy + 2, 1, 1, 0xffffff, false); Rect(fx + 1, fy + 3, 1, 1, 0x101010, false); Rect(fx + 6, fy + 3, 1, 1, 0x101010, false); break;
-                case "cow": Rect(fx + 3, fy, 2, fh, 0xe6e6e6); Rect(fx + 1, fy + 2, 1, 1, 0x101010, false); Rect(fx + fw - 2, fy + 2, 1, 1, 0x101010, false); break;
-                case "sheep": Rect(fx + 1, fy + 2, 1, 1, 0x101010, false); Rect(fx + fw - 2, fy + 2, 1, 1, 0x101010, false); break;
-                case "chicken": Rect(fx, fy + 1, 1, 1, 0x101010, false); Rect(fx + fw - 1, fy + 1, 1, 1, 0x101010, false); break;
-                case "enderman": Rect(fx + 1, fy + 4, 2, 1, 0xd65cff, false); Rect(fx + 5, fy + 4, 2, 1, 0xd65cff, false); break;
-                case "wolf": Rect(fx + 1, fy + 2, 1, 1, 0x101010, false); Rect(fx + fw - 2, fy + 2, 1, 1, 0x101010, false); break;
-            }
+            face(p, hb.U + hb.D, hb.V + hb.D, hb.W, hb.H);
         }
-        if (tex == "cow")
+        if (tex == "cow") CowPatches(p);
+        if (tex == "slime") SlimeJelly(p);
+        return (Painter.W, Painter.H, p.Px);
+    }
+
+    /// <summary>White patches on the hide.</summary>
+    private static void CowPatches(Painter p)
+    {
+        for (int i = 0; i < 6; i++) p.Rect(18 + p.Rnd.Next(40), 4 + p.Rnd.Next(24), 3 + p.Rnd.Next(4), 2 + p.Rnd.Next(4), 0xe8e8e8);
+    }
+
+    /// <summary>The outer cube translucent, a dark core.</summary>
+    private static void SlimeJelly(Painter p)
+    {
+        for (int i = 0; i < Painter.W * Painter.H; i++) if (p.Px[i] != 0 && i / Painter.W < 16) p.Px[i] = (p.Px[i] & 0xffffff) | 0xb0000000;
+        p.Rect(32, 0, 8, 12, 0x1c3a18, false);
+    }
+
+    /// <summary>One part's boxes in its colour (the sheep's fur parts only in the fur texture, never the hat layer).</summary>
+    private static void PaintPart(Painter p, string tex, EntityModel model, ModelPart part)
+    {
+        bool fur = part.Name.StartsWith("wool");
+        if (tex == "sheep_fur" != fur && model.Kind == "sheep") return;
+        if (part.Name == "hat") return; // the hat layer stays transparent (an overlay, not a second head)
+        foreach (var b in part.Boxes)
         {
-            // White patches on the hide.
-            for (int i = 0; i < 6; i++) Rect(18 + rnd.Next(40), 4 + rnd.Next(24), 3 + rnd.Next(4), 2 + rnd.Next(4), 0xe8e8e8);
+            uint c = PartColour(tex, part.Name);
+            // A head's extra boxes are the snout / beak / horns: colour them apart.
+            if (part.Name == "head" && b != part.Boxes[0]) c = HeadExtraColour(tex, b, c);
+            if (tex == "cow" && part.Name == "body" && b != part.Boxes[0]) c = 0xe8a0a0;
+            p.Rect(b.U, b.V, 2 * (b.D + b.W), b.D + b.H, c);
         }
-        if (tex == "slime")
+    }
+
+    private static uint HeadExtraColour(string tex, ModelBox b, uint c) =>
+        tex switch { "pig" => 0xd88a88, "chicken" => b.V == 4 ? 0xd02020u : 0xf2b030u, "cow" => 0xd8d6c8, "wolf" => 0xc9c2b8, _ => c };
+
+    /// <summary>The face painted on a head's front (painter, front x, y, width, height), per texture.</summary>
+    private static readonly Dictionary<string, Action<Painter, int, int, int, int>> Faces = new(StringComparer.Ordinal)
+    {
+        ["char"] = (p, fx, fy, fw, fh) =>
         {
-            for (int i = 0; i < W * H; i++) if (px[i] != 0 && i / W < 16) px[i] = (px[i] & 0xffffff) | 0xb0000000;
-            Rect(32, 0, 8, 12, 0x1c3a18, false);
-        }
-        return (W, H, px);
+            p.Rect(fx, fy, fw, 2, 0x3b2a1a); p.Rect(fx + 1, fy + 4, 2, 1, 0xffffff, false); p.Rect(fx + 2, fy + 4, 1, 1, 0x4a3aa0, false);
+            p.Rect(fx + 5, fy + 4, 2, 1, 0xffffff, false); p.Rect(fx + 5, fy + 4, 1, 1, 0x4a3aa0, false); p.Rect(fx + 3, fy + 6, 2, 1, 0x8a4a3a, false);
+        },
+        ["zombie"] = ZombieFace,
+        ["pigzombie"] = ZombieFace,
+        ["skeleton"] = (p, fx, fy, fw, fh) =>
+        {
+            p.Rect(fx + 1, fy + 3, 2, 2, 0x202020, false); p.Rect(fx + 5, fy + 3, 2, 2, 0x202020, false); p.Rect(fx + 2, fy + 6, 4, 1, 0x303030, false);
+        },
+        ["creeper"] = (p, fx, fy, fw, fh) =>
+        {
+            p.Rect(fx + 1, fy + 2, 2, 2, 0x0a0a0a, false); p.Rect(fx + 5, fy + 2, 2, 2, 0x0a0a0a, false);
+            p.Rect(fx + 3, fy + 4, 2, 3, 0x0a0a0a, false); p.Rect(fx + 2, fy + 5, 1, 3, 0x0a0a0a, false); p.Rect(fx + 5, fy + 5, 1, 3, 0x0a0a0a, false);
+        },
+        ["spider"] = (p, fx, fy, fw, fh) =>
+        {
+            foreach (var (ex, ey) in new[] { (1, 2), (6, 2), (2, 3), (5, 3), (3, 2), (4, 2), (1, 4), (6, 4) }) p.Rect(fx + ex, fy + ey, 1, 1, 0xd01818, false);
+        },
+        ["pig"] = (p, fx, fy, fw, fh) =>
+        {
+            p.Rect(fx + 1, fy + 2, 1, 1, 0xffffff, false); p.Rect(fx + 6, fy + 2, 1, 1, 0xffffff, false);
+            p.Rect(fx + 1, fy + 3, 1, 1, 0x101010, false); p.Rect(fx + 6, fy + 3, 1, 1, 0x101010, false);
+        },
+        ["cow"] = (p, fx, fy, fw, fh) =>
+        {
+            p.Rect(fx + 3, fy, 2, fh, 0xe6e6e6); p.Rect(fx + 1, fy + 2, 1, 1, 0x101010, false); p.Rect(fx + fw - 2, fy + 2, 1, 1, 0x101010, false);
+        },
+        ["sheep"] = SideEyes,
+        ["chicken"] = (p, fx, fy, fw, fh) => { p.Rect(fx, fy + 1, 1, 1, 0x101010, false); p.Rect(fx + fw - 1, fy + 1, 1, 1, 0x101010, false); },
+        ["enderman"] = (p, fx, fy, fw, fh) => { p.Rect(fx + 1, fy + 4, 2, 1, 0xd65cff, false); p.Rect(fx + 5, fy + 4, 2, 1, 0xd65cff, false); },
+        ["wolf"] = SideEyes,
+    };
+
+    private static void ZombieFace(Painter p, int fx, int fy, int fw, int fh)
+    {
+        p.Rect(fx + 1, fy + 4, 2, 1, 0x101010, false); p.Rect(fx + 5, fy + 4, 2, 1, 0x101010, false); p.Rect(fx + 2, fy + 6, 4, 1, 0x2a4a20, false);
+    }
+
+    private static void SideEyes(Painter p, int fx, int fy, int fw, int fh)
+    {
+        p.Rect(fx + 1, fy + 2, 1, 1, 0x101010, false); p.Rect(fx + fw - 2, fy + 2, 1, 1, 0x101010, false);
     }
 
     /// <summary>Texel (0xAARRGGBB) at normalised (u, v) of texture <paramref name="id"/>.</summary>
@@ -191,11 +244,13 @@ public static class ItemIcons
     }
 
     /// <summary>A flat colour for an item (no texture available).</summary>
-    public static uint Colour(int id) => id is > 0 and < 256 ? BlockGeometry.FlatColour(id, Face.North) : id switch
+    public static uint Colour(int id) =>
+        id is > 0 and < 256 ? BlockGeometry.FlatColour(id, Face.North) : Colours.TryGetValue(id, out var c) ? c : 0xe0d070;
+
+    private static readonly Dictionary<int, uint> Colours = new()
     {
-        263 => 0x2a2a2a, 264 => 0x5fe0e0, 265 => 0xd8d8d8, 266 => 0xf0d040, 280 => 0x8a6a3a, 295 => 0x6ab040, 296 => 0xc8b048, 331 => 0xc01010,
-        338 => 0x8ac060, 344 => 0xf0e0c0, 352 => 0xe8e8e0, 287 => 0xf0f0f0, 288 => 0xf0f0f0, 289 => 0x505050, 334 => 0x8a5030, 337 => 0xa0a8b8,
-        _ => 0xe0d070,
+        [263] = 0x2a2a2a, [264] = 0x5fe0e0, [265] = 0xd8d8d8, [266] = 0xf0d040, [280] = 0x8a6a3a, [295] = 0x6ab040, [296] = 0xc8b048, [331] = 0xc01010,
+        [338] = 0x8ac060, [344] = 0xf0e0c0, [352] = 0xe8e8e0, [287] = 0xf0f0f0, [288] = 0xf0f0f0, [289] = 0x505050, [334] = 0x8a5030, [337] = 0xa0a8b8,
     };
 }
 

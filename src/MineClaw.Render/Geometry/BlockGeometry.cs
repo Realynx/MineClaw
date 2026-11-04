@@ -31,34 +31,39 @@ public enum BlockShape : byte
 public static class BlockGeometry
 {
     /// <summary>b1.8.1 Block.b() render type of a block id (0 = standard cube; −1 = tile-entity model or invisible).</summary>
-    public static int RenderType(int id) => id switch
+    public static int RenderType(int id) => (uint)id < (uint)RenderTypes.Length ? RenderTypes[id] : 0;
+
+    /// <summary><see cref="RenderType"/> per block id 0..255 (0 unless listed).</summary>
+    private static readonly sbyte[] RenderTypes = BuildRenderTypes();
+
+    private static sbyte[] BuildRenderTypes()
     {
-        0 => -1,
-        Blocks.Sapling or Blocks.Web or Blocks.TallGrass or Blocks.DeadBush or Blocks.Dandelion or Blocks.Rose
-            or Blocks.BrownMushroom or Blocks.RedMushroom or Blocks.SugarCane => 1,
-        Blocks.Torch or Blocks.RedstoneTorchOff or Blocks.RedstoneTorch => 2,
-        Blocks.Fire => 3,
-        Blocks.FlowingWater or Blocks.Water or Blocks.FlowingLava or Blocks.Lava => 4,
-        Blocks.RedstoneWire => 5,
-        Blocks.Crops => 6,
-        Blocks.WoodenDoor or Blocks.IronDoor => 7,
-        Blocks.Ladder => 8,
-        Blocks.Rail or Blocks.PoweredRail or Blocks.DetectorRail => 9,
-        Blocks.WoodenStairs or Blocks.CobblestoneStairs or Blocks.BrickStairs or Blocks.StoneBrickStairs => 10,
-        Blocks.Fence => 11,
-        Blocks.Lever => 12,
-        Blocks.Cactus => 13,
-        Blocks.Bed => 14,
-        Blocks.RepeaterOff or Blocks.RepeaterOn => 15,
-        Blocks.Piston or Blocks.StickyPiston => 16,
-        Blocks.PistonHead => 17,
-        Blocks.IronBars or Blocks.GlassPane => 18,
-        Blocks.PumpkinStem or Blocks.MelonStem => 19,
-        Blocks.Vine => 20,
-        Blocks.FenceGate => 21,
-        Blocks.SignPost or Blocks.WallSign or Blocks.PistonMoving => -1,
-        _ => 0,
-    };
+        var t = new sbyte[256];
+        static void Set(sbyte[] t, int type, params int[] ids) { foreach (int id in ids) t[id] = (sbyte)type; }
+        Set(t, -1, 0, Blocks.SignPost, Blocks.WallSign, Blocks.PistonMoving);
+        Set(t, 1, Blocks.Sapling, Blocks.Web, Blocks.TallGrass, Blocks.DeadBush, Blocks.Dandelion, Blocks.Rose, Blocks.BrownMushroom, Blocks.RedMushroom, Blocks.SugarCane);
+        Set(t, 2, Blocks.Torch, Blocks.RedstoneTorchOff, Blocks.RedstoneTorch);
+        Set(t, 3, Blocks.Fire);
+        Set(t, 4, Blocks.FlowingWater, Blocks.Water, Blocks.FlowingLava, Blocks.Lava);
+        Set(t, 5, Blocks.RedstoneWire);
+        Set(t, 6, Blocks.Crops);
+        Set(t, 7, Blocks.WoodenDoor, Blocks.IronDoor);
+        Set(t, 8, Blocks.Ladder);
+        Set(t, 9, Blocks.Rail, Blocks.PoweredRail, Blocks.DetectorRail);
+        Set(t, 10, Blocks.WoodenStairs, Blocks.CobblestoneStairs, Blocks.BrickStairs, Blocks.StoneBrickStairs);
+        Set(t, 11, Blocks.Fence);
+        Set(t, 12, Blocks.Lever);
+        Set(t, 13, Blocks.Cactus);
+        Set(t, 14, Blocks.Bed);
+        Set(t, 15, Blocks.RepeaterOff, Blocks.RepeaterOn);
+        Set(t, 16, Blocks.Piston, Blocks.StickyPiston);
+        Set(t, 17, Blocks.PistonHead);
+        Set(t, 18, Blocks.IronBars, Blocks.GlassPane);
+        Set(t, 19, Blocks.PumpkinStem, Blocks.MelonStem);
+        Set(t, 20, Blocks.Vine);
+        Set(t, 21, Blocks.FenceGate);
+        return t;
+    }
 
     /// <summary>Render type 0 blocks whose bounds are not the full cube.</summary>
     private static bool PartialCube(int id) => id is Blocks.Slab or Blocks.SnowLayer or Blocks.StonePressurePlate or Blocks.WoodenPressurePlate
@@ -99,36 +104,50 @@ public static class BlockGeometry
         const int idx = 26, id = Blocks.Chest;
         if (l is 0 or 1) return idx - 1;
         int i1 = w.Block(i, j, k - 1), j1 = w.Block(i, j, k + 1), k1 = w.Block(i - 1, j, k), l1 = w.Block(i + 1, j, k);
-        if (i1 == id || j1 == id)
-        {
-            if (l is 2 or 3) return idx;
-            int i2 = 0;
-            if (i1 == id) i2 = -1;
-            int k2 = w.Block(i - 1, j, i1 != id ? k + 1 : k - 1), i3 = w.Block(i + 1, j, i1 != id ? k + 1 : k - 1);
-            if (l == 4) i2 = -1 - i2;
-            int b1 = 5;
-            if ((Op(k1) || Op(k2)) && !Op(l1) && !Op(i3)) b1 = 5;
-            if ((Op(l1) || Op(i3)) && !Op(k1) && !Op(k2)) b1 = 4;
-            return (l != b1 ? idx + 32 : idx + 16) + i2;
-        }
-        if (k1 == id || l1 == id)
-        {
-            if (l is 4 or 5) return idx;
-            int j2 = 0;
-            if (k1 == id) j2 = -1;
-            int l2 = w.Block(k1 != id ? i + 1 : i - 1, j, k - 1), j3 = w.Block(k1 != id ? i + 1 : i - 1, j, k + 1);
-            if (l == 3) j2 = -1 - j2;
-            int b2 = 3;
-            if ((Op(i1) || Op(l2)) && !Op(j1) && !Op(j3)) b2 = 3;
-            if ((Op(j1) || Op(j3)) && !Op(i1) && !Op(l2)) b2 = 2;
-            return (l != b2 ? idx + 32 : idx + 16) + j2;
-        }
+        if (i1 == id || j1 == id) return PairAlongZ(w, i, j, k, l, i1, k1, l1);
+        if (k1 == id || l1 == id) return PairAlongX(w, i, j, k, l, i1, j1, k1);
+        return SingleChestTile(l, i1, j1, k1, l1);
+    }
+
+    /// <summary>A single chest faces south unless that side is walled: then away from the opaque neighbour.</summary>
+    private static int SingleChestTile(int l, int i1, int j1, int k1, int l1)
+    {
+        const int idx = 26;
         int b0 = 3;
-        if (Op(i1) && !Op(j1)) b0 = 3;
         if (Op(j1) && !Op(i1)) b0 = 2;
         if (Op(k1) && !Op(l1)) b0 = 5;
         if (Op(l1) && !Op(k1)) b0 = 4;
         return l != b0 ? idx : idx + 1;
+    }
+
+    /// <summary>The front side of a double chest: <paramref name="otherSide"/> when only the other side (b, b2) is walled.</summary>
+    private static int FrontAway(int a, int a2, int b, int b2, int side, int otherSide) =>
+        (Op(b) || Op(b2)) && !Op(a) && !Op(a2) ? otherSide : side;
+
+    /// <summary>A double chest along z (the partner north or south): its half of the wide front/back on the east/west faces.</summary>
+    private static int PairAlongZ(IVoxelWorld w, int i, int j, int k, int l, int i1, int k1, int l1)
+    {
+        const int idx = 26;
+        if (l is 2 or 3) return idx;
+        int i2 = i1 == Blocks.Chest ? -1 : 0;
+        int kz = i1 != Blocks.Chest ? k + 1 : k - 1;
+        int k2 = w.Block(i - 1, j, kz), i3 = w.Block(i + 1, j, kz);
+        if (l == 4) i2 = -1 - i2;
+        int b1 = FrontAway(k1, k2, l1, i3, 5, 4);
+        return (l != b1 ? idx + 32 : idx + 16) + i2;
+    }
+
+    /// <summary>A double chest along x (the partner west or east): its half of the wide front/back on the north/south faces.</summary>
+    private static int PairAlongX(IVoxelWorld w, int i, int j, int k, int l, int i1, int j1, int k1)
+    {
+        const int idx = 26;
+        if (l is 4 or 5) return idx;
+        int j2 = k1 == Blocks.Chest ? -1 : 0;
+        int ix = k1 != Blocks.Chest ? i + 1 : i - 1;
+        int l2 = w.Block(ix, j, k - 1), j3 = w.Block(ix, j, k + 1);
+        if (l == 3) j2 = -1 - j2;
+        int b2 = FrontAway(i1, l2, j1, j3, 3, 2);
+        return (l != b2 ? idx + 32 : idx + 16) + j2;
     }
 
     /// <summary>Flat palette colour of a face (no atlas on this machine).</summary>
@@ -199,36 +218,35 @@ public static class BlockGeometry
         int l = Decay(w, i, j, k, fluidId);
         for (int n = 0; n < 4; n++)
         {
-            int x = i, z = k;
-            if (n == 0) x = i - 1;
-            if (n == 1) z = k - 1;
-            if (n == 2) x++;
-            if (n == 3) z++;
-            int l1 = Decay(w, x, j, z, fluidId);
-            if (l1 < 0)
-            {
-                if (!SolidMaterial(w.Block(x, j, z)))
-                {
-                    l1 = Decay(w, x, j - 1, z, fluidId);
-                    if (l1 >= 0) { int d = l1 - (l - 8); vx += (x - i) * d; vz += (z - k) * d; }
-                }
-            }
-            else
-            {
-                int d = l1 - l;
-                vx += (x - i) * d; vz += (z - k) * d;
-            }
+            var (x, z) = n switch { 0 => (i - 1, k), 1 => (i, k - 1), 2 => (i + 1, k), _ => (i, k + 1) };
+            if (FlowToward(w, x, j, z, fluidId, l) is not { } d) continue;
+            vx += (x - i) * d; vz += (z - k) * d;
         }
-        if (w.Meta(i, j, k) >= 8)
+        if (w.Meta(i, j, k) >= 8 && FallsBesideSolid(w, i, j, k))
         {
-            bool side = SolidMaterial(w.Block(i, j, k - 1)) || SolidMaterial(w.Block(i, j, k + 1)) || SolidMaterial(w.Block(i - 1, j, k))
-                || SolidMaterial(w.Block(i + 1, j, k)) || SolidMaterial(w.Block(i, j + 1, k - 1)) || SolidMaterial(w.Block(i, j + 1, k + 1))
-                || SolidMaterial(w.Block(i - 1, j + 1, k)) || SolidMaterial(w.Block(i + 1, j + 1, k));
-            if (side) { double len0 = Math.Sqrt(vx * vx + vz * vz); if (len0 > 0) { vx /= len0; vz /= len0; } vy -= 6; }
+            double len0 = Math.Sqrt(vx * vx + vz * vz);
+            if (len0 > 0) { vx /= len0; vz /= len0; }
+            vy -= 6;
         }
         double len = Math.Sqrt(vx * vx + vy * vy + vz * vz);
         return len < 1e-9 ? (0, 0, 0) : (vx / len, vy / len, vz / len);
     }
+
+    /// <summary>The decay difference toward a neighbour (the same fluid there, or below it when it's open), null = no pull.</summary>
+    private static int? FlowToward(IVoxelWorld w, int x, int j, int z, int fluidId, int l)
+    {
+        int l1 = Decay(w, x, j, z, fluidId);
+        if (l1 >= 0) return l1 - l;
+        if (SolidMaterial(w.Block(x, j, z))) return null;
+        l1 = Decay(w, x, j - 1, z, fluidId);
+        return l1 >= 0 ? l1 - (l - 8) : null;
+    }
+
+    /// <summary>A falling fluid cell with a solid block beside it (at its level or the one above): it streams straight down.</summary>
+    private static bool FallsBesideSolid(IVoxelWorld w, int i, int j, int k) =>
+        SolidMaterial(w.Block(i, j, k - 1)) || SolidMaterial(w.Block(i, j, k + 1)) || SolidMaterial(w.Block(i - 1, j, k))
+        || SolidMaterial(w.Block(i + 1, j, k)) || SolidMaterial(w.Block(i, j + 1, k - 1)) || SolidMaterial(w.Block(i, j + 1, k + 1))
+        || SolidMaterial(w.Block(i - 1, j + 1, k)) || SolidMaterial(w.Block(i + 1, j + 1, k));
 
     /// <summary>BlockFluids.a(IBlockAccess, …, material): atan2(flow.z, flow.x) − π/2, or −1000 when still.</summary>
     public static float FlowAngle(IVoxelWorld w, int x, int y, int z, int fluidId)
@@ -319,26 +337,12 @@ public static class BlockGeometry
         {
             if ((skip >> fi & 1) != 0) continue;
             var f = (Face)fi;
-            Vector3 a, b, c, d;
-            switch (f)
-            {
-                case Face.Up: a = new(x0, y1, z0); b = new(x0, y1, z1); c = new(x1, y1, z1); d = new(x1, y1, z0); break;
-                case Face.Down: a = new(x0, y0, z1); b = new(x0, y0, z0); c = new(x1, y0, z0); d = new(x1, y0, z1); break;
-                case Face.North: a = new(x1, y1, z0); b = new(x1, y0, z0); c = new(x0, y0, z0); d = new(x0, y1, z0); break;
-                case Face.South: a = new(x0, y1, z1); b = new(x0, y0, z1); c = new(x1, y0, z1); d = new(x1, y1, z1); break;
-                case Face.West: a = new(x0, y1, z0); b = new(x0, y0, z0); c = new(x0, y0, z1); d = new(x0, y1, z1); break;
-                default: a = new(x1, y1, z1); b = new(x1, y0, z1); c = new(x1, y0, z0); d = new(x1, y1, z0); break;
-            }
+            var (a, b, c, d) = BoxFace(f, x0, y0, z0, x1, y1, z1);
             var t = tile(f);
             var q = GeoQuad.Make(a, b, c, d, FaceUv(f, a), FaceUv(f, b), FaceUv(f, c), FaceUv(f, d));
             q.Tile = (short)t.Tile; q.Tint = t.Tint; q.Overlay = (short)t.Overlay; q.OverlayTint = t.OverlayTint;
             q.Pass = pass; q.Flat = FlatColour(id, f); q.Shade = shade ? Lighting.FaceShade(f) : 1f;
-            bool boundary = f switch
-            {
-                Face.Up => y1 >= 0.999f, Face.Down => y0 <= 0.001f, Face.North => z0 <= 0.001f, Face.South => z1 >= 0.999f,
-                Face.West => x0 <= 0.001f, _ => x1 >= 0.999f,
-            };
-            q.LightFace = boundary && xf == null ? (sbyte)f : (sbyte)-1;
+            q.LightFace = xf == null && OnBoundary(f, x0, y0, z0, x1, y1, z1) ? (sbyte)f : (sbyte)-1;
             q.Emissive = BlockTextures.Emissive(id);
             if (xf is { } m)
             {
@@ -348,6 +352,24 @@ public static class BlockGeometry
             dst.Add(q);
         }
     }
+
+    /// <summary>The corners of one face of a box, in the vanilla vertex order.</summary>
+    private static (Vector3 A, Vector3 B, Vector3 C, Vector3 D) BoxFace(Face f, float x0, float y0, float z0, float x1, float y1, float z1) => f switch
+    {
+        Face.Up => (new(x0, y1, z0), new(x0, y1, z1), new(x1, y1, z1), new(x1, y1, z0)),
+        Face.Down => (new(x0, y0, z1), new(x0, y0, z0), new(x1, y0, z0), new(x1, y0, z1)),
+        Face.North => (new(x1, y1, z0), new(x1, y0, z0), new(x0, y0, z0), new(x0, y1, z0)),
+        Face.South => (new(x0, y1, z1), new(x0, y0, z1), new(x1, y0, z1), new(x1, y1, z1)),
+        Face.West => (new(x0, y1, z0), new(x0, y0, z0), new(x0, y0, z1), new(x0, y1, z1)),
+        _ => (new(x1, y1, z1), new(x1, y0, z1), new(x1, y0, z0), new(x1, y1, z0)),
+    };
+
+    /// <summary>The face lies on the block's boundary (it takes the neighbouring cell's light).</summary>
+    private static bool OnBoundary(Face f, float x0, float y0, float z0, float x1, float y1, float z1) => f switch
+    {
+        Face.Up => y1 >= 0.999f, Face.Down => y0 <= 0.001f, Face.North => z0 <= 0.001f, Face.South => z1 >= 0.999f,
+        Face.West => x0 <= 0.001f, _ => x1 >= 0.999f,
+    };
 
     /// <summary>The face shade for an arbitrary normal (blend of the axis shades).</summary>
     private static float ShadeOf(Vector3 n) =>
@@ -375,176 +397,257 @@ public static class BlockGeometry
 
     // ------------------------------------------------------------------ build
 
+    /// <summary>The block being built: its world and cell, id, meta and the faces against opaque cubes (bit per <see cref="Face"/>).</summary>
+    private readonly record struct Cell(IVoxelWorld W, int X, int Y, int Z, int Id, int Meta, int Skip);
+
+    private delegate void Shaper(in Cell c, List<GeoQuad> dst);
+
+    /// <summary>The shape builder per render type 1..21 (index = <see cref="RenderType"/>).</summary>
+    private static readonly Shaper?[] ByRenderType =
+    [
+        null,
+        (in Cell c, List<GeoQuad> d) => Crossed(c.W, c.X, c.Y, c.Z, c.Id, c.Meta, d),
+        (in Cell c, List<GeoQuad> d) => Torch(c.Id, c.Meta, d),
+        (in Cell c, List<GeoQuad> d) => Fire(d),
+        (in Cell c, List<GeoQuad> d) => Fluid(c.W, c.X, c.Y, c.Z, c.Id, d),
+        WireShape,
+        (in Cell c, List<GeoQuad> d) => Crops(c.Meta, d),
+        (in Cell c, List<GeoQuad> d) => Door(c.Id, c.Meta, d),
+        LadderShape,
+        (in Cell c, List<GeoQuad> d) => Rail(c.Id, c.Meta, d),
+        (in Cell c, List<GeoQuad> d) => Stairs(c.Id, c.Meta, d, c.Skip),
+        (in Cell c, List<GeoQuad> d) => Fence(c.W, c.X, c.Y, c.Z, d),
+        (in Cell c, List<GeoQuad> d) => Lever(c.Meta, d),
+        CactusShape,
+        (in Cell c, List<GeoQuad> d) => Bed(c.Meta, d, c.Skip),
+        RepeaterShape,
+        PistonShape,
+        PistonHeadShape,
+        (in Cell c, List<GeoQuad> d) => Pane(c.W, c.X, c.Y, c.Z, c.Id, d),
+        StemShape,
+        (in Cell c, List<GeoQuad> d) => Vine(c.Meta, d),
+        (in Cell c, List<GeoQuad> d) => Gate(c.Meta, d),
+    ];
+
+    /// <summary>Render type 0 and −1 blocks that aren't full cubes: their builder by id.</summary>
+    private static readonly Shaper?[] ById = BuildShapersById();
+
+    private static Shaper?[] BuildShapersById()
+    {
+        var t = new Shaper?[256];
+        t[Blocks.SignPost] = t[Blocks.WallSign] = (in Cell c, List<GeoQuad> d) => Sign(c.Id, c.Meta, d);
+        t[Blocks.Slab] = SlabShape;
+        t[Blocks.SnowLayer] = SnowShape;
+        t[Blocks.StonePressurePlate] = t[Blocks.WoodenPressurePlate] = PlateShape;
+        t[Blocks.Farmland] = FarmlandShape;
+        t[Blocks.Trapdoor] = TrapdoorShape;
+        t[Blocks.Cake] = CakeShape;
+        t[Blocks.StoneButton] = ButtonShape;
+        t[Blocks.Portal] = PortalShape;
+        return t;
+    }
+
     /// <summary>Adds the quads of the block at (x, y, z) in block-local coordinates; faces against opaque cubes are left out.</summary>
     public static void Build(IVoxelWorld w, int x, int y, int z, List<GeoQuad> dst)
     {
         int id = w.Block(x, y, z);
         if (id == 0) return;
-        int meta = w.Meta(x, y, z);
+        var c = new Cell(w, x, y, z, id, w.Meta(x, y, z), OpaqueNeighbours(w, x, y, z));
+        int rt = RenderType(id);
+        if ((uint)rt < (uint)ByRenderType.Length && ByRenderType[rt] is { } shape) shape(c, dst);
+        else if ((uint)id < (uint)ById.Length && ById[id] is { } special) special(c, dst);
+        else FullCube(c, dst);
+    }
+
+    /// <summary>Faces (bit per <see cref="Face"/>) with an opaque cube beside them.</summary>
+    private static int OpaqueNeighbours(IVoxelWorld w, int x, int y, int z)
+    {
         int skip = 0;
         for (int f = 0; f < 6; f++)
         {
             var (dx, dy, dz) = Lighting.Normal((Face)f);
             if (Op(w.Block(x + dx, y + dy, z + dz))) skip |= 1 << f;
         }
-        int rt = RenderType(id);
-        switch (rt)
-        {
-            case 1: Crossed(w, x, y, z, id, meta, dst); return;
-            case 2: Torch(id, meta, dst); return;
-            case 3: Fire(dst); return;
-            case 4: Fluid(w, x, y, z, id, dst); return;
-            case 5:
-            {
-                float p = meta / 15f;
-                float r = meta == 0 ? 0.3f : p * 0.6f + 0.4f, g = Math.Max(0, p * p * 0.7f - 0.5f), b = Math.Max(0, p * p * 0.6f - 0.7f);
-                uint tint = (uint)(r * 255) << 16 | (uint)(g * 255) << 8 | (uint)(b * 255);
-                var q = GeoQuad.Make(new(0, 1 / 64f, 0), new(0, 1 / 64f, 1), new(1, 1 / 64f, 1), new(1, 1 / 64f, 0), new(0, 0), new(0, 1), new(1, 1), new(1, 0));
-                q.Tile = 164; q.Tint = tint; q.Pass = RenderPass.Cutout; q.Flat = 0x8a0a0a; q.TwoSided = true;
-                dst.Add(q);
-                return;
-            }
-            case 6: Crops(meta, dst); return;
-            case 7: Door(id, meta, dst); return;
-            case 8:
-            {
-                const float o = 0.05f;
-                switch (meta)
-                {
-                    case 5: Plane(dst, new(o, 1, 1), new(o, 0, 1), new(o, 0, 0), new(o, 1, 0), 83, 0, id, light: (sbyte)Face.East); break;
-                    case 4: Plane(dst, new(1 - o, 1, 0), new(1 - o, 0, 0), new(1 - o, 0, 1), new(1 - o, 1, 1), 83, 0, id, light: (sbyte)Face.West); break;
-                    case 3: Plane(dst, new(0, 1, o), new(0, 0, o), new(1, 0, o), new(1, 1, o), 83, 0, id, light: (sbyte)Face.South); break;
-                    default: Plane(dst, new(1, 1, 1 - o), new(1, 0, 1 - o), new(0, 0, 1 - o), new(0, 1, 1 - o), 83, 0, id, light: (sbyte)Face.North); break;
-                }
-                return;
-            }
-            case 9: Rail(id, meta, dst); return;
-            case 10: Stairs(id, meta, dst, skip); return;
-            case 11: Fence(w, x, y, z, dst); return;
-            case 12: Lever(meta, dst); return;
-            case 13:
-            {
-                const float i = 1 / 16f;
-                Box(dst, 0, 0, 0, 1, 1, 1, f => Std(id, meta, f), id, RenderPass.Opaque, skip | 0b111100);
-                // Sides drawn 1/16 inside the cell, full width (spines are transparent texels).
-                Plane(dst, new(1, 1, i), new(1, 0, i), new(0, 0, i), new(0, 1, i), 70, 0, id, shade: 0.8f);
-                Plane(dst, new(0, 1, 1 - i), new(0, 0, 1 - i), new(1, 0, 1 - i), new(1, 1, 1 - i), 70, 0, id, shade: 0.8f);
-                Plane(dst, new(i, 1, 0), new(i, 0, 0), new(i, 0, 1), new(i, 1, 1), 70, 0, id, shade: 0.6f);
-                Plane(dst, new(1 - i, 1, 1), new(1 - i, 0, 1), new(1 - i, 0, 0), new(1 - i, 1, 0), 70, 0, id, shade: 0.6f);
-                return;
-            }
-            case 14: Bed(meta, dst, skip); return;
-            case 15:
-            {
-                int tile = id == Blocks.RepeaterOn ? 147 : 131, from = dst.Count;
-                Box(dst, 0, 0, 0, 1, 2 / 16f, 1, f => f == Face.Up ? new(tile) : new(1), id, RenderPass.Opaque, skip & 1);
-                RotateTopUv(dst, meta & 3, from);
-                return;
-            }
-            case 16:
-            {
-                int facing = meta & 7;
-                bool ext = (meta & 8) != 0;
-                Box(dst, 0, 0, 0, 1, 1, 1, f => (int)f == facing ? new(ext ? 110 : id == Blocks.StickyPiston ? 106 : 107)
-                    : (int)f == (facing ^ 1) ? new(109) : new(108), id, RenderPass.Opaque, skip);
-                return;
-            }
-            case 17:
-            {
-                var (nx, ny, nz) = Lighting.Normal((Face)(meta & 7));
-                float x0 = nx > 0 ? 0.75f : 0, x1 = nx < 0 ? 0.25f : 1, y0 = ny > 0 ? 0.75f : 0, y1 = ny < 0 ? 0.25f : 1, z0 = nz > 0 ? 0.75f : 0, z1 = nz < 0 ? 0.25f : 1;
-                Box(dst, x0, y0, z0, x1, y1, z1, _ => new(107), id);
-                return;
-            }
-            case 18: Pane(w, x, y, z, id, dst); return;
-            case 19:
-            {
-                float h = Math.Min(1f, (meta * 2 + 2) / 16f);
-                uint tint = (uint)(meta * 32) << 16 | (uint)(255 - meta * 8) << 8 | (uint)(meta * 4);
-                CrossAt(dst, 0.5f, 0, 0.5f, h, 111, tint, id, new(0, 1 - h), new(1, 1));
-                return;
-            }
-            case 20: Vine(meta, dst); return;
-            case 21: Gate(meta, dst); return;
-        }
-        if (id is Blocks.SignPost or Blocks.WallSign) { Sign(id, meta, dst); return; }
-        switch (id)
-        {
-            case Blocks.Slab:
-                if ((meta & 8) != 0) Box(dst, 0, 0.5f, 0, 1, 1, 1, f => Std(id, meta, f), id, RenderPass.Opaque, skip & ~1);
-                else Box(dst, 0, 0, 0, 1, 0.5f, 1, f => Std(id, meta, f), id, RenderPass.Opaque, skip & ~2);
-                return;
-            case Blocks.SnowLayer:
-                Box(dst, 0, 0, 0, 1, ((meta & 7) + 1) / 8f, 1, f => Std(id, meta, f), id, RenderPass.Opaque, skip & ~2);
-                return;
-            case Blocks.StonePressurePlate or Blocks.WoodenPressurePlate:
-            {
-                float h = meta == 1 ? 1 / 32f : 1 / 16f;
-                Box(dst, 1 / 16f, 0, 1 / 16f, 15 / 16f, h, 15 / 16f, f => Std(id, meta, f), id, RenderPass.Opaque, skip & 1);
-                return;
-            }
-            case Blocks.Farmland:
-                Box(dst, 0, 0, 0, 1, 15 / 16f, 1, f => Std(id, meta, f), id, RenderPass.Opaque, skip & ~2);
-                return;
-            case Blocks.Trapdoor:
-            {
-                const float t = 3 / 16f;
-                if ((meta & 4) == 0) Box(dst, 0, 0, 0, 1, t, 1, f => Std(id, meta, f), id, RenderPass.Cutout, skip & 1);
-                else switch (meta & 3)
-                {
-                    case 0: Box(dst, 0, 0, 1 - t, 1, 1, 1, f => Std(id, meta, f), id, RenderPass.Cutout); break;
-                    case 1: Box(dst, 0, 0, 0, 1, 1, t, f => Std(id, meta, f), id, RenderPass.Cutout); break;
-                    case 2: Box(dst, 1 - t, 0, 0, 1, 1, 1, f => Std(id, meta, f), id, RenderPass.Cutout); break;
-                    default: Box(dst, 0, 0, 0, t, 1, 1, f => Std(id, meta, f), id, RenderPass.Cutout); break;
-                }
-                return;
-            }
-            case Blocks.Cake:
-            {
-                float x0 = (1 + meta * 2) / 16f;
-                Box(dst, x0, 0, 1 / 16f, 15 / 16f, 0.5f, 15 / 16f,
-                    f => f == Face.Up ? new(121) : f == Face.Down ? new(124) : f == Face.West && meta > 0 ? new(123) : new(122), id, RenderPass.Cutout, skip & 1);
-                return;
-            }
-            case Blocks.StoneButton:
-            {
-                int i1 = meta & 7;
-                float f3 = (meta & 8) != 0 ? 1 / 16f : 0.125f;
-                const float a = 0.375f, b = 0.625f, c = 0.1875f;
-                var (x0, y0, z0, x1, y1, z1) = i1 switch
-                {
-                    1 => (0f, a, 0.5f - c, f3, b, 0.5f + c),
-                    2 => (1 - f3, a, 0.5f - c, 1f, b, 0.5f + c),
-                    3 => (0.5f - c, a, 0f, 0.5f + c, b, f3),
-                    _ => (0.5f - c, a, 1 - f3, 0.5f + c, b, 1f),
-                };
-                Box(dst, x0, y0, z0, x1, y1, z1, _ => new(1), id);
-                return;
-            }
-            case Blocks.Portal:
-            {
-                bool alongX = w.Block(x - 1, y, z) is Blocks.Portal or Blocks.Obsidian || w.Block(x + 1, y, z) is Blocks.Portal or Blocks.Obsidian;
-                int before = dst.Count;
-                if (alongX) Box(dst, 0, 0, 0.375f, 1, 1, 0.625f, _ => BlockTextures.TileRef.None, id, RenderPass.Translucent, skip);
-                else Box(dst, 0.375f, 0, 0, 0.625f, 1, 1, _ => BlockTextures.TileRef.None, id, RenderPass.Translucent, skip);
-                for (int i = before; i < dst.Count; i++) { var q = dst[i]; q.Tex = QuadTex.Flat; q.Flat = 0x7a2bd9; q.Alpha = 0.62f; q.Emissive = true; dst[i] = q; }
-                return;
-            }
-        }
-        // A full cube (the GPU path; the raycaster takes the DDA fast path for these).
+        return skip;
+    }
+
+    /// <summary>A full cube (the GPU path; the raycaster takes the DDA fast path for these).</summary>
+    private static void FullCube(in Cell c, List<GeoQuad> dst)
+    {
+        var w = c.W;
+        int x = c.X, y = c.Y, z = c.Z, id = c.Id, meta = c.Meta;
         var shape = Classify(id);
         var pass = shape == BlockShape.CutoutCube ? RenderPass.Cutout : shape == BlockShape.TranslucentCube ? RenderPass.Translucent : RenderPass.Opaque;
-        int cull = skip;
-        if (shape != BlockShape.Cube && id != Blocks.Leaves)
-            for (int f = 0; f < 6; f++)
-            {
-                var (dx, dy, dz) = Lighting.Normal((Face)f);
-                if (w.Block(x + dx, y + dy, z + dz) == id) cull |= 1 << f; // glass beside glass, ice beside ice
-            }
+        int cull = c.Skip;
+        if (shape != BlockShape.Cube && id != Blocks.Leaves) cull |= SameNeighbours(w, x, y, z, id); // glass beside glass, ice beside ice
         int i0 = dst.Count;
         Box(dst, 0, 0, 0, 1, 1, 1, f => CubeTile(w, x, y, z, id, meta, f), id, pass, cull);
         if (id == Blocks.Ice) for (int i = i0; i < dst.Count; i++) { var q = dst[i]; q.Alpha = 0.62f; dst[i] = q; }
     }
+
+    /// <summary>Faces (bit per <see cref="Face"/>) with the same block beside them.</summary>
+    private static int SameNeighbours(IVoxelWorld w, int x, int y, int z, int id)
+    {
+        int same = 0;
+        for (int f = 0; f < 6; f++)
+        {
+            var (dx, dy, dz) = Lighting.Normal((Face)f);
+            if (w.Block(x + dx, y + dy, z + dz) == id) same |= 1 << f;
+        }
+        return same;
+    }
+
+    /// <summary>Redstone wire (type 5): a flat quad 1/64 up, tinted by its power.</summary>
+    private static void WireShape(in Cell c, List<GeoQuad> dst)
+    {
+        int meta = c.Meta;
+        float p = meta / 15f;
+        float r = meta == 0 ? 0.3f : p * 0.6f + 0.4f, g = Math.Max(0, p * p * 0.7f - 0.5f), b = Math.Max(0, p * p * 0.6f - 0.7f);
+        uint tint = (uint)(r * 255) << 16 | (uint)(g * 255) << 8 | (uint)(b * 255);
+        var q = GeoQuad.Make(new(0, 1 / 64f, 0), new(0, 1 / 64f, 1), new(1, 1 / 64f, 1), new(1, 1 / 64f, 0), new(0, 0), new(0, 1), new(1, 1), new(1, 0));
+        q.Tile = 164; q.Tint = tint; q.Pass = RenderPass.Cutout; q.Flat = 0x8a0a0a; q.TwoSided = true;
+        dst.Add(q);
+    }
+
+    /// <summary>Ladders (type 8): a plane 0.05 in front of the wall its meta names.</summary>
+    private static void LadderShape(in Cell c, List<GeoQuad> dst)
+    {
+        const float o = 0.05f;
+        int id = c.Id;
+        switch (c.Meta)
+        {
+            case 5: Plane(dst, new(o, 1, 1), new(o, 0, 1), new(o, 0, 0), new(o, 1, 0), 83, 0, id, light: (sbyte)Face.East); break;
+            case 4: Plane(dst, new(1 - o, 1, 0), new(1 - o, 0, 0), new(1 - o, 0, 1), new(1 - o, 1, 1), 83, 0, id, light: (sbyte)Face.West); break;
+            case 3: Plane(dst, new(0, 1, o), new(0, 0, o), new(1, 0, o), new(1, 1, o), 83, 0, id, light: (sbyte)Face.South); break;
+            default: Plane(dst, new(1, 1, 1 - o), new(1, 0, 1 - o), new(0, 0, 1 - o), new(0, 1, 1 - o), 83, 0, id, light: (sbyte)Face.North); break;
+        }
+    }
+
+    /// <summary>Cactus (type 13): top and bottom, the sides drawn 1/16 inside the cell at full width (spines are transparent texels).</summary>
+    private static void CactusShape(in Cell c, List<GeoQuad> dst)
+    {
+        const float i = 1 / 16f;
+        int id = c.Id, meta = c.Meta;
+        Box(dst, 0, 0, 0, 1, 1, 1, f => Std(id, meta, f), id, RenderPass.Opaque, c.Skip | 0b111100);
+        Plane(dst, new(1, 1, i), new(1, 0, i), new(0, 0, i), new(0, 1, i), 70, 0, id, shade: 0.8f);
+        Plane(dst, new(0, 1, 1 - i), new(0, 0, 1 - i), new(1, 0, 1 - i), new(1, 1, 1 - i), 70, 0, id, shade: 0.8f);
+        Plane(dst, new(i, 1, 0), new(i, 0, 0), new(i, 0, 1), new(i, 1, 1), 70, 0, id, shade: 0.6f);
+        Plane(dst, new(1 - i, 1, 1), new(1 - i, 0, 1), new(1 - i, 0, 0), new(1 - i, 1, 0), 70, 0, id, shade: 0.6f);
+    }
+
+    /// <summary>Repeaters (type 15): a 2/16 slab, its top turned to the meta's facing.</summary>
+    private static void RepeaterShape(in Cell c, List<GeoQuad> dst)
+    {
+        int tile = c.Id == Blocks.RepeaterOn ? 147 : 131, from = dst.Count;
+        Box(dst, 0, 0, 0, 1, 2 / 16f, 1, f => f == Face.Up ? new(tile) : new(1), c.Id, RenderPass.Opaque, c.Skip & 1);
+        RotateTopUv(dst, c.Meta & 3, from);
+    }
+
+    /// <summary>Pistons (type 16): a cube with the head (or the open face when extended) on the meta's facing.</summary>
+    private static void PistonShape(in Cell c, List<GeoQuad> dst)
+    {
+        int facing = c.Meta & 7;
+        bool ext = (c.Meta & 8) != 0;
+        int front = ext ? 110 : c.Id == Blocks.StickyPiston ? 106 : 107;
+        Box(dst, 0, 0, 0, 1, 1, 1, f => (int)f == facing ? new(front) : (int)f == (facing ^ 1) ? new(109) : new(108), c.Id, RenderPass.Opaque, c.Skip);
+    }
+
+    /// <summary>Piston heads (type 17): a 4/16 plate on the meta's facing.</summary>
+    private static void PistonHeadShape(in Cell c, List<GeoQuad> dst)
+    {
+        var (nx, ny, nz) = Lighting.Normal((Face)(c.Meta & 7));
+        float x0 = nx > 0 ? 0.75f : 0, x1 = nx < 0 ? 0.25f : 1, y0 = ny > 0 ? 0.75f : 0, y1 = ny < 0 ? 0.25f : 1, z0 = nz > 0 ? 0.75f : 0, z1 = nz < 0 ? 0.25f : 1;
+        Box(dst, x0, y0, z0, x1, y1, z1, _ => new(107), c.Id);
+    }
+
+    /// <summary>Pumpkin/melon stems (type 19): crossed planes growing with the age, tinted green → orange.</summary>
+    private static void StemShape(in Cell c, List<GeoQuad> dst)
+    {
+        int meta = c.Meta;
+        float h = Math.Min(1f, (meta * 2 + 2) / 16f);
+        uint tint = (uint)(meta * 32) << 16 | (uint)(255 - meta * 8) << 8 | (uint)(meta * 4);
+        CrossAt(dst, 0.5f, 0, 0.5f, h, 111, tint, c.Id, new(0, 1 - h), new(1, 1));
+    }
+
+    private static void SlabShape(in Cell c, List<GeoQuad> dst)
+    {
+        int id = c.Id, meta = c.Meta;
+        if ((meta & 8) != 0) Box(dst, 0, 0.5f, 0, 1, 1, 1, f => Std(id, meta, f), id, RenderPass.Opaque, c.Skip & ~1);
+        else Box(dst, 0, 0, 0, 1, 0.5f, 1, f => Std(id, meta, f), id, RenderPass.Opaque, c.Skip & ~2);
+    }
+
+    private static void SnowShape(in Cell c, List<GeoQuad> dst)
+    {
+        int id = c.Id, meta = c.Meta;
+        Box(dst, 0, 0, 0, 1, ((meta & 7) + 1) / 8f, 1, f => Std(id, meta, f), id, RenderPass.Opaque, c.Skip & ~2);
+    }
+
+    private static void PlateShape(in Cell c, List<GeoQuad> dst)
+    {
+        int id = c.Id, meta = c.Meta;
+        float h = meta == 1 ? 1 / 32f : 1 / 16f;
+        Box(dst, 1 / 16f, 0, 1 / 16f, 15 / 16f, h, 15 / 16f, f => Std(id, meta, f), id, RenderPass.Opaque, c.Skip & 1);
+    }
+
+    private static void FarmlandShape(in Cell c, List<GeoQuad> dst)
+    {
+        int id = c.Id, meta = c.Meta;
+        Box(dst, 0, 0, 0, 1, 15 / 16f, 1, f => Std(id, meta, f), id, RenderPass.Opaque, c.Skip & ~2);
+    }
+
+    /// <summary>Trapdoors: a 3/16 slab on the floor, or standing against the side its meta names when open.</summary>
+    private static void TrapdoorShape(in Cell c, List<GeoQuad> dst)
+    {
+        const float t = 3 / 16f;
+        int id = c.Id, meta = c.Meta;
+        TileFn tile = f => Std(id, meta, f);
+        if ((meta & 4) == 0) { Box(dst, 0, 0, 0, 1, t, 1, tile, id, RenderPass.Cutout, c.Skip & 1); return; }
+        switch (meta & 3)
+        {
+            case 0: Box(dst, 0, 0, 1 - t, 1, 1, 1, tile, id, RenderPass.Cutout); break;
+            case 1: Box(dst, 0, 0, 0, 1, 1, t, tile, id, RenderPass.Cutout); break;
+            case 2: Box(dst, 1 - t, 0, 0, 1, 1, 1, tile, id, RenderPass.Cutout); break;
+            default: Box(dst, 0, 0, 0, t, 1, 1, tile, id, RenderPass.Cutout); break;
+        }
+    }
+
+    /// <summary>Cake: shorter by two pixels per slice eaten (meta), the cut face showing the inside.</summary>
+    private static void CakeShape(in Cell c, List<GeoQuad> dst)
+    {
+        int meta = c.Meta;
+        float x0 = (1 + meta * 2) / 16f;
+        Box(dst, x0, 0, 1 / 16f, 15 / 16f, 0.5f, 15 / 16f,
+            f => f == Face.Up ? new(121) : f == Face.Down ? new(124) : f == Face.West && meta > 0 ? new(123) : new(122), c.Id, RenderPass.Cutout, c.Skip & 1);
+    }
+
+    /// <summary>Stone buttons: a 6×4 px box on the wall its meta names, pressed in when bit 8 is set.</summary>
+    private static void ButtonShape(in Cell c, List<GeoQuad> dst)
+    {
+        int i1 = c.Meta & 7;
+        float f3 = (c.Meta & 8) != 0 ? 1 / 16f : 0.125f;
+        const float a = 0.375f, b = 0.625f, cc = 0.1875f;
+        var (x0, y0, z0, x1, y1, z1) = i1 switch
+        {
+            1 => (0f, a, 0.5f - cc, f3, b, 0.5f + cc),
+            2 => (1 - f3, a, 0.5f - cc, 1f, b, 0.5f + cc),
+            3 => (0.5f - cc, a, 0f, 0.5f + cc, b, f3),
+            _ => (0.5f - cc, a, 1 - f3, 0.5f + cc, b, 1f),
+        };
+        Box(dst, x0, y0, z0, x1, y1, z1, _ => new(1), c.Id);
+    }
+
+    /// <summary>Portals: a 4/16 sheet across the frame's axis, flat translucent purple.</summary>
+    private static void PortalShape(in Cell c, List<GeoQuad> dst)
+    {
+        var w = c.W;
+        int x = c.X, y = c.Y, z = c.Z;
+        bool alongX = w.Block(x - 1, y, z) is Blocks.Portal or Blocks.Obsidian || w.Block(x + 1, y, z) is Blocks.Portal or Blocks.Obsidian;
+        int before = dst.Count;
+        if (alongX) Box(dst, 0, 0, 0.375f, 1, 1, 0.625f, _ => BlockTextures.TileRef.None, c.Id, RenderPass.Translucent, c.Skip);
+        else Box(dst, 0.375f, 0, 0, 0.625f, 1, 1, _ => BlockTextures.TileRef.None, c.Id, RenderPass.Translucent, c.Skip);
+        for (int i = before; i < dst.Count; i++) { var q = dst[i]; q.Tex = QuadTex.Flat; q.Flat = 0x7a2bd9; q.Alpha = 0.62f; q.Emissive = true; dst[i] = q; }
+    }
+
 
     private static void RotateTopUv(List<GeoQuad> dst, int quarter, int from)
     {
