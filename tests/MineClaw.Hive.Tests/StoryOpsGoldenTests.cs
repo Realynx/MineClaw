@@ -618,4 +618,103 @@ public sealed class StoryOpsGoldenTests
         s.State("end", null);
         Golden("tick-audit", s.Sb.ToString());
     }
+
+    // ================================================================ growing and fishing zone bills, storage ops
+
+    [Fact]
+    public void Grow_bills_and_storage()
+    {
+        var s = Make(2, Release1122GameData.Instance);
+        for (int x = -10; x < -4; x++) for (int z = -10; z < -4; z++) s.W.Set(x, 63, z, 2); // grass to farm
+        for (int x = 20; x < 24; x++) for (int z = 0; z < 4; z++) s.W.Set(x, 63, z, 9); // a pond
+        s.W.Set(0, 64, 9, 54); s.W.Set(1, 64, 9, 54); s.W.Set(4, 64, 9, 54); s.W.Set(6, 64, 12, 146); // chests
+        s.Rec("farm", s.C.ZoneOp("add", "farm", Area.Of(-10, 63, -10, -5, 64, -5), null, "Wheat", new JsonObject { ["plant"] = "wheat" }));
+        s.Rec("fish", s.C.ZoneOp("add", "fish", Area.Of(19, 63, -1, 24, 63, 4), null, null, null));
+        s.Rec("home", s.C.ZoneOp("add", "home", Area.Of(-3, 64, -3, 3, 66, 3), null, null, null));
+        var zs = s.C.Zones.Select(z => z.Id).ToList();
+        string farm = zs[0], fish = zs[1], home = zs[2];
+        JsonObject B(params (string K, JsonNode? V)[] kv) => new(kv.Select(x => new KeyValuePair<string, JsonNode?>(x.K, x.V)));
+        foreach (var (op, id, body) in new (string, string?, JsonObject?)[]
+                 {
+                     ("bill_add", farm, B(("plant", "carrots"), ("mode", "until"), ("target", 20))),
+                     ("bill_add", farm, B(("plant", "pumpkin"), ("mode", "count"), ("target", 5), ("paused", true))),
+                     ("bill_add", farm, B(("plant", "oak"))),
+                     ("bill_add", farm, B(("plant", "cactus"))),
+                     ("bill_add", farm, B(("plant", "kelp"))),
+                     ("bill_add", farm, B(("plant", "wheat"), ("mode", "sometimes"))),
+                     ("bill_add", farm, B(("plant", "wheat"), ("target", 0))),
+                     ("bill_add", farm, B(("plant", "wheat"), ("target", "x"))),
+                     ("bill_add", farm, B(("plant", 5))),
+                     ("bill_add", farm, null),
+                     ("bill_add", home, B(("plant", "wheat"))),
+                     ("bill_add", "nope", B(("plant", "wheat"))),
+                     ("bill_add", fish, B(("plant", "wheat"))),
+                     ("bill_add", fish, B(("mode", "count"), ("target", 7))),
+                     ("bill_add", fish, B(("plant", "fish"), ("mode", "until"), ("target", 12))),
+                     ("bill_update", farm, B(("bill", "gb5"), ("target", 40))),
+                     ("bill_update", farm, B(("bill", "gb5"), ("mode", "forever"))),
+                     ("bill_update", farm, B(("bill", "gb2"), ("plant", "melon"), ("paused", false))),
+                     ("bill_update", farm, B(("bill", "gb2"), ("plant", "kelp"))),
+                     ("bill_update", farm, B(("bill", "nope"), ("target", 3))),
+                     ("bill_update", farm, B(("target", 3))),
+                     ("bill_pause", farm, B(("bill", "gb5"))),
+                     ("bill_resume", farm, B(("bill", "gb5"))), ("bill_pause", fish, B(("bill", "gb16"))),
+                     ("bill_pause", farm, B(("bill", 99))),
+                     ("bill_reorder", farm, B(("ids", new JsonArray("gb7", "gb5")))),
+                     ("bill_reorder", farm, B(("ids", new JsonArray("gb3", "nope")))),
+                     ("bill_reorder", farm, B(("ids", "gb3"))),
+                     ("bill_reorder", farm, B(("ids", new JsonArray("gb2", "gb2")))),
+                     ("bill_remove", farm, B(("bill", "gb6"))),
+                     ("bill_remove", fish, B(("bill", "nope"))),
+                     ("bill_explode", farm, B()),
+                 })
+        {
+            s.Rec($"zone {op} {id} {body?.ToJsonString()}", s.C.ZoneOp(op, null, null, id, null, body));
+            s.Sb.Append("  bills ").Append(string.Join(" | ", s.C.Zones.Select(z => z.Id + ":" + z.Plant + ":"
+                + string.Join(",", (z.Bills ?? []).Select(b => $"{b.Id}/{b.Plant}/{b.Mode}/{b.Target}/{b.Done}/{b.Paused}"))))).Append('\n');
+        }
+        for (int i = 0; i < 3; i++) s.Rec("farm bill_add more", s.C.ZoneOp("bill_add", null, null, farm, null, B(("plant", "potatoes"))));
+        for (int i = 0; i < 14; i++) s.C.ZoneOp("bill_add", null, null, fish, null, B(("plant", "fish")));
+        s.Rec("fish bill_add full", s.C.ZoneOp("bill_add", null, null, fish, null, B(("plant", "fish"))));
+        var f1 = new StorageFilter { Allow = ["food"], Deny = ["297"] };
+        foreach (var (op, chests, filter, prio, label, from, area) in new (string, IReadOnlyList<P3>?, StorageFilter?, string?, string?, P3?, Area?)[]
+                 {
+                     ("set", [new P3(0, 64, 9)], f1, "preferred", "Pantry", null, null),
+                     ("set", [new P3(4, 64, 9)], null, null, null, null, null),
+                     ("set", [], null, null, null, null, null),
+                     ("set", null, null, "urgent", null, null, null),
+                     ("set", [new P3(4, 64, 9)], new StorageFilter { Allow = ["nonsense:thing:x"] }, null, null, null, null),
+                     ("copy", [new P3(4, 64, 9)], null, null, null, new P3(0, 64, 9), null),
+                     ("copy", [new P3(4, 64, 9)], null, null, null, new P3(9, 9, 9), null),
+                     ("copy", [], null, null, null, new P3(0, 64, 9), null),
+                     ("copy", [new P3(4, 64, 9)], null, null, null, null, null),
+                     ("assign_area", null, null, "low", "Area", null, Area.Of(0, 60, 0, 10, 70, 20)),
+                     ("assign_area", null, null, null, null, null, Area.Of(0, 0, 0, 100, 100, 100)),
+                     ("assign_area", null, null, null, null, null, null),
+                     ("remove", [new P3(4, 64, 9), new P3(9, 9, 9)], null, null, null, null, null),
+                     ("remove", null, null, null, null, null, null),
+                     ("explode", [new P3(4, 64, 9)], null, null, null, null, null),
+                 })
+            s.Rec($"storage {op} {(chests == null ? "-" : string.Join(";", chests))} {prio} {label} {from} {area?.Json().ToJsonString()}",
+                s.C.StorageOp(op, chests, filter, prio, label, from, area));
+        s.State("after ops");
+        s.Run(4, "farm");
+        s.State("end", null);
+        Golden("ops-growbills", s.Sb.ToString());
+    }
+
+    // ================================================================ small lookups: every input
+
+    [Fact]
+    public void Tool_lookups()
+    {
+        var sb = new StringBuilder();
+        for (int id = -1; id <= 4096; id++)
+            if (StoryRecipeFamilies.Source(id) is { } src) sb.Append("source ").Append(id).Append(' ').Append(src).Append('\n');
+        foreach (var d in new IGameData[] { Beta181GameData.Instance, Release1122GameData.Instance })
+            foreach (var pref in new[] { "best", "axe", "sword", "bow", "none", "x" })
+                for (int id = -1; id <= 2300; id++)
+                    if (StoryTools.WeaponScore(d, id, pref) is var w and not 0) sb.Append(d.VersionId).Append(" weapon ").Append(pref).Append(' ').Append(id).Append(' ').Append(w).Append('\n');
+        GoldenHash("tool-lookups", sb.ToString());
+    }
 }
