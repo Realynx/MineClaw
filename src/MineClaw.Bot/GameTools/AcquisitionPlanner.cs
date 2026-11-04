@@ -177,45 +177,66 @@ public sealed class AcquisitionPlanner(IGameClient c, AcquisitionSources sources
         if (ok.Length == 0) return null;
         int stone = k.Craftable.Length > 0 ? k.Craftable[0] : 0, wood = k.Craftable.Length > 1 ? k.Craftable[1] : 0;
 
-        // (b) a chest — unless that's a wood tool and stone can be crafted right here from the inventory (best tier first).
-        bool stoneNow = stone != 0 && min <= 1 && PlanCompleteFromInventory(stone);
-        var stocked = k.Name == "food" ? null : ChestBest(ok);
-        if (stocked is { } best && !(stoneNow && Level(best) < 1)) // food: FoodSupply below (reserved items stay)
-        {
-            if (await WithdrawAsync(ok, 1, ct).ConfigureAwait(false) is { } from && Has(k, min)) return from;
-        }
-        if (stoneNow && await CraftAsync(stone, ct).ConfigureAwait(false)) return Crafted(stone);
-
-        if (k.Name == "food")
-        {
-            // The food resolver before bothering the hive: chest food, bread from chest wheat, stew, cooking (FoodSupply).
-            var food = await new FoodSupply(c, _s) { OnStep = Step }.ObtainAsync(ct).ConfigureAwait(false);
-            if (food.Ok) return food.Text;
-            _shortfall = food.Text;
-            if (await HandoffAsync(k.Name, ok, k.Want, () => Has(k, min), ct).ConfigureAwait(false) is { } feeder) return feeder;
-            return need.Depth == AcquireDepth.Full ? await AskAsync(k.Name, "food", () => Has(k, min), ct).ConfigureAwait(false) : null;
-        }
+        if (await StoredOrCraftedNowAsync(k, ok, min, stone, ct).ConfigureAwait(false) is { } quick) return quick;
+        if (k.Name == "food") return await FoodToolAsync(k, need, ok, min, ct).ConfigureAwait(false);
 
         // (c) a hive member's spare (main had 2 picks while 67 and 69 had none).
         if (await HandoffAsync(k.Name, ok, 1, () => Has(k, min), ct).ConfigureAwait(false) is { } giver) return giver;
 
         if (stone == 0) return need.Depth == AcquireDepth.Full ? await AskAsync(k.Name, Short(k), () => Has(k, min), ct).ConfigureAwait(false) : null;
+        return await CraftOrBootstrapAsync(k, need, ok, min, stone, wood, ct).ConfigureAwait(false);
+    }
 
-        // (d) craft from inventory + chests: stone when cobble is reachable there, else (cheap mode) wood.
-        int cobbleReach = Inv(Blocks.Cobblestone) + ChestStock(Blocks.Cobblestone);
-        if (min <= 1 && cobbleReach >= HeadCount(k) && WoodUnits(withChests: true) >= SticksPlanks(k)
-            && await CraftAsync(stone, ct).ConfigureAwait(false)) return Crafted(stone);
+    /// <summary>(b) a chest — unless that's a wood tool and stone can be crafted right here from the inventory (best tier first).</summary>
+    private async Task<string?> StoredOrCraftedNowAsync(Loadout.Kind k, int[] ok, int min, int stone, CancellationToken ct)
+    {
+        bool stoneNow = stone != 0 && min <= 1 && PlanCompleteFromInventory(stone);
+        if (TakeFromStock(k, ok, stoneNow) && await WithdrawAsync(ok, 1, ct).ConfigureAwait(false) is { } from && Has(k, min)) return from;
+        return stoneNow && await CraftAsync(stone, ct).ConfigureAwait(false) ? Crafted(stone) : null;
+    }
+
+    /// <summary>A chest holds one, and it isn't a wood tool when stone can be crafted right now. Food: never (FoodSupply below;
+    /// reserved items stay).</summary>
+    private bool TakeFromStock(Loadout.Kind k, int[] ok, bool stoneNow)
+    {
+        var stocked = k.Name == "food" ? null : ChestBest(ok);
+        return stocked is { } best && !(stoneNow && Level(best) < 1);
+    }
+
+    /// <summary>The food resolver before bothering the hive: chest food, bread from chest wheat, stew, cooking (FoodSupply); then a feeder, then a player.</summary>
+    private async Task<string?> FoodToolAsync(Loadout.Kind k, Need need, int[] ok, int min, CancellationToken ct)
+    {
+        var food = await new FoodSupply(c, _s) { OnStep = Step }.ObtainAsync(ct).ConfigureAwait(false);
+        if (food.Ok) return food.Text;
+        _shortfall = food.Text;
+        if (await HandoffAsync(k.Name, ok, k.Want, () => Has(k, min), ct).ConfigureAwait(false) is { } feeder) return feeder;
+        return need.Depth == AcquireDepth.Full ? await AskAsync(k.Name, "food", () => Has(k, min), ct).ConfigureAwait(false) : null;
+    }
+
+    /// <summary>(d) craft from inventory + chests: stone when cobble is reachable there, else (cheap mode) wood; (e) bootstrap from
+    /// scratch; (f) a player, last.</summary>
+    private async Task<string?> CraftOrBootstrapAsync(Loadout.Kind k, Need need, int[] ok, int min, int stone, int wood, CancellationToken ct)
+    {
+        if (StoneInReach(k, min) && await CraftAsync(stone, ct).ConfigureAwait(false)) return Crafted(stone);
         if (need.Depth == AcquireDepth.Cheap)
-            return min == 0 && wood != 0 && WoodUnits(withChests: true) >= HeadCount(k) + SticksPlanks(k) && await CraftAsync(wood, ct).ConfigureAwait(false)
-                ? Crafted(wood) : null;
+            return WoodInReach(k, min, wood) && await CraftAsync(wood, ct).ConfigureAwait(false) ? Crafted(wood) : null;
         if (min >= 2) return await AskAsync(k.Name, Names.Item(ok[0]), () => Has(k, min), ct).ConfigureAwait(false); // iron+: nothing to bootstrap
 
-        // (e) bootstrap from scratch.
         var made = await BootstrapAsync(k, min, stone, wood, ct).ConfigureAwait(false);
         if (made != null) return made;
-        // (f) a player, last.
         return await AskAsync(k.Name, $"{Short(k)} (or 3 logs)", () => Has(k, min), ct).ConfigureAwait(false);
     }
+
+    /// <summary>A stone tool can be crafted from inventory + chests: cobble for the head and wood for the sticks.</summary>
+    private bool StoneInReach(Loadout.Kind k, int min)
+    {
+        int cobbleReach = Inv(Blocks.Cobblestone) + ChestStock(Blocks.Cobblestone);
+        return min <= 1 && cobbleReach >= HeadCount(k) && WoodUnits(withChests: true) >= SticksPlanks(k);
+    }
+
+    /// <summary>(Cheap mode) a wood tool will do and inventory + chests hold the wood for its head and sticks.</summary>
+    private bool WoodInReach(Loadout.Kind k, int min, int wood) =>
+        min == 0 && wood != 0 && WoodUnits(withChests: true) >= HeadCount(k) + SticksPlanks(k);
 
     /// <summary>Planks equivalent of the sticks a tool needs (2 planks = 4 sticks; sticks on hand count).</summary>
     private int SticksPlanks(Loadout.Kind k) => Inv(Items.Stick) >= SticksFor(k) ? 0 : 2;

@@ -48,6 +48,7 @@ import {
   ZONE_TOOLS,
   storeyOf,
   type BuildOpts,
+  type DesignateId,
   type MenuItem,
 } from './tools';
 import type { MapTool } from './StoryMap';
@@ -76,46 +77,55 @@ export interface BarBody {
 /** The offline pawns of the bar (not the AI bodies). */
 export const offlinePawns = (bodies: readonly BarBody[]) => bodies.filter((b) => b.kind === 'pawn' && b.offline);
 
-export function barBodies(pawns: readonly StoryPawn[], ai: readonly StoryAiBody[]): BarBody[] {
-  return [
-    ...pawns.map((p) => {
-      const offline = p.online === false || p.state === 'offline';
-      return {
-        name: p.name,
-        label: p.display,
-        kind: 'pawn' as const,
-        hp: p.hp ?? 20,
-        food: p.food ?? 20,
-        job: offline
-          ? 'Offline'
-          : (p.job?.label ?? (p.drafted ? 'Drafted, awaiting orders' : p.state === 'sleeping' ? 'Sleeping' : 'Idle')),
-        drafted: !!p.drafted,
-        mood: pawnMood(p),
-        pos: p.pos ?? null,
-        offline,
-        offlineReason: offline ? (p.offlineReason ?? 'offline') : null,
-      };
-    }),
-    ...ai.map((a) => ({
-      name: a.name,
-      label: a.kind === 'main' ? 'main' : a.name.replace(/^maid_chan_?/, '') || a.name,
-      kind: 'ai' as const,
-      hp: a.hp ?? 20,
-      food: a.food ?? 20,
-      job: a.task ?? a.brainState ?? 'AI',
+/** What a pawn's portrait says it is doing. */
+function pawnJob(p: StoryPawn, offline: boolean): string {
+  if (offline) return 'Offline';
+  if (p.job?.label) return p.job.label;
+  if (p.drafted) return 'Drafted, awaiting orders';
+  return p.state === 'sleeping' ? 'Sleeping' : 'Idle';
+}
+
+function pawnBody(p: StoryPawn): BarBody {
+  const offline = p.online === false || p.state === 'offline';
+  return {
+    name: p.name,
+    label: p.display,
+    kind: 'pawn' as const,
+    hp: p.hp ?? 20,
+    food: p.food ?? 20,
+    job: pawnJob(p, offline),
+    drafted: !!p.drafted,
+    mood: pawnMood(p),
+    pos: p.pos ?? null,
+    offline,
+    offlineReason: offline ? (p.offlineReason ?? 'offline') : null,
+  };
+}
+
+function aiBody(a: StoryAiBody): BarBody {
+  return {
+    name: a.name,
+    label: a.kind === 'main' ? 'main' : a.name.replace(/^maid_chan_?/, '') || a.name,
+    kind: 'ai' as const,
+    hp: a.hp ?? 20,
+    food: a.food ?? 20,
+    job: a.task ?? a.brainState ?? 'AI',
+    drafted: false,
+    mood: pawnMood({
+      hp: a.hp,
+      food: a.food,
+      state: a.online === false ? 'offline' : 'working',
       drafted: false,
-      mood: pawnMood({
-        hp: a.hp,
-        food: a.food,
-        state: a.online === false ? 'offline' : 'working',
-        drafted: false,
-        online: a.online,
-      }),
-      pos: a.pos ?? null,
-      offline: a.online === false,
-      offlineReason: null,
-    })),
-  ];
+      online: a.online,
+    }),
+    pos: a.pos ?? null,
+    offline: a.online === false,
+    offlineReason: null,
+  };
+}
+
+export function barBodies(pawns: readonly StoryPawn[], ai: readonly StoryAiBody[]): BarBody[] {
+  return [...pawns.map(pawnBody), ...ai.map(aiBody)];
 }
 
 const MOOD_COLOR: Record<PawnMood, string> = {
@@ -125,6 +135,271 @@ const MOOD_COLOR: Record<PawnMood, string> = {
   drafted: 'bg-[#ff9f43]',
   offline: 'bg-subtle',
 };
+
+/** A pointer held on a portrait: a click, a double click, a box-select drag, or (held still) a lift to reorder. */
+type Press = {
+  name: string;
+  x: number;
+  y: number;
+  t: number;
+  timer: ReturnType<typeof setTimeout> | null;
+  lifted: boolean;
+  moved: boolean;
+  shift: boolean;
+  ctrl: boolean;
+  id: number;
+};
+type Lift = { name: string; x: number; top: number; height: number };
+type BarBox = { x0: number; x1: number; top: number };
+
+type GestureProps = {
+  bodies: BarBody[];
+  pawns: BarBody[];
+  order: readonly string[];
+  onOrder: (next: string[]) => void;
+  onClick: (name: string, mods: { shift: boolean; ctrl: boolean }) => void;
+  onBox: (names: string[], add: boolean) => void;
+  onJump: (name: string) => void;
+};
+
+/** The pawn order a lifted portrait dropped at `x` makes: before the pawn portrait under the pointer, else last. */
+function droppedOrder(row: HTMLElement | null, p: Press, x: number, order: readonly string[], pawns: BarBody[]): string[] {
+  const target = [...(row?.querySelectorAll<HTMLElement>('[data-portrait][data-kind="pawn"]') ?? [])].find((el) => {
+    const r = el.getBoundingClientRect();
+    return x < r.left + r.width / 2;
+  });
+  const names = order.length ? order : pawns.map((b) => b.name);
+  const full = [...names, ...pawns.map((b) => b.name).filter((n) => !names.includes(n))];
+  const before = target?.dataset.portrait ?? null;
+  return reorderNames(full, p.name, before === p.name ? null : before);
+}
+
+/** The portraits between two x positions (a box-select drag). */
+function coveredNames(row: HTMLElement | null, x0: number, x1: number): string[] {
+  const lo = Math.min(x0, x1),
+    hi = Math.max(x0, x1);
+  return [...(row?.querySelectorAll<HTMLElement>('[data-portrait]') ?? [])]
+    .filter((el) => {
+      const r = el.getBoundingClientRect();
+      return r.right >= lo && r.left <= hi;
+    })
+    .map((el) => el.dataset.portrait!);
+}
+
+/** The colonist bar's pointer gestures: click, Shift/Ctrl, double click to jump, drag across, long-press and drag to reorder. */
+function useBarGestures({ bodies, pawns, order, onOrder, onClick, onBox, onJump }: GestureProps) {
+  const row = useRef<HTMLDivElement>(null);
+  const [box, setBox] = useState<BarBox | null>(null);
+  const [lift, setLift] = useState<Lift | null>(null);
+  const [pressing, setPressing] = useState(false);
+  const press = useRef<Press | null>(null);
+  const last = useRef<{ name: string; t: number } | null>(null);
+
+  const liftAt = (name: string, x: number) => {
+    const r = row.current?.getBoundingClientRect();
+    setLift({ name, x, top: r?.top ?? 0, height: r?.height ?? 60 });
+  };
+
+  const down = (e: React.PointerEvent, name: string) => {
+    if (e.button !== 0) return;
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    const p: Press = {
+      name,
+      x: e.clientX,
+      y: e.clientY,
+      t: e.timeStamp,
+      timer: null,
+      lifted: false,
+      moved: false,
+      shift: e.shiftKey,
+      ctrl: e.ctrlKey || e.metaKey,
+      id: e.pointerId,
+    };
+    // Hold still for a moment to lift the portrait (then drag to reorder); a quick drag box-selects.
+    p.timer = setTimeout(() => {
+      if (press.current !== p || p.moved || bodies.find((b) => b.name === name)?.kind !== 'pawn') return;
+      p.lifted = true;
+      liftAt(name, e.clientX);
+    }, 320);
+    press.current = p;
+    setPressing(true);
+  };
+
+  const move = (e: React.PointerEvent) => {
+    const p = press.current;
+    if (!p) return;
+    if (!p.moved && Math.abs(e.clientX - p.x) + Math.abs(e.clientY - p.y) > 5) {
+      p.moved = true;
+      if (p.timer) clearTimeout(p.timer);
+    }
+    if (p.lifted) liftAt(p.name, e.clientX);
+    else if (p.moved) setBox({ x0: p.x, x1: e.clientX, top: (row.current?.getBoundingClientRect().bottom ?? 2) - 2 });
+  };
+
+  /** A press that didn't move: a click, or the second click of a double click (jump). */
+  const tap = (p: Press, now: number) => {
+    if (last.current && last.current.name === p.name && now - last.current.t < 350) {
+      last.current = null;
+      onJump(p.name);
+      return;
+    }
+    last.current = { name: p.name, t: now };
+    onClick(p.name, { shift: p.shift, ctrl: p.ctrl });
+  };
+
+  const up = (e: React.PointerEvent) => {
+    const p = press.current;
+    press.current = null;
+    setPressing(false);
+    if (!p) return;
+    if (p.timer) clearTimeout(p.timer);
+    setBox(null);
+    setLift(null);
+    if (p.lifted) {
+      if (p.moved) onOrder(droppedOrder(row.current, p, e.clientX, order, pawns));
+      return;
+    }
+    if (p.moved) onBox(coveredNames(row.current, p.x, e.clientX), p.shift);
+    else tap(p, e.timeStamp);
+  };
+
+  return { row, box, lift, pressing, down, move, up };
+}
+
+type PortraitHandlers = {
+  onDown: (e: React.PointerEvent, name: string) => void;
+  onMove: (e: React.PointerEvent) => void;
+  onUp: (e: React.PointerEvent) => void;
+  onEnter: (name: string) => void;
+  onLeave: (name: string) => void;
+};
+
+function portraitClass(b: BarBody, selected: boolean, lifted: boolean): string {
+  return cn(
+    'relative flex cursor-pointer flex-col items-center gap-0.5 rounded-md px-1 pt-1 pb-1 transition-colors select-none',
+    b.kind === 'ai' ? 'w-[48px]' : 'w-[58px]',
+    selected ? 'bg-[#f5c542]/20 ring-2 ring-[#f5c542]' : 'hover:bg-surface-2',
+    lifted && 'opacity-40',
+    b.offline && !lifted && 'opacity-60',
+  );
+}
+
+/** One body's portrait: avatar and badges, mood dot, name, health and food, and the tooltip while hovered. */
+function Portrait({
+  b,
+  selected,
+  lifted,
+  tip,
+  h,
+}: {
+  b: BarBody;
+  selected: boolean;
+  lifted: boolean;
+  tip: boolean;
+  h: PortraitHandlers;
+}) {
+  return (
+    <div
+      data-portrait={b.name}
+      data-kind={b.kind}
+      data-drafted={b.drafted}
+      role="button"
+      tabIndex={-1}
+      aria-pressed={selected}
+      aria-label={b.offline ? `${b.label}: offline, ${b.offlineReason}` : `${b.label}: ${b.job}`}
+      data-offline={b.offline || undefined}
+      onPointerDown={(e) => h.onDown(e, b.name)}
+      onPointerMove={h.onMove}
+      onPointerUp={h.onUp}
+      onPointerEnter={() => h.onEnter(b.name)}
+      onPointerLeave={() => h.onLeave(b.name)}
+      className={portraitClass(b, selected, lifted)}
+    >
+      <PortraitFace b={b} />
+      <span
+        className={cn('absolute top-1 right-1 size-2 rounded-full ring-1 ring-black/40', MOOD_COLOR[b.mood])}
+        aria-hidden
+      />
+      <span
+        className={cn(
+          'max-w-full truncate text-[10px] leading-tight font-semibold',
+          b.mood === 'danger' ? 'text-danger' : 'text-fg',
+        )}
+      >
+        {b.label}
+      </span>
+      <StatBar title={`Health ${b.hp}/20`} colour="bg-[#e5484d]" value={b.hp} />
+      <StatBar title={`Food ${Math.round(b.food)}/20`} colour="bg-[#e2a336]" value={b.food} />
+      {tip ? <PortraitTip b={b} /> : null}
+    </div>
+  );
+}
+
+function PortraitFace({ b }: { b: BarBody }) {
+  const ai = b.kind === 'ai';
+  return (
+    <div
+      className={cn(
+        'relative overflow-hidden rounded-[5px] ring-1',
+        ai ? 'ring-[#a78bfa]' : 'ring-black/30',
+        b.mood === 'offline' && 'grayscale',
+      )}
+    >
+      <Avatar name={b.name} size={ai ? 28 : 34} ai={ai} />
+      {ai ? (
+        <span
+          className="absolute -right-0.5 -bottom-0.5 grid size-3.5 place-items-center rounded-sm bg-[#a78bfa] text-[#1b1530]"
+          title="AI-driven"
+        >
+          <AiMark className="size-2.5" />
+        </span>
+      ) : null}
+      {b.offline ? (
+        <span
+          className="absolute -bottom-0.5 -left-0.5 grid size-3.5 place-items-center rounded-sm bg-surface-3 text-muted ring-1 ring-border"
+          title={`Offline: ${b.offlineReason}`}
+          data-testid="offline-badge"
+        >
+          <WifiOff className="size-2.5" aria-hidden />
+        </span>
+      ) : null}
+      {b.drafted ? (
+        <span className="absolute top-0 left-0 rounded-br bg-[#ff9f43] px-0.5 text-[8px] leading-3 font-bold text-[#2a1600]">
+          D
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
+/** Health or food out of 20 as a thin bar. */
+function StatBar({ title, colour, value }: { title: string; colour: string; value: number }) {
+  return (
+    <span className="block h-1 w-full overflow-hidden rounded-full bg-black/25" title={title}>
+      <span className={cn('block h-full', colour)} style={{ width: `${Math.max(0, Math.min(1, value / 20)) * 100}%` }} />
+    </span>
+  );
+}
+
+function PortraitTip({ b }: { b: BarBody }) {
+  return (
+    <div
+      className="pointer-events-none absolute top-full left-1/2 z-30 mt-1 w-max max-w-56 -translate-x-1/2 rounded-md border border-border bg-surface px-2 py-1 text-left text-[11px] shadow-pop"
+      role="tooltip"
+    >
+      <div className="font-semibold">
+        {b.label} {b.kind === 'ai' ? <span className="text-[#a78bfa]">· AI</span> : null}
+      </div>
+      {b.offline ? (
+        <div className="text-muted" data-testid="offline-reason">
+          Offline: {b.offlineReason}
+        </div>
+      ) : (
+        <div className="text-muted">{b.job}</div>
+      )}
+    </div>
+  );
+}
 
 export function ColonistBar({
   bodies,
@@ -157,218 +432,36 @@ export function ColonistBar({
 }) {
   const [addMany, setAddMany] = useState<number | null>(null);
   const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
-  const row = useRef<HTMLDivElement>(null);
-  const [box, setBox] = useState<{ x0: number; x1: number; top: number } | null>(null);
-  const [lift, setLift] = useState<{ name: string; x: number; top: number; height: number } | null>(null);
-  const [pressing, setPressing] = useState(false);
   const [hover, setHover] = useState<string | null>(null);
-  const press = useRef<{
-    name: string;
-    x: number;
-    y: number;
-    t: number;
-    timer: ReturnType<typeof setTimeout> | null;
-    lifted: boolean;
-    moved: boolean;
-    shift: boolean;
-    ctrl: boolean;
-    id: number;
-  } | null>(null);
-  const last = useRef<{ name: string; t: number } | null>(null);
   const sel = new Set(selected);
   const pawns = bodies.filter((b) => b.kind === 'pawn');
   const ai = bodies.filter((b) => b.kind === 'ai');
-
-  const covered = (x0: number, x1: number) => {
-    const lo = Math.min(x0, x1),
-      hi = Math.max(x0, x1);
-    return [...(row.current?.querySelectorAll<HTMLElement>('[data-portrait]') ?? [])]
-      .filter((el) => {
-        const r = el.getBoundingClientRect();
-        return r.right >= lo && r.left <= hi;
-      })
-      .map((el) => el.dataset.portrait!);
+  const { row, box, lift, pressing, down, move, up } = useBarGestures({
+    bodies,
+    pawns,
+    order,
+    onOrder,
+    onClick,
+    onBox,
+    onJump,
+  });
+  const h: PortraitHandlers = {
+    onDown: down,
+    onMove: move,
+    onUp: up,
+    onEnter: setHover,
+    onLeave: (name) => setHover((x) => (x === name ? null : x)),
   };
-
-  const down = (e: React.PointerEvent, name: string) => {
-    if (e.button !== 0) return;
-    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-    const p = {
-      name,
-      x: e.clientX,
-      y: e.clientY,
-      t: e.timeStamp,
-      timer: null as ReturnType<typeof setTimeout> | null,
-      lifted: false,
-      moved: false,
-      shift: e.shiftKey,
-      ctrl: e.ctrlKey || e.metaKey,
-      id: e.pointerId,
-    };
-    // Hold still for a moment to lift the portrait (then drag to reorder); a quick drag box-selects.
-    p.timer = setTimeout(() => {
-      if (press.current === p && !p.moved && bodies.find((b) => b.name === name)?.kind === 'pawn') {
-        p.lifted = true;
-        const r = row.current?.getBoundingClientRect();
-        setLift({ name, x: e.clientX, top: r?.top ?? 0, height: r?.height ?? 60 });
-      }
-    }, 320);
-    press.current = p;
-    setPressing(true);
-  };
-  const move = (e: React.PointerEvent) => {
-    const p = press.current;
-    if (!p) return;
-    if (!p.moved && Math.abs(e.clientX - p.x) + Math.abs(e.clientY - p.y) > 5) {
-      p.moved = true;
-      if (p.timer) clearTimeout(p.timer);
-    }
-    const r = row.current?.getBoundingClientRect();
-    if (p.lifted) setLift({ name: p.name, x: e.clientX, top: r?.top ?? 0, height: r?.height ?? 60 });
-    else if (p.moved) setBox({ x0: p.x, x1: e.clientX, top: (r?.bottom ?? 2) - 2 });
-  };
-  const up = (e: React.PointerEvent) => {
-    const p = press.current;
-    press.current = null;
-    setPressing(false);
-    if (!p) return;
-    if (p.timer) clearTimeout(p.timer);
-    setBox(null);
-    setLift(null);
-    if (p.lifted) {
-      if (!p.moved) return;
-      // Drop before the portrait under the pointer.
-      const target = [...(row.current?.querySelectorAll<HTMLElement>('[data-portrait][data-kind="pawn"]') ?? [])].find(
-        (el) => {
-          const r = el.getBoundingClientRect();
-          return e.clientX < r.left + r.width / 2;
-        },
-      );
-      const names = order.length ? order : pawns.map((b) => b.name);
-      const full = [...names, ...pawns.map((b) => b.name).filter((n) => !names.includes(n))];
-      onOrder(
-        reorderNames(full, p.name, target?.dataset.portrait === p.name ? null : (target?.dataset.portrait ?? null)),
-      );
-      return;
-    }
-    if (p.moved) {
-      onBox(covered(p.x, e.clientX), p.shift);
-      return;
-    }
-    const now = e.timeStamp;
-    if (last.current && last.current.name === p.name && now - last.current.t < 350) {
-      last.current = null;
-      onJump(p.name);
-      return;
-    }
-    last.current = { name: p.name, t: now };
-    onClick(p.name, { shift: p.shift, ctrl: p.ctrl });
-  };
-
-  const portrait = (b: BarBody) => {
-    const isSel = sel.has(b.name);
-    return (
-      <div
-        key={b.name}
-        data-portrait={b.name}
-        data-kind={b.kind}
-        data-drafted={b.drafted}
-        role="button"
-        tabIndex={-1}
-        aria-pressed={isSel}
-        aria-label={b.offline ? `${b.label}: offline, ${b.offlineReason}` : `${b.label}: ${b.job}`}
-        data-offline={b.offline || undefined}
-        onPointerDown={(e) => down(e, b.name)}
-        onPointerMove={move}
-        onPointerUp={up}
-        onPointerEnter={() => setHover(b.name)}
-        onPointerLeave={() => setHover((h) => (h === b.name ? null : h))}
-        className={cn(
-          'relative flex cursor-pointer flex-col items-center gap-0.5 rounded-md px-1 pt-1 pb-1 transition-colors select-none',
-          b.kind === 'ai' ? 'w-[48px]' : 'w-[58px]',
-          isSel ? 'bg-[#f5c542]/20 ring-2 ring-[#f5c542]' : 'hover:bg-surface-2',
-          lift?.name === b.name && 'opacity-40',
-          b.offline && lift?.name !== b.name && 'opacity-60',
-        )}
-      >
-        <div
-          className={cn(
-            'relative overflow-hidden rounded-[5px] ring-1',
-            b.kind === 'ai' ? 'ring-[#a78bfa]' : 'ring-black/30',
-            b.mood === 'offline' && 'grayscale',
-          )}
-        >
-          <Avatar name={b.name} size={b.kind === 'ai' ? 28 : 34} ai={b.kind === 'ai'} />
-          {b.kind === 'ai' ? (
-            <span
-              className="absolute -right-0.5 -bottom-0.5 grid size-3.5 place-items-center rounded-sm bg-[#a78bfa] text-[#1b1530]"
-              title="AI-driven"
-            >
-              <AiMark className="size-2.5" />
-            </span>
-          ) : null}
-          {b.offline ? (
-            <span
-              className="absolute -bottom-0.5 -left-0.5 grid size-3.5 place-items-center rounded-sm bg-surface-3 text-muted ring-1 ring-border"
-              title={`Offline: ${b.offlineReason}`}
-              data-testid="offline-badge"
-            >
-              <WifiOff className="size-2.5" aria-hidden />
-            </span>
-          ) : null}
-          {b.drafted ? (
-            <span className="absolute top-0 left-0 rounded-br bg-[#ff9f43] px-0.5 text-[8px] leading-3 font-bold text-[#2a1600]">
-              D
-            </span>
-          ) : null}
-        </div>
-        <span
-          className={cn('absolute top-1 right-1 size-2 rounded-full ring-1 ring-black/40', MOOD_COLOR[b.mood])}
-          aria-hidden
-        />
-        <span
-          className={cn(
-            'max-w-full truncate text-[10px] leading-tight font-semibold',
-            b.mood === 'danger' ? 'text-danger' : 'text-fg',
-          )}
-        >
-          {b.label}
-        </span>
-        <span className="block h-1 w-full overflow-hidden rounded-full bg-black/25" title={`Health ${b.hp}/20`}>
-          <span
-            className="block h-full bg-[#e5484d]"
-            style={{ width: `${Math.max(0, Math.min(1, b.hp / 20)) * 100}%` }}
-          />
-        </span>
-        <span
-          className="block h-1 w-full overflow-hidden rounded-full bg-black/25"
-          title={`Food ${Math.round(b.food)}/20`}
-        >
-          <span
-            className="block h-full bg-[#e2a336]"
-            style={{ width: `${Math.max(0, Math.min(1, b.food / 20)) * 100}%` }}
-          />
-        </span>
-        {hover === b.name && !pressing ? (
-          <div
-            className="pointer-events-none absolute top-full left-1/2 z-30 mt-1 w-max max-w-56 -translate-x-1/2 rounded-md border border-border bg-surface px-2 py-1 text-left text-[11px] shadow-pop"
-            role="tooltip"
-          >
-            <div className="font-semibold">
-              {b.label} {b.kind === 'ai' ? <span className="text-[#a78bfa]">· AI</span> : null}
-            </div>
-            {b.offline ? (
-              <div className="text-muted" data-testid="offline-reason">
-                Offline: {b.offlineReason}
-              </div>
-            ) : (
-              <div className="text-muted">{b.job}</div>
-            )}
-          </div>
-        ) : null}
-      </div>
-    );
-  };
+  const portrait = (b: BarBody) => (
+    <Portrait
+      key={b.name}
+      b={b}
+      selected={sel.has(b.name)}
+      lifted={lift?.name === b.name}
+      tip={hover === b.name && !pressing}
+      h={h}
+    />
+  );
 
   return (
     <div
@@ -381,114 +474,63 @@ export function ColonistBar({
       aria-label="Colonists"
     >
       {pawns.map(portrait)}
-      {Array.from({ length: Math.max(0, pending) }, (_, i) => (
-        <div
-          key={`joining-${i}`}
-          className="flex h-[58px] w-[58px] flex-col items-center justify-center gap-0.5 rounded-md border border-dashed border-border text-[10px] text-subtle opacity-70 grayscale"
-          title="A new pawn joining: it comes as soon as a seat is free"
-          data-testid="bar-joining"
-        >
-          <Avatar name={`joining-${i}`} size={24} />
-          joining…
-        </div>
-      ))}
+      <JoiningTiles pending={pending} />
       {onAdd || onRemove ? (
-        <div className="relative flex h-[58px] flex-col justify-center gap-1">
-          {onAdd ? (
-            <button
-              type="button"
-              onClick={(e) => (e.shiftKey ? setAddMany(2) : onAdd(1))}
-              className="grid size-6 place-items-center rounded-md border border-border text-sm font-bold text-muted hover:bg-surface-2 hover:text-fg"
-              title="Add a pawn (Shift+click: add several)"
-              aria-label="Add a pawn"
-              data-testid="bar-add-pawn"
-            >
-              +
-            </button>
-          ) : null}
-          {onRemove ? (
-            <button
-              type="button"
-              disabled={pawns.filter((p) => sel.has(p.name)).length !== 1 || pawns.length <= 1}
-              onClick={() => setConfirmRemove(pawns.find((p) => sel.has(p.name))?.name ?? null)}
-              className="grid size-6 place-items-center rounded-md border border-border text-sm font-bold text-muted hover:bg-surface-2 hover:text-fg disabled:opacity-40"
-              title="Remove the selected pawn (its items go to storage)"
-              aria-label="Remove the selected pawn"
-              data-testid="bar-remove-pawn"
-            >
-              −
-            </button>
-          ) : null}
-          {addMany !== null && onAdd ? (
-            <div className="absolute top-full left-0 z-40 mt-1 flex items-center gap-1 rounded-md border border-border bg-surface p-1.5 text-[11px] shadow-pop">
-              Add
-              <input
-                type="number"
-                min={1}
-                max={12}
-                value={addMany}
-                aria-label="How many pawns"
-                onChange={(e) => setAddMany(Math.max(1, Math.min(12, Number(e.target.value) || 1)))}
-                className="w-12 rounded border border-border bg-surface-2 px-1"
-              />
-              <button
-                type="button"
-                className="rounded bg-accent px-1.5 text-accent-fg"
-                onClick={() => {
-                  onAdd(addMany);
-                  setAddMany(null);
-                }}
-              >
-                Add
-              </button>
-              <button type="button" className="text-muted" onClick={() => setAddMany(null)}>
-                Cancel
-              </button>
-            </div>
-          ) : null}
-          {confirmRemove && onRemove ? (
-            <div
-              className="absolute top-full left-0 z-40 mt-1 w-max max-w-64 space-y-1 rounded-md border border-border bg-surface p-2 text-[11px] shadow-pop"
-              role="dialog"
-              aria-label="Remove a pawn"
-              data-testid="remove-pawn-confirm"
-            >
-              <div>
-                Remove {pawns.find((p) => p.name === confirmRemove)?.label ?? confirmRemove}? Their items go to storage.
-              </div>
-              <div className="flex justify-end gap-2">
-                <button type="button" className="text-muted" onClick={() => setConfirmRemove(null)}>
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  className="rounded bg-danger px-1.5 text-white"
-                  onClick={() => {
-                    onRemove(confirmRemove);
-                    setConfirmRemove(null);
-                  }}
-                >
-                  Remove
-                </button>
-              </div>
-            </div>
-          ) : null}
-        </div>
+        <BarControls
+          pawns={pawns}
+          sel={sel}
+          onAdd={onAdd}
+          onRemove={onRemove}
+          addMany={addMany}
+          setAddMany={setAddMany}
+          confirmRemove={confirmRemove}
+          setConfirmRemove={setConfirmRemove}
+        />
       ) : null}
-      {onBringAll && offlinePawns(bodies).length ? (
-        <button
-          type="button"
-          onClick={onBringAll}
-          className="flex h-[58px] w-[58px] flex-col items-center justify-center gap-0.5 rounded-md border border-dashed border-border-strong text-[10px] leading-tight font-semibold text-muted hover:bg-surface-2 hover:text-fg"
-          title="Bring every offline pawn online (main whitelists them again; the player cap permitting)"
-          data-testid="bar-bring-online"
-        >
-          <Power className="size-3.5" aria-hidden />
-          Bring {offlinePawns(bodies).length} online
-        </button>
-      ) : null}
+      {onBringAll ? <BringAllTile bodies={bodies} onBringAll={onBringAll} /> : null}
       {ai.length ? <div className="mx-1 w-px self-stretch bg-border" aria-hidden /> : null}
       {ai.map(portrait)}
+      <DragMarks box={box} lift={lift} />
+    </div>
+  );
+}
+
+/** Greyed "joining…" tiles for pawns added that aren't here yet. */
+function JoiningTiles({ pending }: { pending: number }) {
+  return Array.from({ length: Math.max(0, pending) }, (_, i) => (
+    <div
+      key={`joining-${i}`}
+      className="flex h-[58px] w-[58px] flex-col items-center justify-center gap-0.5 rounded-md border border-dashed border-border text-[10px] text-subtle opacity-70 grayscale"
+      title="A new pawn joining: it comes as soon as a seat is free"
+      data-testid="bar-joining"
+    >
+      <Avatar name={`joining-${i}`} size={24} />
+      joining…
+    </div>
+  ));
+}
+
+function BringAllTile({ bodies, onBringAll }: { bodies: readonly BarBody[]; onBringAll: () => void }) {
+  const n = offlinePawns(bodies).length;
+  if (!n) return null;
+  return (
+    <button
+      type="button"
+      onClick={onBringAll}
+      className="flex h-[58px] w-[58px] flex-col items-center justify-center gap-0.5 rounded-md border border-dashed border-border-strong text-[10px] leading-tight font-semibold text-muted hover:bg-surface-2 hover:text-fg"
+      title="Bring every offline pawn online (main whitelists them again; the player cap permitting)"
+      data-testid="bar-bring-online"
+    >
+      <Power className="size-3.5" aria-hidden />
+      Bring {n} online
+    </button>
+  );
+}
+
+/** The box-select line and the reorder drop marker while dragging. */
+function DragMarks({ box, lift }: { box: BarBox | null; lift: Lift | null }) {
+  return (
+    <>
       {box ? (
         <div
           className="pointer-events-none fixed top-0 h-0 border-t-2 border-[#f5c542]"
@@ -501,6 +543,135 @@ export function ColonistBar({
           style={{ left: lift.x, top: lift.top, height: lift.height }}
         />
       ) : null}
+    </>
+  );
+}
+
+/** + (Shift: how many) and − (the one selected pawn, after a confirm). */
+function BarControls({
+  pawns,
+  sel,
+  onAdd,
+  onRemove,
+  addMany,
+  setAddMany,
+  confirmRemove,
+  setConfirmRemove,
+}: {
+  pawns: BarBody[];
+  sel: ReadonlySet<string>;
+  onAdd?: ((n: number) => void) | null;
+  onRemove?: ((name: string) => void) | null;
+  addMany: number | null;
+  setAddMany: (n: number | null) => void;
+  confirmRemove: string | null;
+  setConfirmRemove: (name: string | null) => void;
+}) {
+  const chosen = pawns.filter((p) => sel.has(p.name));
+  return (
+    <div className="relative flex h-[58px] flex-col justify-center gap-1">
+      {onAdd ? (
+        <button
+          type="button"
+          onClick={(e) => (e.shiftKey ? setAddMany(2) : onAdd(1))}
+          className="grid size-6 place-items-center rounded-md border border-border text-sm font-bold text-muted hover:bg-surface-2 hover:text-fg"
+          title="Add a pawn (Shift+click: add several)"
+          aria-label="Add a pawn"
+          data-testid="bar-add-pawn"
+        >
+          +
+        </button>
+      ) : null}
+      {onRemove ? (
+        <button
+          type="button"
+          disabled={chosen.length !== 1 || pawns.length <= 1}
+          onClick={() => setConfirmRemove(chosen[0]?.name ?? null)}
+          className="grid size-6 place-items-center rounded-md border border-border text-sm font-bold text-muted hover:bg-surface-2 hover:text-fg disabled:opacity-40"
+          title="Remove the selected pawn (its items go to storage)"
+          aria-label="Remove the selected pawn"
+          data-testid="bar-remove-pawn"
+        >
+          −
+        </button>
+      ) : null}
+      {addMany !== null && onAdd ? <AddManyBox n={addMany} setN={setAddMany} onAdd={onAdd} /> : null}
+      {confirmRemove && onRemove ? (
+        <RemoveConfirm
+          name={confirmRemove}
+          label={pawns.find((p) => p.name === confirmRemove)?.label ?? confirmRemove}
+          onRemove={onRemove}
+          onDone={() => setConfirmRemove(null)}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+function AddManyBox({ n, setN, onAdd }: { n: number; setN: (n: number | null) => void; onAdd: (n: number) => void }) {
+  return (
+    <div className="absolute top-full left-0 z-40 mt-1 flex items-center gap-1 rounded-md border border-border bg-surface p-1.5 text-[11px] shadow-pop">
+      Add
+      <input
+        type="number"
+        min={1}
+        max={12}
+        value={n}
+        aria-label="How many pawns"
+        onChange={(e) => setN(Math.max(1, Math.min(12, Number(e.target.value) || 1)))}
+        className="w-12 rounded border border-border bg-surface-2 px-1"
+      />
+      <button
+        type="button"
+        className="rounded bg-accent px-1.5 text-accent-fg"
+        onClick={() => {
+          onAdd(n);
+          setN(null);
+        }}
+      >
+        Add
+      </button>
+      <button type="button" className="text-muted" onClick={() => setN(null)}>
+        Cancel
+      </button>
+    </div>
+  );
+}
+
+function RemoveConfirm({
+  name,
+  label,
+  onRemove,
+  onDone,
+}: {
+  name: string;
+  label: string;
+  onRemove: (name: string) => void;
+  onDone: () => void;
+}) {
+  return (
+    <div
+      className="absolute top-full left-0 z-40 mt-1 w-max max-w-64 space-y-1 rounded-md border border-border bg-surface p-2 text-[11px] shadow-pop"
+      role="dialog"
+      aria-label="Remove a pawn"
+      data-testid="remove-pawn-confirm"
+    >
+      <div>Remove {label}? Their items go to storage.</div>
+      <div className="flex justify-end gap-2">
+        <button type="button" className="text-muted" onClick={onDone}>
+          Cancel
+        </button>
+        <button
+          type="button"
+          className="rounded bg-danger px-1.5 text-white"
+          onClick={() => {
+            onRemove(name);
+            onDone();
+          }}
+        >
+          Remove
+        </button>
+      </div>
     </div>
   );
 }
@@ -625,35 +796,13 @@ export function ControlCluster({
       <div className="flex items-center gap-2">
         <span className="max-w-36 truncate text-[13px] font-semibold">{name}</span>
         <ColonyClock clock={clock} />
-        <button
-          type="button"
-          onClick={onPause}
-          disabled={!canWrite}
-          aria-pressed={paused}
-          className={cn(
-            'ml-auto inline-flex h-6 items-center gap-1 rounded px-1.5 font-medium',
-            paused ? 'bg-warn-soft text-warn' : 'hover:bg-surface-2',
-          )}
-          title="Pause the colony: every pawn holds (Space)"
-        >
-          {paused ? <Play className="size-3.5" /> : <Pause className="size-3.5" />}
-          {paused ? 'Paused' : 'Pause'}
-        </button>
+        <PauseButton paused={paused} canWrite={canWrite} onPause={onPause} />
         {speed && onSpeed ? (
           <SpeedControl speed={speed} effective={speedEffective} canWrite={canWrite} onSpeed={onSpeed} />
         ) : null}
       </div>
       <div className="flex items-center gap-1.5">
-        <button
-          type="button"
-          onClick={onView}
-          className="inline-flex h-6 items-center gap-1 rounded bg-surface-2 px-1.5 font-medium hover:bg-surface-3"
-          title="Top-down ↔ angled view (V)"
-          aria-label={view === 'top' ? 'Switch to the angled view' : 'Switch to the top-down view'}
-        >
-          {view === 'top' ? <Box className="size-3.5" /> : <Layers className="size-3.5" />}
-          {view === 'top' ? 'Top-down' : 'Angled'}
-        </button>
+        <ViewButton view={view} onView={onView} />
         <div className="flex items-center rounded bg-surface-2" data-testid="level-widget">
           <button
             type="button"
@@ -677,19 +826,7 @@ export function ControlCluster({
             <ArrowUp className="size-3.5" />
           </button>
         </div>
-        <button
-          type="button"
-          onClick={onXray}
-          aria-pressed={xray}
-          className={cn(
-            'grid size-6 place-items-center rounded',
-            xray ? 'bg-accent-soft text-accent' : 'hover:bg-surface-2',
-          )}
-          title={xray ? 'Roofs x-rayed (X)' : 'Show everything above this level (X)'}
-          aria-label="X-ray above the level"
-        >
-          {xray ? <EyeOff className="size-3.5" /> : <Eye className="size-3.5" />}
-        </button>
+        <XrayButton xray={xray} onXray={onXray} />
         <button
           type="button"
           onClick={onHelp}
@@ -703,6 +840,56 @@ export function ControlCluster({
       </div>
       {children}
     </div>
+  );
+}
+
+function PauseButton({ paused, canWrite, onPause }: { paused: boolean; canWrite: boolean; onPause: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onPause}
+      disabled={!canWrite}
+      aria-pressed={paused}
+      className={cn(
+        'ml-auto inline-flex h-6 items-center gap-1 rounded px-1.5 font-medium',
+        paused ? 'bg-warn-soft text-warn' : 'hover:bg-surface-2',
+      )}
+      title="Pause the colony: every pawn holds (Space)"
+    >
+      {paused ? <Play className="size-3.5" /> : <Pause className="size-3.5" />}
+      {paused ? 'Paused' : 'Pause'}
+    </button>
+  );
+}
+
+function ViewButton({ view, onView }: { view: 'top' | 'angled'; onView: () => void }) {
+  const top = view === 'top';
+  return (
+    <button
+      type="button"
+      onClick={onView}
+      className="inline-flex h-6 items-center gap-1 rounded bg-surface-2 px-1.5 font-medium hover:bg-surface-3"
+      title="Top-down ↔ angled view (V)"
+      aria-label={top ? 'Switch to the angled view' : 'Switch to the top-down view'}
+    >
+      {top ? <Box className="size-3.5" /> : <Layers className="size-3.5" />}
+      {top ? 'Top-down' : 'Angled'}
+    </button>
+  );
+}
+
+function XrayButton({ xray, onXray }: { xray: boolean; onXray: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onXray}
+      aria-pressed={xray}
+      className={cn('grid size-6 place-items-center rounded', xray ? 'bg-accent-soft text-accent' : 'hover:bg-surface-2')}
+      title={xray ? 'Roofs x-rayed (X)' : 'Show everything above this level (X)'}
+      aria-label="X-ray above the level"
+    >
+      {xray ? <EyeOff className="size-3.5" /> : <Eye className="size-3.5" />}
+    </button>
   );
 }
 
@@ -902,6 +1089,37 @@ function HeightModes({
   );
 }
 
+type OptionsTool = Exclude<MapTool, { kind: 'select' } | { kind: 'build' }>;
+type ToolHeading = { name: string | undefined; hint: string; icon: string };
+
+/** The options bar's title, hint and icon for each tool kind. */
+const HEADINGS: { [K in OptionsTool['kind']]: (t: Extract<OptionsTool, { kind: K }>) => ToolHeading } = {
+  designate: (t) => {
+    const d = DESIGNATE_TOOLS.find((x) => x.id === t.id);
+    return { name: d?.label, hint: `${d?.hint}. Drag a box; Shift keeps the tool.`, icon: t.id };
+  },
+  zone: (t) => ({
+    name: `${t.op === 'remove' ? 'Remove ' : ''}${ZONE_TOOLS.find((z) => z.id === t.id)?.label ?? 'Zone'}`,
+    hint: 'Drag to paint the zone',
+    icon: 'zone',
+  }),
+  storage: () => ({ name: 'Register chests', hint: 'Drag over chests to make them storage', icon: 'storage' }),
+  home: () => ({
+    name: 'Set home',
+    hint: 'Click where home should be: the colony migrates there (you confirm first)',
+    icon: 'home',
+  }),
+  design: (t) => ({
+    name: `Design: ${t.name}`,
+    hint: `${t.blocks.length} blocks: click to queue it here (Q/E turns, PgUp/PgDn changes the level)`,
+    icon: 'block',
+  }),
+};
+
+function toolHeadingOf(tool: OptionsTool): ToolHeading {
+  return (HEADINGS[tool.kind] as (t: OptionsTool) => ToolHeading)(tool);
+}
+
 export function OptionsBar({
   tool,
   build,
@@ -934,36 +1152,7 @@ export function OptionsBar({
 }) {
   // Structure and furniture tools have the docked material selector instead (MaterialBar.tsx): one place, no second bar.
   if (tool.kind === 'select' || tool.kind === 'build') return null;
-  const name =
-    tool.kind === 'designate'
-      ? DESIGNATE_TOOLS.find((t) => t.id === tool.id)?.label
-      : tool.kind === 'zone'
-        ? `${tool.op === 'remove' ? 'Remove ' : ''}${ZONE_TOOLS.find((z) => z.id === tool.id)?.label ?? 'Zone'}`
-        : tool.kind === 'storage'
-          ? 'Register chests'
-          : tool.kind === 'home'
-            ? 'Set home'
-            : `Design: ${tool.name}`;
-  const hint =
-    tool.kind === 'designate'
-      ? `${DESIGNATE_TOOLS.find((t) => t.id === tool.id)?.hint}. Drag a box; Shift keeps the tool.`
-      : tool.kind === 'storage'
-        ? 'Drag over chests to make them storage'
-        : tool.kind === 'home'
-          ? 'Click where home should be: the colony migrates there (you confirm first)'
-          : tool.kind === 'design'
-            ? `${tool.blocks.length} blocks: click to queue it here (Q/E turns, PgUp/PgDn changes the level)`
-            : 'Drag to paint the zone';
-  const icon =
-    tool.kind === 'designate'
-      ? tool.id
-      : tool.kind === 'storage'
-        ? 'storage'
-        : tool.kind === 'design'
-          ? 'block'
-          : tool.kind === 'home'
-            ? 'home'
-            : 'zone';
+  const { name, hint, icon } = toolHeadingOf(tool);
   return (
     <div
       className={cn(panel, 'pointer-events-auto flex flex-wrap items-center gap-2 px-2.5 py-1.5 text-xs')}
@@ -974,33 +1163,15 @@ export function OptionsBar({
       <ToolIcon id={icon} className="size-4 text-accent" />
       <span className="font-semibold">{name}</span>
       <span className="text-muted">{hint}</span>
-      {tool.kind === 'designate' && hasHeight(tool.id) ? (
-        <HeightModes mode={heightMode} onMode={onHeightMode} layers={layers} onLayers={onLayers} level={level} />
-      ) : null}
-      {tool.kind === 'designate' && tool.id === 'mine' ? (
-        <select
-          aria-label="Mine filter"
-          value={mineFilter}
-          onChange={(e) => onMineFilter(e.target.value as never)}
-          className="h-6 rounded border border-border bg-surface-2 px-1"
-        >
-          {MINE_FILTERS.map((f) => (
-            <option key={f.id} value={f.id}>
-              {f.label}
-            </option>
-          ))}
-        </select>
-      ) : null}
-      {tool.kind === 'designate' && tool.id === 'retry' ? (
-        <button
-          type="button"
-          onClick={onRetryAll}
-          disabled={!stalled}
-          data-testid="retry-all"
-          className="rounded border border-border bg-surface-2 px-2 py-0.5 font-medium hover:bg-surface-3 disabled:opacity-50"
-        >
-          Retry all failed ({stalled})
-        </button>
+      {tool.kind === 'designate' ? (
+        <DesignateOptions
+          id={tool.id}
+          height={{ mode: heightMode, onMode: onHeightMode, layers, onLayers, level }}
+          mineFilter={mineFilter}
+          onMineFilter={onMineFilter}
+          stalled={stalled}
+          onRetryAll={onRetryAll}
+        />
       ) : null}
       {tool.kind === 'design' ? (
         <span className="flex items-center gap-1" title="Facing (Q / E)">
@@ -1020,6 +1191,54 @@ export function OptionsBar({
         <X className="size-3.5" />
       </button>
     </div>
+  );
+}
+
+/** A designate tool's own options: the height modes (Mine, Deconstruct), the mine filter, "Retry all failed". */
+function DesignateOptions({
+  id,
+  height,
+  mineFilter,
+  onMineFilter,
+  stalled,
+  onRetryAll,
+}: {
+  id: DesignateId;
+  height: Parameters<typeof HeightModes>[0];
+  mineFilter: string;
+  onMineFilter: (f: 'all' | 'ores' | 'stone' | 'soil') => void;
+  stalled: number;
+  onRetryAll?: () => void;
+}) {
+  return (
+    <>
+      {hasHeight(id) ? <HeightModes {...height} /> : null}
+      {id === 'mine' ? (
+        <select
+          aria-label="Mine filter"
+          value={mineFilter}
+          onChange={(e) => onMineFilter(e.target.value as never)}
+          className="h-6 rounded border border-border bg-surface-2 px-1"
+        >
+          {MINE_FILTERS.map((f) => (
+            <option key={f.id} value={f.id}>
+              {f.label}
+            </option>
+          ))}
+        </select>
+      ) : null}
+      {id === 'retry' ? (
+        <button
+          type="button"
+          onClick={onRetryAll}
+          disabled={!stalled}
+          data-testid="retry-all"
+          className="rounded border border-border bg-surface-2 px-2 py-0.5 font-medium hover:bg-surface-3 disabled:opacity-50"
+        >
+          Retry all failed ({stalled})
+        </button>
+      ) : null}
+    </>
   );
 }
 

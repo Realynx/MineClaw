@@ -183,34 +183,52 @@ public sealed partial class WorldIndexer
         e.Min = frameMin;
         e.Max = frameMax;
         e.Anchor = min;
-        // A frame flagged as an "unknown build" before the sheet was lit is re-judged (now explained by the portal).
-        for (int x = frameMin.X; x <= frameMax.X; x++)
-        for (int y = frameMin.Y; y <= frameMax.Y; y++)
-        for (int z = frameMin.Z; z <= frameMax.Z; z++)
-            if (_builds.Contains(new BlockPos(x, y, z))) _builds.Touch(new BlockPos(x, y, z));
-        // Protect the sheet and its obsidian frame: breaking either strands the bot in the other dimension.
-        var protect = new HashSet<BlockPos>(c.Cells);
-        for (int x = frameMin.X; x <= frameMax.X; x++)
-        for (int y = frameMin.Y; y <= frameMax.Y; y++)
-        for (int z = frameMin.Z; z <= frameMax.Z; z++)
-            if (_world.GetBlock(x, y, z) == Blocks.Obsidian) protect.Add(new BlockPos(x, y, z));
-        SetProtect(e, protect);
+        RejudgeBuilds(frameMin, frameMax);
+        SetProtect(e, PortalProtectSet(c.Cells, frameMin, frameMax));
         // Exact standing spot: a bottom portal cell with solid ground under it (walking into it starts the trip).
         var stand = c.Cells.Where(p => p.Y == min.Y).OrderBy(p => p.X + p.Z).FirstOrDefault();
-        // Approach spot: free 2-high cell on solid ground right in front of the sheet.
-        BlockPos? approach = null;
-        foreach (var b in c.Cells.Where(p => p.Y == min.Y))
-        foreach (var off in alongX ? new[] { new BlockPos(0, 0, 1), new BlockPos(0, 0, -1) } : new[] { new BlockPos(1, 0, 0), new BlockPos(-1, 0, 0) })
-        {
-            var s = b + off;
-            if (!BlockShapes.HasCollision(_world, s.X, s.Y, s.Z) && !BlockShapes.HasCollision(_world, s.X, s.Y + 1, s.Z)
-                && BlockShapes.HasCollision(_world, s.X, s.Y - 1, s.Z)) { approach ??= s; }
-        }
+        var approach = PortalApproach(c.Cells, min.Y, alongX);
         e.Extra.Clear();
         e.Extra["stand"] = Arr(stand);
         e.Extra["approach"] = approach is { } ap ? Arr(ap) : null;
         e.Extra["frame"] = new List<int[]> { Arr(frameMin), Arr(frameMax) };
         e.Extra["cells"] = c.Cells.Count;
+    }
+
+    /// <summary>A frame flagged as an "unknown build" before the sheet was lit is re-judged (now explained by the portal).</summary>
+    private void RejudgeBuilds(BlockPos frameMin, BlockPos frameMax)
+    {
+        for (int x = frameMin.X; x <= frameMax.X; x++)
+        for (int y = frameMin.Y; y <= frameMax.Y; y++)
+        for (int z = frameMin.Z; z <= frameMax.Z; z++)
+            if (_builds.Contains(new BlockPos(x, y, z))) _builds.Touch(new BlockPos(x, y, z));
+    }
+
+    /// <summary>The sheet and its obsidian frame: breaking either strands the bot in the other dimension.</summary>
+    private HashSet<BlockPos> PortalProtectSet(IEnumerable<BlockPos> cells, BlockPos frameMin, BlockPos frameMax)
+    {
+        var protect = new HashSet<BlockPos>(cells);
+        for (int x = frameMin.X; x <= frameMax.X; x++)
+        for (int y = frameMin.Y; y <= frameMax.Y; y++)
+        for (int z = frameMin.Z; z <= frameMax.Z; z++)
+            if (_world.GetBlock(x, y, z) == Blocks.Obsidian) protect.Add(new BlockPos(x, y, z));
+        return protect;
+    }
+
+    private static readonly BlockPos[] AlongXFront = [new BlockPos(0, 0, 1), new BlockPos(0, 0, -1)];
+    private static readonly BlockPos[] AlongZFront = [new BlockPos(1, 0, 0), new BlockPos(-1, 0, 0)];
+
+    /// <summary>Approach spot: the first free 2-high cell on solid ground right in front of the sheet's bottom row.</summary>
+    private BlockPos? PortalApproach(IEnumerable<BlockPos> cells, int bottomY, bool alongX)
+    {
+        foreach (var b in cells.Where(p => p.Y == bottomY))
+        foreach (var off in alongX ? AlongXFront : AlongZFront)
+        {
+            var s = b + off;
+            if (!BlockShapes.HasCollision(_world, s.X, s.Y, s.Z) && !BlockShapes.HasCollision(_world, s.X, s.Y + 1, s.Z)
+                && BlockShapes.HasCollision(_world, s.X, s.Y - 1, s.Z)) return s;
+        }
+        return null;
     }
 
     // ------------------------------------------------------------------ nether hazard summary (instead of islands)

@@ -86,37 +86,12 @@ public sealed partial class ScriptBridge
     {
         if (Crew is not { } port) return (null, "no other bodies here to run a crew on");
         var req0 = c.Request;
-        if (req0.Lang != ScriptLanguage.Js) return (null, $"{req0.Name} is legacy Lua: a crew script is JS (everyBody)");
-        if (!Crews.IsCrewScript(req0.Code))
-            return (null, $"{req0.Name} isn't a crew script: its main() works the bodies through a role (everyBody('worker', args)); give each body its own run");
+        if (CrewScriptRefusal(req0) is { } why) return (null, why);
         var id = c.Id ?? NewCrewId(req0.Name);
         var notTaken = new List<string>();
-        Func<IReadOnlyCollection<string>> members;
-        Func<int>? pending = c.Pending;
-        if (c.Bodies is { } list)
-        {
-            var online = port.Bodies();
-            var got = new List<string>();
-            foreach (var b in list.Distinct(StringComparer.OrdinalIgnoreCase))
-            {
-                if (port.HeldBy(b) is { } other && !string.Equals(other, id, StringComparison.Ordinal)) notTaken.Add($"{b} (in crew {other})");
-                else if (!online.Contains(b, StringComparer.OrdinalIgnoreCase)) notTaken.Add($"{b} (not free for a crew: offline or a hive script's)");
-                else if (!port.Hold(b, id)) notTaken.Add($"{b} (in crew {port.HeldBy(b)})");
-                else got.Add(b);
-            }
-            if (got.Count == 0) return (null, "no body free for this crew: " + string.Join(", ", notTaken));
-            members = () => got;
-            pending ??= () => 0; // a fixed list: a body that left is dropped, never waited for
-        }
-        else
-        {
-            members = c.Members ?? (() => port.Bodies());
-            if (c.Members == null) pending ??= port.Pending;
-            foreach (var b in port.Bodies())
-                if (port.HeldBy(b) is { } other && !string.Equals(other, id, StringComparison.Ordinal) && members().Contains(b, StringComparer.OrdinalIgnoreCase))
-                    notTaken.Add($"{b} (in crew {other})");
-        }
-        var sub = new SubsetCrewPort(port, members, id, pending);
+        var (members, pending, error) = CrewMembers(c, port, id, notTaken);
+        if (error != null) return (null, error);
+        var sub = new SubsetCrewPort(port, members!, id, pending);
         Crews.Open(id); // its bodies are this crew's from now on (one body, one crew; the wake digest), not from its first lane
         var controller = Coordinator(sub, id);
         var req = req0 with { CrewId = id, Unattended = true, Coordinator = Controller.Host.Username };
@@ -130,25 +105,80 @@ public sealed partial class ScriptBridge
         var run = new CrewRun(id, req.Name, s, sub.Bodies);
         _crewRuns[id] = run;
         _log?.LogInformation("crew {Id}: {Script} v{V} over {Bodies} (bodiless coordinator){NotTaken}", id, req.Name, req.Version,
-            c.Bodies != null ? string.Join(",", members()) : c.Members != null ? "its spawned bodies" : "all bodies", notTaken.Count > 0 ? "; not taken: " + string.Join(", ", notTaken) : "");
-        _ = s.Completion.ContinueWith(_ =>
+            c.Bodies != null ? string.Join(",", members!()) : c.Members != null ? "its spawned bodies" : "all bodies", NotTakenSuffix(notTaken));
+        _ = s.Completion.ContinueWith(_ => OnCrewEnded(c, id, req.Name, s, controller), TaskScheduler.Default);
+        return (run, $"ok: crew {req.Name} running on {CrewWho(c, members!)}: ONE coordinator, no body of yours held; you hear its result " +
+            $"(script{{op:cancel,name:{req.Name}}} ends it)" + NotTakenSuffix(notTaken));
+    }
+
+    /// <summary>Why a script can't coordinate a crew (legacy Lua, or no everyBody role), else null.</summary>
+    private static string? CrewScriptRefusal(ScriptRequest req)
+    {
+        if (req.Lang != ScriptLanguage.Js) return $"{req.Name} is legacy Lua: a crew script is JS (everyBody)";
+        if (!Crews.IsCrewScript(req.Code))
+            return $"{req.Name} isn't a crew script: its main() works the bodies through a role (everyBody('worker', args)); give each body its own run";
+        return null;
+    }
+
+    private static string NotTakenSuffix(List<string> notTaken) => notTaken.Count > 0 ? "; not taken: " + string.Join(", ", notTaken) : "";
+
+    /// <summary>The crew's bodies and the ones still to come: a named list (each held for this crew now; a body that left is
+    /// dropped, never waited for), else the spec's members or every body (late ones too). Bodies another crew holds go to
+    /// <paramref name="notTaken"/>; an error when a named list got none.</summary>
+    private static (Func<IReadOnlyCollection<string>>? Members, Func<int>? Pending, string? Error) CrewMembers(CrewSpec c, ICrewPort port, string id,
+        List<string> notTaken)
+    {
+        Func<int>? pending = c.Pending;
+        if (c.Bodies is { } list)
         {
-            _crewRuns.TryRemove(id, out var _);
-            Crews.Close(id);
-            controller.Dispose();
-            var line = (s.Outcome ?? (s.Ok ? "ok" : "failed")).ReplaceLineEndings(" ").Trim();
-            // "ok: script deforest done (deforest: 3/3 bodies done (…), 4m)" → its own result line (the tag says done/failed).
-            if (System.Text.RegularExpressions.Regex.Match(line, @"^ok: script \S+ done \((.*)\)$") is { Success: true } m) line = m.Groups[1].Value;
-            line = ScriptText.Cap(line, 300);
-            _log?.LogInformation("crew {Id}: {Status}: {Line}", id, s.Status, line);
-            try { c.Ended?.Invoke(s.Ok, line); } catch (Exception ex) { _log?.LogWarning(ex, "crew {Id}: end hook failed", id); }
-            // The one wake a crew costs the brain: its result (or failure), never a lane's.
-            if (!c.Quiet) PostOwn(GameEvent.Notice($"[crew {req.Name} {(s.Ok ? "done" : "failed")}] {line}", EventPriority.Normal) with { MustWake = true });
-        }, TaskScheduler.Default);
-        var who = c.Bodies != null ? $"{members().Count} bod{(members().Count == 1 ? "y" : "ies")} ({string.Join(",", members())})"
-            : c.Members != null ? "the bodies spawned for it, as they log in" : "all your bodies, late ones too";
-        return (run, $"ok: crew {req.Name} running on {who}: ONE coordinator, no body of yours held; you hear its result " +
-            $"(script{{op:cancel,name:{req.Name}}} ends it)" + (notTaken.Count > 0 ? "; not taken: " + string.Join(", ", notTaken) : ""));
+            var got = HoldListed(port, list, id, notTaken);
+            if (got.Count == 0) return (null, null, "no body free for this crew: " + string.Join(", ", notTaken));
+            return (() => got, pending ?? (() => 0), null);
+        }
+        Func<IReadOnlyCollection<string>> members = c.Members ?? (() => port.Bodies());
+        if (c.Members == null) pending ??= port.Pending;
+        foreach (var b in port.Bodies())
+            if (port.HeldBy(b) is { } other && !string.Equals(other, id, StringComparison.Ordinal) && members().Contains(b, StringComparer.OrdinalIgnoreCase))
+                notTaken.Add($"{b} (in crew {other})");
+        return (members, pending, null);
+    }
+
+    /// <summary>Holds each listed body for crew <paramref name="id"/>; the ones it can't (another crew's, offline, a hive script's)
+    /// go to <paramref name="notTaken"/> with why.</summary>
+    private static List<string> HoldListed(ICrewPort port, IReadOnlyList<string> list, string id, List<string> notTaken)
+    {
+        var online = port.Bodies();
+        var got = new List<string>();
+        foreach (var b in list.Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            if (port.HeldBy(b) is { } other && !string.Equals(other, id, StringComparison.Ordinal)) notTaken.Add($"{b} (in crew {other})");
+            else if (!online.Contains(b, StringComparer.OrdinalIgnoreCase)) notTaken.Add($"{b} (not free for a crew: offline or a hive script's)");
+            else if (!port.Hold(b, id)) notTaken.Add($"{b} (in crew {port.HeldBy(b)})");
+            else got.Add(b);
+        }
+        return got;
+    }
+
+    private static string CrewWho(CrewSpec c, Func<IReadOnlyCollection<string>> members)
+    {
+        if (c.Bodies != null) return $"{members().Count} bod{(members().Count == 1 ? "y" : "ies")} ({string.Join(",", members())})";
+        return c.Members != null ? "the bodies spawned for it, as they log in" : "all your bodies, late ones too";
+    }
+
+    /// <summary>A crew's end: free its bodies and coordinator, report its result line, and wake the brain once with it.</summary>
+    private void OnCrewEnded(CrewSpec c, string id, string name, ScriptSession s, ScriptController controller)
+    {
+        _crewRuns.TryRemove(id, out var _);
+        Crews.Close(id);
+        controller.Dispose();
+        var line = (s.Outcome ?? (s.Ok ? "ok" : "failed")).ReplaceLineEndings(" ").Trim();
+        // "ok: script deforest done (deforest: 3/3 bodies done (…), 4m)" → its own result line (the tag says done/failed).
+        if (System.Text.RegularExpressions.Regex.Match(line, @"^ok: script \S+ done \((.*)\)$") is { Success: true } m) line = m.Groups[1].Value;
+        line = ScriptText.Cap(line, 300);
+        _log?.LogInformation("crew {Id}: {Status}: {Line}", id, s.Status, line);
+        try { c.Ended?.Invoke(s.Ok, line); } catch (Exception ex) { _log?.LogWarning(ex, "crew {Id}: end hook failed", id); }
+        // The one wake a crew costs the brain: its result (or failure), never a lane's.
+        if (!c.Quiet) PostOwn(GameEvent.Notice($"[crew {name} {(s.Ok ? "done" : "failed")}] {line}", EventPriority.Normal) with { MustWake = true });
     }
 
     /// <summary>The crew run a name means (its script or its id), or null.</summary>

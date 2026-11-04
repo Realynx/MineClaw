@@ -45,11 +45,6 @@ export function ZoneToolbar({
   const work = ZONE_TOOLS.filter((z) => !isOverlayZone(z.id));
   const overlays = ZONE_TOOLS.filter((z) => isOverlayZone(z.id));
   const zt = tool.kind === 'zone' ? (tool as unknown as ZoneTool) : null;
-  const target = zt?.into !== undefined ? zones.find((z) => String(z.id) === String(zt.into)) : undefined;
-  const kinds: Array<[string, string]> = [
-    [ERASE_ANY, 'Any'],
-    ...ZONE_TOOLS.map((z) => [z.id, z.label] as [string, string]),
-  ];
   return (
     <>
       {work.map((z) =>
@@ -62,43 +57,74 @@ export function ZoneToolbar({
         'Erase zone',
         'Drag over zones to erase those cells (empty zones go, a zone cut in two becomes two)',
       )}
-      {zt?.op === 'remove' ? (
-        <div className="w-full" data-testid="zone-erase-kind">
-          <div className="mb-1 text-[11px] font-semibold text-muted">Erase</div>
-          <div className="flex flex-wrap gap-1" role="radiogroup" aria-label="Erase which zones">
-            {kinds.map(([id, label]) => (
-              <button
-                key={id}
-                type="button"
-                role="radio"
-                aria-checked={erase === id}
-                onClick={() => {
-                  eraseKind = id;
-                  for (const l of listeners) l();
-                  onTool({ kind: 'zone', id, op: 'remove' });
-                }}
-                className={cn(
-                  'rounded border px-1.5 py-0.5 text-[11px]',
-                  erase === id ? 'border-accent bg-accent-soft text-fg' : 'border-border text-muted hover:text-fg',
-                )}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-        </div>
-      ) : null}
-      {zt?.op === 'add' && zt.id === 'farm' && zt.into === undefined ? <GrowPlantPicker plants={plants} /> : null}
-      {zt?.op === 'add' && zt.id === 'mine' && zt.into === undefined ? <QuarryModePicker /> : null}
-      {zt?.op === 'add' && zt.into !== undefined ? (
-        <p className="w-full text-[11px] text-accent" data-testid="zone-extending">
-          Extending {target?.name || target?.label || `zone ${zt.into}`}: painted cells join it. Esc to stop.
-        </p>
-      ) : null}
+      {zt ? <ZoneToolExtra zt={zt} erase={erase} onTool={onTool} plants={plants} zones={zones} /> : null}
       <p className="w-full text-[11px] leading-snug text-muted">
         Drag to paint. Cells touching a zone of the same type join it; work zones replace each other; Home area and Keep
         out are overlay layers. Shift-drag from inside a zone extends that zone.
       </p>
     </>
+  );
+}
+
+/** What shows under the buttons for the zone tool in hand: the erase kind, the plant, the quarry mode, or the zone extended. */
+function ZoneToolExtra({
+  zt,
+  erase,
+  onTool,
+  plants,
+  zones,
+}: {
+  zt: ZoneTool;
+  erase: string;
+  onTool: (t: ZoneTool) => void;
+  plants?: readonly StoryPlant[] | null;
+  zones: readonly StoryZone[];
+}) {
+  if (zt.op === 'remove') return <EraseKindPicker erase={erase} onTool={onTool} />;
+  if (zt.into !== undefined) return <ExtendingNote into={zt.into} zones={zones} />;
+  if (zt.id === 'farm') return <GrowPlantPicker plants={plants} />;
+  return zt.id === 'mine' ? <QuarryModePicker /> : null;
+}
+
+const ERASE_KINDS: ReadonlyArray<[string, string]> = [
+  [ERASE_ANY, 'Any'],
+  ...ZONE_TOOLS.map((z) => [z.id, z.label] as [string, string]),
+];
+
+function EraseKindPicker({ erase, onTool }: { erase: string; onTool: (t: ZoneTool) => void }) {
+  return (
+    <div className="w-full" data-testid="zone-erase-kind">
+      <div className="mb-1 text-[11px] font-semibold text-muted">Erase</div>
+      <div className="flex flex-wrap gap-1" role="radiogroup" aria-label="Erase which zones">
+        {ERASE_KINDS.map(([id, label]) => (
+          <button
+            key={id}
+            type="button"
+            role="radio"
+            aria-checked={erase === id}
+            onClick={() => {
+              eraseKind = id;
+              for (const l of listeners) l();
+              onTool({ kind: 'zone', id, op: 'remove' });
+            }}
+            className={cn(
+              'rounded border px-1.5 py-0.5 text-[11px]',
+              erase === id ? 'border-accent bg-accent-soft text-fg' : 'border-border text-muted hover:text-fg',
+            )}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ExtendingNote({ into, zones }: { into: string | number; zones: readonly StoryZone[] }) {
+  const target = zones.find((z) => String(z.id) === String(into));
+  return (
+    <p className="w-full text-[11px] text-accent" data-testid="zone-extending">
+      Extending {target?.name || target?.label || `zone ${into}`}: painted cells join it. Esc to stop.
+    </p>
   );
 }

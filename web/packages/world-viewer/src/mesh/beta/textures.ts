@@ -27,129 +27,92 @@ function frontOf(id: number, meta: number): number {
   return meta >= 2 && meta <= 5 ? meta : 3;
 }
 
+/** BlockMushroomCap pieces 1..9 (the 3×3 cap: 1 NW … 9 SE) → the faces (bit per face) showing the cap: the top, plus
+ * north for the first row, south for the last, west for the first column, east for the last. */
+function capFaces(meta: number): number {
+  if (meta < 1 || meta > 9) return 0;
+  const row = Math.floor((meta - 1) / 3), col = (meta - 1) % 3;
+  return (1 << 1) | (row === 0 ? 1 << 2 : 0) | (row === 2 ? 1 << 3 : 0) | (col === 0 ? 1 << 4 : 0) | (col === 2 ? 1 << 5 : 0);
+}
+const CAP_FACES = Array.from({ length: 16 }, (_, meta) => capFaces(meta));
+
 /** BlockMushroomCap: which faces show the cap (meta 1..9 = the 3×3 cap pieces, 10 stem, 14 all cap, 15 all stem). */
 function mushroom(cap: number, meta: number, f: number): TileRef {
-  if (meta === 10 && f > 1) return ref(141);
-  if (meta === 15) return ref(141);
-  if (meta === 14) return ref(cap);
-  if (meta >= 1 && meta <= 9 && f === 1) return ref(cap);
-  if (meta >= 1 && meta <= 3 && f === 2) return ref(cap);
-  if (meta >= 7 && meta <= 9 && f === 3) return ref(cap);
-  if ((meta === 1 || meta === 4 || meta === 7) && f === 4) return ref(cap);
-  if ((meta === 3 || meta === 6 || meta === 9) && f === 5) return ref(cap);
+  if (meta === 15 || (meta === 10 && f > 1)) return ref(141);
+  if (meta === 14 || (CAP_FACES[meta] & (1 << f)) !== 0) return ref(cap);
   return ref(142);
+}
+
+type TileRule = (meta: number, f: number, fancy: boolean) => TileRef;
+
+/** The terrain.png tile rule per block id (undefined = no tile). */
+const TILE_RULES: Array<TileRule | undefined> = [];
+const rule = (ids: readonly number[], fn: TileRule) => {
+  for (const id of ids) TILE_RULES[id] = fn;
+};
+
+/** One tile on every face, whatever the metadata. */
+const SINGLE: ReadonlyArray<readonly [number, number]> = [
+  [1, 1], [3, 2], [4, 16], [5, 4], [7, 17], [12, 18], [13, 19], [14, 32], [15, 33], [16, 34], [19, 48], [20, 49], [21, 160],
+  [22, 144], [25, 74], [28, 195], [30, 11], [32, 55], [37, 13], [38, 12], [39, 29], [40, 28], [41, 23], [42, 22], [45, 7],
+  [48, 36], [49, 37], [50, 80], [51, 31], [52, 65], [53, 4], [55, 164], [56, 50], [57, 24], [63, 4], [68, 4], [65, 83],
+  [67, 16], [69, 96], [70, 1], [72, 4], [73, 51], [74, 51], [75, 115], [76, 99], [77, 1], [78, 66], [79, 67], [80, 66],
+  [82, 72], [83, 73], [85, 4], [87, 103], [88, 104], [89, 105], [90, 14], [96, 84], [101, 85], [102, 49], [107, 4],
+  [108, 7], [109, 54],
+];
+for (const [id, tile] of SINGLE) rule([id], () => ref(tile));
+
+/** [top, bottom, sides]. */
+const BY_FACE: ReadonlyArray<readonly [number, number, number, number]> = [
+  [24, 176, 208, 192], [46, 9, 10, 8], [47, 4, 4, 35], [81, 69, 71, 70], [84, 75, 74, 74], [92, 121, 124, 122], [103, 137, 137, 136],
+];
+for (const [id, top, bottom, side] of BY_FACE) rule([id], (_m, f) => ref(f === 1 ? top : f === 0 ? bottom : side));
+
+/** Furnaces, dispensers, pumpkins and jack-o'-lanterns: [top, bottom, front, other sides]. */
+const FRONTED: ReadonlyArray<readonly [number, number, number, number, number]> = [
+  [23, 62, 45, 46, 45], [61, 62, 62, 44, 45], [62, 62, 62, 61, 45], [86, 102, 102, 119, 118], [91, 102, 102, 120, 118],
+];
+for (const [id, top, bottom, front, side] of FRONTED)
+  rule([id], (meta, f) => ref(f === 1 ? top : f === 0 ? bottom : frontOf(id, meta) === f ? front : side));
+
+rule([2], (_m, f) => (f === 1 ? ref(0, GRASS_TINT) : f === 0 ? ref(2) : ref(3, 0, GRASS_SIDE_OVERLAY, GRASS_TINT)));
+rule([6], (meta) => ref([15, 63, 79, 15][meta & 3]));
+rule([17], (meta, f) => (f === 1 || f === 0 ? ref(21) : ref([20, 116, 117, 20][meta & 3])));
+rule([18], (meta, _f, fancy) => ref(((meta & 3) === 1 ? 132 : 52) + (fancy ? 0 : 1), [FOLIAGE_TINT, SPRUCE_TINT, BIRCH_TINT, FOLIAGE_TINT][meta & 3]));
+rule([27], (meta) => ref((meta & 8) !== 0 ? 179 : 163));
+rule([31], (meta) => ((meta & 3) === 0 ? ref(55) : (meta & 3) === 2 ? ref(56, GRASS_TINT) : ref(39, GRASS_TINT)));
+rule([35], (meta) => ref(WOOL[meta & 15]));
+rule([43, 44], slab);
+rule([54, 95], (_m, f) => (f === 1 || f === 0 ? ref(25) : f === 3 ? ref(27) : ref(26)));
+rule([58], (_m, f) => (f === 1 ? ref(43) : f === 0 ? ref(4) : f === 2 || f === 4 ? ref(60) : ref(59)));
+rule([59], (meta) => ref(88 + Math.max(0, Math.min(7, meta))));
+rule([60], (meta, f) => (f === 1 ? ref(meta > 0 ? 86 : 87) : ref(2)));
+rule([64], (meta) => ref((meta & 8) !== 0 ? 81 : 97));
+rule([71], (meta) => ref((meta & 8) !== 0 ? 82 : 98));
+rule([66], (meta) => ref(meta >= 6 ? 112 : 128));
+rule([97], (meta) => ref([1, 16, 54][meta % 3] ?? 1));
+rule([98], (meta) => ref([54, 100, 101, 54][meta & 3]));
+rule([99], (meta, f) => mushroom(126, meta, f));
+rule([100], (meta, f) => mushroom(125, meta, f));
+rule([106], () => ref(143, FOLIAGE_TINT));
+
+/** Stone slabs by material (meta & 7): stone, sandstone, wood, cobblestone, brick, stone brick. */
+function slab(meta: number, f: number): TileRef {
+  const ends = f === 1 || f === 0;
+  switch (meta & 7) {
+    case 1: return ends ? ref(176) : ref(192);
+    case 2: return ref(4);
+    case 3: return ref(16);
+    case 4: return ref(7);
+    case 5: return ref(54);
+    default: return ends ? ref(6) : ref(5);
+  }
 }
 
 /** `fancy`: alpha-cutout leaves (52/132) rather than the opaque fast ones (53/133). */
 export function tileFor(id: number, meta: number, f: number, fancy = true): TileRef {
-  const top = f === 1, bottom = f === 0, side = !top && !bottom;
-  switch (id) {
-    case 1: return ref(1);
-    case 2: return top ? ref(0, GRASS_TINT) : bottom ? ref(2) : ref(3, 0, GRASS_SIDE_OVERLAY, GRASS_TINT);
-    case 3: return ref(2);
-    case 4: return ref(16);
-    case 5: return ref(4);
-    case 6: return ref([15, 63, 79, 15][meta & 3]);
-    case 7: return ref(17);
-    case 12: return ref(18);
-    case 13: return ref(19);
-    case 14: return ref(32);
-    case 15: return ref(33);
-    case 16: return ref(34);
-    case 17: return top || bottom ? ref(21) : ref([20, 116, 117, 20][meta & 3]);
-    case 18: return ref(((meta & 3) === 1 ? 132 : 52) + (fancy ? 0 : 1), [FOLIAGE_TINT, SPRUCE_TINT, BIRCH_TINT, FOLIAGE_TINT][meta & 3]);
-    case 19: return ref(48);
-    case 20: return ref(49);
-    case 21: return ref(160);
-    case 22: return ref(144);
-    case 23: return top ? ref(62) : side && frontOf(id, meta) === f ? ref(46) : ref(45);
-    case 24: return top ? ref(176) : bottom ? ref(208) : ref(192);
-    case 25: return ref(74);
-    case 27: return ref((meta & 8) !== 0 ? 179 : 163);
-    case 28: return ref(195);
-    case 30: return ref(11);
-    case 31: return (meta & 3) === 0 ? ref(55) : (meta & 3) === 2 ? ref(56, GRASS_TINT) : ref(39, GRASS_TINT);
-    case 32: return ref(55);
-    case 35: return ref(WOOL[meta & 15]);
-    case 37: return ref(13);
-    case 38: return ref(12);
-    case 39: return ref(29);
-    case 40: return ref(28);
-    case 41: return ref(23);
-    case 42: return ref(22);
-    case 43:
-    case 44:
-      switch (meta & 7) {
-        case 1: return top || bottom ? ref(176) : ref(192);
-        case 2: return ref(4);
-        case 3: return ref(16);
-        case 4: return ref(7);
-        case 5: return ref(54);
-        default: return top || bottom ? ref(6) : ref(5);
-      }
-    case 45: return ref(7);
-    case 46: return top ? ref(9) : bottom ? ref(10) : ref(8);
-    case 47: return top || bottom ? ref(4) : ref(35);
-    case 48: return ref(36);
-    case 49: return ref(37);
-    case 50: return ref(80);
-    case 51: return ref(31);
-    case 52: return ref(65);
-    case 53: return ref(4);
-    case 54:
-    case 95: return top || bottom ? ref(25) : f === 3 ? ref(27) : ref(26);
-    case 55: return ref(164);
-    case 56: return ref(50);
-    case 57: return ref(24);
-    case 58: return top ? ref(43) : bottom ? ref(4) : f === 2 || f === 4 ? ref(60) : ref(59);
-    case 59: return ref(88 + Math.max(0, Math.min(7, meta)));
-    case 60: return top ? ref(meta > 0 ? 86 : 87) : ref(2);
-    case 61: return top || bottom ? ref(62) : frontOf(id, meta) === f ? ref(44) : ref(45);
-    case 62: return top || bottom ? ref(62) : frontOf(id, meta) === f ? ref(61) : ref(45);
-    case 63:
-    case 68: return ref(4);
-    case 64: return ref((meta & 8) !== 0 ? 81 : 97);
-    case 71: return ref((meta & 8) !== 0 ? 82 : 98);
-    case 65: return ref(83);
-    case 66: return ref(meta >= 6 ? 112 : 128);
-    case 67: return ref(16);
-    case 69: return ref(96);
-    case 70: return ref(1);
-    case 72: return ref(4);
-    case 73:
-    case 74: return ref(51);
-    case 75: return ref(115);
-    case 76: return ref(99);
-    case 77: return ref(1);
-    case 78: return ref(66);
-    case 79: return ref(67);
-    case 80: return ref(66);
-    case 81: return top ? ref(69) : bottom ? ref(71) : ref(70);
-    case 82: return ref(72);
-    case 83: return ref(73);
-    case 84: return top ? ref(75) : ref(74);
-    case 85: return ref(4);
-    case 86: return top || bottom ? ref(102) : frontOf(id, meta) === f ? ref(119) : ref(118);
-    case 87: return ref(103);
-    case 88: return ref(104);
-    case 89: return ref(105);
-    case 90: return ref(14);
-    case 91: return top || bottom ? ref(102) : frontOf(id, meta) === f ? ref(120) : ref(118);
-    case 92: return top ? ref(121) : bottom ? ref(124) : ref(122);
-    case 96: return ref(84);
-    case 97: return ref([1, 16, 54][meta % 3] ?? 1);
-    case 98: return ref([54, 100, 101, 54][meta & 3]);
-    case 99: return mushroom(126, meta, f);
-    case 100: return mushroom(125, meta, f);
-    case 101: return ref(85);
-    case 102: return ref(49);
-    case 103: return top || bottom ? ref(137) : ref(136);
-    case 107: return ref(4);
-    case 108: return ref(7);
-    case 109: return ref(54);
-    case 106: return ref(143, FOLIAGE_TINT);
-    default: return NO_TILE;
-  }
+  const fn = TILE_RULES[id];
+  return fn ? fn(meta, f, fancy) : NO_TILE;
 }
 
 /** Blocks drawn at full brightness (vanilla light values ≥ 13 that matter here). */

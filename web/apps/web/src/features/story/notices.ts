@@ -7,7 +7,7 @@
  *   not op). Listed while they hold, gone when they clear; never clicked away.
  * - **Log**: the last `LOG_CAP` messages (and the page's own toasts), filterable, each a jump to its pawn or place.
  */
-import type { StoryAlert, StoryColonyState } from '@mineclaw/contracts';
+import type { StoryAlert, StoryColonyState, StoryPawn } from '@mineclaw/contracts';
 
 export type NoticeLevel = 'info' | 'ok' | 'warn' | 'danger';
 
@@ -105,34 +105,75 @@ export interface MessageIn {
   source?: LogEntry['source'];
 }
 
-/** A message: into the log, and (unless `stack: false`) onto the stack, merged with one of its kind when there is one. */
-export function addMessage(s: NoticeState, m: MessageIn, now: number, ttlScale = 1, logOpen = false): NoticeState {
+/** One message as it lands: its kind, level, text, pawn, place and alert. */
+interface Incoming {
+  key: string;
+  level: NoticeLevel;
+  text: string;
+  pawn: string | null;
+  pos: [number, number, number] | null;
+  alert: StoryAlert | null;
+  now: number;
+}
+
+function incoming(m: MessageIn, now: number): Incoming {
   const level = levelOf(m.level);
-  const key = noticeKey(level, m.text);
-  const pos = m.pos ?? m.alert?.fix?.workbench ?? posIn(m.text);
-  const pawn = m.pawn ?? m.alert?.pawn ?? null;
-  const ttl = TTL[level] * ttlScale;
-  let stack = s.stack;
-  if (m.stack !== false) {
-    const i = stack.findIndex((n) => n.key === key);
-    if (i >= 0) {
-      const n = stack[i]!;
-      const merged: Notice = { ...n, text: m.text, count: n.count + 1, last: now, expires: now + ttl, pawn: pawn ?? n.pawn, pos: pos ?? n.pos, alert: m.alert ?? n.alert };
-      stack = [...stack.slice(0, i), ...stack.slice(i + 1), merged];
-    } else
-      stack = [...stack, { key, level, text: m.text, count: 1, first: now, last: now, expires: now + ttl, pawn, pos, alert: m.alert ?? null }];
+  return {
+    key: noticeKey(level, m.text),
+    level,
+    text: m.text,
+    pos: m.pos ?? m.alert?.fix?.workbench ?? posIn(m.text),
+    pawn: m.pawn ?? m.alert?.pawn ?? null,
+    alert: m.alert ?? null,
+    now,
+  };
+}
+
+/** The stack with `m`: merged into the entry of its kind (moved to the top, count and timer refreshed), else added on top. */
+function stackWith(stack: Notice[], m: Incoming, expires: number): Notice[] {
+  const i = stack.findIndex((n) => n.key === m.key);
+  if (i < 0) {
+    const { key, level, text, now, pawn, pos, alert } = m;
+    return [...stack, { key, level, text, count: 1, first: now, last: now, expires, pawn, pos, alert }];
   }
-  let log = s.log;
-  const j = log.findIndex((e) => e.key === key && now - e.at < LOG_MERGE_MS);
-  let nextId = s.nextId;
+  const n = stack[i]!;
+  const merged: Notice = {
+    ...n,
+    text: m.text,
+    count: n.count + 1,
+    last: m.now,
+    expires,
+    pawn: m.pawn ?? n.pawn,
+    pos: m.pos ?? n.pos,
+    alert: m.alert ?? n.alert,
+  };
+  return [...stack.slice(0, i), ...stack.slice(i + 1), merged];
+}
+
+/** The log with `m`: merged into a recent entry of its kind (moved to the end), else a new entry (the oldest dropped past the cap). */
+function logWith(
+  log: LogEntry[],
+  nextId: number,
+  m: Incoming,
+  source: LogEntry['source'],
+): { log: LogEntry[]; nextId: number; merged: boolean } {
+  const j = log.findIndex((e) => e.key === m.key && m.now - e.at < LOG_MERGE_MS);
   if (j >= 0) {
     const e = log[j]!;
-    log = [...log.slice(0, j), ...log.slice(j + 1), { ...e, text: m.text, count: e.count + 1, at: now, pawn: pawn ?? e.pawn, pos: pos ?? e.pos }];
-  } else {
-    log = [...log, { id: nextId++, key, level, text: m.text, count: 1, at: now, pawn, pos, alert: m.alert ?? null, source: m.source ?? 'colony' }];
-    if (log.length > LOG_CAP) log = log.slice(log.length - LOG_CAP);
+    const entry = { ...e, text: m.text, count: e.count + 1, at: m.now, pawn: m.pawn ?? e.pawn, pos: m.pos ?? e.pos };
+    return { log: [...log.slice(0, j), ...log.slice(j + 1), entry], nextId, merged: true };
   }
-  return { ...s, stack, log, nextId, unread: logOpen ? 0 : s.unread + (j >= 0 ? 0 : 1) };
+  const { key, level, text, now, pawn, pos, alert } = m;
+  const out = [...log, { id: nextId, key, level, text, count: 1, at: now, pawn, pos, alert, source }];
+  return { log: out.length > LOG_CAP ? out.slice(out.length - LOG_CAP) : out, nextId: nextId + 1, merged: false };
+}
+
+/** A message: into the log, and (unless `stack: false`) onto the stack, merged with one of its kind when there is one. */
+export function addMessage(s: NoticeState, m: MessageIn, now: number, ttlScale = 1, logOpen = false): NoticeState {
+  const msg = incoming(m, now);
+  const stack = m.stack === false ? s.stack : stackWith(s.stack, msg, now + TTL[msg.level] * ttlScale);
+  const { log, nextId, merged } = logWith(s.log, s.nextId, msg, m.source ?? 'colony');
+  return { ...s, stack, log, nextId, unread: logOpen ? 0 : s.unread + (merged ? 0 : 1) };
 }
 
 /**
@@ -194,67 +235,120 @@ const FOOD = new Set([260, 282, 297, 319, 320, 322, 349, 350, 357, 360, 363, 364
 /** Seeds: wheat, pumpkin, melon, beetroot (and carrots and potatoes, which plant themselves). */
 const SEEDS = new Set([295, 361, 362, 435, 391, 392]);
 
+type ConditionRule = (
+  st: StoryColonyState,
+  pawns: readonly StoryPawn[],
+  opts: { mainOp?: boolean | null },
+) => Condition | Condition[] | null;
+
+/** "Dara is offline" for one pawn, "3 pawns offline" for more. */
+function pawnsText(list: readonly StoryPawn[], one: (display: string) => string, many: (n: number) => string): string {
+  return list.length === 1 ? one(list[0]!.display) : many(list.length);
+}
+
+/** A condition about some pawns (none: no condition). */
+function aboutPawns(
+  key: string,
+  list: readonly StoryPawn[],
+  one: (display: string) => string,
+  many: (n: number) => string,
+  tab?: Condition['tab'],
+): Condition | null {
+  if (!list.length) return null;
+  return {
+    key,
+    level: 'warn',
+    text: pawnsText(list, one, many),
+    pawns: list.map((p) => p.name),
+    ...(tab ? { tab } : {}),
+  };
+}
+
+const offlineRule: ConditionRule = (_st, pawns) =>
+  aboutPawns(
+    'offline',
+    pawns.filter((p) => p.online === false),
+    (d) => `${d} is offline`,
+    (n) => `${n} pawns offline`,
+  );
+
+const bedRule: ConditionRule = (st, pawns) => {
+  if (!st.beds) return null;
+  const owners = new Set(st.beds.map((b) => b.pawn).filter(Boolean));
+  return aboutPawns(
+    'bed',
+    pawns.filter((p) => p.online !== false && !owners.has(p.name)),
+    (d) => `${d} has no bed`,
+    (n) => `${n} pawns have no bed`,
+    'colony',
+  );
+};
+
+/** No food, no seeds for a growing zone: only once a chest's contents are known. */
+const supplyRule: ConditionRule = (st, pawns) => {
+  const stores = st.storages ?? [];
+  if (!stores.some((s) => s.knownAt !== null && s.knownAt !== undefined)) return null;
+  const has = (set: Set<number>) =>
+    stores.some((s) => s.contents.some(([id, , n]) => set.has(id) && n > 0)) ||
+    pawns.some((p) => p.inventory.some(([id, , n]) => set.has(id) && n > 0));
+  const out: Condition[] = [];
+  if (!has(FOOD)) out.push({ key: 'food', level: 'danger', text: 'No food in storage', pawns: [], tab: 'storage' });
+  if ((st.zones ?? []).some((z) => z.kind === 'farm') && !has(SEEDS))
+    out.push({ key: 'seeds', level: 'warn', text: 'No seeds for the growing zone', pawns: [], tab: 'storage' });
+  return out;
+};
+
+const unstoredRule: ConditionRule = (st) => {
+  const unstored = st.unstoredKinds ?? [];
+  if (!unstored.length) return null;
+  return { key: 'unstored', level: 'warn', text: `No storage for: ${unstored.join(', ')}`, pawns: [], tab: 'storage' };
+};
+
+const stuckRule: ConditionRule = (_st, pawns) =>
+  aboutPawns(
+    'stuck',
+    pawns.filter((p) => p.online !== false && p.stuck),
+    (d) => `${d} is stuck`,
+    (n) => `${n} pawns are stuck`,
+  );
+
+/** Idle pawns with work about (the idle audit), by why: stuck ones have their own condition, "not taken yet" passes by itself. */
+const idleWorkRule: ConditionRule = (st) => {
+  const blocked = (st.blockedWork ?? []).filter(
+    (b) => b.reason !== 'stuck' && b.reason !== 'work not taken yet' && b.count > 0,
+  );
+  if (!blocked.length) return null;
+  const n = blocked.reduce((a, b) => a + b.count, 0);
+  const why = blocked[0]!.reason.replace(/^waiting: /, '');
+  const more = blocked.length > 1 ? ` (+${blocked.length - 1} more reason${blocked.length > 2 ? 's' : ''})` : '';
+  return {
+    key: 'idle-work',
+    level: 'warn',
+    text: `${n === 1 ? '1 pawn' : `${n} pawns`} idle: ${why}${more}`,
+    pawns: blocked.flatMap((b) => b.pawns),
+    tab: 'work',
+  };
+};
+
+const opRule: ConditionRule = (st, _pawns, opts) =>
+  (opts.mainOp ?? st.timeControl?.available) === false
+    ? { key: 'op', level: 'warn', text: "Main isn't op: time of day and commands are off", pawns: [] }
+    : null;
+
+/** The conditions, in the order the page lists them. */
+const CONDITION_RULES: readonly ConditionRule[] = [
+  offlineRule,
+  bedRule,
+  supplyRule,
+  unstoredRule,
+  stuckRule,
+  idleWorkRule,
+  opRule,
+];
+
 /** The colony's ongoing problems, from its state; each clears itself when its condition does. */
 export function conditions(st: StoryColonyState | undefined, opts: { mainOp?: boolean | null } = {}): Condition[] {
   if (!st) return [];
-  const out: Condition[] = [];
   const pawns = st.pawns ?? [];
-  const offline = pawns.filter((p) => p.online === false);
-  if (offline.length)
-    out.push({
-      key: 'offline',
-      level: 'warn',
-      text: offline.length === 1 ? `${offline[0]!.display} is offline` : `${offline.length} pawns offline`,
-      pawns: offline.map((p) => p.name),
-    });
-  if (st.beds) {
-    const owners = new Set(st.beds.map((b) => b.pawn).filter(Boolean));
-    const homeless = pawns.filter((p) => p.online !== false && !owners.has(p.name));
-    if (homeless.length)
-      out.push({
-        key: 'bed',
-        level: 'warn',
-        text: homeless.length === 1 ? `${homeless[0]!.display} has no bed` : `${homeless.length} pawns have no bed`,
-        pawns: homeless.map((p) => p.name),
-        tab: 'colony',
-      });
-  }
-  const stores = st.storages ?? [];
-  const known = stores.filter((s) => s.knownAt !== null && s.knownAt !== undefined);
-  if (known.length) {
-    const has = (set: Set<number>) =>
-      stores.some((s) => s.contents.some(([id, , n]) => set.has(id) && n > 0)) ||
-      pawns.some((p) => p.inventory.some(([id, , n]) => set.has(id) && n > 0));
-    if (!has(FOOD)) out.push({ key: 'food', level: 'danger', text: 'No food in storage', pawns: [], tab: 'storage' });
-    if ((st.zones ?? []).some((z) => z.kind === 'farm') && !has(SEEDS))
-      out.push({ key: 'seeds', level: 'warn', text: 'No seeds for the growing zone', pawns: [], tab: 'storage' });
-  }
-  const unstored = st.unstoredKinds ?? [];
-  if (unstored.length)
-    out.push({ key: 'unstored', level: 'warn', text: `No storage for: ${unstored.join(', ')}`, pawns: [], tab: 'storage' });
-  const stuck = pawns.filter((p) => p.online !== false && p.stuck);
-  if (stuck.length)
-    out.push({
-      key: 'stuck',
-      level: 'warn',
-      text: stuck.length === 1 ? `${stuck[0]!.display} is stuck` : `${stuck.length} pawns are stuck`,
-      pawns: stuck.map((p) => p.name),
-    });
-  // Idle pawns with work about (the idle audit), by why: stuck ones have their own condition, "not taken yet" passes by itself.
-  const blocked = (st.blockedWork ?? []).filter((b) => b.reason !== 'stuck' && b.reason !== 'work not taken yet' && b.count > 0);
-  if (blocked.length) {
-    const n = blocked.reduce((a, b) => a + b.count, 0);
-    const why = blocked[0]!.reason.replace(/^waiting: /, '');
-    const more = blocked.length > 1 ? ` (+${blocked.length - 1} more reason${blocked.length > 2 ? 's' : ''})` : '';
-    out.push({
-      key: 'idle-work',
-      level: 'warn',
-      text: `${n === 1 ? '1 pawn' : `${n} pawns`} idle: ${why}${more}`,
-      pawns: blocked.flatMap((b) => b.pawns),
-      tab: 'work',
-    });
-  }
-  const op = opts.mainOp ?? st.timeControl?.available;
-  if (op === false) out.push({ key: 'op', level: 'warn', text: "Main isn't op: time of day and commands are off", pawns: [] });
-  return out;
+  return CONDITION_RULES.flatMap((rule) => rule(st, pawns, opts) ?? []);
 }

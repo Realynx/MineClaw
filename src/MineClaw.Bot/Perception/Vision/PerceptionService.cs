@@ -171,44 +171,66 @@ public sealed class PerceptionService
     public static string? Grounding(IBlockAccess w, RoleMap roles, (int X, int Y, int Z) f, int radius, IReadOnlyList<VerifiedFact> facts)
     {
         var named = facts.SelectMany(x => x.Coords).ToHashSet();
-        var found = new Dictionary<BlockRole, List<(int X, int Y, int Z)>>();
-        int r = Math.Min(radius, 8);
-        for (int y = f.Y - 3; y <= f.Y + 3; y++)
-            for (int z = f.Z - r; z <= f.Z + r; z++)
-                for (int x = f.X - r; x <= f.X + r; x++)
-                {
-                    if (!w.IsLoaded(x, z)) continue;
-                    int id = w.GetBlock(x, y, z);
-                    if (id == 0 && y != f.Y && y != f.Y - 1) continue;
-                    BlockRole role;
-                    try { role = roles(x, y, z); } catch (Exception) { continue; }
-                    if (role is not (BlockRole.GenCell or BlockRole.Portal or BlockRole.NeverBreak)) continue;
-                    if (!found.TryGetValue(role, out var list)) found[role] = list = new();
-                    list.Add((x, y, z));
-                }
+        var found = RoleCellsNear(w, roles, f, Math.Min(radius, 8));
         var parts = new List<string>();
-        // An air focus (a hole the bot stands in, a cell to fill): its solid faces, the thing models misread most (live 7,62,9).
-        if (w.IsLoaded(f.X, f.Z) && w.GetBlock(f.X, f.Y, f.Z) == 0)
-        {
-            var faces = new List<string>();
-            foreach (var (name, dx, dy, dz) in new[] { ("E", 1, 0, 0), ("W", -1, 0, 0), ("S", 0, 0, 1), ("N", 0, 0, -1), ("below", 0, -1, 0), ("above", 0, 1, 0) })
-            {
-                int id = w.GetBlock(f.X + dx, f.Y + dy, f.Z + dz);
-                if (id != 0 && w.Info(id).Solid) faces.Add(string.Create(CultureInfo.InvariantCulture, $"{name} {f.X + dx},{f.Y + dy},{f.Z + dz}"));
-            }
-            parts.Add(faces.Count == 0 ? "faces: none (nothing to place against)" : "faces: " + string.Join(", ", faces));
-        }
+        if (AirFocusFaces(w, f) is { } faces) parts.Add(faces);
         var roleParts = new List<string>();
         foreach (var (role, list) in found.OrderBy(kv => kv.Key))
         {
             var cells = list.Where(c => !named.Contains(c)).OrderBy(c => Math.Abs(c.X - f.X) + Math.Abs(c.Y - f.Y) + Math.Abs(c.Z - f.Z)).ToList();
             if (cells.Count == 0) continue;
-            string text = role == BlockRole.Portal && cells.Count > 3
-                ? $"{cells.Min(c => c.X)},{cells.Min(c => c.Y)},{cells.Min(c => c.Z)}..{cells.Max(c => c.X)},{cells.Max(c => c.Y)},{cells.Max(c => c.Z)}"
-                : string.Join(" ", cells.Take(3).Select(c => string.Create(CultureInfo.InvariantCulture, $"{c.X},{c.Y},{c.Z}"))) + (cells.Count > 3 ? $" +{cells.Count - 3}" : "");
-            roleParts.Add($"{BlockRoles.Glyph(role)} {BlockRoles.Name(role)} {text}");
+            roleParts.Add($"{BlockRoles.Glyph(role)} {BlockRoles.Name(role)} {RoleCellsText(role, cells)}");
         }
         if (roleParts.Count > 0) parts.Add("roles: " + string.Join("; ", roleParts));
         return parts.Count == 0 ? null : string.Join(" | ", parts);
     }
+
+    /// <summary>The gen cells, portal and never-break blocks within <paramref name="r"/> (±3 in y) of the focus; air only on the
+    /// focus's and the floor's levels.</summary>
+    private static Dictionary<BlockRole, List<(int X, int Y, int Z)>> RoleCellsNear(IBlockAccess w, RoleMap roles, (int X, int Y, int Z) f, int r)
+    {
+        var found = new Dictionary<BlockRole, List<(int X, int Y, int Z)>>();
+        for (int y = f.Y - 3; y <= f.Y + 3; y++)
+            for (int z = f.Z - r; z <= f.Z + r; z++)
+                for (int x = f.X - r; x <= f.X + r; x++)
+                {
+                    if (!w.IsLoaded(x, z)) continue;
+                    if (w.GetBlock(x, y, z) == 0 && y != f.Y && y != f.Y - 1) continue;
+                    if (GroundingRole(roles, x, y, z) is not { } role) continue;
+                    if (!found.TryGetValue(role, out var list)) found[role] = list = new();
+                    list.Add((x, y, z));
+                }
+        return found;
+    }
+
+    /// <summary>The cell's role when grounding reports it (gen cell, portal, never-break), else null (a throwing map too).</summary>
+    private static BlockRole? GroundingRole(RoleMap roles, int x, int y, int z)
+    {
+        BlockRole role;
+        try { role = roles(x, y, z); } catch (Exception) { return null; }
+        return role is BlockRole.GenCell or BlockRole.Portal or BlockRole.NeverBreak ? role : null;
+    }
+
+    private static readonly (string Name, int Dx, int Dy, int Dz)[] FaceDirs =
+        [("E", 1, 0, 0), ("W", -1, 0, 0), ("S", 0, 0, 1), ("N", 0, 0, -1), ("below", 0, -1, 0), ("above", 0, 1, 0)];
+
+    /// <summary>An air focus (a hole the bot stands in, a cell to fill): its solid faces, the thing models misread most (live
+    /// 7,62,9). Null when the focus isn't loaded air.</summary>
+    private static string? AirFocusFaces(IBlockAccess w, (int X, int Y, int Z) f)
+    {
+        if (!w.IsLoaded(f.X, f.Z) || w.GetBlock(f.X, f.Y, f.Z) != 0) return null;
+        var faces = new List<string>();
+        foreach (var (name, dx, dy, dz) in FaceDirs)
+        {
+            int id = w.GetBlock(f.X + dx, f.Y + dy, f.Z + dz);
+            if (id != 0 && w.Info(id).Solid) faces.Add(string.Create(CultureInfo.InvariantCulture, $"{name} {f.X + dx},{f.Y + dy},{f.Z + dz}"));
+        }
+        return faces.Count == 0 ? "faces: none (nothing to place against)" : "faces: " + string.Join(", ", faces);
+    }
+
+    /// <summary>A role's cells, nearest first: a big portal as its box, else up to three cells and "+n" more.</summary>
+    private static string RoleCellsText(BlockRole role, List<(int X, int Y, int Z)> cells) =>
+        role == BlockRole.Portal && cells.Count > 3
+            ? $"{cells.Min(c => c.X)},{cells.Min(c => c.Y)},{cells.Min(c => c.Z)}..{cells.Max(c => c.X)},{cells.Max(c => c.Y)},{cells.Max(c => c.Z)}"
+            : string.Join(" ", cells.Take(3).Select(c => string.Create(CultureInfo.InvariantCulture, $"{c.X},{c.Y},{c.Z}"))) + (cells.Count > 3 ? $" +{cells.Count - 3}" : "");
 }

@@ -47,32 +47,45 @@ export function mergeGhosts(
 ): StoryColonyState['ghosts'] {
   const gone = new Set((removedBuilds ?? []).map(String));
   if (!prev) return next;
-  const touched = (next?.blocks.length ?? 0) > 0 || (gone.size > 0 && prev.blocks.some((g) => gone.has(String(g[5]))));
-  if (!touched) return prev;
+  const fresh = next?.blocks ?? [];
+  if (!ghostsTouched(prev, fresh, gone)) return prev;
   const key = (g: Ghosts['blocks'][number]) => `${g[5]}|${g[0]},${g[1]},${g[2]}`;
   const map = new Map<string, Ghosts['blocks'][number]>();
   for (const g of prev.blocks) map.set(key(g), g);
-  for (const g of next?.blocks ?? []) map.set(key(g), g);
+  for (const g of fresh) map.set(key(g), g);
   const blocks = [...map.values()].filter((g) => !gone.has(String(g[5])));
   return { rev: Math.max(prev.rev, next?.rev ?? 0), blocks };
+}
+
+/** Whether a delta changes the ghosts: new ones, or a removed build that had some. */
+function ghostsTouched(prev: Ghosts, fresh: Ghosts['blocks'], gone: ReadonlySet<string>): boolean {
+  return fresh.length > 0 || (gone.size > 0 && prev.blocks.some((g) => gone.has(String(g[5]))));
 }
 
 /** Applies a delta (or a whole state) to what the client holds. Older revisions are ignored. */
 export function mergeColony(prev: StoryColonyState | undefined, d: StoryColonyState): StoryColonyState {
   if (!prev || d.full || d.rev < (prev.rev ?? 0) - 1000) return d;
-  if (d.rev <= prev.rev) {
-    // Nothing new in the colony, but the server's clock moved on: the time fields are always current (a quiet or paused
-    // colony keeps its revision while the world time runs).
-    const time = d.timeOfDay ?? null;
-    if (time === null || (time === prev.timeOfDay && (d.timeFrozen ?? null) === (prev.timeFrozen ?? null))) return prev;
-    return {
-      ...prev,
-      timeOfDay: time,
-      hour: d.hour ?? prev.hour,
-      timeFrozen: d.timeFrozen ?? null,
-      at: d.at ?? prev.at,
-    };
-  }
+  return d.rev <= prev.rev ? withTime(prev, d) : mergeDelta(prev, d);
+}
+
+/**
+ * Nothing new in the colony, but the server's clock moved on: the time fields are always current (a quiet or paused colony keeps
+ * its revision while the world time runs). The same object when the time didn't move either.
+ */
+function withTime(prev: StoryColonyState, d: StoryColonyState): StoryColonyState {
+  const time = d.timeOfDay ?? null;
+  if (time === null || (time === prev.timeOfDay && (d.timeFrozen ?? null) === (prev.timeFrozen ?? null))) return prev;
+  return {
+    ...prev,
+    timeOfDay: time,
+    hour: d.hour ?? prev.hour,
+    timeFrozen: d.timeFrozen ?? null,
+    at: d.at ?? prev.at,
+  };
+}
+
+/** A newer delta: its fields over the held ones, its lists merged by id (removed ids dropped). */
+function mergeDelta(prev: StoryColonyState, d: StoryColonyState): StoryColonyState {
   const rm = d.removed ?? {};
   const id = (x: { id: Key }) => String(x.id);
   const alerts = mergeBy(prev.alerts, d.alerts, (a) => String(a.id ?? `${a.at}|${a.text}`), rm.alerts).slice(-40);
@@ -178,10 +191,14 @@ export function reorderNames(order: readonly string[], name: string, before: str
 
 export type PawnMood = 'danger' | 'idle' | 'busy' | 'drafted' | 'offline';
 
+/** Hurt (8 health or less), starving (4 food or less) or fleeing. */
+const inDanger = (p: Pick<StoryPawn, 'hp' | 'food' | 'state'>) =>
+  (p.hp ?? 20) <= 8 || (p.food ?? 20) <= 4 || p.state === 'fleeing';
+
 /** The indicator a portrait shows. */
 export function pawnMood(p: Pick<StoryPawn, 'hp' | 'food' | 'state' | 'drafted' | 'online'>): PawnMood {
   if (p.online === false || p.state === 'offline') return 'offline';
-  if ((p.hp ?? 20) <= 8 || (p.food ?? 20) <= 4 || p.state === 'fleeing') return 'danger';
+  if (inDanger(p)) return 'danger';
   if (p.drafted) return 'drafted';
   if (!p.state || p.state === 'idle') return 'idle';
   return 'busy';
@@ -329,12 +346,18 @@ export function dispatch(
   verb = 'ordered',
 ): Dispatch {
   const needsPawns = director?.route === 'story.orders';
-  const d = director && (!needsPawns || sel.pawns.length > 0) ? director : null;
+  const d = directorFor(sel, director);
   const dir = directive && sel.ai.length ? { bots: [...sel.ai], directive, requestId } : null;
   const parts: string[] = [];
   if (d) parts.push(needsPawns ? `${plural(sel.pawns.length, 'pawn')} ${verb}` : `colony: ${verb}`);
   if (dir) parts.push(`sent to ${sel.ai.join(', ')} (AI)`);
   return { director: d, directive: dir, summary: parts.join(' · ') || 'nothing selected to do that' };
+}
+
+/** The director's call when it applies: designations always, orders only with pawns selected. */
+function directorFor(sel: { pawns: readonly string[] }, director: DirectorCall | null): DirectorCall | null {
+  if (!director) return null;
+  return director.route !== 'story.orders' || sel.pawns.length > 0 ? director : null;
 }
 
 export function directiveStatusTone(status: string): 'info' | 'ok' | 'warn' | 'danger' | 'muted' {

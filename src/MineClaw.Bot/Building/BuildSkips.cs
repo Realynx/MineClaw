@@ -181,33 +181,50 @@ public static partial class BuildSkips
     public static string? FloorHint(IReadOnlyList<(BlockPos Pos, string? Why)> items, Area? footprint, IBlockAccess world)
     {
         if (items.Count == 0 || footprint is not { } f) return null;
-        var why = new Dictionary<BlockPos, string?>();
-        foreach (var (p, w) in items) why.TryAdd(p, w);
-        int hanging = 0;
-        foreach (var (p, _) in items)
-        {
-            var seen = new HashSet<BlockPos>();
-            for (BlockPos? q = p; q is { } c && seen.Add(c) && why.TryGetValue(c, out var w);)
-            {
-                var cat = Category(w);
-                // Hanging: past the scaffold limit over the void, or no way up because every pillar/stair spot is beside it.
-                if (cat is OverVoid or NoSupport || w?.Contains("the void", StringComparison.OrdinalIgnoreCase) == true) { hanging++; break; }
-                if (cat != Waiting) break;
-                q = RestsOn(w);
-            }
-        }
-        if (hanging * 2 <= items.Count) return null;
+        if (Hanging(items) * 2 <= items.Count) return null;
         int y = f.Y0 - 1;
         if (y < 1) return null;
-        int empty = 0;
-        for (int x = f.X0; x <= f.X1; x++)
-            for (int z = f.Z0; z <= f.Z1; z++)
-                if (!BuildBlocks.Supports(world.GetBlock(x, y, z))) empty++;
+        int empty = EmptyCells(f, y, world);
         if (empty == 0) return null;
         // Skyblock grows the island (cobble from the gen); a normal world lays a foundation of any solid block on the ground.
         return MineClaw.Data.Versioning.WorldMode.Current.HasVoidBelow
             ? $"lay a floor: expand_island area={f.X0},{f.Z0},{f.X1},{f.Z1} y={y} ({empty} cells, {empty} cobble)"
             : $"lay a foundation: fill_floor from={f.X0},{y},{f.Z0} to={f.X1},{y},{f.Z1} ({empty} cells of any solid block, or scaffold up to it)";
+    }
+
+    /// <summary>How many skipped cells hang over the void (their own reason, or a "rests on" chain ending in one).</summary>
+    private static int Hanging(IReadOnlyList<(BlockPos Pos, string? Why)> items)
+    {
+        var why = new Dictionary<BlockPos, string?>();
+        foreach (var (p, w) in items) why.TryAdd(p, w);
+        int hanging = 0;
+        foreach (var (p, _) in items)
+            if (Hangs(p, why)) hanging++;
+        return hanging;
+    }
+
+    private static bool Hangs(BlockPos p, Dictionary<BlockPos, string?> why)
+    {
+        var seen = new HashSet<BlockPos>();
+        for (BlockPos? q = p; q is { } c && seen.Add(c) && why.TryGetValue(c, out var w);)
+        {
+            var cat = Category(w);
+            // Hanging: past the scaffold limit over the void, or no way up because every pillar/stair spot is beside it.
+            if (cat is OverVoid or NoSupport || w?.Contains("the void", StringComparison.OrdinalIgnoreCase) == true) return true;
+            if (cat != Waiting) return false;
+            q = RestsOn(w);
+        }
+        return false;
+    }
+
+    /// <summary>The cells of the footprint at <paramref name="y"/> that hold nothing to stand on yet.</summary>
+    private static int EmptyCells(Area f, int y, IBlockAccess world)
+    {
+        int empty = 0;
+        for (int x = f.X0; x <= f.X1; x++)
+            for (int z = f.Z0; z <= f.Z1; z++)
+                if (!BuildBlocks.Supports(world.GetBlock(x, y, z))) empty++;
+        return empty;
     }
 
     /// <summary><paramref name="line"/> with the foundation suggestion appended ("...; lay a floor: ...").</summary>
