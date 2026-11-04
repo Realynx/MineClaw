@@ -238,7 +238,9 @@ public sealed class StorySdkTests
         int sword = calls.IndexOf("""equip {"ench":"any","from":"","item":"iron_sword","mode":"hold"}""");
         Assert.True(off >= 0 && off < on && on < sword, string.Join(" | ", calls));
         Assert.Contains("""attack {"target":"50"}""", calls);
-        Assert.Equal(["maid_chan j1 done", "maid_chan j2 done", "maid_chan j3 done", "maid_chan j4 done"], port.Reports);
+        string[] want = ["maid_chan j1 done", "maid_chan j2 done", "maid_chan j3 done", "maid_chan j4 done"]; // a job's own message rides along
+        Assert.Equal(want.Length, port.Reports.Count);
+        Assert.All(want.Zip(port.Reports), x => Assert.StartsWith(x.First, x.Second));
     }
 
     [Fact]
