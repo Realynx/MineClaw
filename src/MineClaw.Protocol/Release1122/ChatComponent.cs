@@ -81,49 +81,61 @@ public static partial class ChatComponent
                 Piece(sb, parent, e.GetRawText());
                 return;
             case JsonValueKind.Array:
-            {
-                // Gson: the first element is the component, the rest are its siblings (extra) and inherit its style.
-                bool first = true;
-                Style st = parent;
-                foreach (var item in e.EnumerateArray())
-                {
-                    if (first) { st = item.ValueKind == JsonValueKind.Object ? StyleOf(item, parent) : parent; Append(sb, item, parent, lang, depth + 1); first = false; }
-                    else Append(sb, item, st, lang, depth + 1);
-                }
+                AppendArray(sb, e, parent, lang, depth);
                 return;
-            }
             case JsonValueKind.Object:
-                break;
-            default:
+                AppendObject(sb, e, parent, lang, depth);
                 return;
         }
+    }
 
-        var style = StyleOf(e, parent);
-        string own;
-        if (e.TryGetProperty("text", out var t)) own = t.ValueKind == JsonValueKind.String ? t.GetString() ?? "" : t.GetRawText();
-        else if (e.TryGetProperty("translate", out var tr) && tr.ValueKind == JsonValueKind.String)
+    /// <summary>Gson: the first element is the component, the rest are its siblings (extra) and inherit its style.</summary>
+    private static void AppendArray(StringBuilder sb, JsonElement e, Style parent, LangTable lang, int depth)
+    {
+        bool first = true;
+        Style st = parent;
+        foreach (var item in e.EnumerateArray())
         {
-            var args = new List<(JsonElement El, string Legacy)>();
-            if (e.TryGetProperty("with", out var with) && with.ValueKind == JsonValueKind.Array)
-                foreach (var a in with.EnumerateArray())
-                {
-                    var asb = new StringBuilder();
-                    Append(asb, a, style, lang, depth + 1);
-                    args.Add((a, asb.ToString()));
-                }
-            // Arguments carry their own codes; the format's literal text gets this component's style.
-            TranslateInto(sb, lang, tr.GetString()!, args.Select(a => a.Legacy).ToList(), style);
-            own = "";
-            AppendExtra(sb, e, style, lang, depth);
-            return;
+            if (first) { st = item.ValueKind == JsonValueKind.Object ? StyleOf(item, parent) : parent; Append(sb, item, parent, lang, depth + 1); first = false; }
+            else Append(sb, item, st, lang, depth + 1);
         }
-        else if (e.TryGetProperty("score", out var score) && score.ValueKind == JsonValueKind.Object)
-            own = score.TryGetProperty("value", out var v) ? v.GetString() ?? "" : "";
-        else if (e.TryGetProperty("selector", out var sel)) own = sel.GetString() ?? "";
-        else if (e.TryGetProperty("keybind", out var kb)) own = kb.GetString() ?? "";
-        else own = "";
-        Piece(sb, style, own);
+    }
+
+    /// <summary>A component object: its own text (or translation), then its extra siblings in its style.</summary>
+    private static void AppendObject(StringBuilder sb, JsonElement e, Style parent, LangTable lang, int depth)
+    {
+        var style = StyleOf(e, parent);
+        if (!e.TryGetProperty("text", out _) && e.TryGetProperty("translate", out var tr) && tr.ValueKind == JsonValueKind.String)
+            AppendTranslation(sb, e, tr.GetString()!, style, lang, depth);
+        else
+            Piece(sb, style, OwnText(e));
         AppendExtra(sb, e, style, lang, depth);
+    }
+
+    /// <summary>Arguments carry their own codes; the format's literal text gets this component's style.</summary>
+    private static void AppendTranslation(StringBuilder sb, JsonElement e, string key, Style style, LangTable lang, int depth)
+    {
+        var args = new List<(JsonElement El, string Legacy)>();
+        if (e.TryGetProperty("with", out var with) && with.ValueKind == JsonValueKind.Array)
+            foreach (var a in with.EnumerateArray())
+            {
+                var asb = new StringBuilder();
+                Append(asb, a, style, lang, depth + 1);
+                args.Add((a, asb.ToString()));
+            }
+        TranslateInto(sb, lang, key, args.Select(a => a.Legacy).ToList(), style);
+    }
+
+    private static string ScoreValue(JsonElement score) => score.TryGetProperty("value", out var v) ? v.GetString() ?? "" : "";
+
+    /// <summary>The literal text of a text, score, selector or keybind component ("" for none).</summary>
+    private static string OwnText(JsonElement e)
+    {
+        if (e.TryGetProperty("text", out var t)) return t.ValueKind == JsonValueKind.String ? t.GetString() ?? "" : t.GetRawText();
+        if (e.TryGetProperty("score", out var score) && score.ValueKind == JsonValueKind.Object) return ScoreValue(score);
+        if (e.TryGetProperty("selector", out var sel)) return sel.GetString() ?? "";
+        if (e.TryGetProperty("keybind", out var kb)) return kb.GetString() ?? "";
+        return "";
     }
 
     private static void AppendExtra(StringBuilder sb, JsonElement e, Style style, LangTable lang, int depth)
@@ -342,34 +354,44 @@ public sealed class LangTable
     {
         if (_default is { } d) return d;
         foreach (var file in CandidateFiles())
-        {
-            try
-            {
-                if (!File.Exists(file)) continue;
-                var t = FromFile(file);
-                log?.Invoke($"1.12.2 chat translations: {t.Count} keys from {file}");
-                return _default = t;
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-            {
-                log?.Invoke($"can't read {file}: {ex.Message}");
-            }
-        }
+            if (TryLoadFile(file, log) is { } t) return _default = t;
         foreach (var jar in CandidateJars().Concat(CachedJars()))
-        {
-            try
-            {
-                if (!File.Exists(jar)) continue;
-                var t = FromJar(jar);
-                log?.Invoke($"1.12.2 chat translations: {t.Count} keys from {jar}");
-                return _default = t;
-            }
-            catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException)
-            {
-                log?.Invoke($"can't read en_us.lang from {jar}: {ex.Message}");
-            }
-        }
+            if (TryLoadJar(jar, log) is { } t) return _default = t;
         return Builtin;
+    }
+
+    /// <summary>An en_us.lang file's table, or null when it's missing or unreadable (logged).</summary>
+    private static LangTable? TryLoadFile(string file, Action<string>? log)
+    {
+        try
+        {
+            if (!File.Exists(file)) return null;
+            var t = FromFile(file);
+            log?.Invoke($"1.12.2 chat translations: {t.Count} keys from {file}");
+            return t;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            log?.Invoke($"can't read {file}: {ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>The en_us.lang inside a client jar, or null when it's missing or unreadable (logged).</summary>
+    private static LangTable? TryLoadJar(string jar, Action<string>? log)
+    {
+        try
+        {
+            if (!File.Exists(jar)) return null;
+            var t = FromJar(jar);
+            log?.Invoke($"1.12.2 chat translations: {t.Count} keys from {jar}");
+            return t;
+        }
+        catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException)
+        {
+            log?.Invoke($"can't read en_us.lang from {jar}: {ex.Message}");
+            return null;
+        }
     }
 
     /// <summary>

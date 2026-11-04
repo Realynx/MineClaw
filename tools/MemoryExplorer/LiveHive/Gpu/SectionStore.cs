@@ -127,22 +127,40 @@ public sealed class SectionStore
     public int Update(int dim, int camCx, int camCz, int radius, int maxSections = int.MaxValue, double maxMs = double.MaxValue)
     {
         var sw = Stopwatch.StartNew();
-        if (_resend)
-        {
-            _resend = false;
-            while (Ready.TryDequeue(out var u)) u.Release();
-            Ready.Enqueue(new MeshUpload { DropAll = true });
-            foreach (var s in _cols.Values) { s.Pending = AllSections(s.Src); s.Meshed = 0; }
-        }
-        if (dim != _dim)
-        {
-            if (_dim != int.MinValue) Ready.Enqueue(new MeshUpload { DropAll = true });
-            _cols.Clear();
-            _dim = dim;
-            _mesher.Nether = dim == -1;
-        }
+        if (_resend) ResendAll();
+        if (dim != _dim) SwitchDim(dim);
         Ring(radius);
-        // Forget columns that left the area (their meshes are dropped on the render thread).
+        DropFar(camCx, camCz, radius);
+        int built = 0;
+        foreach (var (dx, dz) in _ring)
+        {
+            int cx = camCx + dx, cz = camCz + dz;
+            if (Track(dim, cx, cz) is not { Pending: not 0 } st) continue;
+            if (!BuildPending(dim, cx, cz, st, ref built, maxSections, maxMs, sw)) return built;
+        }
+        return built;
+    }
+
+    /// <summary>The GPU lost its buffers: drop the queue, tell the render thread to drop everything, and mesh every section again.</summary>
+    private void ResendAll()
+    {
+        _resend = false;
+        while (Ready.TryDequeue(out var u)) u.Release();
+        Ready.Enqueue(new MeshUpload { DropAll = true });
+        foreach (var s in _cols.Values) { s.Pending = AllSections(s.Src); s.Meshed = 0; }
+    }
+
+    private void SwitchDim(int dim)
+    {
+        if (_dim != int.MinValue) Ready.Enqueue(new MeshUpload { DropAll = true });
+        _cols.Clear();
+        _dim = dim;
+        _mesher.Nether = dim == -1;
+    }
+
+    /// <summary>Forgets columns that left the area (their meshes are dropped on the render thread).</summary>
+    private void DropFar(int camCx, int camCz, int radius)
+    {
         _drop.Clear();
         foreach (var k in _cols.Keys)
             if (Math.Max(Math.Abs(k.Item1 - camCx), Math.Abs(k.Item2 - camCz)) > radius + 1) _drop.Add(k);
@@ -151,47 +169,56 @@ public sealed class SectionStore
             _cols.Remove(k);
             Ready.Enqueue(new MeshUpload { Key = new SectionKey(k.Item1, 0, k.Item2), DropColumn = true });
         }
-        int built = 0;
-        foreach (var (dx, dz) in _ring)
+    }
+
+    /// <summary>The column's state with its pending sections brought up to date (a new column: all of them); null = no column there yet.</summary>
+    private ColState? Track(int dim, int cx, int cz)
+    {
+        var cur = _cache.Get(dim, cx, cz);
+        if (_cols.TryGetValue((cx, cz), out var st))
         {
-            int cx = camCx + dx, cz = camCz + dz;
-            var cur = _cache.Get(dim, cx, cz);
-            if (!_cols.TryGetValue((cx, cz), out var st))
-            {
-                if (cur == null) continue;
-                st = new ColState();
-                _cols[(cx, cz)] = st;
-                st.Src = cur;
-                for (int i = 0; i < 4; i++) st.N[i] = _cache.Get(dim, cx + Dirs[i].Dx, cz + Dirs[i].Dz);
-                st.Pending = AllSections(cur);
-            }
-            else
-            {
-                if (!ReferenceEquals(cur, st.Src))
-                {
-                    st.Pending |= cur == null || st.Src == null ? (ushort)(AllSections(cur) | st.Meshed)
-                        : (ushort)(Diff(st.Src.Snap, cur.Snap, st.Src.Top, cur.Top) | LightDiff(st.Src, cur));
-                    st.Src = cur;
-                }
-                for (int i = 0; i < 4; i++)
-                {
-                    var n = _cache.Get(dim, cx + Dirs[i].Dx, cz + Dirs[i].Dz);
-                    if (ReferenceEquals(n, st.N[i])) continue;
-                    if (cur != null) st.Pending |= EdgeDiff(i, st.N[i], n, cur);
-                    st.N[i] = n;
-                }
-            }
-            if (st.Pending == 0) continue;
-            for (int sy = 0; sy < Sections; sy++)
-            {
-                if ((st.Pending >> sy & 1) == 0) continue;
-                if (built >= maxSections || sw.Elapsed.TotalMilliseconds > maxMs) return built;
-                st.Pending &= (ushort)~(1 << sy);
-                BuildOne(dim, cx, sy, cz, st);
-                built++;
-            }
+            Refresh(dim, cx, cz, st, cur);
+            return st;
         }
-        return built;
+        if (cur == null) return null;
+        st = new ColState();
+        _cols[(cx, cz)] = st;
+        st.Src = cur;
+        for (int i = 0; i < 4; i++) st.N[i] = _cache.Get(dim, cx + Dirs[i].Dx, cz + Dirs[i].Dz);
+        st.Pending = AllSections(cur);
+        return st;
+    }
+
+    /// <summary>Marks what changed since the column (and its four neighbours) were last meshed.</summary>
+    private void Refresh(int dim, int cx, int cz, ColState st, ClientColumn? cur)
+    {
+        if (!ReferenceEquals(cur, st.Src))
+        {
+            st.Pending |= cur == null || st.Src == null ? (ushort)(AllSections(cur) | st.Meshed)
+                : (ushort)(Diff(st.Src.Snap, cur.Snap, st.Src.Top, cur.Top) | LightDiff(st.Src, cur));
+            st.Src = cur;
+        }
+        for (int i = 0; i < 4; i++)
+        {
+            var n = _cache.Get(dim, cx + Dirs[i].Dx, cz + Dirs[i].Dz);
+            if (ReferenceEquals(n, st.N[i])) continue;
+            if (cur != null) st.Pending |= EdgeDiff(i, st.N[i], n, cur);
+            st.N[i] = n;
+        }
+    }
+
+    /// <summary>Rebuilds the column's pending sections bottom up; false = the pass's budget (sections or time) ran out.</summary>
+    private bool BuildPending(int dim, int cx, int cz, ColState st, ref int built, int maxSections, double maxMs, Stopwatch sw)
+    {
+        for (int sy = 0; sy < Sections; sy++)
+        {
+            if ((st.Pending >> sy & 1) == 0) continue;
+            if (built >= maxSections || sw.Elapsed.TotalMilliseconds > maxMs) return false;
+            st.Pending &= (ushort)~(1 << sy);
+            BuildOne(dim, cx, sy, cz, st);
+            built++;
+        }
+        return true;
     }
 
     private void BuildOne(int dim, int cx, int sy, int cz, ColState st)
@@ -251,25 +278,33 @@ public sealed class SectionStore
         ushort m = 0;
         for (int xz = 0; xz < 256; xz++)
         {
-            for (int half = 0; half < halves; half++)
-            {
-                int o = Run(half, xz);
-                var ia = a.Ids.AsSpan(o, ChunkColumn.SizeY); var ib = b.Ids.AsSpan(o, ChunkColumn.SizeY);
-                var ma = a.Meta.AsSpan(o, ChunkColumn.SizeY); var mb = b.Meta.AsSpan(o, ChunkColumn.SizeY);
-                if (ia.SequenceEqual(ib) && ma.SequenceEqual(mb)) continue;
-                for (int ls = 0; ls < ChunkColumn.SizeY / 16; ls++)
-                {
-                    int y0 = ls * 16, s = half * 8 + ls;
-                    if (ia.Slice(y0, 16).SequenceEqual(ib.Slice(y0, 16)) && ma.Slice(y0, 16).SequenceEqual(mb.Slice(y0, 16))) continue;
-                    m |= (ushort)(1 << s);
-                    if (s > 0 && (ia[y0] != ib[y0] || ma[y0] != mb[y0])) m |= (ushort)(1 << (s - 1));
-                    if (s < sections - 1 && (ia[y0 + 15] != ib[y0 + 15] || ma[y0 + 15] != mb[y0 + 15])) m |= (ushort)(1 << (s + 1));
-                }
-            }
+            for (int half = 0; half < halves; half++) m |= RunDiff(a, b, Run(half, xz), half, sections);
             if (topA[xz] != topB[xz]) m |= SpanMask(Math.Min(topA[xz], topB[xz]) - 1, Math.Max(topA[xz], topB[xz]) + 1, height);
         }
         return m;
     }
+
+    /// <summary><see cref="Diff"/> for one 128-cell run at offset <paramref name="o"/>: each changed section, plus the one across
+    /// a changed bottom/top layer.</summary>
+    private static ushort RunDiff(ChunkSnapshot a, ChunkSnapshot b, int o, int half, int sections)
+    {
+        var ia = a.Ids.AsSpan(o, ChunkColumn.SizeY); var ib = b.Ids.AsSpan(o, ChunkColumn.SizeY);
+        var ma = a.Meta.AsSpan(o, ChunkColumn.SizeY); var mb = b.Meta.AsSpan(o, ChunkColumn.SizeY);
+        if (ia.SequenceEqual(ib) && ma.SequenceEqual(mb)) return 0;
+        ushort m = 0;
+        for (int ls = 0; ls < ChunkColumn.SizeY / 16; ls++)
+        {
+            int y0 = ls * 16, s = half * 8 + ls;
+            if (ia.Slice(y0, 16).SequenceEqual(ib.Slice(y0, 16)) && ma.Slice(y0, 16).SequenceEqual(mb.Slice(y0, 16))) continue;
+            m |= (ushort)(1 << s);
+            if (s > 0 && CellDiffers(ia, ib, ma, mb, y0)) m |= (ushort)(1 << (s - 1));
+            if (s < sections - 1 && CellDiffers(ia, ib, ma, mb, y0 + 15)) m |= (ushort)(1 << (s + 1));
+        }
+        return m;
+    }
+
+    private static bool CellDiffers(ReadOnlySpan<byte> ia, ReadOnlySpan<byte> ib, ReadOnlySpan<byte> ma, ReadOnlySpan<byte> mb, int y) =>
+        ia[y] != ib[y] || ma[y] != mb[y];
 
     /// <summary>Sections whose synced light (or the biomes: tints) changed from <paramref name="a"/> to <paramref name="b"/>, each with
     /// the sections above and below it (their boundary faces and smooth corners read its cells).</summary>
@@ -279,10 +314,16 @@ public sealed class SectionStore
         if (la == null && lb == null) return 0;
         int height = Math.Max(a.Snap.Height, b.Snap.Height);
         if (la == null || lb == null || la.Sections != lb.Sections || !SameBiomes(la, lb)) return AllBits(height);
+        return (ushort)(ChangedLight(la, lb) & AllBits(height));
+    }
+
+    /// <summary>Each section whose light differs, with the sections above and below it.</summary>
+    private static ushort ChangedLight(LightSnapshot la, LightSnapshot lb)
+    {
         ushort m = 0;
         for (int s = 0; s < la.Sections; s++)
             if (!la.SameSection(lb, s)) m |= (ushort)(7 << s >> 1);
-        return (ushort)(m & AllBits(height));
+        return m;
     }
 
     private static bool SameBiomes(LightSnapshot a, LightSnapshot b) =>
@@ -296,31 +337,36 @@ public sealed class SectionStore
         if (a == null || b == null || a.Snap.Height != b.Snap.Height) return AllSections(cur);
         int height = b.Snap.Height, halves = height >> 7;
         ushort m = 0;
-        for (int i = 0; i < 16; i++)
-        {
-            // The neighbour's plane that touches us: W neighbour → its x=15, E → x=0, N → z=15, S → z=0.
-            int x = dir switch { 0 => 15, 1 => 0, _ => i }, z = dir switch { 2 => 15, 3 => 0, _ => i };
-            int xz = x * 16 + z;
-            for (int half = 0; half < halves; half++)
-            {
-                int o = Run(half, xz);
-                var ia = a.Snap.Ids.AsSpan(o, ChunkColumn.SizeY); var ib = b.Snap.Ids.AsSpan(o, ChunkColumn.SizeY);
-                var ma = a.Snap.Meta.AsSpan(o, ChunkColumn.SizeY); var mb = b.Snap.Meta.AsSpan(o, ChunkColumn.SizeY);
-                if (ia.SequenceEqual(ib) && ma.SequenceEqual(mb)) continue;
-                for (int ls = 0; ls < ChunkColumn.SizeY / 16; ls++)
-                    if (!ia.Slice(ls * 16, 16).SequenceEqual(ib.Slice(ls * 16, 16)) || !ma.Slice(ls * 16, 16).SequenceEqual(mb.Slice(ls * 16, 16)))
-                        m |= (ushort)(1 << (half * 8 + ls));
-            }
-            if (a.Top[xz] != b.Top[xz]) m |= SpanMask(Math.Min(a.Top[xz], b.Top[xz]), Math.Max(a.Top[xz], b.Top[xz]) + 1, height);
-        }
+        for (int i = 0; i < 16; i++) m |= EdgeCellDiff(dir, i, a, b, halves, height);
         // The neighbour's light (its edge cells light our boundary faces); biomes don't cross columns.
-        if (a.Light is { } la && b.Light is { } lb && la.Sections == lb.Sections)
-        {
-            for (int s = 0; s < la.Sections; s++)
-                if (!la.SameSection(lb, s)) m |= (ushort)(7 << s >> 1);
-        }
+        if (a.Light is { } la && b.Light is { } lb && la.Sections == lb.Sections) m |= ChangedLight(la, lb);
         else if (a.Light != null || b.Light != null) m |= AllSections(cur);
         return (ushort)(m & AllBits(height));
+    }
+
+    /// <summary><see cref="EdgeDiff"/> for the <paramref name="i"/>-th column of the neighbour's plane that touches us
+    /// (W neighbour → its x=15, E → x=0, N → z=15, S → z=0): its changed sections and sky light span.</summary>
+    private static ushort EdgeCellDiff(int dir, int i, ClientColumn a, ClientColumn b, int halves, int height)
+    {
+        int x = dir switch { 0 => 15, 1 => 0, _ => i }, z = dir switch { 2 => 15, 3 => 0, _ => i };
+        int xz = x * 16 + z;
+        ushort m = 0;
+        for (int half = 0; half < halves; half++) m |= ChangedSections(a.Snap, b.Snap, Run(half, xz), half);
+        if (a.Top[xz] != b.Top[xz]) m |= SpanMask(Math.Min(a.Top[xz], b.Top[xz]), Math.Max(a.Top[xz], b.Top[xz]) + 1, height);
+        return m;
+    }
+
+    /// <summary>The sections of one 128-cell run (offset <paramref name="o"/>, half <paramref name="half"/>) whose blocks differ.</summary>
+    private static ushort ChangedSections(ChunkSnapshot a, ChunkSnapshot b, int o, int half)
+    {
+        var ia = a.Ids.AsSpan(o, ChunkColumn.SizeY); var ib = b.Ids.AsSpan(o, ChunkColumn.SizeY);
+        var ma = a.Meta.AsSpan(o, ChunkColumn.SizeY); var mb = b.Meta.AsSpan(o, ChunkColumn.SizeY);
+        if (ia.SequenceEqual(ib) && ma.SequenceEqual(mb)) return 0;
+        ushort m = 0;
+        for (int ls = 0; ls < ChunkColumn.SizeY / 16; ls++)
+            if (!ia.Slice(ls * 16, 16).SequenceEqual(ib.Slice(ls * 16, 16)) || !ma.Slice(ls * 16, 16).SequenceEqual(mb.Slice(ls * 16, 16)))
+                m |= (ushort)(1 << (half * 8 + ls));
+        return m;
     }
 }
 

@@ -79,7 +79,7 @@ public sealed partial class BotTileViewModel : ObservableObject, IDisposable
     {
         Bot = b;
         Title = b.Main ? $"{b.Name} · main" : $"{b.Name} · {b.Short}";
-        Subtitle = string.IsNullOrEmpty(b.Brain) ? (b.Live ? "in-process body" : "clone") : b.Brain!;
+        Subtitle = SubtitleOf(b);
         Job = string.IsNullOrWhiteSpace(b.Job) ? "idle" : b.Job!;
         Hp = b.Hp;
         Food = b.Food;
@@ -88,10 +88,19 @@ public sealed partial class BotTileViewModel : ObservableObject, IDisposable
         Held = string.IsNullOrEmpty(b.Held) ? null : "holding " + b.Held;
         var claims = b.Claims ?? [];
         HasClaims = claims.Count > 0;
-        Claims = claims.Count == 0 ? "" : "claims " + string.Join(", ", claims.Take(3)) + (claims.Count > 3 ? $" +{claims.Count - 3}" : "");
+        Claims = ClaimsText(claims);
         Where = string.Create(CultureInfo.InvariantCulture, $"{(b.Dim == -1 ? "nether " : "")}{b.X:0},{b.Y:0},{b.Z:0}");
-        PoseNote = b.Yaw == null ? "no pose yet (eye faces south)" : b.PoseAge is > 3 ? $"pose {b.PoseAge:0} s old" : null;
+        PoseNote = PoseNoteOf(b);
     }
+
+    /// <summary>The brain, else what kind of body it is.</summary>
+    private static string SubtitleOf(BotDto b) => string.IsNullOrEmpty(b.Brain) ? (b.Live ? "in-process body" : "clone") : b.Brain!;
+
+    /// <summary>"claims a, b, c +2" (the first three).</summary>
+    private static string ClaimsText(List<string> claims) =>
+        claims.Count == 0 ? "" : "claims " + string.Join(", ", claims.Take(3)) + (claims.Count > 3 ? $" +{claims.Count - 3}" : "");
+
+    private static string? PoseNoteOf(BotDto b) => b.Yaw == null ? "no pose yet (eye faces south)" : b.PoseAge is > 3 ? $"pose {b.PoseAge:0} s old" : null;
 
     /// <summary>A new server picture (decoded off the UI thread).</summary>
     public void SetMap(Bitmap bmp)

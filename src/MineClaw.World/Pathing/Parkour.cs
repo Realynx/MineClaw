@@ -110,78 +110,136 @@ public static class Parkour
     public static ParkourOutcome Simulate(IBlockAccess w, PhysicsState start, ParkourSchedule sch, int fromTick, BlockPos to,
         double toFloor, double maxFall, bool record = false)
     {
-        var s = start.Clone();
-        var track = record ? new List<Vec3d>(sch.JumpTick + 24) : null;
-        bool hazardBefore = s.InLava || Safety.TouchesHazard(w, s.BoundingBox);
-        bool airborne = fromTick > sch.JumpTick && !s.OnGround;
-        double peak = s.Position.Y + (s.OnGround ? 0 : Math.Max(0, s.FallDistance));
-        int contact = fromTick > sch.JumpTick && s.OnGround ? fromTick : -1;
-        double margin = contact >= 0 ? SupportMargin(w, s.Position, sch.Yaw) : double.NegativeInfinity;
-        Vec3d takeoff = s.Position;
-        double distance = 0;
+        var run = new SimRun(w, start.Clone(), sch, fromTick, record);
         int end = Math.Max(fromTick, sch.JumpTick) + MaxFlightTicks + SettleTicks;
         for (int k = fromTick; k < end; k++)
-        {
-            track?.Add(s.Position);
-            if (k == sch.JumpTick)
-            {
-                if (!s.OnGround) return ParkourOutcome.Fail("no ground under the takeoff");
-                takeoff = s.Position;
-            }
-            // After the touchdown the simulation just brakes (sneak: vanilla edge clamping holds the body on a narrow
-            // roof); the follower then sneak-homes onto the cell centre, a plain walk on the same floor.
-            var input = contact >= 0 ? new MoveInput(Sneak: true, Yaw: sch.Yaw) : sch.InputAt(k, s);
-            PlayerPhysics.Tick(w, s, input);
-            if (s.Frozen) return ParkourOutcome.Fail("unloaded chunk");
-            if (s.Position.Y < 1) return ParkourOutcome.Fail("void");
-            if (!hazardBefore && (s.InLava || Safety.TouchesHazard(w, s.BoundingBox))) return ParkourOutcome.Fail("hazard");
-            if (s.InWater) return ParkourOutcome.Fail("water");
-
-            if (k < sch.JumpTick)
-            {
-                if (!s.OnGround) return ParkourOutcome.Fail("ran off the edge before the takeoff");
-                if (s.CollidedHorizontally) return ParkourOutcome.Fail("run-up blocked");
-                if (sch.Sprint && !s.Sprinting) return ParkourOutcome.Fail("sprint lost");
-                continue;
-            }
-            if (contact < 0)
-            {
-                if (s.Position.Y > peak) peak = s.Position.Y;
-                if (s.CollidedHorizontally) return ParkourOutcome.Fail("hit a wall in flight");
-                if (!s.OnGround)
-                {
-                    airborne = true;
-                    if (k - sch.JumpTick > MaxFlightTicks) return ParkourOutcome.Fail("too long in the air");
-                    // Falling below the target floor: it can no longer be landed on (fail fast instead of falling on).
-                    if (s.Velocity.Y < 0 && s.Position.Y < toFloor - 0.6) return ParkourOutcome.Fail("fell short");
-                    continue;
-                }
-                if (!airborne) return ParkourOutcome.Fail("no jump (head bump)");
-                contact = k;
-                double fall = peak - s.Position.Y;
-                if (fall > maxFall + 1e-6) return ParkourOutcome.Fail($"fall {fall:0.0}");
-                if (s.Position.Y < toFloor - 0.5 - 1e-3 || s.Position.Y > toFloor + 1e-3)
-                    return ParkourOutcome.Fail($"landed at y {s.Position.Y:0.##} instead of {toFloor:0.##}");
-                margin = SupportMargin(w, s.Position, sch.Yaw);
-                double dx = s.Position.X - takeoff.X, dz = s.Position.Z - takeoff.Z;
-                distance = Math.Sqrt(dx * dx + dz * dz);
-                continue;
-            }
-            // Landed: brake to rest on or near the target cell at the target floor (or its stair half).
-            if (!s.OnGround) return ParkourOutcome.Fail("slid off the landing");
-            if (s.Velocity.HorizontalLength < 0.003)
-            {
-                var p = s.Position;
-                int fx = (int)Math.Floor(p.X), fz = (int)Math.Floor(p.Z);
-                // Overshooting onto the same roof is fine (the follower sneak-walks back); further means another place.
-                if (Math.Abs(fx - to.X) > 2 || Math.Abs(fz - to.Z) > 2) return ParkourOutcome.Fail("came to rest off the landing");
-                if (p.Y < toFloor - 0.5 - 1e-3 || p.Y > toFloor + 1e-3) return ParkourOutcome.Fail("came to rest at the wrong height");
-                track?.Add(p);
-                return new ParkourOutcome(true, null, margin, contact, distance, peak, track);
-            }
-            if (k - contact > SettleTicks) return ParkourOutcome.Fail("did not settle on the landing");
-        }
+            if (SimTick(w, ref run, sch, k, to, toFloor, maxFall) is { } outcome) return outcome;
         return ParkourOutcome.Fail("timeout");
+    }
+
+    /// <summary>The state of one <see cref="Simulate"/> run between its ticks.</summary>
+    private struct SimRun
+    {
+        public readonly PhysicsState S;
+        public readonly List<Vec3d>? Track;
+        public readonly bool HazardBefore;
+        public bool Airborne;
+        public double Peak;
+        /// <summary>The touchdown tick (−1 still before it).</summary>
+        public int Contact;
+        public double Margin;
+        public Vec3d Takeoff;
+        public double Distance;
+
+        public SimRun(IBlockAccess w, PhysicsState s, ParkourSchedule sch, int fromTick, bool record)
+        {
+            S = s;
+            Track = record ? new List<Vec3d>(sch.JumpTick + 24) : null;
+            HazardBefore = s.InLava || Safety.TouchesHazard(w, s.BoundingBox);
+            Airborne = fromTick > sch.JumpTick && !s.OnGround;
+            Peak = s.Position.Y + (s.OnGround ? 0 : Math.Max(0, s.FallDistance));
+            Contact = fromTick > sch.JumpTick && s.OnGround ? fromTick : -1;
+            Margin = Contact >= 0 ? SupportMargin(w, s.Position, sch.Yaw) : double.NegativeInfinity;
+            Takeoff = s.Position;
+            Distance = 0;
+        }
+    }
+
+    /// <summary>One tick of the run: the outcome once decided, null to go on.</summary>
+    private static ParkourOutcome? SimTick(IBlockAccess w, ref SimRun run, ParkourSchedule sch, int k, BlockPos to, double toFloor, double maxFall)
+    {
+        var s = run.S;
+        run.Track?.Add(s.Position);
+        if (k == sch.JumpTick)
+        {
+            if (!s.OnGround) return ParkourOutcome.Fail("no ground under the takeoff");
+            run.Takeoff = s.Position;
+        }
+        // After the touchdown the simulation just brakes (sneak: vanilla edge clamping holds the body on a narrow
+        // roof); the follower then sneak-homes onto the cell centre, a plain walk on the same floor.
+        var input = run.Contact >= 0 ? new MoveInput(Sneak: true, Yaw: sch.Yaw) : sch.InputAt(k, s);
+        PlayerPhysics.Tick(w, s, input);
+        if (Broken(w, run) is { } why) return ParkourOutcome.Fail(why);
+        if (k < sch.JumpTick) return RunUpTick(s, sch);
+        if (run.Contact < 0) return FlightTick(w, ref run, sch, k, toFloor, maxFall);
+        return SettleTick(run, k, to, toFloor);
+    }
+
+    /// <summary>What ends any run at once: an unloaded chunk, the void, a hazard touched (unless started in one), water.</summary>
+    private static string? Broken(IBlockAccess w, in SimRun run)
+    {
+        var s = run.S;
+        if (s.Frozen) return "unloaded chunk";
+        if (s.Position.Y < 1) return "void";
+        if (!run.HazardBefore && (s.InLava || Safety.TouchesHazard(w, s.BoundingBox))) return "hazard";
+        if (s.InWater) return "water";
+        return null;
+    }
+
+    private static ParkourOutcome? RunUpTick(PhysicsState s, ParkourSchedule sch)
+    {
+        if (!s.OnGround) return ParkourOutcome.Fail("ran off the edge before the takeoff");
+        if (s.CollidedHorizontally) return ParkourOutcome.Fail("run-up blocked");
+        if (sch.Sprint && !s.Sprinting) return ParkourOutcome.Fail("sprint lost");
+        return null;
+    }
+
+    private static ParkourOutcome? FlightTick(IBlockAccess w, ref SimRun run, ParkourSchedule sch, int k, double toFloor, double maxFall)
+    {
+        var s = run.S;
+        if (s.Position.Y > run.Peak) run.Peak = s.Position.Y;
+        if (s.CollidedHorizontally) return ParkourOutcome.Fail("hit a wall in flight");
+        if (!s.OnGround)
+        {
+            run.Airborne = true;
+            return StillFlying(s, sch, k, toFloor);
+        }
+        if (!run.Airborne) return ParkourOutcome.Fail("no jump (head bump)");
+        return FirstContact(w, ref run, sch, k, toFloor, maxFall);
+    }
+
+    private static ParkourOutcome? StillFlying(PhysicsState s, ParkourSchedule sch, int k, double toFloor)
+    {
+        if (k - sch.JumpTick > MaxFlightTicks) return ParkourOutcome.Fail("too long in the air");
+        // Falling below the target floor: it can no longer be landed on (fail fast instead of falling on).
+        if (s.Velocity.Y < 0 && s.Position.Y < toFloor - 0.6) return ParkourOutcome.Fail("fell short");
+        return null;
+    }
+
+    /// <summary>The first ground contact after the flight: within the fall budget, at the target floor (−0.5 for a stair half).</summary>
+    private static ParkourOutcome? FirstContact(IBlockAccess w, ref SimRun run, ParkourSchedule sch, int k, double toFloor, double maxFall)
+    {
+        var s = run.S;
+        run.Contact = k;
+        double fall = run.Peak - s.Position.Y;
+        if (fall > maxFall + 1e-6) return ParkourOutcome.Fail($"fall {fall:0.0}");
+        if (s.Position.Y < toFloor - 0.5 - 1e-3 || s.Position.Y > toFloor + 1e-3)
+            return ParkourOutcome.Fail($"landed at y {s.Position.Y:0.##} instead of {toFloor:0.##}");
+        run.Margin = SupportMargin(w, s.Position, sch.Yaw);
+        double dx = s.Position.X - run.Takeoff.X, dz = s.Position.Z - run.Takeoff.Z;
+        run.Distance = Math.Sqrt(dx * dx + dz * dz);
+        return null;
+    }
+
+    /// <summary>Landed: brake to rest on or near the target cell at the target floor (or its stair half).</summary>
+    private static ParkourOutcome? SettleTick(in SimRun run, int k, BlockPos to, double toFloor)
+    {
+        var s = run.S;
+        if (!s.OnGround) return ParkourOutcome.Fail("slid off the landing");
+        if (s.Velocity.HorizontalLength < 0.003) return AtRest(run, to, toFloor);
+        if (k - run.Contact > SettleTicks) return ParkourOutcome.Fail("did not settle on the landing");
+        return null;
+    }
+
+    private static ParkourOutcome AtRest(in SimRun run, BlockPos to, double toFloor)
+    {
+        var p = run.S.Position;
+        int fx = (int)Math.Floor(p.X), fz = (int)Math.Floor(p.Z);
+        // Overshooting onto the same roof is fine (the follower sneak-walks back); further means another place.
+        if (Math.Abs(fx - to.X) > 2 || Math.Abs(fz - to.Z) > 2) return ParkourOutcome.Fail("came to rest off the landing");
+        if (p.Y < toFloor - 0.5 - 1e-3 || p.Y > toFloor + 1e-3) return ParkourOutcome.Fail("came to rest at the wrong height");
+        run.Track?.Add(p);
+        return new ParkourOutcome(true, null, run.Margin, run.Contact, run.Distance, run.Peak, run.Track);
     }
 
     /// <summary>

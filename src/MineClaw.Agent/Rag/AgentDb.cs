@@ -340,7 +340,13 @@ public sealed class AgentDb : IDisposable
         }
         Exec("PRAGMA foreign_keys=ON;");
         Exec("PRAGMA busy_timeout=5000;");
+        Migrate(log);
+        EnsureSearchTables(log, disableFts, disableRtree);
+    }
 
+    /// <summary>Runs the schema migrations this db hasn't had (each in its own transaction; a newer schema refuses to open).</summary>
+    private void Migrate(ILogger log)
+    {
         int version = (int)ScalarLong("PRAGMA user_version;");
         if (version > Migrations.Length)
             throw new InvalidOperationException($"database schema v{version} is newer than this build (v{Migrations.Length})");
@@ -358,8 +364,12 @@ public sealed class AgentDb : IDisposable
             if (ran) log.LogInformation("db schema migrated to v{Version}", v + 1);
         }
         SchemaVersion = Migrations.Length;
+    }
 
-        bool ftsOk = !disableFts && Probe("CREATE VIRTUAL TABLE temp.__fts_probe USING fts5(x); DROP TABLE temp.__fts_probe;");
+    /// <summary>The FTS5 and R*Tree tables when SQLite has them (else LIKE and range scans).</summary>
+    private void EnsureSearchTables(ILogger log, bool disableFts, bool disableRtree)
+    {
+        bool ftsOk =!disableFts && Probe("CREATE VIRTUAL TABLE temp.__fts_probe USING fts5(x); DROP TABLE temp.__fts_probe;");
         bool rtOk = !disableRtree && Probe("CREATE VIRTUAL TABLE temp.__rt_probe USING rtree(id, a, b); DROP TABLE temp.__rt_probe;");
         HasFts = ftsOk && EnsureVirtual("docs_fts", FtsSql, log);
         if (rtOk) DropStaleRtree(log);

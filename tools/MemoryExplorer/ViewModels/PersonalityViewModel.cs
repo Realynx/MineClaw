@@ -59,28 +59,34 @@ public sealed partial class PersonalityViewModel(MainWindowViewModel shell) : Pa
                 return (q.SelfEntries(scope), q.SelfHistory(scope), q.SelfAggregates(scope, "mood"), q.SelfAbstractions(scope));
             });
             if (scope != Scope) return;
-            var order = new[] { "trait", "like", "dislike", "opinion", "joke", "nickname", "relationship", "milestone" };
-            foreach (var g in entries.GroupBy(e => e.Type).OrderBy(g => Array.IndexOf(order, g.Key) is var i && i < 0 ? 99 : i))
-            {
-                var rows = g.Select(e =>
-                {
-                    var p = e.Props.ToDictionary(x => x.Key, x => x.Value);
-                    return new TraitRow(e.Id, e.Text, p.GetValueOrDefault("player"), Math.Clamp(e.Confidence ?? 0, 0, 1) * 100,
-                        (e.Confidence ?? 0).ToString("0.00", CultureInfo.InvariantCulture),
-                        $"#{e.Id} · seen {p.GetValueOrDefault("observations", "1")}× · reinforced {e.UpdatedText}", p.GetValueOrDefault("reason"));
-                }).ToList();
-                Groups.Add(new TraitGroup(Capital(g.Key), rows));
-            }
-            foreach (var h in hist)
-                History.Add(new HistoryItem("v" + h.Version, h.At.ToLocalTime().ToString("MM-dd HH:mm", CultureInfo.InvariantCulture), h.Op, h.Section ?? "",
-                    h.Text ?? "", h.Reason ?? "", h.Source));
-            foreach (var m in mood.Where(m => m.Key.Length == 0 || m.Key == "_"))
-                Mood.Add(new MoodItem(m.Dim, m.Value, m.Value.ToString("+0.00;-0.00", CultureInfo.InvariantCulture), Math.Clamp((m.Value + 1) / 2 * 100, 0, 100)));
+            foreach (var g in entries.GroupBy(e => e.Type).OrderBy(g => SectionRank(g.Key)))
+                Groups.Add(new TraitGroup(Capital(g.Key), g.Select(TraitRowOf).ToList()));
+            foreach (var h in hist) History.Add(HistoryItemOf(h));
+            foreach (var m in mood.Where(m => m.Key.Length == 0 || m.Key == "_")) Mood.Add(MoodItemOf(m));
             foreach (var a in abs) Abstractions.Add(new AbstractionItem($"L{a.Layer} · {a.Leaves} notes", a.Text));
             Summary = $"{entries.Count} entries · {hist.Count} versions" + (hist.Count > 0 ? $" · last change {hist[0].At.ToLocalTime():yyyy-MM-dd HH:mm} ({hist[0].Source})" : "");
         }
         finally { IsLoading = false; }
     }
+
+    private static readonly string[] SectionOrder = ["trait", "like", "dislike", "opinion", "joke", "nickname", "relationship", "milestone"];
+
+    /// <summary>Known sections in their fixed order, any other after them.</summary>
+    private static int SectionRank(string section) => Array.IndexOf(SectionOrder, section) is var i && i < 0 ? 99 : i;
+
+    private static TraitRow TraitRowOf(MemoryRow e)
+    {
+        var p = e.Props.ToDictionary(x => x.Key, x => x.Value);
+        return new TraitRow(e.Id, e.Text, p.GetValueOrDefault("player"), Math.Clamp(e.Confidence ?? 0, 0, 1) * 100,
+            (e.Confidence ?? 0).ToString("0.00", CultureInfo.InvariantCulture),
+            $"#{e.Id} · seen {p.GetValueOrDefault("observations", "1")}× · reinforced {e.UpdatedText}", p.GetValueOrDefault("reason"));
+    }
+
+    private static HistoryItem HistoryItemOf(MemoryQueries.HistoryRow h) =>
+        new("v" + h.Version, h.At.ToLocalTime().ToString("MM-dd HH:mm", CultureInfo.InvariantCulture), h.Op, h.Section ?? "", h.Text ?? "", h.Reason ?? "", h.Source);
+
+    private static MoodItem MoodItemOf(MemoryQueries.MoodRow m) =>
+        new(m.Dim, m.Value, m.Value.ToString("+0.00;-0.00", CultureInfo.InvariantCulture), Math.Clamp((m.Value + 1) / 2 * 100, 0, 100));
 
     private static string Capital(string s) => s.Length == 0 ? s : char.ToUpperInvariant(s[0]) + s[1..] + (s.EndsWith('s') ? "" : "s");
 }

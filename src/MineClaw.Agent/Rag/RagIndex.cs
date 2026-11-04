@@ -927,50 +927,14 @@ public sealed class RagIndex : IRetrievalIndex, IDisposable
             int written = 0;
             for (int guard = 0; guard < 1000; guard++)
             {
-                var pending = _db.Query("""
-                    SELECT d.id, d.title, d.body, d.hash, d.kind, d.tag, CASE WHEN d.min_x IS NULL THEN NULL ELSE d.dimension END
-                    FROM docs d LEFT JOIN vectors v ON v.doc_id = d.id
-                    WHERE d.embed = 1 AND (v.doc_id IS NULL OR v.model <> $m OR v.dims <> $d OR v.hash <> d.hash) LIMIT 256
-                    """, r => new Pending(r.GetInt64(0), r.GetString(1) + "\n" + r.GetString(2), r.GetString(3), r.GetString(4), AgentDb.StrOrNull(r, 5),
-                        r.IsDBNull(6) ? null : (int)r.GetInt64(6)),
-                    ("$m", VecModel), ("$d", _embedder.Dimensions));
+                var pending = PendingEmbeds();
                 if (pending.Count == 0) break;
-
-                var need = new List<Pending>();
-                foreach (var p in pending)
-                {
-                    var blob = _db.Scalar("SELECT vec FROM embed_cache WHERE hash = $h AND model = $m AND dims = $d",
-                        ("$h", p.Hash), ("$m", VecModel), ("$d", _embedder.Dimensions)) as byte[];
-                    if (blob != null) { StoreVector(p, VectorMath.FromBlob(blob)); written++; }
-                    else if (!need.Any(x => x.Hash == p.Hash)) need.Add(p);
-                }
-
+                var need = FromEmbedCache(pending, ref written);
                 int batch = Math.Max(1, _embOptions.MaxBatch);
                 for (int i = 0; i < need.Count; i += batch)
                 {
-                    var chunk = need.Skip(i).Take(batch).ToList();
-                    EmbeddingResponse resp;
-                    try
-                    {
-                        resp = await _embedder.EmbedAsync(chunk.Select(c => c.Text).ToList(), ct).ConfigureAwait(false);
-                        Interlocked.Exchange(ref _warm, 1);
-                        EmbedRequests++;
-                    }
-                    catch (Exception ex) when (!ct.IsCancellationRequested)
-                    {
-                        Fail(ex);
-                        return written;
-                    }
-                    RecordUsage(resp.Tokens);
-                    EmbeddedTexts += chunk.Count;
-                    for (int k = 0; k < chunk.Count; k++)
-                    {
-                        var v = VectorMath.Normalize(resp.Vectors[k]);
-                        _db.Exec("INSERT OR REPLACE INTO embed_cache(hash, model, dims, vec, created) VALUES ($h, $m, $d, $v, $t)",
-                            ("$h", chunk[k].Hash), ("$m", VecModel), ("$d", _embedder.Dimensions), ("$v", VectorMath.ToBlob(v)), ("$t", AgentDb.ToUnixMs(Now)));
-                        StoreVector(chunk[k], v);
-                        written++;
-                    }
+                    if (await EmbedChunkAsync(need.Skip(i).Take(batch).ToList(), ct).ConfigureAwait(false) is not { } n) return written;
+                    written += n;
                 }
                 // Same-hash duplicates in this round now hit the cache on the next loop.
                 if (_failures > 0) { _log.LogInformation("embeddings recovered"); _failures = 0; }
@@ -981,6 +945,56 @@ public sealed class RagIndex : IRetrievalIndex, IDisposable
         {
             _embedGate.Release();
         }
+    }
+
+    /// <summary>Up to 256 docs to embed whose vector is missing or stale (another model, dims or text).</summary>
+    private List<Pending> PendingEmbeds() => _db.Query("""
+        SELECT d.id, d.title, d.body, d.hash, d.kind, d.tag, CASE WHEN d.min_x IS NULL THEN NULL ELSE d.dimension END
+        FROM docs d LEFT JOIN vectors v ON v.doc_id = d.id
+        WHERE d.embed = 1 AND (v.doc_id IS NULL OR v.model <> $m OR v.dims <> $d OR v.hash <> d.hash) LIMIT 256
+        """, r => new Pending(r.GetInt64(0), r.GetString(1) + "\n" + r.GetString(2), r.GetString(3), r.GetString(4), AgentDb.StrOrNull(r, 5),
+            r.IsDBNull(6) ? null : (int)r.GetInt64(6)),
+        ("$m", VecModel), ("$d", _embedder.Dimensions));
+
+    /// <summary>Stores the cached vectors (counted in <paramref name="written"/>); returns the rest to embed, one per text hash.</summary>
+    private List<Pending> FromEmbedCache(List<Pending> pending, ref int written)
+    {
+        var need = new List<Pending>();
+        foreach (var p in pending)
+        {
+            var blob = _db.Scalar("SELECT vec FROM embed_cache WHERE hash = $h AND model = $m AND dims = $d",
+                ("$h", p.Hash), ("$m", VecModel), ("$d", _embedder.Dimensions)) as byte[];
+            if (blob != null) { StoreVector(p, VectorMath.FromBlob(blob)); written++; }
+            else if (!need.Any(x => x.Hash == p.Hash)) need.Add(p);
+        }
+        return need;
+    }
+
+    /// <summary>Embeds one batch, caches and stores its vectors; the count written, or null when the embedder failed.</summary>
+    private async Task<int?> EmbedChunkAsync(List<Pending> chunk, CancellationToken ct)
+    {
+        EmbeddingResponse resp;
+        try
+        {
+            resp = await _embedder.EmbedAsync(chunk.Select(c => c.Text).ToList(), ct).ConfigureAwait(false);
+            Interlocked.Exchange(ref _warm, 1);
+            EmbedRequests++;
+        }
+        catch (Exception ex) when (!ct.IsCancellationRequested)
+        {
+            Fail(ex);
+            return null;
+        }
+        RecordUsage(resp.Tokens);
+        EmbeddedTexts += chunk.Count;
+        for (int k = 0; k < chunk.Count; k++)
+        {
+            var v = VectorMath.Normalize(resp.Vectors[k]);
+            _db.Exec("INSERT OR REPLACE INTO embed_cache(hash, model, dims, vec, created) VALUES ($h, $m, $d, $v, $t)",
+                ("$h", chunk[k].Hash), ("$m", VecModel), ("$d", _embedder.Dimensions), ("$v", VectorMath.ToBlob(v)), ("$t", AgentDb.ToUnixMs(Now)));
+            StoreVector(chunk[k], v);
+        }
+        return chunk.Count;
     }
 
     private void StoreVector(Pending p, float[] v)

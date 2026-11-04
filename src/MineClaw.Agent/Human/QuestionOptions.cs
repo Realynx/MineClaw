@@ -47,30 +47,34 @@ public sealed class QuestionOptions
     /// </summary>
     public string TimeoutText(string? player, string dflt, bool risky, string? question = null)
     {
-        string line;
         // Live 10-28: "skipped that part for now" posted 4× with no hint which question it meant.
-        if (risky) line = RiskyTimeoutLine.Replace("{topic}", Topic(question) is { } t ? $"\"{t}\"" : "that part");
-        else
-        {
-            var d = (dflt ?? "").Trim();
-            var clause = ClauseBreak.Split(d)[0];
-            clause = Regex.Replace(Jargon.Replace(clause, ""), @"\s+", " ").Trim(' ', ',', ':');
-            var words = clause.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-            bool plan = words.Length > 0 && PlanVerbs.Contains(words[0]);
-            bool plain = !plan && clause == d.TrimEnd('.', '!') && words.Length is > 0 and <= 5 && !Coords.IsMatch(d);
-            if (plain) line = TimeoutLine.Replace("{default}", d);
-            else if (plan && words.Length <= 10 && !Coords.IsMatch(clause))
-            {
-                var p = char.ToLowerInvariant(clause[0]) + clause[1..];
-                p = Regex.Replace(p, @"\s+for now$", "", RegexOptions.IgnoreCase);
-                line = PlanTimeoutLine.Replace("{plan}", p);
-            }
-            else line = Topic(question) is { } t
-                ? VagueTimeoutLine.Replace("my best guess", $"my best guess on \"{t}\"") // which question (live 10-28 11:1x)
-                : VagueTimeoutLine;
-        }
+        string line = risky ? RiskyTimeoutLine.Replace("{topic}", Topic(question) is { } t ? $"\"{t}\"" : "that part") : DefaultLine(dflt, question);
         return line.Replace("{player}", player ?? "").Replace("{default}", dflt ?? "").Trim(' ', ',');
     }
+
+    /// <summary>A safe question's timeout line: the short choice itself, the plan it names, or a vague "best guess".</summary>
+    private string DefaultLine(string dflt, string? question)
+    {
+        var d = (dflt ?? "").Trim();
+        var clause = ClauseBreak.Split(d)[0];
+        clause = Regex.Replace(Jargon.Replace(clause, ""), @"\s+", " ").Trim(' ', ',', ':');
+        var words = clause.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        bool plan = words.Length > 0 && PlanVerbs.Contains(words[0]);
+        if (IsPlainChoice(d, clause, words, plan)) return TimeoutLine.Replace("{default}", d);
+        if (plan && words.Length <= 10 && !Coords.IsMatch(clause))
+        {
+            var p = char.ToLowerInvariant(clause[0]) + clause[1..];
+            p = Regex.Replace(p, @"\s+for now$", "", RegexOptions.IgnoreCase);
+            return PlanTimeoutLine.Replace("{plan}", p);
+        }
+        return Topic(question) is { } t
+            ? VagueTimeoutLine.Replace("my best guess", $"my best guess on \"{t}\"") // which question (live 10-28 11:1x)
+            : VagueTimeoutLine;
+    }
+
+    /// <summary>A short plain choice ("left cell"): no instruction, no jargon cut off, no coordinates.</summary>
+    private static bool IsPlainChoice(string d, string clause, string[] words, bool plan) =>
+        !plan && clause == d.TrimEnd('.', '!') && words.Length is > 0 and <= 5 && !Coords.IsMatch(d);
 
     private static readonly Regex AskLead = new(
         @"^\s*(?:\w+[,:]\s*)?(?:master~?\s*)?(?:(?:can|could|may|should|shall)\s+i|do you want me to|want me to|(?:is it\s+)?ok(?:ay)?\s+(?:if i|to)|mind if i)\s+",

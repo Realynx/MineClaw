@@ -118,6 +118,15 @@ internal static class ClaimVerifier
         }
         if (ClaimParser.KindBlocks(kind) is not { } ids) return; // farm, island, "robin's house": nothing to look for block-wise
         if (s.World is not { } w) { s.SetPlan(c.Id, ClaimPlan.Location, ExperimentRisk.Safe); return; }
+        var (loaded, found) = ScanAround(w, p, ids);
+        if (!loaded) { s.SetPlan(c.Id, ClaimPlan.Location, ExperimentRisk.Safe); return; }
+        s.SetPlan(c.Id, ClaimPlan.None, ExperimentRisk.Safe);
+        AddBlockEvidence(s, c, p, kind, found);
+    }
+
+    /// <summary>The 3×3×3 around the spot: whether any of it is loaded, and whether one of the kind's blocks is there.</summary>
+    private static (bool Loaded, bool Found) ScanAround(IBeliefWorld w, ClaimPos p, int[] ids)
+    {
         bool loaded = false, found = false;
         for (int dx = -1; dx <= 1 && !found; dx++)
             for (int dy = -1; dy <= 1 && !found; dy++)
@@ -127,11 +136,12 @@ internal static class ClaimVerifier
                     loaded = true;
                     found = ids.Contains(b);
                 }
-        if (!loaded) { s.SetPlan(c.Id, ClaimPlan.Location, ExperimentRisk.Safe); return; }
-        s.SetPlan(c.Id, ClaimPlan.None, ExperimentRisk.Safe);
+        return (loaded, found);
+    }
+
+    private static void AddBlockEvidence(BeliefStore s, BeliefClaim c, ClaimPos p, string kind, bool found) =>
         s.AddEvidence(c.Id, EvidenceKind.Observation, found ? 1 : -1, found ? 0.9 : 0.85, $"block:{p.Format()}",
             found ? $"{kind.Replace('_', ' ')} is there" : $"no {kind.Replace('_', ' ')} at {p.Format()}");
-    }
 
     // ---------------- structures ----------------
 

@@ -92,39 +92,61 @@ public sealed class HiveApi : IDisposable
         var sw = Stopwatch.StartNew();
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         cts.CancelAfter(TimeoutFor(route));
-        HttpResponseMessage res;
-        byte[] body;
-        try
-        {
-            res = await _http.GetAsync(pathAndQuery, HttpCompletionOption.ResponseHeadersRead, cts.Token).ConfigureAwait(false);
-        }
-        catch (HttpRequestException ex) { Fail(route, 0, null); throw new HiveApiException(0, $"{route}: {ex.InnerException?.Message ?? ex.Message}"); }
-        catch (OperationCanceledException) when (!ct.IsCancellationRequested) { Fail(route, 0, null); throw new HiveApiException(0, $"{route}: timed out"); }
-        using (res)
-        {
-            try { body = await res.Content.ReadAsByteArrayAsync(cts.Token).ConfigureAwait(false); }
-            catch (HttpRequestException ex) { Fail(route, 0, null); throw new HiveApiException(0, $"{route}: {ex.InnerException?.Message ?? ex.Message}"); }
-            catch (IOException ex) { Fail(route, 0, null); throw new HiveApiException(0, $"{route}: {ex.Message}"); }
-            catch (OperationCanceledException) when (!ct.IsCancellationRequested) { Fail(route, 0, null); throw new HiveApiException(0, $"{route}: timed out"); }
-            Interlocked.Add(ref BytesIn, body.Length);
-            if (track)
-                lock (_lock) _latency = _latency < 0 ? sw.Elapsed.TotalMilliseconds : _latency * 0.8 + sw.Elapsed.TotalMilliseconds * 0.2;
-            int code = (int)res.StatusCode;
-            if (res.IsSuccessStatusCode) { Ok(route); return body; }
-            TimeSpan? retry = res.StatusCode is HttpStatusCode.TooManyRequests or HttpStatusCode.ServiceUnavailable
-                ? res.Headers.RetryAfter?.Delta ?? TimeSpan.FromSeconds(1) : null;
-            // Auth problems are reported, not backed off (the fast loop shows them and retries every few seconds).
-            if (code is not (401 or 403)) retry = Fail(route, code, retry);
-            throw new HiveApiException(code, route + ": " + code switch
-            {
-                401 or 403 => "unauthorized: token missing or wrong",
-                404 => "not found (is the server new enough for the Live Hive routes?)",
-                429 => "rate limited",
-                503 => "server busy",
-                _ => $"HTTP {code}",
-            }, retry);
-        }
+        using var res = await SendAsync(route, pathAndQuery, ct, cts.Token).ConfigureAwait(false);
+        var body = await ReadAsync(route, res, ct, cts.Token).ConfigureAwait(false);
+        Interlocked.Add(ref BytesIn, body.Length);
+        if (track) TrackLatency(sw.Elapsed.TotalMilliseconds);
+        if (res.IsSuccessStatusCode) { Ok(route); return body; }
+        throw Refused(route, res);
     }
+
+    /// <summary>A request that got no answer (status 0): the route backs off.</summary>
+    private HiveApiException Dropped(string route, string why)
+    {
+        Fail(route, 0, null);
+        return new HiveApiException(0, $"{route}: {why}");
+    }
+
+    private async Task<HttpResponseMessage> SendAsync(string route, string pathAndQuery, CancellationToken ct, CancellationToken timed)
+    {
+        try { return await _http.GetAsync(pathAndQuery, HttpCompletionOption.ResponseHeadersRead, timed).ConfigureAwait(false); }
+        catch (HttpRequestException ex) { throw Dropped(route, ex.InnerException?.Message ?? ex.Message); }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested) { throw Dropped(route, "timed out"); }
+    }
+
+    private async Task<byte[]> ReadAsync(string route, HttpResponseMessage res, CancellationToken ct, CancellationToken timed)
+    {
+        try { return await res.Content.ReadAsByteArrayAsync(timed).ConfigureAwait(false); }
+        catch (HttpRequestException ex) { throw Dropped(route, ex.InnerException?.Message ?? ex.Message); }
+        catch (IOException ex) { throw Dropped(route, ex.Message); }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested) { throw Dropped(route, "timed out"); }
+    }
+
+    private void TrackLatency(double ms)
+    {
+        lock (_lock) _latency = _latency < 0 ? ms : _latency * 0.8 + ms * 0.2;
+    }
+
+    /// <summary>A non-success answer as an exception: 429/503 carry their Retry-After (1 s without one); every status but
+    /// 401/403 backs the route off.</summary>
+    private HiveApiException Refused(string route, HttpResponseMessage res)
+    {
+        int code = (int)res.StatusCode;
+        TimeSpan? retry = res.StatusCode is HttpStatusCode.TooManyRequests or HttpStatusCode.ServiceUnavailable
+            ? res.Headers.RetryAfter?.Delta ?? TimeSpan.FromSeconds(1) : null;
+        // Auth problems are reported, not backed off (the fast loop shows them and retries every few seconds).
+        if (code is not (401 or 403)) retry = Fail(route, code, retry);
+        return new HiveApiException(code, route + ": " + StatusText(code), retry);
+    }
+
+    private static string StatusText(int code) => code switch
+    {
+        401 or 403 => "unauthorized: token missing or wrong",
+        404 => "not found (is the server new enough for the Live Hive routes?)",
+        429 => "rate limited",
+        503 => "server busy",
+        _ => $"HTTP {code}",
+    };
 
     public async Task<T> GetJsonAsync<T>(string route, string pathAndQuery, CancellationToken ct, bool track = false)
     {

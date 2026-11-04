@@ -118,75 +118,93 @@ public sealed class ActivityCompaction
         int actBefore = ActivityDocs();
         var ctx = _groomer.Context(dryRun);
         var pending = Pending().Where(r => !ctx.Episodes.IsEpisode(r.Ref)).ToList();
-        int removed = 0, rewritten = 0, dirty = 0;
-        var outputs = new Dictionary<string, RagDoc>(StringComparer.Ordinal);
-        var gone = new HashSet<string>(StringComparer.Ordinal);
+        var pass = new CompactionPass(this, ctx, dryRun);
 
         foreach (var batch in pending.Chunk(250))
         {
             ct.ThrowIfCancellationRequested();
-            void Step()
-            {
-                var deleteIds = new List<long>();
-                var rewrittenIds = new List<long>();
-                var deleteRefs = new List<string>();
-                foreach (var raw in batch)
-                {
-                    var docs = _groomer.Groom(ToDoc(raw), ctx);
-                    bool keepsRef = false;
-                    foreach (var d in docs)
-                    {
-                        outputs[d.Ref] = d;
-                        if (d.Ref == raw.Ref)
-                        {
-                            keepsRef = true;
-                            if (d.Body != raw.Body || d.Title != raw.Title) { rewritten++; rewrittenIds.Add(raw.Id); }
-                        }
-                        if (!dryRun) _rag.UpsertGroomed(d);
-                    }
-                    if (!keepsRef)
-                    {
-                        gone.Add(raw.Ref);
-                        deleteIds.Add(raw.Id);
-                        deleteRefs.Add(raw.Ref);
-                    }
-                }
-                if (dryRun) return;
-                dirty += MarkAncestorsDirty([.. deleteIds, .. rewrittenIds]);
-                foreach (var r in deleteRefs) if (_rag.Delete(r)) removed++;
-            }
-            if (dryRun) Step();
-            else _db.Tx(Step);
+            if (dryRun) pass.Step(batch);
+            else _db.Tx(() => pass.Step(batch));
         }
-        if (dryRun) removed = gone.Count;
-        int episodes = outputs.Keys.Count(k => !gone.Contains(k));
+        if (dryRun) pass.Removed = pass.Gone.Count;
+        int removed = pass.Removed;
+        int episodes = pass.Outputs.Keys.Count(k => !pass.Gone.Contains(k));
 
-        if (!dryRun && pending.Count > 0)
-        {
-            // The tree takes the removals now (zero tokens); summaries above them stay dirty for the budgeted refresh.
-            try
-            {
-                if (_maintenance != null) _maintenance.Signal();
-                else if (_raptor is { Ready: true } raptor)
-                {
-                    if (_rag.Embedder.IsAvailable) await _rag.FlushEmbeddingsAsync(ct).ConfigureAwait(false);
-                    for (int i = 0; i < 200; i++)
-                        if (!(await raptor.SyncAsync(ct).ConfigureAwait(false)).Any) break;
-                }
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException) { _log.LogWarning(ex, "activity compaction: tree sync deferred"); }
-        }
+        // The tree takes the removals now (zero tokens); summaries above them stay dirty for the budgeted refresh.
+        if (!dryRun && pending.Count > 0) await SyncTreeAsync(ct).ConfigureAwait(false);
 
-        int docsAfter = dryRun ? docsBefore - removed : (int)_db.ScalarLong("SELECT count(*) FROM docs");
-        int actAfter = dryRun ? actBefore - removed : ActivityDocs();
-        var samples = outputs.Values.Where(d => !gone.Contains(d.Ref)).OrderByDescending(d => d.Body.Length).Take(5).Select(d => d.Body).ToList();
+        var (docsAfter, actAfter) = dryRun ? (docsBefore - removed, actBefore - removed) : ((int)_db.ScalarLong("SELECT count(*) FROM docs"), ActivityDocs());
+        var samples = pass.Outputs.Values.Where(d => !pass.Gone.Contains(d.Ref)).OrderByDescending(d => d.Body.Length).Take(5).Select(d => d.Body).ToList();
         var msg = pending.Count == 0
             ? $"nothing to compact: {actBefore} activity episodes are already coalesced"
-            : $"{(dryRun ? "would compact" : "compacted")} {pending.Count} activity docs into {episodes} episodes " +
-              $"({removed} removed, {rewritten} rewritten in place); docs {docsBefore} → {docsAfter}, activity {actBefore} → {actAfter}" +
-              (dryRun ? "" : $"; {dirty} RAPTOR summaries marked dirty");
+            : CompactedMessage(dryRun, pending.Count, episodes, pass, (docsBefore, docsAfter), (actBefore, actAfter));
         _log.LogInformation("activity compaction: {Message}", msg);
-        return new ActivityCompactionReport(true, dryRun, docsBefore, docsAfter, actBefore, actAfter, pending.Count, removed, rewritten, episodes, dirty,
-            msg, samples, backup);
+        return new ActivityCompactionReport(true, dryRun, docsBefore, docsAfter, actBefore, actAfter, pending.Count, removed, pass.Rewritten, episodes,
+            pass.Dirty, msg, samples, backup);
+    }
+
+    private static string CompactedMessage(bool dryRun, int pending, int episodes, CompactionPass pass, (int Before, int After) docs,
+        (int Before, int After) act) =>
+        $"{(dryRun ? "would compact" : "compacted")} {pending} activity docs into {episodes} episodes " +
+        $"({pass.Removed} removed, {pass.Rewritten} rewritten in place); docs {docs.Before} → {docs.After}, activity {act.Before} → {act.After}" +
+        (dryRun ? "" : $"; {pass.Dirty} RAPTOR summaries marked dirty");
+
+    /// <summary>Signals the maintenance loop, else syncs the RAPTOR tree here (bounded); a failure defers it.</summary>
+    private async Task SyncTreeAsync(CancellationToken ct)
+    {
+        try
+        {
+            if (_maintenance != null) _maintenance.Signal();
+            else if (_raptor is { Ready: true } raptor)
+            {
+                if (_rag.Embedder.IsAvailable) await _rag.FlushEmbeddingsAsync(ct).ConfigureAwait(false);
+                for (int i = 0; i < 200; i++)
+                    if (!(await raptor.SyncAsync(ct).ConfigureAwait(false)).Any) break;
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException) { _log.LogWarning(ex, "activity compaction: tree sync deferred"); }
+    }
+
+    /// <summary>One compaction run's grooming: every pending doc through the groomer, outputs kept, replaced docs removed.</summary>
+    private sealed class CompactionPass(ActivityCompaction owner, GroomContext ctx, bool dryRun)
+    {
+        public int Removed, Rewritten, Dirty;
+        public readonly Dictionary<string, RagDoc> Outputs = new(StringComparer.Ordinal);
+        public readonly HashSet<string> Gone = new(StringComparer.Ordinal);
+
+        /// <summary>One batch (one transaction when writing): groom each doc, then mark the tree dirty and delete what was replaced.</summary>
+        public void Step(Raw[] batch)
+        {
+            var deleteIds = new List<long>();
+            var rewrittenIds = new List<long>();
+            var deleteRefs = new List<string>();
+            foreach (var raw in batch)
+            {
+                if (Groom(raw, rewrittenIds)) continue;
+                Gone.Add(raw.Ref);
+                deleteIds.Add(raw.Id);
+                deleteRefs.Add(raw.Ref);
+            }
+            if (dryRun) return;
+            Dirty += owner.MarkAncestorsDirty([.. deleteIds, .. rewrittenIds]);
+            foreach (var r in deleteRefs) if (owner._rag.Delete(r)) Removed++;
+        }
+
+        /// <summary>Grooms one doc (outputs kept, written unless dry); true when an output keeps its ref (a rewrite or as is).</summary>
+        private bool Groom(Raw raw, List<long> rewrittenIds)
+        {
+            bool keepsRef = false;
+            foreach (var d in owner._groomer.Groom(ToDoc(raw), ctx))
+            {
+                Outputs[d.Ref] = d;
+                if (d.Ref == raw.Ref)
+                {
+                    keepsRef = true;
+                    if (d.Body != raw.Body || d.Title != raw.Title) { Rewritten++; rewrittenIds.Add(raw.Id); }
+                }
+                if (!dryRun) owner._rag.UpsertGroomed(d);
+            }
+            return keepsRef;
+        }
     }
 }

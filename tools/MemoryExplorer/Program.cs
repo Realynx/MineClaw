@@ -28,39 +28,78 @@ internal static class Screenshot
 {
     public static int Run(StartupOptions o)
     {
-        var builder = AppBuilder.Configure<App>().UseSkia().WithInterFont()
-            .UseHeadless(new AvaloniaHeadlessPlatformOptions { UseHeadlessDrawing = false });
-        builder.SetupWithoutStarting();
-        if (o.Theme is { } t)
-            Avalonia.Application.Current!.RequestedThemeVariant = t == "dark" ? Avalonia.Styling.ThemeVariant.Dark : Avalonia.Styling.ThemeVariant.Light;
+        SetUpHeadless(o);
         var vm = new MainWindowViewModel(o);
         var window = new MainWindow { DataContext = vm, Width = 1440, Height = 900 };
         window.Show();
         var init = vm.InitializeAsync();
         var deadline = DateTime.UtcNow.AddSeconds(90);
-        while ((!init.IsCompleted || vm.IsBusy) && DateTime.UtcNow < deadline)
+        PumpWhile(() => !init.IsCompleted || vm.IsBusy, deadline);
+        RunQuery(vm, o, deadline);
+        ApplyTreeOptions(vm.Tree, o);
+        Pump(30);
+        PinTip(window, o);
+        return Save(window, vm, o);
+    }
+
+    /// <summary>Avalonia's headless platform with real Skia drawing, in the requested theme.</summary>
+    private static void SetUpHeadless(StartupOptions o)
+    {
+        var builder = AppBuilder.Configure<App>().UseSkia().WithInterFont()
+            .UseHeadless(new AvaloniaHeadlessPlatformOptions { UseHeadlessDrawing = false });
+        builder.SetupWithoutStarting();
+        if (o.Theme is { } t)
+            Avalonia.Application.Current!.RequestedThemeVariant = t == "dark" ? Avalonia.Styling.ThemeVariant.Dark : Avalonia.Styling.ThemeVariant.Light;
+    }
+
+    private static void PumpWhile(Func<bool> busy, DateTime deadline)
+    {
+        while (busy() && DateTime.UtcNow < deadline)
         {
             Avalonia.Threading.Dispatcher.UIThread.RunJobs();
             Thread.Sleep(20);
         }
+    }
+
+    private static void Pump(int frames)
+    {
+        for (int i = 0; i < frames; i++) { Avalonia.Threading.Dispatcher.UIThread.RunJobs(); Thread.Sleep(20); }
+    }
+
+    /// <summary><c>--query</c> on the search or tree page: runs the search first (the tree lights its hits up).</summary>
+    private static void RunQuery(MainWindowViewModel vm, StartupOptions o, DateTime deadline)
+    {
         if (vm.Pages.FirstOrDefault(p => p.Key == "search") is { } sp && o.Query != null && o.Page is "search" or "tree")
         {
             var s = (SearchViewModel)sp.Page;
             s.Query = o.Query;
             var run = s.RunSearchAsync();
-            while (!run.IsCompleted && DateTime.UtcNow < deadline) { Avalonia.Threading.Dispatcher.UIThread.RunJobs(); Thread.Sleep(20); }
+            PumpWhile(() => !run.IsCompleted, deadline);
         }
-        if (o.Graph) vm.Tree.GraphMode = true;
-        if (o.GraphLayout != null) vm.Tree.SetLayoutCommand.Execute(o.GraphLayout);
-        if (o.ColorBy != null) vm.Tree.ColorByIndex = o.ColorBy switch { "time" => 1, "cluster" => 2, _ => 0 };
-        if (o.Node is { } node) vm.Tree.Reveal(node);
-        if (o.Focus is { } focus) vm.Tree.GraphFocus = focus;
-        for (int i = 0; i < 30; i++) { Avalonia.Threading.Dispatcher.UIThread.RunJobs(); Thread.Sleep(20); }
+    }
+
+    /// <summary><c>--graph --graph-layout --color-by --node --focus</c>.</summary>
+    private static void ApplyTreeOptions(RaptorTreeViewModel tree, StartupOptions o)
+    {
+        if (o.Graph) tree.GraphMode = true;
+        if (o.GraphLayout != null) tree.SetLayoutCommand.Execute(o.GraphLayout);
+        if (o.ColorBy != null) tree.ColorByIndex = o.ColorBy switch { "time" => 1, "cluster" => 2, _ => 0 };
+        if (o.Node is { } node) tree.Reveal(node);
+        if (o.Focus is { } focus) tree.GraphFocus = focus;
+    }
+
+    /// <summary><c>--tip</c>: pins the graph's tooltip on a node.</summary>
+    private static void PinTip(MainWindow window, StartupOptions o)
+    {
         if (o.Tip is { } tip && Avalonia.VisualTree.VisualExtensions.GetVisualDescendants(window).OfType<Controls.LayeredGraph>().FirstOrDefault() is { } graph)
         {
             graph.PinTooltip(tip);
-            for (int i = 0; i < 5; i++) { Avalonia.Threading.Dispatcher.UIThread.RunJobs(); Thread.Sleep(20); }
+            Pump(5);
         }
+    }
+
+    private static int Save(MainWindow window, MainWindowViewModel vm, StartupOptions o)
+    {
         var frame = window.CaptureRenderedFrame();
         if (frame == null) { Console.Error.WriteLine("no frame rendered"); return 1; }
         var path = Path.GetFullPath(o.Screenshot!);

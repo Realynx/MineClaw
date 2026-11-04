@@ -228,68 +228,95 @@ public sealed class GlFreecamView : OpenGlControlBase, Avalonia.Rendering.ICusto
     {
         if (Model is not { } m) return;
         if (_r == null && !TryInit(gl)) return;
-        var r = _r!;
-        double t0 = FreecamStats.NowMs;
-        var st = FreecamStats.Shared;
-        try
-        {
-            double dt = _lastFrame == 0 ? 0 : (t0 - _lastFrame) / 1000.0;
-            _lastFrame = t0;
-            m.Step(dt);
-            double input = m.Camera.TakeInputStamp();
-            var pose = m.Camera.Pose;
-            if (m.Atlas() is { } atlas && !ReferenceEquals(atlas, r.Atlas))
-            {
-                // Textures arrived after the context, or the hive's version changed (b1.8.1 ↔ 1.12.2 models): rebuild the atlas
-                // texture and every mesh (the worker re-meshes with the new models on its next pass).
-                var nr = new GlFreecamRenderer();
-                nr.Init(gl, GlVersion, atlas);
-                r.Release(m.Scene);
-                r.Dispose();
-                _r = r = nr;
-                m.Scene.Textured = true;
-                m.Store.RequestResend();
-            }
-            long? time = m.Cache.TimeNow(pose.Dim);
-            var wx = m.Cache.WeatherIn(pose.Dim);
-            int sub = pose.Dim == -1 || time is not { } t ? 0 : Lighting.SkylightSubtracted(t, wx.Rain, wx.Thunder);
-            m.Scene.SkySubtracted = sub;
-            m.Scene.Weather = wx;
-            m.Worker.Aim(pose.Dim, (int)Math.Floor(pose.X) >> 4, (int)Math.Floor(pose.Z) >> 4, m.MaxDistance / 16 + 1, r.Textured, sub);
-            r.Ingest(m.Store, m.Scene, m.UploadBudgetMs, m.MaxUploadsPerFrame);
-            double scale = TopLevel.GetTopLevel(this)?.RenderScaling ?? 1;
-            int w = Math.Max(16, (int)(Bounds.Width * scale)), h = Math.Max(16, (int)(Bounds.Height * scale));
-            long alloc0 = GC.GetAllocatedBytesForCurrentThread();
-            m.Scene.Prepare(pose, w, h, DateTimeOffset.UtcNow);
-            if (m.ShotPath is { } shot) { m.ShotPath = null; r.ShotPath = shot; }
-            st.DrawCalls = r.Draw(m.Scene, fb, w, h);
-            st.Renderer = "gl";
-            st.Width = w; st.Height = h;
-            m.PublishLabels(m.Scene.Labels);
-            st.AllocBytes.Add(GC.GetAllocatedBytesForCurrentThread() - alloc0);
-            double spent = FreecamStats.NowMs - t0;
-            st.FrameMs.Add(spent);
-            st.PresentMs.Add(spent);
-            st.OnPresented(input);
-            Interlocked.Increment(ref st.Frames);
-            _fpsN++;
-            if (t0 - _fpsT >= 1000) { m.Fps = _fpsN * 1000.0 / (t0 - _fpsT); _fpsN = 0; _fpsT = t0; }
-            _consecutiveFailures = 0;
-        }
+        try { DrawFrame(gl, fb, m, _r!); }
         catch (Exception ex)
         {
-            // One bad frame (a racing eviction, a driver hiccup) must not end the GPU camera: log it once, keep going; only a
-            // persistent failure (two seconds of nothing but errors) falls back to the CPU raycaster.
-            Interlocked.Increment(ref m.FramesFailed);
-            if (m.LastError == null || !m.LastError.EndsWith(ex.Message, StringComparison.Ordinal))
-            {
-                m.LastError = $"frame failed: {ex.GetType().Name}: {ex.Message}";
-                System.Diagnostics.Trace.WriteLine("livehive gl: " + ex);
-            }
-            if (++_consecutiveFailures > 240) Fail("OpenGL keeps failing: " + ex.Message);
+            OnFrameFailed(m, ex);
             return;
         }
         FrameRendered?.Invoke();
+    }
+
+    /// <summary>One frame: step the camera, follow the atlas and the sky, aim the mesher, upload, draw, then the frame stats.</summary>
+    private void DrawFrame(GlInterface gl, int fb, GpuFreecam m, GlFreecamRenderer r)
+    {
+        double t0 = FreecamStats.NowMs;
+        var st = FreecamStats.Shared;
+        double dt = _lastFrame == 0 ? 0 : (t0 - _lastFrame) / 1000.0;
+        _lastFrame = t0;
+        m.Step(dt);
+        double input = m.Camera.TakeInputStamp();
+        var pose = m.Camera.Pose;
+        r = FollowAtlas(gl, m, r);
+        int sub = UpdateSky(m, pose);
+        m.Worker.Aim(pose.Dim, (int)Math.Floor(pose.X) >> 4, (int)Math.Floor(pose.Z) >> 4, m.MaxDistance / 16 + 1, r.Textured, sub);
+        r.Ingest(m.Store, m.Scene, m.UploadBudgetMs, m.MaxUploadsPerFrame);
+        double scale = TopLevel.GetTopLevel(this)?.RenderScaling ?? 1;
+        int w = Math.Max(16, (int)(Bounds.Width * scale)), h = Math.Max(16, (int)(Bounds.Height * scale));
+        long alloc0 = GC.GetAllocatedBytesForCurrentThread();
+        m.Scene.Prepare(pose, w, h, DateTimeOffset.UtcNow);
+        if (m.ShotPath is { } shot) { m.ShotPath = null; r.ShotPath = shot; }
+        st.DrawCalls = r.Draw(m.Scene, fb, w, h);
+        st.Renderer = "gl";
+        st.Width = w; st.Height = h;
+        m.PublishLabels(m.Scene.Labels);
+        st.AllocBytes.Add(GC.GetAllocatedBytesForCurrentThread() - alloc0);
+        double spent = FreecamStats.NowMs - t0;
+        st.FrameMs.Add(spent);
+        st.PresentMs.Add(spent);
+        st.OnPresented(input);
+        Interlocked.Increment(ref st.Frames);
+        CountFps(m, t0);
+        _consecutiveFailures = 0;
+    }
+
+    /// <summary>
+    /// Textures arrived after the context, or the hive's version changed (b1.8.1 ↔ 1.12.2 models): rebuild the atlas texture and
+    /// every mesh (the worker re-meshes with the new models on its next pass). The renderer to draw with.
+    /// </summary>
+    private GlFreecamRenderer FollowAtlas(GlInterface gl, GpuFreecam m, GlFreecamRenderer r)
+    {
+        if (m.Atlas() is not { } atlas || ReferenceEquals(atlas, r.Atlas)) return r;
+        var nr = new GlFreecamRenderer();
+        nr.Init(gl, GlVersion, atlas);
+        r.Release(m.Scene);
+        r.Dispose();
+        _r = nr;
+        m.Scene.Textured = true;
+        m.Store.RequestResend();
+        return nr;
+    }
+
+    /// <summary>The sky darkening (none in the nether or without a time) and the weather of the camera's dimension.</summary>
+    private static int UpdateSky(GpuFreecam m, CamPose pose)
+    {
+        long? time = m.Cache.TimeNow(pose.Dim);
+        var wx = m.Cache.WeatherIn(pose.Dim);
+        int sub = pose.Dim == -1 || time is not { } t ? 0 : Lighting.SkylightSubtracted(t, wx.Rain, wx.Thunder);
+        m.Scene.SkySubtracted = sub;
+        m.Scene.Weather = wx;
+        return sub;
+    }
+
+    private void CountFps(GpuFreecam m, double t0)
+    {
+        _fpsN++;
+        if (t0 - _fpsT >= 1000) { m.Fps = _fpsN * 1000.0 / (t0 - _fpsT); _fpsN = 0; _fpsT = t0; }
+    }
+
+    /// <summary>
+    /// One bad frame (a racing eviction, a driver hiccup) must not end the GPU camera: log it once, keep going; only a persistent
+    /// failure (two seconds of nothing but errors) falls back to the CPU raycaster.
+    /// </summary>
+    private void OnFrameFailed(GpuFreecam m, Exception ex)
+    {
+        Interlocked.Increment(ref m.FramesFailed);
+        if (m.LastError == null || !m.LastError.EndsWith(ex.Message, StringComparison.Ordinal))
+        {
+            m.LastError = $"frame failed: {ex.GetType().Name}: {ex.Message}";
+            System.Diagnostics.Trace.WriteLine("livehive gl: " + ex);
+        }
+        if (++_consecutiveFailures > 240) Fail("OpenGL keeps failing: " + ex.Message);
     }
 
     // ------------------------------------------------------------------ input
@@ -355,8 +382,7 @@ public sealed class GlFreecamView : OpenGlControlBase, Avalonia.Rendering.ICusto
         e.Handled = true;
     }
 
-    private static bool Movement(Key k) => k is Key.W or Key.A or Key.S or Key.D or Key.Q or Key.E or Key.Up or Key.Down or Key.Left or Key.Right
-        or Key.Space or Key.LeftShift or Key.RightShift or Key.PageUp or Key.PageDown;
+    private static bool Movement(Key k) => FreecamKeys.IsMovement(k);
 
     protected override void OnKeyDown(KeyEventArgs e)
     {
@@ -450,6 +476,21 @@ public sealed class FreecamOverlay : Control
         if (Model is not { } m) return;
         var b = new Rect(Bounds.Size);
         double scale = TopLevel.GetTopLevel(this)?.RenderScaling ?? 1;
+        DrawLabels(ctx, m, scale);
+        var c = b.Center;
+        ctx.DrawLine(Cross, new Point(c.X - 7, c.Y), new Point(c.X + 7, c.Y));
+        ctx.DrawLine(Cross, new Point(c.X, c.Y - 7), new Point(c.X, c.Y + 7));
+        var hud = Hud(m);
+        ctx.DrawRectangle(HudBg, null, new Rect(10, 10, hud.Width + 16, hud.Height + 10), 6, 6);
+        ctx.DrawText(hud, new Point(18, 15));
+        if (m.Engaged)
+            ctx.DrawRectangle(null, EngagedPen, new Rect(b.Size).Deflate(1.5), 4, 4); // visible focus: the camera has the keys
+        else DrawHint(ctx, b);
+    }
+
+    /// <summary>The 80 nearest labels as chips, far to near (occluded ones faded).</summary>
+    private void DrawLabels(DrawingContext ctx, GpuFreecam m, double scale)
+    {
         m.CopyLabels(_labels);
         _labels.Sort(FarFirst);
         int start = Math.Max(0, _labels.Count - 80);
@@ -464,31 +505,28 @@ public sealed class FreecamOverlay : Control
                 ctx.DrawText(ft, new Point(x, y));
             }
         }
-        var c = b.Center;
-        ctx.DrawLine(Cross, new Point(c.X - 7, c.Y), new Point(c.X + 7, c.Y));
-        ctx.DrawLine(Cross, new Point(c.X, c.Y - 7), new Point(c.X, c.Y + 7));
+    }
+
+    /// <summary>The HUD text (fps, size, position, facing, speed, link, errors, stats), rebuilt at most 4 times a second.</summary>
+    private FormattedText Hud(GpuFreecam m)
+    {
         double now = FreecamStats.NowMs;
-        if (_hud == null || now - _hudAt > 250)
-        {
-            _hudAt = now;
-            var p = m.Camera.Pose;
-            string text = string.Create(CultureInfo.InvariantCulture,
-                $"{m.Fps,4:0} fps  gpu  {m.Scene.Width}x{m.Scene.Height}\n{p.X:0.0}, {p.Y:0.0}, {p.Z:0.0}  {(p.Dim == -1 ? "nether" : "overworld")}  facing {EyeRenderer.Compass(p.Yaw)} ({p.Yaw:0}°, {p.Pitch:0}°)  speed {m.Camera.Speed:0}");
-            if (m.LinkNote is { } ln) text += "\n" + ln;
-            if (m.LastError is { } err) text += $"\n{err} ({Interlocked.Read(ref m.FramesFailed)} frames)";
-            if (m.ShowStats) text += "\n" + FreecamStats.Shared.Overlay(m.Fps) + $"\n{m.GlInfo}  entities {m.Scene.EntitiesDrawn}";
-            _hud = new FormattedText(text, CultureInfo.InvariantCulture, FlowDirection.LeftToRight, Mono, 11.5, Brushes.White);
-        }
-        ctx.DrawRectangle(HudBg, null, new Rect(10, 10, _hud.Width + 16, _hud.Height + 10), 6, 6);
-        ctx.DrawText(_hud, new Point(18, 15));
-        if (m.Engaged)
-            ctx.DrawRectangle(null, EngagedPen, new Rect(b.Size).Deflate(1.5), 4, 4); // visible focus: the camera has the keys
-        else
-        {
-            var hint = Text("click to control · WASD move · Q/E down/up · drag to look · wheel speed · Shift fast · Esc releases · F3 stats", 0xffffff);
-            var r = new Rect((b.Width - hint.Width) / 2 - 10, b.Height - hint.Height - 22, hint.Width + 20, hint.Height + 10);
-            ctx.DrawRectangle(HudBg, null, r, 6, 6);
-            ctx.DrawText(hint, new Point(r.X + 10, r.Y + 5));
-        }
+        if (_hud != null && now - _hudAt <= 250) return _hud;
+        _hudAt = now;
+        var p = m.Camera.Pose;
+        string text = string.Create(CultureInfo.InvariantCulture,
+            $"{m.Fps,4:0} fps  gpu  {m.Scene.Width}x{m.Scene.Height}\n{p.X:0.0}, {p.Y:0.0}, {p.Z:0.0}  {(p.Dim == -1 ? "nether" : "overworld")}  facing {EyeRenderer.Compass(p.Yaw)} ({p.Yaw:0}°, {p.Pitch:0}°)  speed {m.Camera.Speed:0}");
+        if (m.LinkNote is { } ln) text += "\n" + ln;
+        if (m.LastError is { } err) text += $"\n{err} ({Interlocked.Read(ref m.FramesFailed)} frames)";
+        if (m.ShowStats) text += "\n" + FreecamStats.Shared.Overlay(m.Fps) + $"\n{m.GlInfo}  entities {m.Scene.EntitiesDrawn}";
+        return _hud = new FormattedText(text, CultureInfo.InvariantCulture, FlowDirection.LeftToRight, Mono, 11.5, Brushes.White);
+    }
+
+    private void DrawHint(DrawingContext ctx, Rect b)
+    {
+        var hint = Text("click to control · WASD move · Q/E down/up · drag to look · wheel speed · Shift fast · Esc releases · F3 stats", 0xffffff);
+        var r = new Rect((b.Width - hint.Width) / 2 - 10, b.Height - hint.Height - 22, hint.Width + 20, hint.Height + 10);
+        ctx.DrawRectangle(HudBg, null, r, 6, 6);
+        ctx.DrawText(hint, new Point(r.X + 10, r.Y + 5));
     }
 }

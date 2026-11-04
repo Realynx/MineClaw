@@ -37,51 +37,58 @@ public static class Landmarks
     public static string? Near(MemoryStore? memory, ObservationStore? world, double x, double y, double z,
         double maxNamed = 24, double maxObject = 8, string? excludeName = null)
     {
-        string? best = null;
-        double bestD = double.MaxValue, bx = 0, bz = 0;
-        if (memory != null)
+        if (memory != null && NearestNamed(memory, x, y, z, excludeName) is { Name: { } best } named && named.D <= maxNamed)
         {
-            int dim = memory.CurrentDimension; // a landmark in the other dimension is never "near"
-            var (wps, sts) = memory.Read(d => (d.Waypoints.Where(w => w.Dimension == dim).ToList(), d.Structures.Where(s => s.Dimension == dim).ToList()));
-            foreach (var w in wps)
-                Consider(w.Name, w.X + 0.5, w.Y, w.Z + 0.5);
-            foreach (var s in sts)
-            {
-                if (s.Min == null) continue;
-                var mx = s.Max ?? s.Min;
-                Consider(s.Name, (s.Min.X + mx.X) / 2.0 + 0.5, (s.Min.Y + mx.Y) / 2.0, (s.Min.Z + mx.Z) / 2.0 + 0.5);
-            }
-        }
-        if (best != null && bestD <= maxNamed)
-        {
-            var off = Offset(bx, bz, x, z);
+            var off = Offset(named.X, named.Z, x, z);
             return off == "here" ? $"at {best}" : $"{off} of {best}";
         }
+        return world != null ? NearObject(world, x, y, z, maxObject) : null;
+    }
 
-        if (world != null)
+    /// <summary>The nearest waypoint or structure (centre) of this dimension, within 12 blocks up/down, by horizontal distance.</summary>
+    private static NamedBest NearestNamed(MemoryStore memory, double x, double y, double z, string? excludeName)
+    {
+        var best = new NamedBest(x, y, z, excludeName);
+        int dim = memory.CurrentDimension; // a landmark in the other dimension is never "near"
+        var (wps, sts) = memory.Read(d => (d.Waypoints.Where(w => w.Dimension == dim).ToList(), d.Structures.Where(s => s.Dimension == dim).ToList()));
+        foreach (var w in wps)
+            best.Consider(w.Name, w.X + 0.5, w.Y, w.Z + 0.5);
+        foreach (var s in sts)
         {
-            try
-            {
-                var hit = world.Nearest(null, x, y, z, 4, maxObject).FirstOrDefault(n => n.Row.Kind is not ("island" or "area" or "region"));
-                if (hit.Row != null)
-                {
-                    // An unknown structure is somebody's build; "a"/"an" by the sound ("by a unknown structure", live 10-28).
-                    var kind = hit.Row.Kind == "unknown_structure" ? "player build" : hit.Row.Kind.Replace('_', ' ');
-                    return $"by {Article(kind)} {kind}";
-                }
-            }
-            catch (Exception) { /* index busy or not ready: no hint */ }
+            if (s.Min == null) continue;
+            var mx = s.Max ?? s.Min;
+            best.Consider(s.Name, (s.Min.X + mx.X) / 2.0 + 0.5, (s.Min.Y + mx.Y) / 2.0, (s.Min.Z + mx.Z) / 2.0 + 0.5);
         }
-        return null;
+        return best;
+    }
 
-        static string Article(string noun) => noun.Length > 0 && "aeiou".Contains(char.ToLowerInvariant(noun[0])) ? "an" : "a";
+    private sealed class NamedBest(double x, double y, double z, string? excludeName)
+    {
+        public string? Name;
+        public double D = double.MaxValue, X, Z;
 
-        void Consider(string name, double lx, double ly, double lz)
+        public void Consider(string name, double lx, double ly, double lz)
         {
             if (excludeName != null && name.Equals(excludeName, StringComparison.OrdinalIgnoreCase)) return;
             if (Math.Abs(ly - y) > 12) return;
             double dx = lx - x, dz = lz - z, d = Math.Sqrt(dx * dx + dz * dz);
-            if (d < bestD) { bestD = d; best = name; bx = lx; bz = lz; }
+            if (d < D) { D = d; Name = name; X = lx; Z = lz; }
         }
+    }
+
+    /// <summary>"by a furnace": the nearest known object from the world index (not an island/area/region); null when none or busy.</summary>
+    private static string? NearObject(ObservationStore world, double x, double y, double z, double maxObject)
+    {
+        try
+        {
+            var hit = world.Nearest(null, x, y, z, 4, maxObject).FirstOrDefault(n => n.Row.Kind is not ("island" or "area" or "region"));
+            if (hit.Row == null) return null;
+            // An unknown structure is somebody's build; "a"/"an" by the sound ("by a unknown structure", live 10-28).
+            var kind = hit.Row.Kind == "unknown_structure" ? "player build" : hit.Row.Kind.Replace('_', ' ');
+            return $"by {Article(kind)} {kind}";
+        }
+        catch (Exception) { return null; /* index busy or not ready: no hint */ }
+
+        static string Article(string noun) => noun.Length > 0 && "aeiou".Contains(char.ToLowerInvariant(noun[0])) ? "an" : "a";
     }
 }

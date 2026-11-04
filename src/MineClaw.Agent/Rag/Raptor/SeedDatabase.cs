@@ -69,6 +69,15 @@ public static class SeedDatabase
     public static List<string> Validate(AgentDb db)
     {
         var errors = new List<string>();
+        DocErrors(db, errors);
+        StateErrors(db, errors);
+        TreeErrors(db, errors);
+        return errors;
+    }
+
+    /// <summary>Docs of a forbidden kind, or from live/test sources.</summary>
+    private static void DocErrors(AgentDb db, List<string> errors)
+    {
         var kinds = db.Query("SELECT kind, count(*) FROM docs GROUP BY kind", r => (r.GetString(0), r.GetInt64(1)));
         foreach (var (kind, n) in kinds)
             if (!AllowedKinds.Contains(kind)) errors.Add($"{n} doc(s) of forbidden kind '{kind}'");
@@ -77,6 +86,11 @@ public static class SeedDatabase
                OR ref LIKE 'eptest:%' OR ref LIKE 'ep:%' OR ref LIKE 'journal:%' OR ref LIKE 'self:%'
             """);
         if (bad > 0) errors.Add($"{bad} doc(s) from live/test sources");
+    }
+
+    /// <summary>Rows in the tables a seed keeps empty, and meta keys of usage/personality state.</summary>
+    private static void StateErrors(AgentDb db, List<string> errors)
+    {
         foreach (var t in EmptyTables)
         {
             if (db.ScalarLong("SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = $n", ("$n", t)) == 0) continue;
@@ -85,12 +99,16 @@ public static class SeedDatabase
         }
         foreach (var key in db.Query("SELECT key FROM meta", r => r.GetString(0)))
             if (!AllowedMeta.Contains(key)) errors.Add($"meta key '{key}' (usage/personality state)");
+    }
+
+    /// <summary>Summaries outside the tree, and tree nodes of a kind a seed never carries.</summary>
+    private static void TreeErrors(AgentDb db, List<string> errors)
+    {
         long orphanSummaries = db.ScalarLong("SELECT count(*) FROM docs WHERE kind = $k AND raptor_idx IS NULL", ("$k", RagIndex.SummaryKind));
         if (orphanSummaries > 0) errors.Add($"{orphanSummaries} summary doc(s) outside the tree");
         long treeOther = db.ScalarLong("SELECT count(*) FROM docs WHERE raptor_idx IS NOT NULL AND kind NOT IN ($a, $b, $c)",
             ("$a", SeedCorpus.Kind), ("$b", KnowledgeIndexer.Kind), ("$c", RagIndex.SummaryKind));
         if (treeOther > 0) errors.Add($"{treeOther} tree node(s) of a forbidden kind");
-        return errors;
     }
 
     /// <summary>Conservative spend projection: every leaf embedded once; summaries read ≤ 2.5× the leaf tokens

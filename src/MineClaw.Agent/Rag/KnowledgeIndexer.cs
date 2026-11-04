@@ -215,70 +215,92 @@ public static class KnowledgeIndexer
     /// docs of the game version are read (no mode docs) and nothing of the db's pack: a 1.12.2 bot never reads b1.8.1/skyblock docs.</param>
     public static KnowledgeLoad Sync(RagIndex index, string? directory, RagOptions options, string? gameVersion = null)
     {
-        var db = index.Db;
-        var core = new StringBuilder();
-        int files = 0, chunks = 0, reindexed = 0;
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var excluded = new List<string>();
-        var active = Admin.Shards.KnowledgePack.Active(db);
-        string? mismatch = null;
-        if (gameVersion is { Length: > 0 } gv && !gv.Equals(active.Version, StringComparison.OrdinalIgnoreCase))
-        {
-            mismatch = $"the db's knowledge pack is {active.Label} but this bot plays {gv}: only {gv} docs are read; " +
-                       $"swap in the {gv} pack (or reset memory for a fresh world)";
-            active = new Admin.Shards.KnowledgePackInfo(gv) { Modes = [] };
-        }
-
+        var (active, mismatch) = PackFor(index.Db, gameVersion);
+        var tally = new SyncTally();
         if (!string.IsNullOrWhiteSpace(directory) && Directory.Exists(directory))
-        {
             foreach (var file in Directory.GetFiles(directory, "*.md").OrderBy(f => f, StringComparer.OrdinalIgnoreCase))
-            {
-                var name = Path.GetFileName(file);
-                var text = File.ReadAllText(file);
-                if (Admin.Shards.KnowledgeDocPack.Parse(text) is { } pack && !pack.ActiveIn(active))
-                {
-                    // Not in this world's packs: no core, no chunks; drop what an earlier start indexed.
-                    excluded.Add(name);
-                    index.DeleteByPrefix($"kb:{name}:");
-                    db.Exec("DELETE FROM knowledge_files WHERE path = $p", ("$p", name));
-                    continue;
-                }
-                seen.Add(name);
-                files++;
-                var (fileCore, fileChunks) = KnowledgeChunker.Parse(name, text, options.ChunkMinTokens, options.ChunkMaxTokens);
-                if (fileCore.Length > 0) core.Append(core.Length > 0 ? "\n\n" : "").Append(fileCore);
-                chunks += fileChunks.Count;
+                SyncFile(index, file, active, options, tally);
 
-                var hash = VectorMath.Hash(text.Replace("\r\n", "\n") + $"|{options.ChunkMinTokens}|{options.ChunkMaxTokens}");
-                var known = db.Scalar("SELECT hash FROM knowledge_files WHERE path = $p", ("$p", name)) as string;
-                if (known == hash) continue;
+        DropGone(index, tally.Seen);
+        foreach (var stored in Admin.Shards.KnowledgePack.StoredCores(active, tally.Seen)) tally.AppendCore(stored);
 
-                var keep = new HashSet<string>(fileChunks.Select(c => Ref(c)));
-                db.Tx(() =>
-                {
-                    index.DeleteByPrefix($"kb:{name}:", keep);
-                    index.UpsertMany(fileChunks.Select(c => new RagDoc(Ref(c), Kind, c.Title, c.Text) { Source = name, Weight = 1.0 }));
-                    db.Exec("INSERT INTO knowledge_files(path, hash, indexed) VALUES ($p, $h, $t) ON CONFLICT(path) DO UPDATE SET hash = excluded.hash, indexed = excluded.indexed",
-                        ("$p", name), ("$h", hash), ("$t", AgentDb.ToUnixMs(DateTimeOffset.UtcNow)));
-                });
-                reindexed++;
-            }
-        }
-
-        // Files that disappeared.
-        foreach (var gone in db.Query("SELECT path FROM knowledge_files", r => r.GetString(0)).Where(p => !seen.Contains(p)).ToList())
-        {
-            index.DeleteByPrefix($"kb:{gone}:");
-            db.Exec("DELETE FROM knowledge_files WHERE path = $p", ("$p", gone));
-        }
-
-        foreach (var stored in Admin.Shards.KnowledgePack.StoredCores(active, seen))
-            core.Append(core.Length > 0 ? "\n\n" : "").Append(stored);
-
-        var coreText = core.ToString();
+        var coreText = tally.Core.ToString();
         bool truncated = coreText.Length > options.MaxCoreChars;
         if (truncated) coreText = coreText[..options.MaxCoreChars];
-        return new KnowledgeLoad(coreText, files, chunks, reindexed, truncated) { Excluded = excluded, VersionMismatch = mismatch };
+        return new KnowledgeLoad(coreText, tally.Files, tally.Chunks, tally.Reindexed, truncated) { Excluded = tally.Excluded, VersionMismatch = mismatch };
+    }
+
+    /// <summary>What one sync read: the core text, counts, the files seen and those left out (not in this world's packs).</summary>
+    private sealed class SyncTally
+    {
+        public readonly StringBuilder Core = new();
+        public int Files, Chunks, Reindexed;
+        public readonly HashSet<string> Seen = new(StringComparer.OrdinalIgnoreCase);
+        public readonly List<string> Excluded = new();
+
+        public void AppendCore(string text) => Core.Append(Core.Length > 0 ? "\n\n" : "").Append(text);
+    }
+
+    /// <summary>The db's knowledge pack, or (with a note) the game version's own when the bot plays another version.</summary>
+    private static (Admin.Shards.KnowledgePackInfo Active, string? Mismatch) PackFor(AgentDb db, string? gameVersion)
+    {
+        var active = Admin.Shards.KnowledgePack.Active(db);
+        if (gameVersion is not { Length: > 0 } gv || gv.Equals(active.Version, StringComparison.OrdinalIgnoreCase)) return (active, null);
+        var mismatch = $"the db's knowledge pack is {active.Label} but this bot plays {gv}: only {gv} docs are read; " +
+                       $"swap in the {gv} pack (or reset memory for a fresh world)";
+        return (new Admin.Shards.KnowledgePackInfo(gv) { Modes = [] }, mismatch);
+    }
+
+    /// <summary>One knowledge file: left out when not in this world's packs, else its core and chunks (re-indexed when changed).</summary>
+    private static void SyncFile(RagIndex index, string file, Admin.Shards.KnowledgePackInfo active, RagOptions options, SyncTally tally)
+    {
+        var name = Path.GetFileName(file);
+        var text = File.ReadAllText(file);
+        if (Admin.Shards.KnowledgeDocPack.Parse(text) is { } pack && !pack.ActiveIn(active))
+        {
+            // Not in this world's packs: no core, no chunks; drop what an earlier start indexed.
+            tally.Excluded.Add(name);
+            Forget(index, name);
+            return;
+        }
+        tally.Seen.Add(name);
+        tally.Files++;
+        var (fileCore, fileChunks) = KnowledgeChunker.Parse(name, text, options.ChunkMinTokens, options.ChunkMaxTokens);
+        if (fileCore.Length > 0) tally.AppendCore(fileCore);
+        tally.Chunks += fileChunks.Count;
+        if (Reindex(index, name, text, fileChunks, options)) tally.Reindexed++;
+    }
+
+    /// <summary>Re-indexes a file's chunks when its text (or the chunk sizes) changed since the last index; false = unchanged.</summary>
+    private static bool Reindex(RagIndex index, string name, string text, List<KnowledgeChunk> fileChunks, RagOptions options)
+    {
+        var db = index.Db;
+        var hash = VectorMath.Hash(text.Replace("\r\n", "\n") + $"|{options.ChunkMinTokens}|{options.ChunkMaxTokens}");
+        var known = db.Scalar("SELECT hash FROM knowledge_files WHERE path = $p", ("$p", name)) as string;
+        if (known == hash) return false;
+
+        var keep = new HashSet<string>(fileChunks.Select(c => Ref(c)));
+        db.Tx(() =>
+        {
+            index.DeleteByPrefix($"kb:{name}:", keep);
+            index.UpsertMany(fileChunks.Select(c => new RagDoc(Ref(c), Kind, c.Title, c.Text) { Source = name, Weight = 1.0 }));
+            db.Exec("INSERT INTO knowledge_files(path, hash, indexed) VALUES ($p, $h, $t) ON CONFLICT(path) DO UPDATE SET hash = excluded.hash, indexed = excluded.indexed",
+                ("$p", name), ("$h", hash), ("$t", AgentDb.ToUnixMs(DateTimeOffset.UtcNow)));
+        });
+        return true;
+    }
+
+    /// <summary>Files that disappeared: their chunks and their file row go.</summary>
+    private static void DropGone(RagIndex index, HashSet<string> seen)
+    {
+        foreach (var gone in index.Db.Query("SELECT path FROM knowledge_files", r => r.GetString(0)).Where(p => !seen.Contains(p)).ToList())
+            Forget(index, gone);
+    }
+
+    private static void Forget(RagIndex index, string name)
+    {
+        index.DeleteByPrefix($"kb:{name}:");
+        index.Db.Exec("DELETE FROM knowledge_files WHERE path = $p", ("$p", name));
     }
 
     private static string Ref(KnowledgeChunk c) => $"kb:{c.File}:{c.Index}";

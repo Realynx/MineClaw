@@ -62,67 +62,103 @@ public static class GpuAtlas
     public static (int W, int H, byte[] Rgba) Build(TextureAtlas? atlas)
     {
         int t = atlas?.Tile ?? 16;
-        int w = Cols * t, h = RowsFor(atlas) * t;
-        var px = new byte[w * h * 4];
-        void Put(int x, int y, uint argb)
-        {
-            int i = (y * w + x) * 4;
-            px[i] = (byte)(argb >> 16); px[i + 1] = (byte)(argb >> 8); px[i + 2] = (byte)argb; px[i + 3] = (byte)(argb >> 24);
-        }
-        void Cell(int col, int row, int cw, int ch, int sw, int sh, uint[] src)
-        {
-            // Nearest-neighbour fit of an sw×sh image into cw×ch cells (1:1 for 16 px tiles and 64×32 entity textures).
-            int dw = cw * t, dh = ch * t;
-            for (int y = 0; y < dh; y++)
-                for (int x = 0; x < dw; x++)
-                    Put(col * t + x, row * t + y, src[y * sh / dh * sw + x * sw / dw]);
-        }
+        var c = new Canvas(Cols * t, RowsFor(atlas) * t, t);
         if (atlas != null)
         {
-            for (int tile = 0; tile < 256; tile++)
-                for (int y = 0; y < t; y++)
-                    for (int x = 0; x < t; x++)
-                        Put(tile % 16 * t + x, tile / 16 * t + y, atlas.Texel(tile, x, y));
-            if (atlas.Items is { } items && items.Length >= atlas.Size * atlas.Size)
-                for (int y = 0; y < atlas.Size; y++)
-                    for (int x = 0; x < atlas.Size; x++)
-                        Put(x, ItemRow * t + y, items[y * atlas.Size + x]);
-            // Grass side: tile 3 with the tinted fringe (tile 38) over it, like BlockTextures.Texel does per sample.
+            Terrain(c, atlas);
+            Items(c, atlas);
+            GrassSideCell(c, atlas);
+        }
+        WhiteAndShadow(c);
+        c.Cell(WaterStill, ExtraRow, 1, 1, 16, 16, FluidTextures.WaterStill);
+        c.Cell(WaterFlow, ExtraRow, 1, 1, 16, 16, FluidTextures.WaterFlow);
+        c.Cell(LavaStill, ExtraRow, 1, 1, 16, 16, FluidTextures.LavaStill);
+        c.Cell(LavaFlow, ExtraRow, 1, 1, 16, 16, FluidTextures.LavaFlow);
+        c.Cell(FireA, ExtraRow, 1, 1, 16, 16, FluidTextures.FireA); // burning blocks and Render.renderEntityOnFire
+        c.Cell(FireB, ExtraRow, 1, 1, 16, 16, FluidTextures.FireB);
+        Entities(c, atlas);
+        if (atlas?.Models is { } models)
+        {
+            var mt = models.Textures;
+            for (int i = 0; i < mt.Count; i++) c.Cell(i % Cols, BlockRow + i / Cols, 1, 1, 16, 16, mt.Pixels(i));
+        }
+        return (c.W, c.H, c.Px);
+    }
+
+    /// <summary>The atlas being built: RGBA bytes, <see cref="T"/> pixels per cell.</summary>
+    private sealed class Canvas(int w, int h, int t)
+    {
+        public readonly int W = w, H = h, T = t;
+        public readonly byte[] Px = new byte[w * h * 4];
+
+        public void Put(int x, int y, uint argb)
+        {
+            int i = (y * W + x) * 4;
+            Px[i] = (byte)(argb >> 16); Px[i + 1] = (byte)(argb >> 8); Px[i + 2] = (byte)argb; Px[i + 3] = (byte)(argb >> 24);
+        }
+
+        /// <summary>Nearest-neighbour fit of an sw×sh image into cw×ch cells (1:1 for 16 px tiles and 64×32 entity textures).</summary>
+        public void Cell(int col, int row, int cw, int ch, int sw, int sh, uint[] src)
+        {
+            int dw = cw * T, dh = ch * T;
+            for (int y = 0; y < dh; y++)
+                for (int x = 0; x < dw; x++)
+                    Put(col * T + x, row * T + y, src[y * sh / dh * sw + x * sw / dw]);
+        }
+    }
+
+    private static void Terrain(Canvas c, TextureAtlas atlas)
+    {
+        int t = c.T;
+        for (int tile = 0; tile < 256; tile++)
             for (int y = 0; y < t; y++)
                 for (int x = 0; x < t; x++)
-                {
-                    uint p = atlas.Texel(3, x, y), o = atlas.Texel(BlockTextures.GrassSideOverlay, x, y);
-                    if (o >> 24 >= 128) p = BlockTextures.Tinted(o, BlockTextures.GrassTint) | 0xff000000;
-                    Put(GrassSide * t + x, ExtraRow * t + y, p);
-                }
-        }
+                    c.Put(tile % 16 * t + x, tile / 16 * t + y, atlas.Texel(tile, x, y));
+    }
+
+    private static void Items(Canvas c, TextureAtlas atlas)
+    {
+        if (atlas.Items is not { } items || items.Length < atlas.Size * atlas.Size) return;
+        for (int y = 0; y < atlas.Size; y++)
+            for (int x = 0; x < atlas.Size; x++)
+                c.Put(x, ItemRow * c.T + y, items[y * atlas.Size + x]);
+    }
+
+    /// <summary>Grass side: tile 3 with the tinted fringe (tile 38) over it, like BlockTextures.Texel does per sample.</summary>
+    private static void GrassSideCell(Canvas c, TextureAtlas atlas)
+    {
+        int t = c.T;
         for (int y = 0; y < t; y++)
             for (int x = 0; x < t; x++)
             {
-                Put(White * t + x, ExtraRow * t + y, 0xffffffff);
+                uint p = atlas.Texel(3, x, y), o = atlas.Texel(BlockTextures.GrassSideOverlay, x, y);
+                if (o >> 24 >= 128) p = BlockTextures.Tinted(o, BlockTextures.GrassTint) | 0xff000000;
+                c.Put(GrassSide * t + x, ExtraRow * t + y, p);
+            }
+    }
+
+    private static void WhiteAndShadow(Canvas c)
+    {
+        int t = c.T;
+        for (int y = 0; y < t; y++)
+            for (int x = 0; x < t; x++)
+            {
+                c.Put(White * t + x, ExtraRow * t + y, 0xffffffff);
                 double dx = (x + 0.5) / t * 2 - 1, dy = (y + 0.5) / t * 2 - 1, r = Math.Sqrt(dx * dx + dy * dy);
                 uint a = (uint)Math.Clamp((1 - r) * 1.6 * 255, 0, 255);
-                Put(Shadow * t + x, ExtraRow * t + y, a << 24);
+                c.Put(Shadow * t + x, ExtraRow * t + y, a << 24);
             }
-        Cell(WaterStill, ExtraRow, 1, 1, 16, 16, FluidTextures.WaterStill);
-        Cell(WaterFlow, ExtraRow, 1, 1, 16, 16, FluidTextures.WaterFlow);
-        Cell(LavaStill, ExtraRow, 1, 1, 16, 16, FluidTextures.LavaStill);
-        Cell(LavaFlow, ExtraRow, 1, 1, 16, 16, FluidTextures.LavaFlow);
-        Cell(FireA, ExtraRow, 1, 1, 16, 16, FluidTextures.FireA); // burning blocks and Render.renderEntityOnFire
-        Cell(FireB, ExtraRow, 1, 1, 16, 16, FluidTextures.FireB);
+    }
+
+    private static void Entities(Canvas c, TextureAtlas? atlas)
+    {
         for (int id = 0; id < EntitySlots; id++)
         {
             var (ew, eh, epx) = EntityTextures.Get(atlas, id);
             if (ew <= 0 || eh <= 0 || epx.Length < ew * eh) continue;
-            var (c, r) = EntityCell(id);
-            Cell(c, r, 4, 2, ew, eh, epx);
+            var (col, row) = EntityCell(id);
+            c.Cell(col, row, 4, 2, ew, eh, epx);
         }
-        if (atlas?.Models is { } models)
-        {
-            var mt = models.Textures;
-            for (int i = 0; i < mt.Count; i++) Cell(i % Cols, BlockRow + i / Cols, 1, 1, 16, 16, mt.Pixels(i));
-        }
-        return (w, h, px);
     }
 
     /// <summary>The 0xAARRGGBB value of the texel at (x, y) of a built atlas (tests).</summary>
@@ -151,29 +187,20 @@ public static class QuadEmit
         col = row = 0;
         uvScale = Vector2.One;
         flags = GpuVertex.Textured;
+        bool tiled = textured && q.Tile >= 0;
         switch (q.Tex)
         {
-            case QuadTex.Terrain when textured && q.Tile >= 0:
-                if (q.Overlay == BlockTextures.GrassSideOverlay && q.Tile == 3) { col = GpuAtlas.GrassSide; row = GpuAtlas.ExtraRow; tint = 0xffffff; return true; }
-                col = (byte)(q.Tile & 15); row = (byte)(q.Tile >> 4 & 15);
+            case QuadTex.Terrain when tiled:
+                TerrainCell(q, out col, out row, ref tint);
                 return true;
-            case QuadTex.Block when textured && q.Tile >= 0:
+            case QuadTex.Block when tiled:
                 // 1.12.2 model textures (a face's overlay is a second quad: see Emit).
                 col = (byte)(q.Tile % GpuAtlas.Cols); row = (byte)(GpuAtlas.BlockRow + q.Tile / GpuAtlas.Cols);
                 return true;
-            case QuadTex.Item when textured && q.Tile >= 0:
+            case QuadTex.Item when tiled:
                 col = (byte)(q.Tile & 15); row = (byte)(GpuAtlas.ItemRow + (q.Tile >> 4 & 15));
                 return true;
-            case QuadTex.WaterStill or QuadTex.WaterFlow or QuadTex.LavaStill or QuadTex.LavaFlow:
-                // Procedural (MineClaw.Render's FluidTextures): available with or without the jar's textures.
-                col = q.Tex switch { QuadTex.WaterStill => GpuAtlas.WaterStill, QuadTex.WaterFlow => GpuAtlas.WaterFlow, QuadTex.LavaStill => GpuAtlas.LavaStill, _ => GpuAtlas.LavaFlow };
-                row = GpuAtlas.ExtraRow;
-                flags |= GpuVertex.Wrap;
-                return true;
-            case QuadTex.Fire:
-                col = (byte)(q.Tile == 1 ? GpuAtlas.FireB : GpuAtlas.FireA); row = GpuAtlas.ExtraRow;
-                return true;
-            case QuadTex.Entity when q.Tile >= 0 && q.Tile < GpuAtlas.EntitySlots:
+            case QuadTex.Entity when IsEntitySlot(q.Tile):
                 // Skin / mob textures (EntityTextures has stand-ins without the jar too); model UVs span the whole image = 4×2 cells.
                 var (c, r) = GpuAtlas.EntityCell(q.Tile);
                 col = (byte)c; row = (byte)r;
@@ -181,10 +208,46 @@ public static class QuadEmit
                 flags |= GpuVertex.Span;
                 return true;
             default:
+                return ProceduralCell(q, ref col, ref row, ref flags);
+        }
+    }
+
+    private static bool IsEntitySlot(int tile) => tile >= 0 && tile < GpuAtlas.EntitySlots;
+
+    /// <summary>A terrain tile's cell (the grass side with its fringe has its own baked cell, untinted).</summary>
+    private static void TerrainCell(in GeoQuad q, out byte col, out byte row, ref uint tint)
+    {
+        if (q.Overlay == BlockTextures.GrassSideOverlay && q.Tile == 3) { col = GpuAtlas.GrassSide; row = GpuAtlas.ExtraRow; tint = 0xffffff; return; }
+        col = (byte)(q.Tile & 15); row = (byte)(q.Tile >> 4 & 15);
+    }
+
+    /// <summary>The procedural textures (MineClaw.Render's FluidTextures: available with or without the jar's): liquids (wrapping
+    /// UVs) and fire; anything else is drawn in its flat colour (false, no flags).</summary>
+    private static bool ProceduralCell(in GeoQuad q, ref byte col, ref byte row, ref byte flags)
+    {
+        switch (q.Tex)
+        {
+            case QuadTex.WaterStill or QuadTex.WaterFlow or QuadTex.LavaStill or QuadTex.LavaFlow:
+                col = FluidCell(q.Tex);
+                row = GpuAtlas.ExtraRow;
+                flags |= GpuVertex.Wrap;
+                return true;
+            case QuadTex.Fire:
+                col = (byte)(q.Tile == 1 ? GpuAtlas.FireB : GpuAtlas.FireA); row = GpuAtlas.ExtraRow;
+                return true;
+            default:
                 flags = 0;
                 return false;
         }
     }
+
+    private static byte FluidCell(QuadTex tex) => tex switch
+    {
+        QuadTex.WaterStill => GpuAtlas.WaterStill,
+        QuadTex.WaterFlow => GpuAtlas.WaterFlow,
+        QuadTex.LavaStill => GpuAtlas.LavaStill,
+        _ => GpuAtlas.LavaFlow,
+    };
 
     public static void Emit(VertexList dst, in GeoQuad q, Vector3 offset, float light, bool textured) =>
         Emit(dst, q, offset, light, light, light, light, textured);
@@ -394,15 +457,19 @@ public sealed class SectionMesher
             var f = (Face)fi;
             var (dx, dy, dz) = Lighting.Normal(f);
             int n = y + dy < 0 ? 0 : w.Block(x + dx, y + dy, z + dz);
-            if (n != 0)
-            {
-                var ns = models.Classify(n, w.Meta(x + dx, y + dy, z + dz));
-                if (ns == BlockShape.Cube || shape != BlockShape.Cube && n == id && id is not (18 or 161)) continue;
-            }
+            if (ModelFaceHidden(models, w, x + dx, y + dy, z + dz, n, id, shape)) continue;
             var q = models.CubeFace(w, x, y, z, id, meta, f);
             if (q.Tex != QuadTex.Block) continue;
             EmitCubeFace(q.Pass == RenderPass.Translucent ? Translucent : Solid, w, q, id, x, y, z, f, off, emissive);
         }
+    }
+
+    /// <summary>A model cube's face is hidden by an opaque cube beside it, or (not for leaves) by the same non-cube block (glass by glass).</summary>
+    private static bool ModelFaceHidden(IBlockModels models, IVoxelWorld w, int nx, int ny, int nz, int n, int id, BlockShape shape)
+    {
+        if (n == 0) return false;
+        var ns = models.Classify(n, w.Meta(nx, ny, nz));
+        return ns == BlockShape.Cube || shape != BlockShape.Cube && n == id && id is not (18 or 161);
     }
 
     private void Cube(IVoxelWorld w, int x, int y, int z, int id, Vector3 off)

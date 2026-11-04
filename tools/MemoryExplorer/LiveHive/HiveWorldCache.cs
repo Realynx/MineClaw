@@ -143,22 +143,34 @@ public sealed class HiveWorldCache
         foreach (var c in index)
         {
             listed.Add((c.Cx, c.Cz));
-            if (_cols.TryGetValue((dim, c.Cx, c.Cz), out var have) && have.Hash == c.Hash)
-            {
-                if (have.SeenMs != c.Seen || have.Live != c.Live || have.By != c.By)
-                {
-                    _cols[(dim, c.Cx, c.Cz)] = have.Touched(c.Seen, c.By, c.Live);
-                    changed = true;
-                }
-                continue;
-            }
+            if (SameHash(dim, c, ref changed)) continue;
             want.Add((c.Cx, c.Cz));
         }
-        foreach (var k in _cols.Keys)
-            if (k.Dim == dim && k.Cx >= cx0 && k.Cx <= cx1 && k.Cz >= cz0 && k.Cz <= cz1 && !listed.Contains((k.Cx, k.Cz)) && _cols.TryRemove(k, out _))
-                changed = true;
+        if (DropUnlisted(dim, cx0, cz0, cx1, cz1, listed)) changed = true;
         if (changed) Interlocked.Increment(ref _version);
         return want;
+    }
+
+    /// <summary>True when the cached column has the index's hash (its seen/by/live are refreshed; <paramref name="changed"/> set then).</summary>
+    private bool SameHash(int dim, ColumnInfoDto c, ref bool changed)
+    {
+        if (!_cols.TryGetValue((dim, c.Cx, c.Cz), out var have) || have.Hash != c.Hash) return false;
+        if (have.SeenMs != c.Seen || have.Live != c.Live || have.By != c.By)
+        {
+            _cols[(dim, c.Cx, c.Cz)] = have.Touched(c.Seen, c.By, c.Live);
+            changed = true;
+        }
+        return true;
+    }
+
+    /// <summary>Drops cached columns inside the rectangle that the index doesn't list; true when one was dropped.</summary>
+    private bool DropUnlisted(int dim, int cx0, int cz0, int cx1, int cz1, HashSet<(int, int)> listed)
+    {
+        bool dropped = false;
+        foreach (var k in _cols.Keys)
+            if (k.Dim == dim && k.Cx >= cx0 && k.Cx <= cx1 && k.Cz >= cz0 && k.Cz <= cz1 && !listed.Contains((k.Cx, k.Cz)) && _cols.TryRemove(k, out _))
+                dropped = true;
+        return dropped;
     }
 
     /// <summary>Decodes a <see cref="ColumnPayload"/> and stores its columns (a missing one is dropped). Returns columns stored.
