@@ -141,7 +141,7 @@ public sealed partial class VisionHub
     private static PanelRequest? ObjectPanel(string kind, JsonElement val)
     {
         string? at = val.Str("at"), from = val.Str("from");
-        double? dist = val.TryGetProperty("dist", out var dv) && dv.ValueKind == JsonValueKind.Number ? dv.GetDouble() : null;
+        double? dist = NumberOf(val, "dist");
         int n = val.Int("n") ?? 1;
         var cam = ObjectCam(kind, val);
         return kind switch
@@ -152,6 +152,9 @@ public sealed partial class VisionHub
             _ => FollowOrNamed(kind, at, cam),
         };
     }
+
+    private static double? NumberOf(JsonElement val, string key) =>
+        val.TryGetProperty(key, out var v) && v.ValueKind == JsonValueKind.Number ? v.GetDouble() : null;
 
     private static PanelRequest? FollowOrNamed(string kind, string? at, CamParams cam) =>
         kind == "follow" ? (at == null ? null : new PanelRequest("follow", at))
