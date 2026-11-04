@@ -5,7 +5,7 @@
  * - Brightness = recency of use, the Memory activity heat model (`0.5^(age/halfLife)`) with a faint linear tail across the chosen
  *   window, so anything used in the window still reads apart from never-used memories once its heat has decayed.
  */
-import { decayHeat, type MemoryCloudResponse } from '@mineclaw/contracts';
+import { decayHeat, toNumber, type CloudArrangement, type CloudFidelity, type MemoryCloudResponse } from '@mineclaw/contracts';
 import type { LastAccess } from '../heat';
 
 export const CLUSTER_SLOTS = 8;
@@ -56,7 +56,7 @@ export function pointLook(
   k: number,
   opts: { dimmed?: boolean; highlighted?: boolean; selected?: boolean } = {},
 ): PointLook {
-  const base = Math.min(7, Math.max(2.2, 2.6 * Math.sqrt(Math.max(0.25, k))));
+  const base = pointBase(k);
   let alpha = 0.3 + 0.7 * b;
   let size = base * (1 + 0.7 * b);
   let halo = b > 0.08 ? b : 0;
@@ -73,6 +73,11 @@ export function pointLook(
     size = Math.max(size, base * 2);
   }
   return { alpha, size, halo };
+}
+
+/** A point's base diameter at zoom k: points shrink when zoomed out so tens of thousands don't merge into a blob. */
+export function pointBase(k: number): number {
+  return Math.min(7, Math.max(2.2, 2.6 * Math.sqrt(Math.max(0.25, k))));
 }
 
 /** Case-insensitive match of every word of `q` in a title (or `#id`). */
@@ -221,6 +226,197 @@ export function lassoSelect(
         if (inPolygon(xy[2 * i]!, xy[2 * i + 1]!, poly)) out.push(i);
       }
   return out.sort((a, b) => a - b);
+}
+
+// ---------- arrangements, fidelity, scale ----------
+
+/** The bridge's arrangements, picker order; `metric` = drawn distance is meant to be read as embedding distance. */
+export const ARRANGEMENTS: ReadonlyArray<{ id: CloudArrangement; short: string; label: string; metric: boolean; hint: string }> = [
+  {
+    id: 'mds',
+    short: 'Distances',
+    label: 'Distances (MDS)',
+    metric: true,
+    hint: 'Metric MDS on cosine distance: how far apart two memories are drawn is how different their embeddings are.',
+  },
+  {
+    id: 'umap',
+    short: 'Neighbourhoods',
+    label: 'Neighbourhoods (UMAP)',
+    metric: false,
+    hint: 'UMAP keeps each memory next to its nearest neighbours; the gaps between islands mean nothing.',
+  },
+  {
+    id: 'pca',
+    short: 'PCA',
+    label: 'PCA',
+    metric: true,
+    hint: 'The two directions along which the memories differ most (linear, global axes).',
+  },
+  {
+    id: 'tree',
+    short: 'Tree',
+    label: 'Tree (force)',
+    metric: false,
+    hint: "The bot's RAPTOR tree laid out by springs along its parent links, started from the distance picture.",
+  },
+];
+export const DEFAULT_ARRANGEMENT: CloudArrangement = 'mds';
+
+export function arrangementMeta(id: CloudArrangement) {
+  return ARRANGEMENTS.find((a) => a.id === id) ?? ARRANGEMENTS[0]!;
+}
+
+export function isArrangement(v: string | null | undefined): v is CloudArrangement {
+  return !!v && ARRANGEMENTS.some((a) => a.id === v);
+}
+
+/** `?cmp=mds,umap`: 2–4 distinct known arrangements in the given order, else null (not comparing). */
+export function parseCompare(v: string | null | undefined): CloudArrangement[] | null {
+  if (!v) return null;
+  const out: CloudArrangement[] = [];
+  for (const s of v.split(',')) if (isArrangement(s) && !out.includes(s)) out.push(s);
+  return out.length >= 2 ? out.slice(0, 4) : null;
+}
+
+export interface FidelityBadge {
+  /** "Distances: true to embeddings" */
+  text: string;
+  /** "r = 0.86, stress 0.12" */
+  detail: string;
+  tone: 'ok' | 'info' | 'warn';
+  tooltip: string;
+}
+
+/**
+ * The fidelity badge: how far drawn distances can be read as embedding distances, from the bridge's numbers. "True to embeddings"
+ * needs a strong correlation and low stress; the tooltip always says why it can never be perfect.
+ */
+export function fidelityBadge(arrangement: CloudArrangement, f: CloudFidelity | null | undefined): FidelityBadge | null {
+  if (!f) return null;
+  const r = toNumber(f.pearson);
+  const stress = toNumber(f.stress);
+  if (!Number.isFinite(r) || !Number.isFinite(stress)) return null;
+  const detail = `r = ${r.toFixed(2)}, stress ${stress.toFixed(2)}`;
+  const good = r >= 0.8 && stress <= 0.3;
+  const fair = r >= 0.6;
+  const text = good ? 'Distances: true to embeddings' : fair ? 'Distances: roughly to scale' : 'Distances: not to scale';
+  const meta = arrangementMeta(arrangement);
+  const ve = f.varianceExplained?.map((v) => `${Math.round(toNumber(v) * 100)} %`);
+  const tooltip = [
+    `${meta.label}. ${meta.hint}`,
+    `Each memory is a 1024-number embedding; no flat picture can keep every distance between them, so some are stretched or squeezed.`,
+    `r = correlation between drawn and embedding distance on ${f.pairs.toLocaleString()} memory pairs (1 = perfect); stress = how much the drawn distances are off overall (0 = perfect, below 0.3 is good).`,
+    ve ? `The two axes explain ${ve.join(' and ')} of the variance.` : '',
+    meta.metric ? '' : 'This arrangement is not built to keep distances; read neighbours, not gaps.',
+  ]
+    .filter(Boolean)
+    .join(' ');
+  return { text, detail, tone: good ? 'ok' : fair ? 'info' : 'warn', tooltip };
+}
+
+/**
+ * A scale bar near `targetPx` long: the round cosine distance (1, 2 or 5 × 10ⁿ) whose drawn length is closest to it. `unitDistance` is
+ * the cosine distance one unit of the unit square stands for; `pxPerUnit` how many screen px that unit is at the current zoom.
+ */
+export function niceScale(unitDistance: number, pxPerUnit: number, targetPx = 110): { px: number; value: number; label: string } | null {
+  if (!(unitDistance > 0) || !(pxPerUnit > 0)) return null;
+  const perPx = unitDistance / pxPerUnit; // cosine distance per px
+  const raw = targetPx * perPx;
+  const p = Math.pow(10, Math.floor(Math.log10(raw)));
+  let best = p;
+  for (const m of [1, 2, 5, 10]) if (Math.abs(m * p - raw) < Math.abs(best - raw)) best = m * p;
+  const value = Number(best.toPrecision(2));
+  const digits = Math.max(0, -Math.floor(Math.log10(value)));
+  return { px: value / perPx, value, label: `${value.toFixed(digits)} cosine distance` };
+}
+
+/** Drawn distance of two points in cosine-distance units (the arrangement's best-fit scale). */
+export function drawnDistance(xy: ArrayLike<number>, i: number, j: number, unitDistance: number): number {
+  return Math.hypot(xy[2 * i]! - xy[2 * j]!, xy[2 * i + 1]! - xy[2 * j + 1]!) * unitDistance;
+}
+
+/**
+ * Link overlay alpha: faded at the fitted view, fading further when zoomed out (the blobs carry the picture there) and with more
+ * links on screen, a little stronger when zoomed in on a few.
+ */
+export function linkAlpha(k: number, segments: number, theme: Theme): number {
+  const base = theme === 'dark' ? 0.075 : 0.085;
+  const density = Math.min(1, Math.sqrt(4000 / Math.max(1, segments)));
+  const zoom = k < 1 ? k * k : Math.min(1.8, 1 + 0.4 * Math.log2(k));
+  return Math.min(0.16, Math.max(0.008, base * Math.max(0.35, density) * zoom));
+}
+
+export interface Rect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/**
+ * Pane rectangles for one canvas: the room right of the legend card (when the canvas is wide enough), split side by side for two
+ * panes (stacked when the room is taller than wide), a 2×2 grid for three or four.
+ */
+export function paneRects(w: number, h: number, count: number, legendW: number, legendRoomMinW: number, gap = 8): Rect[] {
+  const left = w >= legendRoomMinW ? legendW : 0;
+  const room: Rect = { x: left, y: 0, w: Math.max(0, w - left), h };
+  if (count <= 1) return [room];
+  if (count === 2) {
+    if (room.w >= room.h) {
+      const pw = (room.w - gap) / 2;
+      return [
+        { x: room.x, y: 0, w: pw, h },
+        { x: room.x + pw + gap, y: 0, w: pw, h },
+      ];
+    }
+    const ph = (room.h - gap) / 2;
+    return [
+      { x: room.x, y: 0, w: room.w, h: ph },
+      { x: room.x, y: ph + gap, w: room.w, h: ph },
+    ];
+  }
+  const pw = (room.w - gap) / 2;
+  const ph = (room.h - gap) / 2;
+  return Array.from({ length: Math.min(4, count) }, (_, i) => ({
+    x: room.x + (i % 2) * (pw + gap),
+    y: Math.floor(i / 2) * (ph + gap),
+    w: pw,
+    h: ph,
+  }));
+}
+
+/** The fitted square inside a pane: the unit square in 94 % of the pane's short side, centred. */
+export function paneFrame(r: Rect): { base: number; ox: number; oy: number } {
+  const base = Math.max(1, Math.min(r.w, r.h) * 0.94);
+  return { base, ox: r.x + (r.w - base) / 2, oy: r.y + (r.h - base) / 2 };
+}
+
+/**
+ * Another arrangement's positions in the primary's point order (the bridge keeps one order for a tree state; this guards a pane
+ * that answered for a different state). Missing points go far off the unit square.
+ */
+export function alignXy(primaryIds: readonly number[], ids: readonly number[], xy: readonly number[]): readonly number[] {
+  if (ids.length === primaryIds.length && ids.every((id, i) => id === primaryIds[i])) return xy;
+  const at = new Map(ids.map((id, i) => [id, i]));
+  const out = new Array<number>(primaryIds.length * 2);
+  primaryIds.forEach((id, i) => {
+    const j = at.get(id);
+    out[2 * i] = j === undefined ? -9 : xy[2 * j]!;
+    out[2 * i + 1] = j === undefined ? -9 : xy[2 * j + 1]!;
+  });
+  return out;
+}
+
+/** Calm ease for the arrangement switch (cubic in-out over 0..1). */
+export function easeInOut(t: number): number {
+  const x = Math.min(1, Math.max(0, t));
+  return x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2;
+}
+
+/** Point size factor at zoom k relative to the fitted view (pointLook sizes are all proportional to its base). */
+export function zoomSizeFactor(k: number): number {
+  return pointBase(k) / pointBase(1);
 }
 
 /** child → parents for every leaf and summary in the cloud (for heat propagation and the link overlay). */

@@ -259,9 +259,23 @@ public static class BridgeEndpoints
             return Json(r);
         });
 
-        // Memory cloud: every RAPTOR leaf at its UMAP position, coloured by the bot's clusters. Never waits for the layout.
+        // Memory cloud: every RAPTOR leaf in one arrangement (MDS by default), coloured by the bot's clusters. Never waits for the layout.
         v1.MapGet("/memory-activity/cloud", async (HttpContext ctx, BankHost banks, MemoryCloudService cloud) =>
-            Json(cloud.Get(await banks.GetAsync(ctx.RequestAborted))));
+        {
+            var arrangement = Q.Enum(ctx, "arrangement", CloudArrangements.Default, CloudArrangements.Ids);
+            return Json(cloud.Get(await banks.GetAsync(ctx.RequestAborted), arrangement));
+        });
+
+        // The cosine distance between two memories' stored embeddings (computed here: vectors never leave the bridge).
+        v1.MapGet("/memory-activity/cloud/distance", async (HttpContext ctx, BankHost banks) =>
+        {
+            var id = ctx.Identity();
+            if (!id.Has("viewer") && !id.IsAdmin) return RequireRole(ctx, "viewer");
+            int? a = Q.IntOpt(ctx, "a", 0, int.MaxValue), b = Q.IntOpt(ctx, "b", 0, int.MaxValue);
+            if (a == null || b == null) return ApiErrors.BadRequest("a and b required");
+            var bank = await banks.GetAsync(ctx.RequestAborted);
+            return MemoryCloudService.Distance(bank, a.Value, b.Value) is { } d ? Json(d) : ApiErrors.NotFound("no such memory, or it has no embedding");
+        });
 
         // ---------------- admin (bridge-native) ----------------
         v1.MapGet("/admin/schema", (HttpContext ctx) => ctx.Identity().IsAdmin ? Json(AdminViews.Schema()) : RequireRole(ctx, "admin"));
