@@ -51,15 +51,26 @@ public sealed class RoutineExecutor
     public async Task<ToolResult> RunAsync(Routine routine, int? repeatOverride, CancellationToken ct)
     {
         if (ScriptRunner is { } script && await script(routine, repeatOverride, ct).ConfigureAwait(false) is { } viaScript) return viaScript;
-        if (routine.Steps.Count == 0 && routine.Script != null) return ToolResult.Error($"routine {routine.Name} is a script; the script engine isn't attached");
-        var invalid = Validate(routine);
-        if (invalid != null) return ToolResult.Error($"routine {routine.Name}: {invalid}");
+        if (NotReplayable(routine) is { } refused) return refused;
 
         int repeat = repeatOverride ?? routine.Repeat;
         int iterations = repeat <= 0 ? MaxIterations : Math.Min(repeat, MaxIterations);
+        return await ReplayAsync(routine, iterations, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>A script without the engine, or an invalid step routine, can't replay (null = it can).</summary>
+    private ToolResult? NotReplayable(Routine routine)
+    {
+        if (routine.Steps.Count == 0 && routine.Script != null) return ToolResult.Error($"routine {routine.Name} is a script; the script engine isn't attached");
+        var invalid = Validate(routine);
+        return invalid != null ? ToolResult.Error($"routine {routine.Name}: {invalid}") : null;
+    }
+
+    /// <summary>The step replay: every step in order per iteration, until a failure, a cancel or the stop condition.</summary>
+    private async Task<ToolResult> ReplayAsync(Routine routine, int iterations, CancellationToken ct)
+    {
         int steps = 0;
         ToolResult? last = null;
-
         for (int i = 1; i <= iterations; i++)
         {
             for (int j = 0; j < routine.Steps.Count; j++)
@@ -72,15 +83,21 @@ public sealed class RoutineExecutor
                 last = await _registry.ExecuteAsync(step.Tool, args, ct).ConfigureAwait(false);
                 steps++;
                 OnStep?.Invoke(i, j, last);
-
-                if (ct.IsCancellationRequested)
-                    return ToolResult.Error($"routine {routine.Name} cancelled at iter {i} step {j + 1} ({step.Tool})");
-                if (!last.Ok)
-                    return ToolResult.Error($"routine {routine.Name} stopped at iter {i} step {j + 1} ({step.Tool}): {last.Text}");
-                if (!string.IsNullOrEmpty(routine.StopWhen) && last.Text.Contains(routine.StopWhen, StringComparison.OrdinalIgnoreCase))
-                    return ToolResult.Success($"routine {routine.Name}: stop condition '{routine.StopWhen}' met at iter {i} ({step.Tool}: {last.Text})");
+                if (AfterStep(routine, step.Tool, i, j, last, ct) is { } end) return end;
             }
         }
         return ToolResult.Success($"routine {routine.Name}: {iterations} iteration(s) ok, {steps} steps; last: {last?.Text}");
+    }
+
+    /// <summary>Ends the replay after a step: cancelled, the step failed, or the stop condition met; null = go on.</summary>
+    private static ToolResult? AfterStep(Routine routine, string tool, int i, int j, ToolResult last, CancellationToken ct)
+    {
+        if (ct.IsCancellationRequested)
+            return ToolResult.Error($"routine {routine.Name} cancelled at iter {i} step {j + 1} ({tool})");
+        if (!last.Ok)
+            return ToolResult.Error($"routine {routine.Name} stopped at iter {i} step {j + 1} ({tool}): {last.Text}");
+        if (!string.IsNullOrEmpty(routine.StopWhen) && last.Text.Contains(routine.StopWhen, StringComparison.OrdinalIgnoreCase))
+            return ToolResult.Success($"routine {routine.Name}: stop condition '{routine.StopWhen}' met at iter {i} ({tool}: {last.Text})");
+        return null;
     }
 }

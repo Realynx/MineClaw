@@ -233,33 +233,14 @@ public sealed class ScriptLibrary(MemoryStore memory)
     {
         name = ParseRef(name).Name;
         var r = Memory.GetRoutine(name) ?? new Routine { Name = name, Repeat = 1 };
-        bool fresh = false;
+        bool fresh;
         if (r.Script == null)
         {
             r.Script = new RoutineScript { Code = code, Version = 1, Author = author, Lang = lang };
             r.Script.Versions.Add(new ScriptVersion { V = 1, Code = code, Author = author, SavedAt = Now(), Lang = lang });
             fresh = true;
         }
-        else
-        {
-            var s = r.Script;
-            Active(s);
-            if (!string.Equals(s.Code, code, StringComparison.Ordinal))
-            {
-                if (s.Versions.FirstOrDefault(v => v.Code == code) is { } same) Activate(s, same.V);
-                else
-                {
-                    int nv = s.Versions.Count == 0 ? 1 : s.Versions.Max(v => v.V) + 1;
-                    s.Versions.Add(new ScriptVersion { V = nv, Code = code, Author = author, SavedAt = Now(), Lang = lang });
-                    if (s.Versions.Count > KeepHistory) s.Versions.RemoveAt(0); // oldest, never the active one (it's last)
-                    Activate(s, nv);
-                }
-                s.Migrated = false;
-                s.RevertNote = null;
-                fresh = true;
-                // A new version earns its own reliability; an already-promoted skill keeps running the active code.
-            }
-        }
+        else fresh = NewVersion(r.Script, code, author, lang);
         var sc = r.Script;
         if (purpose != null) sc.Purpose = purpose;
         if (argNames != null) sc.ArgNames = argNames.ToList();
@@ -268,6 +249,27 @@ public sealed class ScriptLibrary(MemoryStore memory)
         sc.DuplicateOf = null;
         if (!string.IsNullOrWhiteSpace(note)) r.Note = note.Trim();
         return new ScriptSave(Memory.SaveRoutine(r), fresh);
+    }
+
+    /// <summary>
+    /// Different code: an identical older version is active again, else a new version (oldest beyond the history dropped).
+    /// A new version earns its own reliability; an already-promoted skill keeps running the active code. False = same code.
+    /// </summary>
+    private bool NewVersion(RoutineScript s, string code, string? author, string? lang)
+    {
+        Active(s);
+        if (string.Equals(s.Code, code, StringComparison.Ordinal)) return false;
+        if (s.Versions.FirstOrDefault(v => v.Code == code) is { } same) Activate(s, same.V);
+        else
+        {
+            int nv = s.Versions.Count == 0 ? 1 : s.Versions.Max(v => v.V) + 1;
+            s.Versions.Add(new ScriptVersion { V = nv, Code = code, Author = author, SavedAt = Now(), Lang = lang });
+            if (s.Versions.Count > KeepHistory) s.Versions.RemoveAt(0); // oldest, never the active one (it's last)
+            Activate(s, nv);
+        }
+        s.Migrated = false;
+        s.RevertNote = null;
+        return true;
     }
 
     private static void Activate(RoutineScript s, int v)
@@ -321,6 +323,17 @@ public sealed class ScriptLibrary(MemoryStore memory)
         var active = Active(s);
         var ver = version is { } vn ? s.Versions.FirstOrDefault(v => v.V == vn) ?? active : active;
         var now = Now();
+        CountScriptRun(s, ok, duration, actions, outcome, now);
+        CountVersionRun(ver, ok, duration, yield, now);
+        if (paramsJson != null) AddParamRun(ver, paramsJson, ok, duration, yield, now, timings);
+        if (!ok) AddFailReason(ver, FailKey(failReason ?? outcome));
+        revertNote = AutoRevert(r.Name, s, ver);
+        Memory.SaveRoutine(r);
+        return s;
+    }
+
+    private static void CountScriptRun(RoutineScript s, bool ok, TimeSpan duration, int actions, string outcome, DateTimeOffset now)
+    {
         s.Runs++;
         if (ok) s.Successes++; else s.Failures++;
         s.TotalSeconds += Math.Max(0, duration.TotalSeconds);
@@ -328,35 +341,40 @@ public sealed class ScriptLibrary(MemoryStore memory)
         s.LastOutcome = outcome.Length <= 200 ? outcome : outcome[..197] + "...";
         s.LastRun = now;
         s.ArchiveFlagged = null;
+    }
+
+    private static void CountVersionRun(ScriptVersion ver, bool ok, TimeSpan duration, int yield, DateTimeOffset now)
+    {
         ver.Runs++;
         if (ok) ver.Successes++; else ver.Failures++;
         ver.TotalSeconds += Math.Max(0, duration.TotalSeconds);
         ver.TotalYield += Math.Max(0, yield);
         ver.LastRun = now;
-        if (paramsJson != null)
-        {
-            ver.ParamRuns.Add(new ParamRun(paramsJson.Length <= 400 ? paramsJson : paramsJson[..400], ok, Math.Round(duration.TotalSeconds, 1), yield, now,
-                timings is { Length: > 160 } ? timings[..160] : timings));
-            if (ver.ParamRuns.Count > 20) ver.ParamRuns.RemoveAt(0);
-        }
-        if (!ok)
-        {
-            var key = FailKey(failReason ?? outcome);
-            ver.FailReasons[key] = ver.FailReasons.GetValueOrDefault(key) + 1;
-            if (ver.FailReasons.Count > 8) ver.FailReasons.Remove(ver.FailReasons.MinBy(kv => kv.Value).Key);
-        }
+    }
 
-        if (ver.V == s.Version && ver.Runs >= Math.Max(1, AutoRevertMinRuns))
-        {
-            var prev = s.Versions.Where(v => v.V < ver.V && v.Runs >= Math.Max(1, AutoRevertMinRuns)).OrderByDescending(v => v.V).FirstOrDefault();
-            if (prev != null && ver.Rate < prev.Rate)
-            {
-                Activate(s, prev.V);
-                revertNote = s.RevertNote = $"auto-reverted {r.Name} v{ver.V} ({ver.Reliability}) -> v{prev.V} ({prev.Reliability}); v{ver.V} kept";
-            }
-        }
-        Memory.SaveRoutine(r);
-        return s;
+    /// <summary>The run's tunables and timings (trimmed), the last 20 per version.</summary>
+    private static void AddParamRun(ScriptVersion ver, string paramsJson, bool ok, TimeSpan duration, int yield, DateTimeOffset now, string? timings)
+    {
+        ver.ParamRuns.Add(new ParamRun(paramsJson.Length <= 400 ? paramsJson : paramsJson[..400], ok, Math.Round(duration.TotalSeconds, 1), yield, now,
+            timings is { Length: > 160 } ? timings[..160] : timings));
+        if (ver.ParamRuns.Count > 20) ver.ParamRuns.RemoveAt(0);
+    }
+
+    /// <summary>Counts a failure kind; past 8 kinds the rarest goes.</summary>
+    private static void AddFailReason(ScriptVersion ver, string key)
+    {
+        ver.FailReasons[key] = ver.FailReasons.GetValueOrDefault(key) + 1;
+        if (ver.FailReasons.Count > 8) ver.FailReasons.Remove(ver.FailReasons.MinBy(kv => kv.Value).Key);
+    }
+
+    /// <summary>The active version fell below the previous one's rate (both with enough runs): that one is active again.</summary>
+    private string? AutoRevert(string name, RoutineScript s, ScriptVersion ver)
+    {
+        if (ver.V != s.Version || ver.Runs < Math.Max(1, AutoRevertMinRuns)) return null;
+        var prev = s.Versions.Where(v => v.V < ver.V && v.Runs >= Math.Max(1, AutoRevertMinRuns)).OrderByDescending(v => v.V).FirstOrDefault();
+        if (prev == null || !(ver.Rate < prev.Rate)) return null;
+        Activate(s, prev.V);
+        return s.RevertNote = $"auto-reverted {name} v{ver.V} ({ver.Reliability}) -> v{prev.V} ({prev.Reliability}); v{ver.V} kept";
     }
 
     /// <summary>"goto: no route to 3,64,2" → "goto: no route to #,#,#" (≤ 50 chars): failures group by kind, not by numbers.</summary>
@@ -493,13 +511,22 @@ public sealed class ScriptLibrary(MemoryStore memory)
         (string, double)? best = null;
         foreach (var r in Scripts())
         {
-            if (string.Equals(r.Name, self, StringComparison.OrdinalIgnoreCase) || r.Script is not { } s) continue;
-            if (s.DuplicateOf != null || s.ArchiveFlagged != null || s.Migrated) continue;
-            double v;
-            try { v = score(code, s); } catch (Exception) { continue; }
+            if (Comparable(r, self) is not { } s || !TryScore(score, code, s, out double v)) continue;
             if (v >= threshold && (best == null || v > best.Value.Item2)) best = (r.Name, v);
         }
         return best;
+    }
+
+    /// <summary>Another live script (not this one, not archived, merged or migrated), else null.</summary>
+    private static RoutineScript? Comparable(Routine r, string self)
+    {
+        if (string.Equals(r.Name, self, StringComparison.OrdinalIgnoreCase) || r.Script is not { } s) return null;
+        return s.DuplicateOf != null || s.ArchiveFlagged != null || s.Migrated ? null : s;
+    }
+
+    private static bool TryScore(Func<string, RoutineScript, double> score, string code, RoutineScript s, out double v)
+    {
+        try { v = score(code, s); return true; } catch (Exception) { v = 0; return false; }
     }
 
     /// <summary>
@@ -512,23 +539,25 @@ public sealed class ScriptLibrary(MemoryStore memory)
             .OrderByDescending(r => r.Script!.Runs).ThenBy(r => r.Name, StringComparer.Ordinal).ToList();
         if (rows.Count == 0) return "no saved scripts";
         var sb = new StringBuilder();
-        foreach (var r in rows.Take(max))
-        {
-            var s = r.Script!;
-            var a = Active(s);
-            sb.Append(r.Name).Append(" v").Append(s.Version);
-            sb.Append(" (").Append(string.Join(",", s.ArgNames)).Append(')');
-            if (!string.IsNullOrWhiteSpace(s.Params)) sb.Append(" tuned ").Append(s.Params.Length <= 60 ? s.Params : s.Params[..57] + "...");
-            if (a.IsLua) sb.Append(" [lua]");
-            sb.Append(' ').Append(a.Reliability);
-            if (a.Runs > 0 && a.AvgYield >= 1) sb.Append($" +{a.AvgYield:0}/run");
-            if (a.TopFailures(1).FirstOrDefault() is { } f) sb.Append(" fails: ").Append(f);
-            var purpose = s.Purpose ?? r.Note;
-            if (!string.IsNullOrWhiteSpace(purpose)) sb.Append(": ").Append(purpose);
-            sb.Append('\n');
-        }
+        foreach (var r in rows.Take(max)) AppendCatalogRow(sb, r);
         if (rows.Count > max) sb.Append($"(+{rows.Count - max} more)");
         return sb.ToString().TrimEnd();
+    }
+
+    private void AppendCatalogRow(StringBuilder sb, Routine r)
+    {
+        var s = r.Script!;
+        var a = Active(s);
+        sb.Append(r.Name).Append(" v").Append(s.Version);
+        sb.Append(" (").Append(string.Join(",", s.ArgNames)).Append(')');
+        if (!string.IsNullOrWhiteSpace(s.Params)) sb.Append(" tuned ").Append(s.Params.Length <= 60 ? s.Params : s.Params[..57] + "...");
+        if (a.IsLua) sb.Append(" [lua]");
+        sb.Append(' ').Append(a.Reliability);
+        if (a.Runs > 0 && a.AvgYield >= 1) sb.Append($" +{a.AvgYield:0}/run");
+        if (a.TopFailures(1).FirstOrDefault() is { } f) sb.Append(" fails: ").Append(f);
+        var purpose = s.Purpose ?? r.Note;
+        if (!string.IsNullOrWhiteSpace(purpose)) sb.Append(": ").Append(purpose);
+        sb.Append('\n');
     }
 
     /// <summary>
@@ -539,6 +568,17 @@ public sealed class ScriptLibrary(MemoryStore memory)
     public string Housekeep(int staleDays, Func<string, string> exactKey)
     {
         var now = Now();
+        var notes = MergeDuplicates(exactKey);
+        var stale = FlagStale(now, staleDays);
+        var parts = new List<string>();
+        if (notes.Count > 0) parts.Add("merged duplicates " + string.Join(", ", notes));
+        if (stale.Count > 0) parts.Add($"flagged for archive (unused {staleDays}d): " + string.Join(", ", stale));
+        return string.Join("; ", parts);
+    }
+
+    /// <summary>Same-code scripts fold into the most used one ("dup=keep" notes).</summary>
+    private List<string> MergeDuplicates(Func<string, string> exactKey)
+    {
         var notes = new List<string>();
         var live = Scripts().Where(r => r.Script is { DuplicateOf: null }).ToList();
         foreach (var g in live.GroupBy(r => SafeKey(exactKey, r.Script!.Code)).Where(g => g.Count() > 1))
@@ -547,18 +587,31 @@ public sealed class ScriptLibrary(MemoryStore memory)
             var ka = Active(keep.Script!);
             foreach (var dup in g.Where(r => r != keep))
             {
-                var ds = dup.Script!;
-                var da = Active(ds);
-                ka.Runs += da.Runs; ka.Successes += da.Successes; ka.Failures += da.Failures;
-                ka.TotalSeconds += da.TotalSeconds; ka.TotalYield += da.TotalYield;
-                foreach (var (k, v) in da.FailReasons) ka.FailReasons[k] = ka.FailReasons.GetValueOrDefault(k) + v;
-                keep.Script!.Runs += ds.Runs; keep.Script.Successes += ds.Successes; keep.Script.Failures += ds.Failures;
-                ds.DuplicateOf = keep.Name;
+                MergeInto(keep, ka, dup.Script!);
                 Memory.SaveRoutine(dup);
                 notes.Add($"{dup.Name}={keep.Name}");
             }
             Memory.SaveRoutine(keep);
         }
+        return notes;
+
+        static string SafeKey(Func<string, string> f, string code) { try { return f(code); } catch (Exception) { return code; } }
+    }
+
+    /// <summary>The duplicate's run stats join the kept script (its active version and its totals); the duplicate points at it.</summary>
+    private void MergeInto(Routine keep, ScriptVersion ka, RoutineScript ds)
+    {
+        var da = Active(ds);
+        ka.Runs += da.Runs; ka.Successes += da.Successes; ka.Failures += da.Failures;
+        ka.TotalSeconds += da.TotalSeconds; ka.TotalYield += da.TotalYield;
+        foreach (var (k, v) in da.FailReasons) ka.FailReasons[k] = ka.FailReasons.GetValueOrDefault(k) + v;
+        keep.Script!.Runs += ds.Runs; keep.Script.Successes += ds.Successes; keep.Script.Failures += ds.Failures;
+        ds.DuplicateOf = keep.Name;
+    }
+
+    /// <summary>Live scripts unused for <paramref name="staleDays"/> are flagged for archive (their names).</summary>
+    private List<string> FlagStale(DateTimeOffset now, int staleDays)
+    {
         var stale = new List<string>();
         foreach (var r in Scripts())
         {
@@ -566,19 +619,12 @@ public sealed class ScriptLibrary(MemoryStore memory)
             if (s.ArchiveFlagged != null || s.DuplicateOf != null) continue;
             Active(s);
             var last = s.LastRun ?? s.Versions.Max(v => v.SavedAt);
-            if (last is { } l && now - l > TimeSpan.FromDays(Math.Max(1, staleDays)))
-            {
-                s.ArchiveFlagged = now;
-                Memory.SaveRoutine(r);
-                stale.Add(r.Name);
-            }
+            if (last is not { } l || now - l <= TimeSpan.FromDays(Math.Max(1, staleDays))) continue;
+            s.ArchiveFlagged = now;
+            Memory.SaveRoutine(r);
+            stale.Add(r.Name);
         }
-        var parts = new List<string>();
-        if (notes.Count > 0) parts.Add("merged duplicates " + string.Join(", ", notes));
-        if (stale.Count > 0) parts.Add($"flagged for archive (unused {staleDays}d): " + string.Join(", ", stale));
-        return string.Join("; ", parts);
-
-        static string SafeKey(Func<string, string> f, string code) { try { return f(code); } catch (Exception) { return code; } }
+        return stale;
     }
 
     /// <summary>Converts a step routine to a script and saves it; null when a step's tool has no script function.</summary>
