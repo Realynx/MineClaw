@@ -70,13 +70,19 @@ type HeatNode = MemoryHeatResponse['nodes'][number];
 
 /** A node's latest access by `brain` (or by any brain); with no brain given, the node's own time when no brain has one. */
 function nodeLast(n: HeatNode, brain: string | undefined): LastAccess | null {
+  const best = latestByBrain(n, brain);
+  if (best || brain || !n.lastAccessAt) return best;
+  return { at: Date.parse(n.lastAccessAt), brain: n.brains[0]?.brain ?? '' };
+}
+
+/** The latest valid per-brain access of a node (only `brain`'s when given). */
+function latestByBrain(n: HeatNode, brain: string | undefined): LastAccess | null {
   let best: LastAccess | null = null;
   for (const b of n.brains) {
     if (brain && b.brain !== brain) continue;
     const at = b.lastAccessAt ? Date.parse(b.lastAccessAt) : NaN;
     if (!Number.isNaN(at) && (!best || at > best.at)) best = { at, brain: b.brain };
   }
-  if (!best && !brain && n.lastAccessAt) best = { at: Date.parse(n.lastAccessAt), brain: n.brains[0]?.brain ?? '' };
   return best;
 }
 

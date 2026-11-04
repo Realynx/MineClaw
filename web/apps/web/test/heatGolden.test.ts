@@ -25,7 +25,7 @@ const ctx = (id: number | null, agoMs: number | null, evicted: boolean, brain: s
     lastSeenAt: agoMs === null ? 'nope' : iso(agoMs),
     turnsInContext: 1,
     positionFromEnd: evicted ? null : 2,
-  }) as InContextMemory;
+  });
 
 const CTX = [
   ctx(1, 30_000, false, 'main'),
