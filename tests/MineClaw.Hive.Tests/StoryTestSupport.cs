@@ -80,9 +80,12 @@ internal sealed class FakeStoryHost(FakeStoryWorld world) : IStoryHost
     public Dictionary<string, Func<int, int, int, bool>?> GrowZones { get; } = new(StringComparer.OrdinalIgnoreCase);
     public void SetGrowZone(string account, Func<int, int, int, bool>? inZone) => GrowZones[account] = inZone;
     public PawnSpeed? Speed(string account) => Live(account).Online && Speeds.TryGetValue(account, out var m)
-        ? new PawnSpeed(m, Math.Min(m, SpeedCaps.GetValueOrDefault(account, 3)), 1, SpeedCaps.ContainsKey(account) ? 2 : 0) : null;
+        ? new PawnSpeed(m, Math.Min(m, SpeedCaps.GetValueOrDefault(account, 3)), ServerAmps.TryGetValue(account, out var a) && a >= 0 ? 1.2 + 0.2 * a : 1,
+            SpeedCaps.ContainsKey(account) ? 2 : 0) : null;
+    /// <summary>The Speed effect each body has on the server (the last one given; −1 or missing = none; a test removes one = it died).</summary>
+    public readonly Dictionary<string, int> ServerAmps = new(StringComparer.OrdinalIgnoreCase);
     public bool SpeedEffectAvailable => EffectsAvailable;
-    public string? SpeedEffect(string account, int amplifier, string why) { Effects.Add((account, amplifier)); return null; }
+    public string? SpeedEffect(string account, int amplifier, string why) { Effects.Add((account, amplifier)); ServerAmps[account] = amplifier; return null; }
     /// <summary>Pawns released one by one (removed from the colony).</summary>
     public List<string> ReleasedPawns { get; } = new();
     public string? ReleasePawn(string account, string why) { ReleasedPawns.Add(account); Lives.Remove(account); return null; }

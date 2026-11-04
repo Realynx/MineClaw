@@ -19,17 +19,20 @@ public sealed record PawnSpeed(double Requested, double Effective, double Server
 /// <item>The client moves the body further each tick (MinecraftClient.Speed.cs); when the server keeps teleporting it back, the body
 /// steps itself down (3 → 2 → 1) and the colony raises one alert per level ("Server rejected faster movement — using Fast").</item>
 /// <item><c>options.speed_effect</c> (default on): on 1.12.2 with an op account, the server is asked for a Speed effect on each
-/// boosted pawn (<c>/effect &lt;pawn&gt; minecraft:speed 30 1|2 true</c>, renewed every <see cref="EffectRenew"/>, through the command
-/// gate's scoped exception: managed accounts only, the blocklist applies, audited), so the server sees legit faster movement and the
-/// client adds only the rest. Back to normal (or the option off) clears the effects the colony gave. b1.8.1 has no effects.</item>
+/// boosted pawn, once, as a toggle (<c>/effect &lt;pawn&gt; minecraft:speed 1000000 1|2 true</c>, through the command gate's scoped
+/// exception: managed accounts only, the blocklist applies, audited), so the server sees legit faster movement and the client adds only
+/// the rest. It is sent again only when the level changes, the pawn comes back online, or the body no longer has it (death, milk) —
+/// checked at most every <see cref="EffectRecheck"/>; Fox 11-04: a 30 s effect renewed every 20 s "is spamming the hell out of the logs".
+/// Back to normal (or the option off) clears the effects the colony gave. b1.8.1 has no effects.</item>
 /// </list>
 /// </summary>
 public sealed partial class StoryColony
 {
     public static readonly string[] SpeedLevels = ["normal", "fast", "faster"];
-    /// <summary>A Speed effect lasts 30 s; the colony renews it this often.</summary>
-    public static readonly TimeSpan EffectRenew = TimeSpan.FromSeconds(20);
-    public const int EffectSeconds = 30;
+    /// <summary>A body that should have the colony's Speed effect but shows none (it died, drank milk) gets it again at most this often.</summary>
+    public static readonly TimeSpan EffectRecheck = TimeSpan.FromSeconds(60);
+    /// <summary>The effect's length: 1.12.2's maximum, so it is a toggle (cleared at normal speed), never a timer to renew.</summary>
+    public const int EffectSeconds = 1_000_000;
 
     private readonly Dictionary<string, (int Amp, DateTimeOffset At)> _effects = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<double> _speedAlerted = new();
@@ -103,7 +106,9 @@ public sealed partial class StoryColony
                 var had = _effects.TryGetValue(p.Name, out var h) ? h : (Amp: -1, At: DateTimeOffset.MinValue);
                 if (amp >= 0)
                 {
-                    if (had.Amp != amp || Now - had.At >= EffectRenew) { sends.Add((p.Name, amp, $"story {Id}: {SpeedLevel(eff)} speed")); _effects[p.Name] = (amp, Now); }
+                    // Once per level; again only when the body has lost it (its server factor is back to 1) and a minute has passed.
+                    bool lost = had.Amp == amp && (now?.ServerFactor ?? 1) <= 1.001 && Now - had.At >= EffectRecheck;
+                    if (had.Amp != amp || lost) { sends.Add((p.Name, amp, $"story {Id}: {SpeedLevel(eff)} speed")); _effects[p.Name] = (amp, Now); }
                 }
                 else if (amp < 0 && had.Amp >= 0)
                 {

@@ -537,8 +537,9 @@ through the network itself." There is still no time control (the server owns the
   "Server rejected faster movement — using Fast" (or "— using normal speed"). The HUD marks the level the slowest pawn runs at.
   Choosing a speed again clears the step-down.
 - **Speed effect (1.12.2, `speed_effect`).** With an op account (main is op: the server's word, else `Supervisor:Viewer:OpAccounts`),
-  Fast and Faster also ask the server for `/effect <pawn> minecraft:speed 30 1|2 true` (Speed II / III: +40 % / +60 % on the
-  movement attribute, which the 1.12.2 physics applies), renewed every 20 s, through the command gate's scoped exception
+  Fast and Faster also ask the server for `/effect <pawn> minecraft:speed 1000000 1|2 true` (Speed II / III: +40 % / +60 % on the
+  movement attribute, which the 1.12.2 physics applies) — once, as a toggle: sent again only when the level changes, the pawn comes
+  back online, or its body shows no Speed effect any more (it died; checked at most once a minute) — through the command gate's scoped exception
   (`CommandGate.ArmManagedSpeed`: only that shape, only the hive's own managed accounts, never main or a player, never when the
   config blocks `/effect`; audited). The server then sees part of the speed as legit and the client adds only the rest
   (`multiplier / server_factor`). Back to normal, the option off, a pawn leaving or a released colony clears it
