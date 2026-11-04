@@ -59,6 +59,7 @@ function storyWrites(): Partial<Record<RouteId, Ctx>> {
     'story.policies': w({ op: 'set', policy: { name: 'Miners', tools: ['pickaxe'], armor: 'none' } }),
     'story.materialRules': w({ op: 'set', rule: { material: 'iron_ore', tier: 'iron', enchant: 'fortune' } }),
     'story.gear': w({ op: 'arm', pawns }),
+    'story.pawns': w({ op: 'add', count: 1 }),
     'story.resume': w({}),
     'story.online': w({ pawns: null }),
     'story.directives': { params: {}, query: {}, body: { bots: ['maid_chan'], directive: { kind: 'text', text: 'hi' }, requestId: 'r-12345678' } },
