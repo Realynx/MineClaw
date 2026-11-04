@@ -82,19 +82,28 @@ public sealed partial class Protection
     /// house box covered the field). Harvesting a ripe crop, replanting and tilling are always allowed, whatever structure box
     /// or indexed build they fall in; an unripe crop is left alone ("not ripe"). Saplings keep their config protection.
     /// </summary>
-    public static bool IsFarmPlant(int id) => id is Blocks.Crops or Blocks.SugarCane or Blocks.Cactus or Blocks.PumpkinStem or Blocks.MelonStem
-        or Blocks.Pumpkin or Blocks.Melon or Blocks.Sapling or Ids1122.Carrots or Ids1122.Potatoes or Ids1122.Beetroots or Ids1122.NetherWart;
+    private static readonly HashSet<int> FarmPlants =
+    [
+        Blocks.Crops, Blocks.SugarCane, Blocks.Cactus, Blocks.PumpkinStem, Blocks.MelonStem, Blocks.Pumpkin, Blocks.Melon, Blocks.Sapling,
+        Ids1122.Carrots, Ids1122.Potatoes, Ids1122.Beetroots, Ids1122.NetherWart,
+    ];
+
+    public static bool IsFarmPlant(int id) => FarmPlants.Contains(id);
 
     /// <summary>
     /// Ground, fluids and plants: never "part of a build" by volume alone. A remembered/guessed structure box protects only the
     /// blocks it is actually made of (planks, cobble, glass, doors, slabs...), plus what the indexer itself tags per block.
     /// </summary>
-    public static bool IsNaturalFill(int id) => id is Blocks.Air or Blocks.Grass or Blocks.Dirt or Blocks.Sand or Blocks.Gravel
-        or Blocks.FlowingWater or Blocks.Water or Blocks.FlowingLava or Blocks.Lava or Blocks.Leaves or Blocks.TallGrass or Blocks.DeadBush
-        or 37 or 38 or Blocks.BrownMushroom or Blocks.RedMushroom or Blocks.SnowLayer or Blocks.Clay or Blocks.Vine
+    public static bool IsNaturalFill(int id) => NaturalFill.Contains(id) || IsFarmPlant(id) || id == Blocks.Farmland;
+
+    private static readonly HashSet<int> NaturalFill =
+    [
+        Blocks.Air, Blocks.Grass, Blocks.Dirt, Blocks.Sand, Blocks.Gravel, Blocks.FlowingWater, Blocks.Water, Blocks.FlowingLava, Blocks.Lava,
+        Blocks.Leaves, Blocks.TallGrass, Blocks.DeadBush, 37, 38, Blocks.BrownMushroom, Blocks.RedMushroom, Blocks.SnowLayer, Blocks.Clay,
+        Blocks.Vine,
         // 1.12.2: mycelium, lily pad, leaves2, packed ice, tall flowers/double grass (podzol and coarse dirt are dirt variants)
-        or 110 or 111 or Ids1122.Leaves2 or 174 or Ids1122.DoublePlant
-        || IsFarmPlant(id) || id == Blocks.Farmland;
+        110, 111, Ids1122.Leaves2, 174, Ids1122.DoublePlant,
+    ];
 
     /// <summary>"wheat is a farm crop (ripe? no: stage 5/7)" for an unripe crop; null = ripe/harvestable (or no stage known).</summary>
     public string? UnripeReason(BlockPos p, int id)

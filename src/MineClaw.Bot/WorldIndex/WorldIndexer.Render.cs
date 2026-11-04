@@ -159,11 +159,13 @@ public sealed partial class WorldIndexer
         if (x.GetValueOrDefault("crops") is int cr) parts.Add($"crops {cr} ({x["ripe"]} ripe)");
         if (x.GetValueOrDefault("stems") is int stm) parts.Add($"stems {stm}");
         if (x.GetValueOrDefault("fruit") is int fr) parts.Add($"{e.SubType} {fr}");
-        if (x.GetValueOrDefault("plants") is int pl) parts.Add($"{(e.SubType ?? "").Replace('_', ' ')} {pl}" + (x.GetValueOrDefault("tallest") is int h ? $" (max h{h})" : ""));
+        if (x.GetValueOrDefault("plants") is int pl) parts.Add($"{(e.SubType ?? "").Replace('_', ' ')} {pl}" + Tallest(x));
         if (x.GetValueOrDefault("soil") is string soil) parts.Add("on " + soil);
         if (x.GetValueOrDefault("water") is int w && w > 0) parts.Add("by water");
         return parts;
     }
+
+    private static string Tallest(Dictionary<string, object?> x) => x.GetValueOrDefault("tallest") is int h ? $" (max h{h})" : "";
 
     private static void RenderTree(EntryText t)
     {

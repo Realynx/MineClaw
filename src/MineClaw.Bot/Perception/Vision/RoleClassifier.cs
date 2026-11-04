@@ -77,14 +77,12 @@ public sealed class RoleClassifier
 
     private BlockRole BlockRoleOf(BlockPos p, int id, bool gen, bool geometry)
     {
-        ProtectionVerdict? v = null;
-        try { v = Verdict?.Invoke(p, id); } catch (Exception) { }
+        var v = VerdictOf(p, id);
         if (v is { Level: ProtectionLevel.Hard }) return BlockRole.NeverBreak;
         if (gen) return BlockRole.GenCell;
         string? kind = null;
         try { kind = IndexerKind?.Invoke(p); } catch (Exception) { }
-        if (id == MineClaw.Data.Blocks.Portal || (id == MineClaw.Data.Blocks.Obsidian && (kind == WorldIndex.IndexKinds.Portal || NextToPortal(p.X, p.Y, p.Z))))
-            return BlockRole.Portal;
+        if (IsPortalPart(p, id, kind)) return BlockRole.Portal;
         if (FixedRole(id) is { } fixedRole) return fixedRole;
         // Crops are work, not property (live 10-28: a field drawn '$' read as "protected, owned by others, needs permission"):
         // ripe/growing from the block's own metadata, whatever box, index entry, claim or planter covers them.
@@ -93,6 +91,15 @@ public sealed class RoleClassifier
         if (kind == WorldIndex.IndexKinds.UnknownStructure) return BlockRole.PlayerBuild;
         return GroundRole(p, id, v, kind, geometry);
     }
+
+    private ProtectionVerdict? VerdictOf(BlockPos p, int id)
+    {
+        try { return Verdict?.Invoke(p, id); } catch (Exception) { return null; }
+    }
+
+    /// <summary>A portal sheet, or obsidian of its frame (indexed as a portal, or beside a sheet).</summary>
+    private bool IsPortalPart(BlockPos p, int id, string? kind) =>
+        id == MineClaw.Data.Blocks.Portal || (id == MineClaw.Data.Blocks.Obsidian && (kind == WorldIndex.IndexKinds.Portal || NextToPortal(p.X, p.Y, p.Z)));
 
     /// <summary>Doors, stations and fluids: their role whatever covers them.</summary>
     private static BlockRole? FixedRole(int id)
