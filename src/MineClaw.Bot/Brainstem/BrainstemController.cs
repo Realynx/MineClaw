@@ -153,8 +153,7 @@ public sealed class BrainstemController : IDisposable
     /// <summary>The event gate: a typed line may run a reflex or start a speculative walk; the event itself passes on.</summary>
     internal GameEvent? OnEvent(GameEvent e)
     {
-        if (!Options.Enabled || !EventQueue.IsTyped(e) || e.Kind is not (EventKind.Chat or EventKind.Whisper) || e.Player is not { } who) return e;
-        if (_isBot(who) || who.Equals(_c.Username, StringComparison.OrdinalIgnoreCase)) return e;
+        if (HumanSpeaker(e) is not { } who) return e;
         if (!HearsLine(e)) return e; // another body's line (one brain, many bodies)
         DateTimeOffset? turned;
         lock (_lock) turned = _turnedAt.TryGetValue(who, out var t) && Now - t < TimeSpan.FromSeconds(2) ? t : null;
@@ -164,14 +163,30 @@ public sealed class BrainstemController : IDisposable
         if (handled != null)
         {
             Note(who, e.Text, handled.Value.Note);
-            Instant(who, handled.Value.Intent.Kind switch { IntentKind.Come => "come", IntentKind.Follow => "follow", IntentKind.Stop => "stop", _ => null }, "reflex");
+            Instant(who, ReflexMoment(handled.Value.Intent.Kind), "reflex");
             return Options.ReflexWakesBrain ? e : e with { Wakes = false };
         }
+        SpeculateOrSmallTalk(e, who);
+        return e;
+    }
+
+    /// <summary>A typed chat/whisper line's speaker when it's a human (not one of our bots, not this body), else null.</summary>
+    private string? HumanSpeaker(GameEvent e)
+    {
+        if (!Options.Enabled || !EventQueue.IsTyped(e) || e.Kind is not (EventKind.Chat or EventKind.Whisper) || e.Player is not { } who) return null;
+        return _isBot(who) || who.Equals(_c.Username, StringComparison.OrdinalIgnoreCase) ? null : who;
+    }
+
+    private static string? ReflexMoment(IntentKind kind) =>
+        kind switch { IntentKind.Come => "come", IntentKind.Follow => "follow", IntentKind.Stop => "stop", _ => null };
+
+    /// <summary>No reflex: a speculative first step, else (an addressed line the quick classifier can answer) small talk.</summary>
+    private void SpeculateOrSmallTalk(GameEvent e, string who)
+    {
         if (TrySpeculate(who, e.Text) is not null)
             Instant(who, _spec?.Intent.Kind == IntentKind.SpecToSpeaker ? "come" : "onit", "speculative start");
         else if (e.Wakes && e.AddressConfidence is not (< 0.75) && QuickReply.Classify([e.Text], Names, e.Kind == EventKind.Emote) != QuickKind.Brain)
             Instant(who, Agent.Character.CharacterVoice.MomentFor(e.Text, Names), "small talk");
-        return e;
     }
 
     /// <summary>
