@@ -275,13 +275,23 @@ export function updateBillBody(bill: StoryBill, d: BillDraft) {
   const after = specOf(d) as Record<string, unknown>;
   const spec: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(after)) if (JSON.stringify(before[k]) !== JSON.stringify(v)) spec[k] = v;
-  if (d.minSkill === null && (bill.minSkill !== null && bill.minSkill !== undefined)) spec.minSkill = 0;
-  if (!d.prefer && bill.prefer) spec.prefer = null;
-  if (!d.preferOnly && bill.preferOnly) spec.preferOnly = false;
-  if (!d.fuel && bill.fuel) spec.fuel = 'inherit';
+  // A field the draft cleared that the bill had: sent as its "off" value (absent would leave it as it was).
+  for (const c of CLEARED_FIELDS) if (c.cleared(d) && c.had(bill)) spec[c.key] = c.off;
   if (Object.keys(spec).length === 0) return null;
   return { op: 'update' as const, id: bill.id, ...spec };
 }
+
+const CLEARED_FIELDS: ReadonlyArray<{
+  key: string;
+  cleared: (d: BillDraft) => boolean;
+  had: (b: StoryBill) => boolean;
+  off: unknown;
+}> = [
+  { key: 'minSkill', cleared: (d) => d.minSkill === null, had: (b) => b.minSkill !== null && b.minSkill !== undefined, off: 0 },
+  { key: 'prefer', cleared: (d) => !d.prefer, had: (b) => !!b.prefer, off: null },
+  { key: 'preferOnly', cleared: (d) => !d.preferOnly, had: (b) => !!b.preferOnly, off: false },
+  { key: 'fuel', cleared: (d) => !d.fuel, had: (b) => !!b.fuel, off: 'inherit' },
+];
 
 /** Moves the bill at `from` to `to`; the reorder request lists every bill in the new order. */
 export function reorderBills(bench: V3, ids: ReadonlyArray<string | number>, from: number, to: number) {
@@ -346,18 +356,25 @@ export function stationLines(bench: Pick<StoryWorkbench, 'kind' | 'station'>): s
   if (!s) return [];
   const out: string[] = [];
   if (s.present === false) out.push(`The ${bench.kind.replace(/_/g, ' ')} is gone`);
-  if (s.bookshelves !== null && s.bookshelves !== undefined) {
-    const [lo, hi] = s.topOffer ?? [];
-    out.push(
-      `Bookshelves ${s.bookshelves}/${s.maxBookshelves ?? 15}` +
-        (lo !== undefined && hi !== undefined ? ` · top offer level ${lo === hi ? lo : `${lo}–${hi}`}` : ''),
-    );
-  }
+  if (s.bookshelves !== null && s.bookshelves !== undefined) out.push(bookshelfLine(s, s.bookshelves));
   if (s.condition) out.push(`Condition: ${s.condition}`);
-  if (bench.kind === 'brewing_stand') {
-    out.push(s.water ? `Water: ${s.water.join(', ')}` : 'No water nearby (a source block or a filled cauldron)');
-    if (s.fuel !== null && s.fuel !== undefined) out.push(`Fuel: ${s.fuel} brew${s.fuel === 1 ? '' : 's'} left`);
-  }
+  if (bench.kind === 'brewing_stand') out.push(...brewingLines(s));
+  return out;
+}
+
+type Station = NonNullable<StoryWorkbench['station']>;
+
+/** "Bookshelves 7/15 · top offer level 8–30". */
+function bookshelfLine(s: Station, shelves: number): string {
+  const [lo, hi] = s.topOffer ?? [];
+  const offer = lo !== undefined && hi !== undefined ? ` · top offer level ${lo === hi ? lo : `${lo}–${hi}`}` : '';
+  return `Bookshelves ${shelves}/${s.maxBookshelves ?? 15}` + offer;
+}
+
+/** A brewing stand's water and fuel. */
+function brewingLines(s: Station): string[] {
+  const out = [s.water ? `Water: ${s.water.join(', ')}` : 'No water nearby (a source block or a filled cauldron)'];
+  if (s.fuel !== null && s.fuel !== undefined) out.push(`Fuel: ${s.fuel} brew${s.fuel === 1 ? '' : 's'} left`);
   return out;
 }
 

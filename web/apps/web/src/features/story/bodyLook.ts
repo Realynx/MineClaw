@@ -38,17 +38,27 @@ export function ghostDigs(g: NonNullable<StoryColonyState['ghosts']>['blocks'][n
  * `place` ghost with id 0 (air) has nothing to draw and is left out. */
 export function hologramCells(st: Pick<StoryColonyState, 'ghosts' | 'builds'> | undefined): { cells: HoloCell[]; rev: string } {
   const builds = new Map((st?.builds ?? []).map((b) => [String(b.id), b.status] as const));
+  const ghosts = st?.ghosts;
   const cells: HoloCell[] = [];
-  for (const g of st?.ghosts?.blocks ?? []) {
-    const state = holoState(g[6], builds.get(String(g[5])));
-    if (!state) continue;
-    // The 8th element (the bot since the mine designer): `dig` cells carry the block expected there (the world's when queued),
-    // so they are told apart by kind, not by id 0; they draw as red outlines until the cell is air. Older 7-element ghosts:
-    // id 0 = dig.
-    const dig = ghostDigs(g);
-    if (!dig && g[3] === 0) continue;
-    cells.push({ x: g[0], y: g[1], z: g[2], id: dig ? 0 : g[3], meta: dig ? 0 : g[4], build: g[5], state });
+  for (const g of ghosts?.blocks ?? []) {
+    const cell = holoCell(g, builds);
+    if (cell) cells.push(cell);
   }
   const sig = [...builds].map(([id, s]) => `${id}:${s}`).join(',');
-  return { cells, rev: `${st?.ghosts?.rev ?? 0}|${cells.length}|${sig}` };
+  return { cells, rev: `${ghosts?.rev ?? 0}|${cells.length}|${sig}` };
+}
+
+/** A ghost's hologram cell (null: nothing to draw). */
+function holoCell(
+  g: NonNullable<StoryColonyState['ghosts']>['blocks'][number],
+  builds: ReadonlyMap<string, string>,
+): HoloCell | null {
+  const state = holoState(g[6], builds.get(String(g[5])));
+  if (!state) return null;
+  // The 8th element (the bot since the mine designer): `dig` cells carry the block expected there (the world's when queued),
+  // so they are told apart by kind, not by id 0; they draw as red outlines until the cell is air. Older 7-element ghosts:
+  // id 0 = dig.
+  const dig = ghostDigs(g);
+  if (!dig && g[3] === 0) return null;
+  return { x: g[0], y: g[1], z: g[2], id: dig ? 0 : g[3], meta: dig ? 0 : g[4], build: g[5], state };
 }
