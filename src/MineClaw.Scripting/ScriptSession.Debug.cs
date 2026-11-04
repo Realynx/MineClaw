@@ -147,58 +147,15 @@ public sealed partial class ScriptSession
     {
         long now = Environment.TickCount64;
         bool live = IsLive;
-        if (live && _o.DebugProbe) Volatile.Write(ref _watchUntil, now + (long)WatchLease.TotalMilliseconds);
+        RenewWatch(live, now);
         var probe = live ? _runtime as IScriptDebugProbe : null;
         var sample = _sample;
         var act = _actionNow;
-
-        // Off-thread refresh while the engine is still (a long gen/goto, a pause): the script thread can't sample until it
-        // runs again, so read the locals here. Only reads (no getters run); any race is caught and the sample kept.
-        if (probe != null && _blocked && (sample == null || now - sample.Tick > 1000 || (act != null && sample.Tick < TickOf(act.Started))))
-        {
-            lock (_probeLock)
-                try
-                {
-                    if (_blocked)
-                    {
-                        var (locals, note) = probe.Locals();
-                        var stack = probe.LastStackText();
-                        Sdk.MachineRunner? m;
-                        lock (_machines) m = _machines.Count > 0 ? _machines[^1] : null;
-                        JsonNode? bb = sample?.Blackboard;
-                        if (m != null) try { bb = m.Blackboard(); } catch (Exception) { }
-                        sample = new DebugSample(now, stack, locals, note, bb, m != null, sample?.Tick);
-                        _sample = sample;
-                        Interlocked.Increment(ref _seq);
-                    }
-                }
-                catch (Exception ex) { ProbeFailed(ex); }
-        }
+        sample = RefreshDebugSample(probe, sample, act, now);
 
         var frames = ParseStack(sample?.Stack ?? (probe?.LastStackText()));
-        (string File, int Line, int Col)? at = null;
-        try { at = probe?.LiveLocation(); } catch (Exception) { }
-        int line = Line, col = 0;
-        bool lineLive = false;
-        string? inSdk = null;
-        if (at is { Line: > 0 } a)
-        {
-            if (a.File == "script") { line = a.Line; col = a.Col; lineLive = true; }
-            else
-            {
-                inSdk = $"{a.File}:{a.Line}";
-                if (frames.FirstOrDefault(f => f.Script) is { } sf) line = sf.Line;
-            }
-        }
-        else if (frames.FirstOrDefault(f => f.Script) is { } sf2) line = sf2.Line;
-
-        ScriptMachineView? machine = null;
-        if (_machineTrace is { } mt)
-        {
-            var bb = sample is { HasMachine: true } s0 && s0.Blackboard != null && s0.Tick >= mt.Tick ? s0.Blackboard : mt.Blackboard;
-            double? bbAge = bb == null ? null : Math.Round((now - (ReferenceEquals(bb, mt.Blackboard) ? mt.Tick : sample!.Tick)) / 1000.0, 1);
-            machine = new ScriptMachineView(mt.Id, mt.State, mt.Transitions, mt.History, bb?.DeepClone(), bbAge);
-        }
+        var (line, col, lineLive, inSdk) = DebugLocation(probe, frames);
+        var machine = DebugMachine(sample, now);
 
         List<ScriptLaneView> lanes;
         lock (_traceLanes) lanes = _traceLanes.Select(kv => new ScriptLaneView(kv.Key, kv.Value.Body, SafeStatus(kv.Value))).ToList();
@@ -206,31 +163,114 @@ public sealed partial class ScriptSession
         List<string> logs;
         lock (_lock) logs = Logs.TakeLast(8).ToList();
         var paused = Status == ScriptStatus.Paused;
+        var (stackAge, localsAge) = DebugAges(sample, now);
         return new ScriptDebugSnapshot
         {
             SessionId = Id, Name = Name, Version = Request.Version, Lang = ScriptLanguages.Tag(Language),
             Status = Status.ToString().ToLowerInvariant(), Live = live, Body = _host.Body ?? "main", Author = Request.Author,
             Role = Request.Role, Crew = Request.CrewId, Coordinator = Request.Role != null ? Request.Coordinator : null, At = _time.GetUtcNow(), Started = Started, Seq = Interlocked.Read(ref _seq),
             Line = line, Column = col, LineLive = lineLive && live, InSdk = inSdk, Snippet = SourceLine(line),
-            Stack = frames, StackAgeSeconds = sample != null ? Math.Round((now - sample.Tick) / 1000.0, 1) : null,
-            Action = act == null ? null : new ScriptActionView(act.Label, ArgsText(act.Args),
-                Math.Round(Stopwatch.GetElapsedTime(act.Started, act.Ended != 0 ? act.Ended : Stopwatch.GetTimestamp()).TotalSeconds, 2),
-                act.Atomic, act.Ended == 0 && live, act.Ok),
+            Stack = frames, StackAgeSeconds = stackAge,
+            Action = DebugAction(act, live),
             Actions = Actions, ElapsedSeconds = Math.Round(Elapsed.TotalSeconds, 1),
             Timings = Timings.OrderByDescending(kv => kv.Value.Total).Select(kv => new ScriptTimingRow(kv.Key, kv.Value.Calls, kv.Value.Fails,
                 Math.Round(kv.Value.Total.TotalSeconds, 2), kv.Value.Calls == 0 ? 0 : Math.Round(kv.Value.Total.TotalMilliseconds / kv.Value.Calls, 1))).ToList(),
             Params = ParseJson(ParamsJson), Args = ParseJson(Request.ArgsJson),
             Checkpoint = Checkpoint, CheckpointsPassed = CheckpointsPassed, CheckpointTotal = CheckpointTotal,
             Paused = paused, PausePending = PausePending && !paused, PauseKind = PausedFor?.ToString().ToLowerInvariant(), PauseReason = PauseReason,
-            PausedSeconds = PausedAt is { } pa ? Math.Round((_time.GetUtcNow() - pa).TotalSeconds, 1) : null,
+            PausedSeconds = PausedSecondsNow(),
             Machine = machine, Patching = Patching, PatchNote = PatchNote, Patches = Patches,
             Locals = sample?.Locals,
-            LocalsNote = probe == null ? (live ? "locals are shown for JavaScript only" : "the script ended") : sample?.LocalsNote ?? (sample == null ? "sampling starts with the next statement or action" : null),
-            LocalsAgeSeconds = sample?.Locals != null ? Math.Round((now - sample.Tick) / 1000.0, 1) : null,
+            LocalsNote = DebugLocalsNote(probe, live, sample),
+            LocalsAgeSeconds = localsAge,
             Lanes = lanes, ProgressPct = ProgressPct, ProgressNote = ProgressNote, LastFailure = LastFailure, Outcome = Outcome, Logs = logs,
             Code = code ? Code : null,
         };
     }
+
+    /// <summary>A live watcher takes or renews the lease that keeps the script thread sampling.</summary>
+    private void RenewWatch(bool live, long now)
+    {
+        if (live && _o.DebugProbe) Volatile.Write(ref _watchUntil, now + (long)WatchLease.TotalMilliseconds);
+    }
+
+    /// <summary>
+    /// Off-thread refresh while the engine is still (a long gen/goto, a pause): the script thread can't sample until it runs again,
+    /// so read the locals here. Only reads (no getters run); any race is caught and the sample kept.
+    /// </summary>
+    private DebugSample? RefreshDebugSample(IScriptDebugProbe? probe, DebugSample? sample, ActionNow? act, long now)
+    {
+        if (probe == null || !_blocked || !DebugSampleStale(sample, act, now)) return sample;
+        lock (_probeLock)
+            try
+            {
+                if (_blocked) sample = TakeDebugSample(probe, sample, now);
+            }
+            catch (Exception ex) { ProbeFailed(ex); }
+        return sample;
+    }
+
+    /// <summary>No sample, one older than a second, or one from before the current action started.</summary>
+    private static bool DebugSampleStale(DebugSample? sample, ActionNow? act, long now) =>
+        sample == null || now - sample.Tick > 1000 || (act != null && sample.Tick < TickOf(act.Started));
+
+    private DebugSample TakeDebugSample(IScriptDebugProbe probe, DebugSample? sample, long now)
+    {
+        var (locals, note) = probe.Locals();
+        var stack = probe.LastStackText();
+        Sdk.MachineRunner? m;
+        lock (_machines) m = _machines.Count > 0 ? _machines[^1] : null;
+        JsonNode? bb = sample?.Blackboard;
+        if (m != null) try { bb = m.Blackboard(); } catch (Exception) { }
+        var fresh = new DebugSample(now, stack, locals, note, bb, m != null, sample?.Tick);
+        _sample = fresh;
+        Interlocked.Increment(ref _seq);
+        return fresh;
+    }
+
+    /// <summary>The script line now: the engine's live location in the script, else the innermost script frame (inside an SDK helper: which one).</summary>
+    private (int Line, int Col, bool LineLive, string? InSdk) DebugLocation(IScriptDebugProbe? probe, IReadOnlyList<ScriptFrame> frames)
+    {
+        (string File, int Line, int Col)? at = null;
+        try { at = probe?.LiveLocation(); } catch (Exception) { }
+        int line = Line;
+        string? inSdk = null;
+        if (at is { Line: > 0 } a)
+        {
+            if (a.File == "script") return (a.Line, a.Col, true, null);
+            inSdk = $"{a.File}:{a.Line}";
+            if (frames.FirstOrDefault(f => f.Script) is { } sf) line = sf.Line;
+        }
+        else if (frames.FirstOrDefault(f => f.Script) is { } sf2) line = sf2.Line;
+        return (line, 0, false, inSdk);
+    }
+
+    /// <summary>The machine's state and its blackboard (the newer of the sample's and the trace's).</summary>
+    private ScriptMachineView? DebugMachine(DebugSample? sample, long now)
+    {
+        if (_machineTrace is not { } mt) return null;
+        var bb = sample is { HasMachine: true } s0 && s0.Blackboard != null && s0.Tick >= mt.Tick ? s0.Blackboard : mt.Blackboard;
+        double? bbAge = bb == null ? null : Math.Round((now - (ReferenceEquals(bb, mt.Blackboard) ? mt.Tick : sample!.Tick)) / 1000.0, 1);
+        return new ScriptMachineView(mt.Id, mt.State, mt.Transitions, mt.History, bb?.DeepClone(), bbAge);
+    }
+
+    /// <summary>How old the sample's stack and its locals are (seconds; null when there is none).</summary>
+    private static (double? Stack, double? Locals) DebugAges(DebugSample? sample, long now)
+    {
+        double? stack = sample != null ? Math.Round((now - sample.Tick) / 1000.0, 1) : null;
+        double? locals = sample?.Locals != null ? Math.Round((now - sample.Tick) / 1000.0, 1) : null;
+        return (stack, locals);
+    }
+
+    private static ScriptActionView? DebugAction(ActionNow? act, bool live) => act == null ? null : new ScriptActionView(act.Label, ArgsText(act.Args),
+        Math.Round(Stopwatch.GetElapsedTime(act.Started, act.Ended != 0 ? act.Ended : Stopwatch.GetTimestamp()).TotalSeconds, 2),
+        act.Atomic, act.Ended == 0 && live, act.Ok);
+
+    private double? PausedSecondsNow() => PausedAt is { } pa ? Math.Round((_time.GetUtcNow() - pa).TotalSeconds, 1) : null;
+
+    private static string? DebugLocalsNote(IScriptDebugProbe? probe, bool live, DebugSample? sample) =>
+        probe == null ? (live ? "locals are shown for JavaScript only" : "the script ended")
+        : sample?.LocalsNote ?? (sample == null ? "sampling starts with the next statement or action" : null);
 
     private static string SafeStatus(Crew.ILane l)
     {
@@ -262,22 +302,27 @@ public sealed partial class ScriptSession
             var parts = new List<string>();
             foreach (var p in a.EnumerateObject())
             {
-                var v = p.Value;
-                string text = v.ValueKind switch
-                {
-                    JsonValueKind.String => v.GetString() ?? "",
-                    JsonValueKind.Number or JsonValueKind.True or JsonValueKind.False => v.GetRawText(),
-                    JsonValueKind.Object when v.TryGetProperty("x", out var x) && v.TryGetProperty("y", out var y) && v.TryGetProperty("z", out var z) =>
-                        $"{x.GetRawText()},{y.GetRawText()},{z.GetRawText()}",
-                    JsonValueKind.Null or JsonValueKind.Undefined => "",
-                    _ => v.GetRawText(),
-                };
+                string text = ArgText(p.Value);
                 if (text.Length > 0) parts.Add(text);
             }
             return parts.Count == 0 ? null : Short(string.Join(" ", parts), 120);
         }
         catch (Exception) { return null; }
     }
+
+    /// <summary>One arg's text: a string as is, a number/bool raw, {x,y,z} as "x,y,z", null as nothing, else raw JSON.</summary>
+    private static string ArgText(JsonElement v) => v.ValueKind switch
+    {
+        JsonValueKind.String => v.GetString() ?? "",
+        JsonValueKind.Number or JsonValueKind.True or JsonValueKind.False => v.GetRawText(),
+        JsonValueKind.Object => PosArgText(v) ?? v.GetRawText(),
+        JsonValueKind.Null or JsonValueKind.Undefined => "",
+        _ => v.GetRawText(),
+    };
+
+    private static string? PosArgText(JsonElement v) =>
+        v.TryGetProperty("x", out var x) && v.TryGetProperty("y", out var y) && v.TryGetProperty("z", out var z)
+            ? $"{x.GetRawText()},{y.GetRawText()},{z.GetRawText()}" : null;
 
     private static readonly Regex FrameRx = new(@"at\s+(?:(?<fn>[^\n]+?)\s+\()?(?<file>[\w.\-/]+):(?<line>\d+):(?<col>\d+)\)?", RegexOptions.Compiled);
 
@@ -293,21 +338,28 @@ public sealed partial class ScriptSession
         var list = new List<ScriptFrame>();
         foreach (Match m in FrameRx.Matches(text))
         {
-            var file = m.Groups["file"].Value;
-            int line = int.Parse(m.Groups["line"].Value, System.Globalization.CultureInfo.InvariantCulture);
-            int col = int.Parse(m.Groups["col"].Value, System.Globalization.CultureInfo.InvariantCulture);
-            bool script = file == "script";
-            if (script && line == 1) col = Math.Max(1, col - Runtime.Js.JsRuntime.WrapPrefix.Length);
-            var fn = m.Groups["fn"].Success ? m.Groups["fn"].Value.Trim() : "";
-            if (fn.Length == 0 && script) continue; // the wrapper's invocation (global code), not a frame of the script
-            if (fn.Length == 0 || fn is "anonymous" or "(anonymous)") fn = "(anonymous)";
-            list.Add(new ScriptFrame(fn, file, line, col, script));
+            if (FrameOf(m) is not { } frame) continue;
+            list.Add(frame);
             if (list.Count >= 24) break;
         }
         // The outermost script frame is the script body itself (the async wrapper).
         int top = list.FindLastIndex(f => f.Script);
         if (top >= 0 && top == list.Count - 1 && list[top].Function == "(anonymous)") list[top] = list[top] with { Function = "(top level)" };
         return list;
+    }
+
+    /// <summary>One stack line as a frame (null: the wrapper's own invocation).</summary>
+    private static ScriptFrame? FrameOf(Match m)
+    {
+        var file = m.Groups["file"].Value;
+        int line = int.Parse(m.Groups["line"].Value, System.Globalization.CultureInfo.InvariantCulture);
+        int col = int.Parse(m.Groups["col"].Value, System.Globalization.CultureInfo.InvariantCulture);
+        bool script = file == "script";
+        if (script && line == 1) col = Math.Max(1, col - Runtime.Js.JsRuntime.WrapPrefix.Length);
+        var fn = m.Groups["fn"].Success ? m.Groups["fn"].Value.Trim() : "";
+        if (fn.Length == 0 && script) return null; // the wrapper's invocation (global code), not a frame of the script
+        if (fn.Length == 0 || fn is "anonymous" or "(anonymous)") fn = "(anonymous)";
+        return new ScriptFrame(fn, file, line, col, script);
     }
 
     private sealed record DebugSample(long Tick, string? Stack, IReadOnlyList<ScriptLocal>? Locals, string? LocalsNote, JsonNode? Blackboard,
