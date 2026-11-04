@@ -327,6 +327,8 @@ public sealed class StorageState
     public List<Stack> Contents { get; set; } = new();
     public int FreeSlots { get; set; } = 27;
     public DateTimeOffset? KnownAt { get; set; }
+    /// <summary>When a body last looked inside (the bot's memory of the chest); null = nobody has (StoryColony.StockCheck.cs).</summary>
+    public DateTimeOffset? SeenAt { get; set; }
     /// <summary>Enchanted gear known to be in this chest (put there by the colony's pawns): the contents list can't tell them apart.</summary>
     public List<EnchStack> Enchanted { get; set; } = new();
     public long Rev { get; set; }
@@ -424,6 +426,8 @@ public sealed class BillState
     public int? XpNeeded { get; set; }
     /// <summary>What the last job made ("enchanted diamond pickaxe: Fortune III", "brewed 3 Potion of Swiftness").</summary>
     public string? Last { get; set; }
+    /// <summary>A furnace bill's fuel override (StoryFuels.Choices); null = the bench's setting.</summary>
+    public string? Fuel { get; set; }
 }
 
 public sealed class WorkbenchState
@@ -437,8 +441,16 @@ public sealed class WorkbenchState
     public string? LoadedBill { get; set; }
     public int LoadedCount { get; set; }
     public DateTimeOffset? ReadyAt { get; set; }
+    /// <summary>The recipe a furnace was loaded with (its bill may be gone by the time it is collected: it still is).</summary>
+    public string? LoadedRecipe { get; set; }
+    /// <summary>When the furnace was loaded (its expected progress: an item every 10 s).</summary>
+    public DateTimeOffset? LoadedAt { get; set; }
     /// <summary>A brewing stand's fuel (brews left) as the colony last left it; null = unknown.</summary>
     public int? Fuel { get; set; }
+    /// <summary>A furnace's fuel choice (StoryFuels.Choices); null = auto.</summary>
+    public string? FuelSetting { get; set; }
+    /// <summary>Items a furnace can still smelt on the fuel the colony loaded (burn time and fuel-slot leftovers), as last left.</summary>
+    public double FuelCredit { get; set; }
     public long Rev { get; set; }
 }
 

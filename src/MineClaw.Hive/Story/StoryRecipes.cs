@@ -23,7 +23,8 @@ public sealed record StoryRecipe(string Id, string Label, string Workbench, stri
     /// <summary>The output's variant follows the input's (planks of the log's wood): its stock counts every variant.</summary>
     public bool AnyOutput { get; init; }
 
-    public JsonObject Json()
+    /// <param name="d">With the version: a furnace recipe lists the fuels it can burn, a brew its blaze powder (the fuel table).</param>
+    public JsonObject Json(IGameData? d = null)
     {
         var json = new JsonObject
         {
@@ -45,6 +46,13 @@ public sealed record StoryRecipe(string Id, string Label, string Workbench, stri
             if (s.Enchantments is { Count: > 0 } ench) json["enchantments"] = new JsonArray(ench.Select(e => (JsonNode)e!).ToArray());
             json["modes"] = new JsonArray(s.Modes.Select(m => (JsonNode)m!).ToArray());
         }
+        // The fuel table (StoryFuels): what a furnace recipe can burn and how many items one unit smelts; a brew's blaze powder.
+        if (d != null && Workbench == "furnace" && Fuel) json["fuels"] = StoryFuels.Json(d, "any");
+        else if (Station?.Kind == "brew")
+            json["fuels"] = new JsonArray(new JsonObject
+            {
+                ["item"] = new JsonArray(StoryFuels.BlazePowder, 0), ["name"] = "blaze_powder", ["items_per_unit"] = MineClaw.Data.Brewing.BrewsPerPowder,
+            });
         return json;
     }
 }

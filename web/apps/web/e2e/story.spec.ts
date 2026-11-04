@@ -436,6 +436,25 @@ test('storage, bills, the build queue and the angled view', async ({ page }) => 
   expect(body(await pause)).toMatchObject({ op: 'pause' });
   if (shots) await page.screenshot({ path: `${shots}/story-bills.png` });
 
+  // The camp's furnace: coal only (the fuel picker), then a smelting bill shows its fuel table and its fuel need.
+  await page.keyboard.press('Escape');
+  const furnace = await pageAt(page, -2.5, -1.5);
+  await page.mouse.click(furnace.x, furnace.y);
+  await expect(bills).toBeVisible();
+  await expect(bills.getByTestId('fuel-picker')).toBeVisible();
+  const fuel = post(page, /\/workbenches$/);
+  await bills.getByRole('button', { name: 'Fuel: Coal', exact: true }).click();
+  expect(body(await fuel)).toMatchObject({ op: 'fuel', fuel: 'coal' });
+  await bills.getByRole('button', { name: 'Add bill' }).click();
+  await page.getByLabel('Search recipes').fill('iron');
+  await page.getByRole('button', { name: 'Recipe Iron ingot' }).click();
+  await expect(page.getByTestId('bill-fuels')).toContainText('coal 1 per 8 items');
+  const add3 = post(page, /\/bills$/);
+  await page.getByRole('button', { name: 'Add bill' }).last().click();
+  await add3;
+  await expect(bills.getByTestId('bill-fuel').first()).toContainText('1 coal');
+  if (shots) await page.screenshot({ path: `${shots}/story-furnace-fuel.png` });
+
   // The build queue: a 5×5 hut (walls 3 high, a door, a flat roof).
   await page.keyboard.press('Escape');
   await page.keyboard.press('b');
