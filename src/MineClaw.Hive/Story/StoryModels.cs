@@ -510,6 +510,8 @@ public sealed class ColonyMeta
     public bool AllowLava { get; set; }
     /// <summary>The 11-04 canal fix reopened this colony's blocked water cells once on load (StoryColony.BuildRetry.cs); false for older saves.</summary>
     public bool WaterRetried { get; set; }
+    /// <summary>The 11-04 "nothing beside or under" fix moved pour cells above their own dug cells down into them, once (StoryColony.BuildRetry.cs).</summary>
+    public bool WaterCellsFixed { get; set; }
     /// <summary>Work roles: named priority templates (StoryColony.Roles.cs). Null = an older save: the built-in roles are seeded.</summary>
     public List<WorkRole>? Roles { get; set; }
 }

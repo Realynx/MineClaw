@@ -55,6 +55,27 @@ public class BucketPourTests
     }
 
     [Fact]
+    public void A_fill_aim_reaches_the_source_from_the_sneaking_eye_too()
+    {
+        // A source in a 1-deep hole seen from stands around it, near and far: the server raytraces from the lower 1.12.2 sneaking eye
+        // when the body sneaks at an edge; an aim only the standing eye clears hits the rim and the bucket stays empty.
+        var g = LiquidTests.Island();
+        var src = new BlockPos(0, 63, 0);
+        g.Set(src, Blocks.Water, 0);
+        var drop = new Vec3d(0, Aiming.SneakEyeDrop, 0);
+        int aims = 0;
+        foreach (var (x, z) in new[] { (2, 0), (3, 0), (0, 3), (-3, 1), (2, 2), (-2, -3) })
+        {
+            var eye = new Vec3d(x + 0.5, 64 + 1.62, z + 0.5);
+            if (BucketOps.SourceAim(g.World, eye, src, 4.5) is not { } p) continue;
+            aims++;
+            Assert.Equal(src, BucketOps.FirstHit(g.World, eye, p, liquids: true));
+            Assert.Equal(src, BucketOps.FirstHit(g.World, eye - drop, p - drop, liquids: true));
+        }
+        Assert.True(aims >= 3, $"{aims} stands had an aim");
+    }
+
+    [Fact]
     public async Task A_cell_with_nothing_beside_or_under_it_says_so_instead_of_searching_for_a_face()
     {
         var g = LiquidTests.Island();

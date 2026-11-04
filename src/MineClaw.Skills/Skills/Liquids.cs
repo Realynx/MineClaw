@@ -174,13 +174,23 @@ public static class BucketOps
                 double z = src.Z + 0.5 + (o.Z != 0 ? o.Z * (0.5 - In) : v);
                 var p = new Vec3d(x, y, z);
                 double d = p.DistanceTo(eye);
-                if (d > reach || FirstHit(w, eye, p, liquids: true) != src) continue;
+                if (d > reach || !HitsFromBothEyes(w, eye, p, src)) continue;
                 double score = d + (f == BlockFace.Top ? 0 : 2);
                 if (score < bestScore) { bestScore = score; best = p; }
             }
             if (best is not null && f == BlockFace.Top) return best;
         }
         return best;
+    }
+
+    /// <summary>The look at <paramref name="p"/> reaches <paramref name="src"/> first from the standing eye and from the 1.12.2 sneaking
+    /// eye (<see cref="Aiming.SneakEyeDrop"/> lower, the same direction): the server raytraces from whichever it has, and a point barely
+    /// in view over a pond's rim is hit on the rim by the lower ray (FakeServer canal 1.12.2: "bucket didn't fill" at the colony's own
+    /// pool, the pool then skipped as unreachable).</summary>
+    private static bool HitsFromBothEyes(IBlockAccess w, Vec3d eye, Vec3d p, BlockPos src)
+    {
+        var drop = new Vec3d(0, Aiming.SneakEyeDrop, 0);
+        return FirstHit(w, eye, p, liquids: true) == src && FirstHit(w, eye - drop, p - drop, liquids: true) == src;
     }
 
     private static readonly BlockFace[] AimFaces = [BlockFace.Top, BlockFace.North, BlockFace.South, BlockFace.West, BlockFace.East];
@@ -314,6 +324,19 @@ public static class BucketOps
     public static bool HasPourFace(IBlockAccess w, BlockPos cell) =>
         BlockFaceExtensions.All.Any(f => cell.Offset(f) is var n && BlockShapes.HasCollision(w, n.X, n.Y, n.Z) && !Aiming.IsReplaceable(w, w.GetBlock(n.X, n.Y, n.Z)));
 
+    /// <summary>No face in this body's view: the cell may be one it hasn't seen lately (a stale or unloaded column reads as air), so it
+    /// walks to dry ground near the cell and looks again. → null when a face is there now, else what is around the cell (the failure
+    /// names it: live 11-04, 371 "nothing beside or under" with nothing to tell why).</summary>
+    private static async Task<string?> PourFaceNearAsync(SkillContext ctx, BlockPos cell, CancellationToken ct)
+    {
+        var near = new GoalFiltered(new GoalWithinReach(cell, 4.2), (x, y, z) => DryStand(ctx.World, x, y, z), $"dry ground near {SkillJson.Fmt(cell)}");
+        await ctx.Game.GotoAsync(near, null, ct).ConfigureAwait(false);
+        if (HasPourFace(ctx.World, cell)) return null;
+        string Name(BlockPos p) => ctx.World.IsLoaded(p.X, p.Z) ? ctx.BlockName(p) : "not loaded";
+        var sides = string.Join(", ", SkillWorld.Horizontal.Select(o => Name(cell + o)));
+        return $"under: {Name(cell.Down())}; beside: {sides}";
+    }
+
     /// <summary>Pours a full bucket into the empty cell <paramref name="cell"/> by clicking a neighbour's face.</summary>
     public static async Task<SkillResult> EmptyAsync(SkillContext ctx, BlockPos cell, bool lava, CancellationToken ct, Func<string?>? veto = null)
     {
@@ -324,8 +347,8 @@ public static class BucketOps
         if (ctx.Protected(cell)) return SkillResult.Fail(ctx.ProtectedText(cell, SkillJson.Fmt(cell)));
         // The server pours along its own raytrace of my look (from a lower eye while sneaking on 1.12.2): the pour aim keeps the
         // water in the cell from either eye, rather than on the rim of a dug hole.
-        if (!HasPourFace(ctx.World, cell))
-            return SkillResult.Fail($"nothing beside or under {SkillJson.Fmt(cell)} to pour against (the {(lava ? "lava" : "water")} would have nothing to hold it)");
+        if (!HasPourFace(ctx.World, cell) && await PourFaceNearAsync(ctx, cell, ct).ConfigureAwait(false) is { } around)
+            return SkillResult.Fail($"nothing beside or under {SkillJson.Fmt(cell)} to pour against ({around}): the {(lava ? "lava" : "water")} would have nothing to hold it");
         var me = ctx.Me;
         var aim = DryStand(ctx.World, me.X, me.Y, me.Z) ? Aiming.FindPourAim(ctx.World, ctx.World.Player.EyePosition, cell, 4.5) : null;
         if (aim is null)

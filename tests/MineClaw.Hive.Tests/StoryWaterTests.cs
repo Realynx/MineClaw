@@ -354,8 +354,8 @@ public sealed class StoryWaterTests
         // A two-deep column dug by its group: the lower cell's floor is dug too, refused; one deep is fine.
         var deep = new JsonObject { ["kind"] = "remove", ["blocks"] = Cells((4, 63, 12), (4, 62, 12)), ["group"] = "g" };
         Assert.Contains("nothing under 4,63,12", Add(c, deep, new JsonObject { ["kind"] = "water", ["blocks"] = Cells((4, 63, 12)), ["group"] = "g" }).Error);
-        // A stack of the item's own cells holds itself (the lower one on stone).
-        Assert.Null(Add(c, new JsonObject { ["kind"] = "water", ["blocks"] = Cells((8, 64, 12), (8, 65, 12)) }).Error);
+        // A stack of the item's own cells: the upper one is held, but nothing beside or under it to pour against (the ray passes water).
+        Assert.Contains("nothing beside or under 8,65,12", Add(c, new JsonObject { ["kind"] = "water", ["blocks"] = Cells((8, 64, 12), (8, 65, 12)) }).Error);
         _ = w;
     }
 
@@ -460,6 +460,49 @@ public sealed class StoryWaterTests
         _ = h;
     }
 
+    /// <summary>The FakeServer canal (live 11-04 follow-up, "scooped at 17,63,16"): a pawn holding two full buckets, a pool queued before
+    /// a canal. While the pool's dug cells still look solid to the colony (its view lags the dig), the canal must not take the full
+    /// buckets; and a water build still being poured is never a fill source.</summary>
+    [Fact]
+    public void Water_builds_go_in_queue_order_and_water_still_being_built_is_never_a_fill_source()
+    {
+        var (c, h, w) = Rig(carried: new Stack(326, 0, 1));
+        h.Lives[c.P()] = FakeStoryHost.Live(2, 64, 4, inv: [new Stack(326, 0, 1), new Stack(326, 0, 1)]);
+        var pool = new[] { (4, 16), (5, 16), (4, 17), (5, 17) };
+        foreach (var (x, z) in pool) w.Set(x, 63, z, 0);                    // dug (the pool's dig is done)
+        foreach (var x in new[] { 15, 16, 17, 18 }) w.Set(x, 63, 30, 0);   // and the canal's
+        Assert.Null(Add(c, new JsonObject { ["kind"] = "water", ["blocks"] = Cells(pool.Select(p => (p.Item1, 63, p.Item2)).ToArray()), ["infinite"] = true }).Error);
+        Assert.Null(Add(c, new JsonObject { ["kind"] = "water", ["blocks"] = Line(15, 18, 63, 30) }).Error);
+        var (poolB, canalB) = (c.Builds[0], c.Builds[1]);
+        // The colony's view still shows the pool's cells full of dirt: no job from the pool, and the canal waits its turn.
+        foreach (var (x, z) in pool) w.Set(x, 63, z, 3);
+        var none = c.Next();
+        Assert.NotEqual("pour", none["kind"]!.GetValue<string>());
+        Assert.Equal("waiting", canalB.Status);
+        Assert.Contains("water builds go in queue order", canalB.Reason);
+        c.Report(c.P(), Id(none), "done", null, null);
+        // The view catches up: the pool gets the full buckets (two corners).
+        foreach (var (x, z) in pool) w.Set(x, 63, z, 0);
+        Later();
+        var job = c.Next();
+        Assert.Equal("pour", job["kind"]!.GetValue<string>());
+        Assert.StartsWith($"pouring water ({poolB.Label})", job["label"]!.GetValue<string>());
+        // Two corners poured, the rest not yet settled: the pool is no fill source while it is being built.
+        w.Set(4, 63, 16, 9);
+        w.Set(5, 63, 17, 9);
+        w.Set(5, 63, 16, 9);
+        w.Set(4, 63, 17, 9); // every cell a source now (and it refills), but the build hasn't seen its cells done
+        Later();
+        Assert.Null(c.FillSource(w, false, new P3(16, 63, 30), new HashSet<P3>()));
+        foreach (var cell in JobCells(job)) c.Report(c.P(), Id(job), "progress", $"cell {cell} done", null);
+        c.Report(c.P(), Id(job), "done", "batch: 2/2 poured", null);
+        c.Next(); // the pick finds the other two cells already sources (they filled by themselves): the pool is done
+        Assert.Equal("done", poolB.Status);
+        Later();
+        var src = c.FillSource(w, false, new P3(16, 63, 30), new HashSet<P3>());
+        Assert.True(src is { } s && pool.Contains((s.X, s.Z)), $"filled at {src}");
+    }
+
     [Fact]
     public void Water_cells_blocked_by_the_old_canal_bugs_reopen_once_on_load()
     {
@@ -477,6 +520,54 @@ public sealed class StoryWaterTests
         Assert.Equal(["todo", "todo", "blocked"], water.Ghosts.Select(g => g.State));
         Assert.Equal("queued", water.Status);
         Assert.Equal("blocked", c.Builds[1].Ghosts[0].State);
+        Assert.False(c.MigrateWaterFailures()); // once
+    }
+
+    // ------------------------------------------------------------------ live 11-04: "nothing beside or under … to pour against" ×371
+
+    [Fact]
+    public void A_channel_drawn_one_above_a_full_trench_is_refused_at_queue_time_and_a_trench_channel_is_fine()
+    {
+        var (c, _, w) = Rig();
+        foreach (var x in new[] { 4, 5, 6 }) w.Set(x, 63, 12, 9); // the trench at the floor already holds water
+        var over = Add(c, new JsonObject { ["kind"] = "water", ["blocks"] = Line(4, 6, 64, 12) });
+        Assert.Contains("4,64,12 sits on water already", over.Error);
+        // Dug into the ground (dig and pour the same cells): every cell has the trench's floor and walls to pour against.
+        var dig = new JsonObject { ["kind"] = "remove", ["blocks"] = Line(8, 10, 63, 12), ["group"] = "t" };
+        var water = new JsonObject { ["kind"] = "water", ["blocks"] = Line(8, 10, 63, 12), ["group"] = "t" };
+        Assert.Null(Add(c, dig, water).Error);
+        Assert.Equal(c.Builds[0].Ghosts.Select(g => g.At), c.Builds[1].Ghosts.Select(g => g.At)); // the dig cells are the pour cells
+    }
+
+    [Fact]
+    public void A_pour_cell_with_nothing_to_pour_against_is_blocked_at_its_first_such_failure()
+    {
+        var (c, _, w) = Rig(carried: new Stack(325, 0, 1));
+        Pool(w, 0, 20);
+        Assert.Null(Add(c, new JsonObject { ["kind"] = "water", ["blocks"] = Line(4, 5, 64, 12) }).Error);
+        var job = c.Next();
+        c.Report(c.P(), Id(job), "progress", "cell 4,64,12 failed: nothing beside or under 4,64,12 to pour against (under: air; beside: air, air, air, air): the water would have nothing to hold it", null);
+        var g = c.Builds.Single().Ghosts.Single(x => x.At == new P3(4, 64, 12));
+        Assert.Equal("blocked", g.State); // not retried 6 times
+        Assert.Contains(c.Alerts, a => a.Text.Contains("nothing beside or under 4,64,12"));
+    }
+
+    [Fact]
+    public void Pour_cells_queued_above_their_own_dug_cells_move_down_into_them_once_on_load()
+    {
+        var (c, _, _) = Rig();
+        var dig = new JsonObject { ["kind"] = "remove", ["blocks"] = Line(4, 6, 63, 12), ["group"] = "t" };
+        var water = new JsonObject { ["kind"] = "water", ["blocks"] = Line(4, 6, 63, 12), ["group"] = "t" };
+        Assert.Null(Add(c, dig, water).Error);
+        var b = c.Builds[1];
+        foreach (var g in b.Ghosts) { g.At = g.At.Add(0, 1, 0); g.State = "blocked"; g.Reason = "nothing beside or under it to pour against"; }
+        b.Status = "blocked";
+        c.Meta.WaterCellsFixed = false; // a save from before the fix
+        c.Meta.WaterRetried = true;
+        Assert.True(c.MigrateWaterFailures());
+        Assert.Equal(c.Builds[0].Ghosts.Select(g => g.At).OrderBy(p => p.X), b.Ghosts.Select(g => g.At).OrderBy(p => p.X));
+        Assert.All(b.Ghosts, g => Assert.Equal(("todo", (string?)null), (g.State, g.Reason)));
+        Assert.Equal("queued", b.Status);
         Assert.False(c.MigrateWaterFailures()); // once
     }
 }
