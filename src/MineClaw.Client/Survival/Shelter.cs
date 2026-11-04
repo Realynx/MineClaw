@@ -55,6 +55,19 @@ public static class Shelter
             return false;
         }
 
+        // A cap beside the roof cell, on top of a head-level wall, when the roof has nothing to click yet.
+        void Roof(List<BlockPos> headSides)
+        {
+            var roof = feet.Up().Up();
+            if (Try(roof)) return;
+            foreach (var c in headSides.Where(S))
+            {
+                var cap = c.Up();
+                if (!Replaceable(w, cap) && !S(cap)) continue;
+                if (Try(cap) && Try(roof)) break;
+            }
+        }
+
         var feetSides = Sides.Select(f => feet + f.Normal()).ToList();
         var headSides = Sides.Select(f => feet.Up() + f.Normal()).ToList();
         foreach (var c in feetSides)
@@ -67,14 +80,7 @@ public static class Shelter
                 Try(c);
             }
         foreach (var c in headSides) Try(c);
-        var roof = feet.Up().Up();
-        if (!Try(roof))
-            foreach (var c in headSides.Where(S))
-            {
-                var cap = c.Up(); // beside the roof cell, on top of a head-level wall
-                if (!Replaceable(w, cap) && !S(cap)) continue;
-                if (Try(cap) && Try(roof)) break;
-            }
+        Roof(headSides);
         return plan;
     }
 
@@ -82,20 +88,24 @@ public static class Shelter
     public static int BlockRank(int id)
     {
         if (id <= 0 || id >= 256) return -1;
-        if (id is Blocks.Sapling or Blocks.Sand or Blocks.Gravel or Blocks.Tnt or Blocks.Leaves) return -1;
-        var b = Blocks.Get(id);
-        if (!b.Solid || b.CollisionHeight < 1 || b.Interactable || b.Hazard || b.Liquid || b.Transparent) return -1;
-        return id switch
-        {
-            Blocks.Cobblestone => 0,
-            Blocks.Planks => 1,
-            Blocks.Stone => 2,
-            Blocks.Netherrack => 3,
-            Blocks.Log => 5,
-            Blocks.Dirt or Blocks.Grass => 9, // dirt last
-            _ => 6,
-        };
+        if (NeverInBox.Contains(id)) return -1;
+        if (UnfitForBox(Blocks.Get(id))) return -1;
+        return BoxRanks.TryGetValue(id, out int rank) ? rank : 6;
     }
+
+    /// <summary>Blocks that fall, blow up, grow or let mobs see through: never a box wall.</summary>
+    private static readonly HashSet<int> NeverInBox = [Blocks.Sapling, Blocks.Sand, Blocks.Gravel, Blocks.Tnt, Blocks.Leaves];
+
+    /// <summary>The box's favourites (lower is better); any other fit block ranks 6.</summary>
+    private static readonly Dictionary<int, int> BoxRanks = new()
+    {
+        [Blocks.Cobblestone] = 0, [Blocks.Planks] = 1, [Blocks.Stone] = 2, [Blocks.Netherrack] = 3, [Blocks.Log] = 5,
+        [Blocks.Dirt] = 9, [Blocks.Grass] = 9, // dirt last
+    };
+
+    /// <summary>Not a full, solid, inert, opaque block.</summary>
+    private static bool UnfitForBox(BlockInfo b) =>
+        !b.Solid || b.CollisionHeight < 1 || b.Interactable || b.Hazard || b.Liquid || b.Transparent;
 
     private static BlockFace FaceFrom(BlockPos against, BlockPos target)
     {

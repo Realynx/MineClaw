@@ -46,27 +46,41 @@ public sealed partial class MinecraftClient
     public string DescribeStatus()
     {
         var p = World.Player.Snapshot;
-        var held = HeldStack();
         string dim = p.Dimension == -1 ? "nether" : "overworld";
         long tod = World.TimeOfDay;
         int hours = (int)((tod / 1000 + 6) % 24), minutes = (int)(tod % 1000 * 60 / 1000);
         var sb = new StringBuilder();
         sb.Append($"pos {p.Position.X:0.#},{p.Position.Y:0.#},{p.Position.Z:0.#}");
-        // Live 10-27 21:03: the join line said "hp 20/20 food 20/20 | airborne | OVER VOID" from the defaults before the 0x08
-        // health and the chunks under the feet arrived (a second later: food 10, ground verified). Unknown = "loading…".
-        sb.Append(p.IsDead ? " | DEAD" : VitalsKnown ? $" | hp {p.Health}/20 food {p.Food}/20" : " | hp/food loading…");
-        sb.Append($" | held {(held.IsEmpty ? "nothing" : ItemName(held.Id, held.Damage) + (held.Count > 1 ? " x" + held.Count : ""))}");
+        sb.Append(VitalsText(p));
+        sb.Append($" | held {HeldText(HeldStack())}");
         if (AirStatus is { } air) sb.Append($" | {air}{(World.Player.HeadUnderWater ? ", head under water" : "")}{(Surfacing ? ", surfacing" : "")}");
-        sb.Append($" | {dim} {hours:00}:{minutes:00} {(World.IsNight ? "night" : "day")}{(IsRaining ? World.Thunder * World.Rain > 0.2f ? " thunderstorm" : " rain" : "")}");
-        if (!GroundKnown) sb.Append(" | ground loading…");
-        else
-        {
-            if (!p.OnGround) sb.Append(" | airborne");
-            if (World.IsPlayerOverVoid(p.Position)) sb.Append(" | OVER VOID");
-        }
+        sb.Append($" | {dim} {hours:00}:{minutes:00} {(World.IsNight ? "night" : "day")}{WeatherText()}");
+        AppendGroundStatus(sb, p);
         sb.Append(CurrentAction is { } a ? $" | doing {a}" : " | idle");
         if (_state != ClientState.Playing) sb.Append($" | {_state.ToString().ToLowerInvariant()}");
         return sb.ToString();
+    }
+
+    /// <summary>Live 10-27 21:03: the join line said "hp 20/20 food 20/20 | airborne | OVER VOID" from the defaults before the 0x08
+    /// health and the chunks under the feet arrived (a second later: food 10, ground verified). Unknown = "loading…".</summary>
+    private string VitalsText(PlayerSnapshot p) =>
+        p.IsDead ? " | DEAD" : VitalsKnown ? $" | hp {p.Health}/20 food {p.Food}/20" : " | hp/food loading…";
+
+    private string HeldText(ItemStack held) =>
+        held.IsEmpty ? "nothing" : ItemName(held.Id, held.Damage) + (held.Count > 1 ? " x" + held.Count : "");
+
+    private string WeatherText() => IsRaining ? World.Thunder * World.Rain > 0.2f ? " thunderstorm" : " rain" : "";
+
+    /// <summary>The ground part of the status: still loading, or airborne / over the void.</summary>
+    private void AppendGroundStatus(StringBuilder sb, PlayerSnapshot p)
+    {
+        if (!GroundKnown)
+        {
+            sb.Append(" | ground loading…");
+            return;
+        }
+        if (!p.OnGround) sb.Append(" | airborne");
+        if (World.IsPlayerOverVoid(p.Position)) sb.Append(" | OVER VOID");
     }
 
     /// <summary>Grouped inventory ("cobblestone x64, ..."), held item, free slots, armor. <paramref name="detail"/> adds the hotbar layout.</summary>
@@ -119,6 +133,18 @@ public sealed partial class MinecraftClient
         // Underfoot + void edges.
         int below = World.GetBlock(fx, fy - 1, fz);
         sb.Append($"at {fx},{fy},{fz} on {BlockName(below, 0)}");
+        AppendVoidEdges(sb, fx, fy, fz);
+        var all = World.FindBlocks(me, radius, (id, _) => id != 0, 40000);
+        AppendCensus(sb, all, detail);
+        AppendPointsOfInterest(sb, all, detail);
+        AppendEntitiesAround(sb, me, radius, detail);
+        return Truncate(sb.ToString(), maxChars);
+    }
+
+    /// <summary>The void in each direction (within 8, a two-high wall stops the look) and the edge mark when the void touches the
+    /// feet cell.</summary>
+    private void AppendVoidEdges(StringBuilder sb, int fx, int fy, int fz)
+    {
         var edges = new List<string>();
         foreach (var (name, dx, dz) in new[] { ("N", 0, -1), ("E", 1, 0), ("S", 0, 1), ("W", -1, 0) })
         {
@@ -131,18 +157,22 @@ public sealed partial class MinecraftClient
         }
         sb.Append(edges.Count > 0 ? $"; void {string.Join(" ", edges)}" : "; no void within 8");
         if (Safety.VoidNeighbourCount(World, fx, fy, fz) > 0) sb.Append(" (EDGE)");
+    }
 
-        // Block census.
-        var all = World.FindBlocks(me, radius, (id, _) => id != 0, 40000);
-        // Variant blocks keep their type ("cobblestone_slab", not every slab as "stone_slab": live 10-27 the brain read
-        // the generator's cobble slabs as smooth-stone ones and planned smelting).
+    /// <summary>Block census, most first. Variant blocks keep their type ("cobblestone_slab", not every slab as "stone_slab": live
+    /// 10-27 the brain read the generator's cobble slabs as smooth-stone ones and planned smelting). Then the crops.</summary>
+    private void AppendCensus(StringBuilder sb, List<FoundBlock> all, bool detail)
+    {
         var counts = all.GroupBy(f => CensusName(f.Id, f.Meta)).ToDictionary(g => g.Key, g => g.Count());
         sb.Append("; blocks: ");
         sb.Append(counts.Count == 0 ? "none" : string.Join(", ", counts.OrderByDescending(kv => kv.Value).Take(detail ? 16 : 7)
             .Select(kv => $"{kv.Key} {kv.Value}")));
         if (CropSummary(all) is { } crops) sb.Append("; ").Append(crops);
+    }
 
-        // Points of interest: nearest of each type.
+    /// <summary>Points of interest: the nearest of each type (with its count).</summary>
+    private void AppendPointsOfInterest(StringBuilder sb, List<FoundBlock> all, bool detail)
+    {
         var poi = new List<string>();
         foreach (var grp in all.Where(f => InterestingBlocks.Contains(f.Id)).GroupBy(f => Canonical(f.Id)))
         {
@@ -151,8 +181,11 @@ public sealed partial class MinecraftClient
             poi.Add($"{BlockName(grp.Key, 0)}@{nearest.Pos.X},{nearest.Pos.Y},{nearest.Pos.Z}{(n > 1 ? $"(x{n})" : "")}");
         }
         if (poi.Count > 0) sb.Append("; near: ").Append(string.Join(" ", poi.Take(detail ? 24 : 10)));
+    }
 
-        // Entities.
+    /// <summary>Players, mobs (hostile ones marked "!") and drops around, and (detail) who else is online.</summary>
+    private void AppendEntitiesAround(StringBuilder sb, Vec3d me, double radius, bool detail)
+    {
         var ents = World.Entities.Nearby(me, Math.Max(radius * 2, 24));
         var players = ents.Where(e => e.Kind == EntityKind.Player).Select(e => $"{e.Name} {e.Position.DistanceTo(me):0}m");
         var mobs = ents.Where(e => e.Kind == EntityKind.Mob).GroupBy(e => e.DisplayName)
@@ -167,7 +200,6 @@ public sealed partial class MinecraftClient
         if (it.Count > 0) sb.Append("; drops: ").Append(string.Join(", ", it.Take(detail ? 12 : 5)));
         var online = World.Entities.OnlinePlayers.Where(n => !string.Equals(n, Options.Username, StringComparison.OrdinalIgnoreCase)).ToList();
         if (detail && online.Count > 0) sb.Append("; online: ").Append(string.Join(", ", online));
-        return Truncate(sb.ToString(), maxChars);
     }
 
     /// <summary>

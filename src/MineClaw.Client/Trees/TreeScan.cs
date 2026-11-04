@@ -53,15 +53,17 @@ public static class TreeScan
     };
 
     /// <summary>"oak" / "birch" / "spruce" (also "pine", "fir") / "jungle" / "acacia" / "dark oak" → species (= sapling damage), else null.</summary>
-    public static int? ParseWood(string? s) => s?.Trim().ToLowerInvariant() switch
+    public static int? ParseWood(string? s) =>
+        s?.Trim().ToLowerInvariant() is { } key && WoodNames.TryGetValue(key, out int wood) ? wood : null;
+
+    private static readonly Dictionary<string, int> WoodNames = new(StringComparer.Ordinal)
     {
-        "oak" or "oak tree" => 0,
-        "spruce" or "pine" or "fir" or "spruce tree" or "pine tree" => 1,
-        "birch" or "birch tree" => 2,
-        "jungle" or "jungle tree" => 3,
-        "acacia" or "acacia tree" => 4,
-        "dark oak" or "darkoak" or "dark_oak" or "roofed oak" or "dark oak tree" => 5,
-        _ => null,
+        ["oak"] = 0, ["oak tree"] = 0,
+        ["spruce"] = 1, ["pine"] = 1, ["fir"] = 1, ["spruce tree"] = 1, ["pine tree"] = 1,
+        ["birch"] = 2, ["birch tree"] = 2,
+        ["jungle"] = 3, ["jungle tree"] = 3,
+        ["acacia"] = 4, ["acacia tree"] = 4,
+        ["dark oak"] = 5, ["darkoak"] = 5, ["dark_oak"] = 5, ["roofed oak"] = 5, ["dark oak tree"] = 5,
     };
 
     private static readonly BlockPos[] Six =
@@ -257,9 +259,7 @@ public static class TreeScan
             {
                 if (dx == 0 && dy == 0 && dz == 0) continue;
                 var n = p.Offset(dx, dy, dz);
-                if ((uint)n.Y >= (uint)h || Math.Abs(n.X - seed.X) > MaxSpread || Math.Abs(n.Z - seed.Z) > MaxSpread) continue;
-                int nid = w.GetBlock(n.X, n.Y, n.Z);
-                if (set.Contains(n) || !Wood.IsLog(nid) || Wood.Type(nid, w.GetMeta(n.X, n.Y, n.Z)) != wood || SelfPlaced(w, n)) continue;
+                if (!JoinsCluster(w, n, seed, wood, h, set)) continue;
                 set.Add(n);
                 q.Enqueue(n);
             }
@@ -267,13 +267,32 @@ public static class TreeScan
         return set;
     }
 
+    /// <summary>A log of the same wood within the cluster's spread, not yet in it and not one a hive bot placed.</summary>
+    private static bool JoinsCluster(IBlockAccess w, BlockPos n, BlockPos seed, int wood, int h, HashSet<BlockPos> set)
+    {
+        if ((uint)n.Y >= (uint)h || Math.Abs(n.X - seed.X) > MaxSpread || Math.Abs(n.Z - seed.Z) > MaxSpread) return false;
+        int nid = w.GetBlock(n.X, n.Y, n.Z);
+        return !set.Contains(n) && Wood.IsLog(nid) && Wood.Type(nid, w.GetMeta(n.X, n.Y, n.Z)) == wood && !SelfPlaced(w, n);
+    }
+
     /// <summary>Leaves whose leaf-path distance to <paramref name="logs"/> is ≤ 4 and strictly less than to any other log.</summary>
     private static HashSet<BlockPos> OwnLeaves(IBlockAccess w, HashSet<BlockPos> logs)
     {
         var mine = LeafDistances(w, logs);
         if (mine.Count == 0) return [];
+        var others = OtherLogsNear(w, logs, mine.Keys);
+        var theirs = others.Count == 0 ? new Dictionary<BlockPos, int>() : LeafDistances(w, others);
+        var result = new HashSet<BlockPos>();
+        foreach (var (p, d) in mine)
+            if (!theirs.TryGetValue(p, out var o) || d < o) result.Add(p);
+        return result;
+    }
+
+    /// <summary>The logs (not the tree's own) within leaf range of the box around <paramref name="leaves"/>.</summary>
+    private static HashSet<BlockPos> OtherLogsNear(IBlockAccess w, HashSet<BlockPos> logs, IEnumerable<BlockPos> leaves)
+    {
         int x0 = int.MaxValue, x1 = int.MinValue, y0 = int.MaxValue, y1 = int.MinValue, z0 = int.MaxValue, z1 = int.MinValue;
-        foreach (var l in mine.Keys)
+        foreach (var l in leaves)
         {
             x0 = Math.Min(x0, l.X); x1 = Math.Max(x1, l.X); y0 = Math.Min(y0, l.Y); y1 = Math.Max(y1, l.Y); z0 = Math.Min(z0, l.Z); z1 = Math.Max(z1, l.Z);
         }
@@ -286,11 +305,7 @@ public static class TreeScan
             var p = new BlockPos(x, y, z);
             if (!logs.Contains(p) && Wood.IsLog(w.GetBlock(x, y, z))) others.Add(p);
         }
-        var theirs = others.Count == 0 ? new Dictionary<BlockPos, int>() : LeafDistances(w, others);
-        var result = new HashSet<BlockPos>();
-        foreach (var (p, d) in mine)
-            if (!theirs.TryGetValue(p, out var o) || d < o) result.Add(p);
-        return result;
+        return others;
     }
 
     private static Dictionary<BlockPos, int> LeafDistances(IBlockAccess w, HashSet<BlockPos> sources)

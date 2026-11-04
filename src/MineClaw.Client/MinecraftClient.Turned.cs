@@ -34,17 +34,25 @@ public sealed partial class MinecraftClient
             if (await WaitUntilAsync(() => World.GetBlock(pos) == block && BlockOrientation.Same(block, meta, World.GetMeta(pos), modern),
                     TimeSpan.FromMilliseconds(400), ct).ConfigureAwait(false))
                 return ActionResult.Success($"placed {ItemName(itemId, damage ?? 0)} at {Fmt(pos)} {want}");
-            int got = World.GetMeta(pos), id = World.GetBlock(pos);
-            string wrong = $"placed with wrong rotation at {Fmt(pos)}: {BlockOrientation.Describe(block, got, modern) ?? $"meta {got}"}, wants {want}";
-            if (id != block) return ActionResult.Fail($"{ItemName(itemId)} at {Fmt(pos)} became {BlockName(id, got)}");
-            if (attempt > 0 || !CanTakeBack(block)) return ActionResult.Fail(wrong);
-            Log($"place: {wrong}; taking it back to place it again");
-            var d = await DigCoreAsync(pos, ct, requested: true).ConfigureAwait(false);
-            if (!d.Ok || World.GetBlock(pos) == block) return ActionResult.Fail($"{wrong} (couldn't take it back: {d.Message})");
-            if (World.Inventory.CountItem(itemId, damage) == 0)
-                await CollectDropsCoreAsync(4, 8, ct, around: new Vec3d(pos.X + 0.5, pos.Y + 0.5, pos.Z + 0.5)).ConfigureAwait(false);
-            if (World.Inventory.CountItem(itemId, damage) == 0) return ActionResult.Fail($"{wrong} (took it back, but its drop is gone)");
+            if (await TakeBackWrongTurnAsync(pos, itemId, damage, block, modern, want, attempt, ct).ConfigureAwait(false) is { } failed) return failed;
         }
+    }
+
+    /// <summary>A placement that came out turned wrong: the first time (when its drop can be had) it is dug and collected for another
+    /// try (null); otherwise the failure.</summary>
+    private async Task<ActionResult?> TakeBackWrongTurnAsync(BlockPos pos, int itemId, int? damage, int block, bool modern, string want, int attempt,
+        CancellationToken ct)
+    {
+        int got = World.GetMeta(pos), id = World.GetBlock(pos);
+        string wrong = $"placed with wrong rotation at {Fmt(pos)}: {BlockOrientation.Describe(block, got, modern) ?? $"meta {got}"}, wants {want}";
+        if (id != block) return ActionResult.Fail($"{ItemName(itemId)} at {Fmt(pos)} became {BlockName(id, got)}");
+        if (attempt > 0 || !CanTakeBack(block)) return ActionResult.Fail(wrong);
+        Log($"place: {wrong}; taking it back to place it again");
+        var d = await DigCoreAsync(pos, ct, requested: true).ConfigureAwait(false);
+        if (!d.Ok || World.GetBlock(pos) == block) return ActionResult.Fail($"{wrong} (couldn't take it back: {d.Message})");
+        if (World.Inventory.CountItem(itemId, damage) == 0)
+            await CollectDropsCoreAsync(4, 8, ct, around: new Vec3d(pos.X + 0.5, pos.Y + 0.5, pos.Z + 0.5)).ConfigureAwait(false);
+        return World.Inventory.CountItem(itemId, damage) == 0 ? ActionResult.Fail($"{wrong} (took it back, but its drop is gone)") : null;
     }
 
     /// <summary>Whether a wrong one may be dug and placed again: it drops itself with something carried (a furnace wants a pickaxe).</summary>
@@ -61,32 +69,46 @@ public sealed partial class MinecraftClient
     private async Task<ActionResult> PlaceTurnedOnceAsync(BlockPos pos, int itemId, int? damage, int block, int meta, bool modern, bool avoidHere,
         CancellationToken ct)
     {
-        if (World.Inventory.CountItem(itemId, damage) == 0) return ActionResult.Fail($"no {ItemName(itemId, damage ?? 0)} in inventory");
-        if (!World.IsLoaded(pos.X, pos.Z)) return ActionResult.Fail($"{Fmt(pos)} is not loaded");
-        int existing = World.GetBlock(pos);
-        if (!Aiming.IsReplaceable(World, existing)) return ActionResult.Fail($"{Fmt(pos)} is occupied by {BlockName(existing, World.GetMeta(pos))}");
+        if (TurnPlaceRefusal(pos, itemId, damage) is { } refusal) return ActionResult.Fail(refusal);
         string want = BlockOrientation.Describe(block, meta, modern) ?? $"meta {meta}";
         var here = World.Player.Position;
         var hereCell = new BlockPos((int)Math.Floor(here.X), (int)Math.Floor(here.Y + 1e-6), (int)Math.Floor(here.Z));
         var pick = avoidHere ? null : PickTurn(pos, block, meta, modern, here);
         if (pick is null)
         {
-            var stands = TurnStands(pos, block, meta, modern, hereCell).ToList();
-            if (stands.Count == 0)
-                return ActionResult.Fail(avoidHere ? $"placed with wrong rotation at {Fmt(pos)}: no other spot to place it {want} from"
-                    : $"can't place {ItemName(itemId)} at {Fmt(pos)} {want}: no spot within reach to click it from");
-            foreach (var s in stands)
-            {
-                var g = await GotoCoreAsync(new GoalBlock(s), GotoOptions.Default with { Timeout = TimeSpan.FromSeconds(20), AllowPartial = false }, ct)
-                    .ConfigureAwait(false);
-                if (!g.Ok) continue;
-                pick = PickTurn(pos, block, meta, modern, World.Player.Position);
-                if (pick is not null) break;
-            }
-            if (pick is null) return ActionResult.Fail($"can't place {ItemName(itemId)} at {Fmt(pos)} {want}: couldn't get to a spot to click it from");
+            var (walked, noSpot) = await WalkToTurnStandAsync(pos, itemId, block, meta, modern, hereCell, avoidHere, want, ct).ConfigureAwait(false);
+            if (noSpot is not null) return ActionResult.Fail(noSpot);
+            pick = walked;
         }
-        var t = pick.Value;
+        var t = pick!.Value;
         return await PlaceAgainstCoreAsync(pos, t.Face, itemId, damage, t.Yaw, allowHidden: true, ct, cursor: t.Cursor).ConfigureAwait(false);
+    }
+
+    /// <summary>Why nothing can be placed at <paramref name="pos"/> (none held, unloaded, occupied), or null.</summary>
+    private string? TurnPlaceRefusal(BlockPos pos, int itemId, int? damage)
+    {
+        if (World.Inventory.CountItem(itemId, damage) == 0) return $"no {ItemName(itemId, damage ?? 0)} in inventory";
+        if (!World.IsLoaded(pos.X, pos.Z)) return $"{Fmt(pos)} is not loaded";
+        int existing = World.GetBlock(pos);
+        return Aiming.IsReplaceable(World, existing) ? null : $"{Fmt(pos)} is occupied by {BlockName(existing, World.GetMeta(pos))}";
+    }
+
+    /// <summary>Walks to the first stand that has the click: the click, or why there is none.</summary>
+    private async Task<(Turn? Pick, string? Fail)> WalkToTurnStandAsync(BlockPos pos, int itemId, int block, int meta, bool modern, BlockPos hereCell,
+        bool avoidHere, string want, CancellationToken ct)
+    {
+        var stands = TurnStands(pos, block, meta, modern, hereCell).ToList();
+        if (stands.Count == 0)
+            return (null, avoidHere ? $"placed with wrong rotation at {Fmt(pos)}: no other spot to place it {want} from"
+                : $"can't place {ItemName(itemId)} at {Fmt(pos)} {want}: no spot within reach to click it from");
+        foreach (var s in stands)
+        {
+            var g = await GotoCoreAsync(new GoalBlock(s), GotoOptions.Default with { Timeout = TimeSpan.FromSeconds(20), AllowPartial = false }, ct)
+                .ConfigureAwait(false);
+            if (!g.Ok) continue;
+            if (PickTurn(pos, block, meta, modern, World.Player.Position) is { } pick) return (pick, null);
+        }
+        return (null, $"can't place {ItemName(itemId)} at {Fmt(pos)} {want}: couldn't get to a spot to click it from");
     }
 
     /// <summary>The click from feet at <paramref name="feet"/> that gives the meta, on a face in reach (a face in view first, then the
@@ -121,6 +143,15 @@ public sealed partial class MinecraftClient
 
     /// <summary>Stand cells near <paramref name="pos"/> (feet and head open, ground under, not in the cell) from which a click gives the
     /// meta: in view first, then the nearest to <paramref name="from"/>; never <paramref name="from"/> itself.</summary>
+    /// <summary>Loaded, feet and head open and dry, on dry ground.</summary>
+    private bool IsOpenStand(BlockPos s)
+    {
+        if (!World.IsLoaded(s.X, s.Z)) return false;
+        if (BlockShapes.HasCollision(World, s.X, s.Y, s.Z) || BlockShapes.HasCollision(World, s.X, s.Y + 1, s.Z)) return false;
+        if (BlockShapes.IsLiquid(World.GetBlock(s)) || BlockShapes.IsLiquid(World.GetBlock(s.X, s.Y + 1, s.Z))) return false;
+        return BlockShapes.HasCollision(World, s.X, s.Y - 1, s.Z) && !BlockShapes.IsLiquid(World.GetBlock(s.X, s.Y - 1, s.Z));
+    }
+
     private IEnumerable<BlockPos> TurnStands(BlockPos pos, int block, int meta, bool modern, BlockPos from)
     {
         var list = new List<(BlockPos S, double Score)>();
@@ -129,10 +160,7 @@ public sealed partial class MinecraftClient
         for (int dz = -4; dz <= 4; dz++)
         {
             var s = new BlockPos(pos.X + dx, pos.Y + dy, pos.Z + dz);
-            if (s == from || !World.IsLoaded(s.X, s.Z)) continue;
-            if (BlockShapes.HasCollision(World, s.X, s.Y, s.Z) || BlockShapes.HasCollision(World, s.X, s.Y + 1, s.Z)) continue;
-            if (BlockShapes.IsLiquid(World.GetBlock(s)) || BlockShapes.IsLiquid(World.GetBlock(s.X, s.Y + 1, s.Z))) continue;
-            if (!BlockShapes.HasCollision(World, s.X, s.Y - 1, s.Z) || BlockShapes.IsLiquid(World.GetBlock(s.X, s.Y - 1, s.Z))) continue;
+            if (s == from || !IsOpenStand(s)) continue;
             var feet = new Vec3d(s.X + 0.5, s.Y, s.Z + 0.5);
             if (PickTurn(pos, block, meta, modern, feet) is not { } t) continue;
             var eye = new Vec3d(feet.X, feet.Y + PlayerPhysics.EyeHeight, feet.Z);

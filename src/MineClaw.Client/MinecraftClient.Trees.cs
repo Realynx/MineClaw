@@ -942,9 +942,13 @@ public sealed partial class MinecraftClient
 
     /// <summary>Natural ground a chop's dug approach (or a detour's dig-through) may break: soil, sand, gravel, clay, snow, stone kinds and
     /// leaves. Never ores (a lost drop), never anything a player placed (the placement log) or protects (the path's own veto).</summary>
-    internal static bool NaturalGround(int id) =>
-        id is Blocks.Grass or Blocks.Dirt or Blocks.Sand or Blocks.Gravel or Blocks.Clay or Blocks.SnowBlock or Blocks.SnowLayer or Blocks.Stone
-            or Blocks.Sandstone or Blocks.Netherrack or Blocks.Leaves or Wood.Leaves2 or 110 /* mycelium */;
+    internal static bool NaturalGround(int id) => NaturalGroundIds.Contains(id);
+
+    private static readonly HashSet<int> NaturalGroundIds =
+    [
+        Blocks.Grass, Blocks.Dirt, Blocks.Sand, Blocks.Gravel, Blocks.Clay, Blocks.SnowBlock, Blocks.SnowLayer, Blocks.Stone,
+        Blocks.Sandstone, Blocks.Netherrack, Blocks.Leaves, Wood.Leaves2, 110 /* mycelium */,
+    ];
 
     /// <summary>A liquid touches the cell on any side (a dug hole there would flood or drain something).</summary>
     private bool NextToLiquid(BlockPos p) => BlockFaceExtensions.All.Any(f => BlockShapes.IsLiquid(World.GetBlock(p.Offset(f))));

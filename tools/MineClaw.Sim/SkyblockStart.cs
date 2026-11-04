@@ -14,6 +14,21 @@ public static class SkyblockStart
     public static void Configure(FakeServer session)
     {
         session.Blocks.Clear();
+        Island(session);
+        Tree(session);
+        StarterChest(session);
+        Generator(session);
+        WheatBed(session);
+        session.Regenerate[GenCell] = Blocks.Cobblestone;
+        session.RegenerateDelayMs = 1000;
+        session.DropOnDig = true;
+        session.StationaryPickup = true;
+        session.ConsumeOnPlace = true;
+    }
+
+    /// <summary>The L of grass over dirt.</summary>
+    private static void Island(FakeServer session)
+    {
         for (int x = 4; x <= 13; x++)
         for (int z = 4; z <= 13; z++)
         {
@@ -21,17 +36,31 @@ public static class SkyblockStart
             for (int y = 61; y <= 63; y++)
                 session.Blocks[(x, y, z)] = y == 63 ? Blocks.Grass : Blocks.Dirt;
         }
+    }
+
+    /// <summary>The tree: a 5-log trunk with its crown.</summary>
+    private static void Tree(FakeServer session)
+    {
         for (int y = 64; y <= 68; y++) session.Blocks[(5, y, 5)] = Blocks.Log;
         for (int x = 3; x <= 7; x++)
         for (int z = 3; z <= 7; z++)
         for (int y = 67; y <= 69; y++)
             if (!session.Blocks.ContainsKey((x, y, z))) session.Blocks[(x, y, z)] = Blocks.Leaves;
+    }
+
+    /// <summary>The starter chest: lava bucket, ice, a sapling.</summary>
+    private static void StarterChest(FakeServer session)
+    {
         session.Blocks[(6, 64, 11)] = Blocks.Chest;
         var chest = Enumerable.Repeat(ItemStack.Empty, 27).ToArray();
         chest[0] = new ItemStack(Items.LavaBucket, 1, 0);
         chest[1] = new ItemStack(Blocks.Ice, 2, 0);
         chest[2] = new ItemStack(Blocks.Sapling, 1, 0);
         session.Chests[(6, 64, 11)] = chest;
+    }
+
+    private static void Generator(FakeServer session)
+    {
         // Raised, contained trench away from the tree and island edge:
         // water -> output <- flowing lava <- still lava source. Water has a
         // one-block sink so it falls rather than washing across the output.
@@ -46,6 +75,10 @@ public static class SkyblockStart
         foreach (var wall in new[] { (7, 64, 6), (8, 64, 5), (8, 64, 7), (9, 64, 5), (9, 64, 7),
                      (11, 64, 5), (11, 64, 7), (12, 64, 5), (12, 64, 7), (13, 64, 6) })
             session.Blocks[wall] = Blocks.Stone;
+    }
+
+    private static void WheatBed(FakeServer session)
+    {
         // A one-row bed, reachable from the grass path without trampling.
         // Wheat block 59 metadata is the Beta growth stage (7 = ripe).
         for (int x = 5; x <= 8; x++)
@@ -55,11 +88,6 @@ public static class SkyblockStart
             session.Blocks[(x, 64, 9)] = 59;
             session.Metas[(x, 64, 9)] = x == 6 ? 3 : 7;
         }
-        session.Regenerate[GenCell] = Blocks.Cobblestone;
-        session.RegenerateDelayMs = 1000;
-        session.DropOnDig = true;
-        session.StationaryPickup = true;
-        session.ConsumeOnPlace = true;
     }
 
     public static void SpawnPlayer(FakeServer session) => session.Send(new NamedEntitySpawnPacket

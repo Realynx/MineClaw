@@ -34,34 +34,30 @@ public sealed partial class MinecraftClient
 
     private void DispatchEntities(Session s, IPacket packet)
     {
+        if (!DispatchEffects(packet)) DispatchPlayerState(packet);
+    }
+
+    /// <summary>Effects, attributes and block entities (true = one of them).</summary>
+    private bool DispatchEffects(IPacket packet)
+    {
+        switch (packet)
+        {
+            case EntityEffectPacket ef: OnEntityEffect(ef); return true;
+            case RemoveEntityEffectPacket re: OnRemoveEntityEffect(re); return true;
+            case EntityPropertiesMessage pm: OnEntityProperties(pm); return true;
+            case BlockEntityMessage be:
+                World.BlockEntities.Set(new BlockPos(be.X, be.Y, be.Z), be.Info); // the viewer's beds, banners, skulls, pots, spawners
+                return true;
+            default: return false;
+        }
+    }
+
+    /// <summary>Head look, the server's hotbar choice, experience, our death message, item cooldowns.</summary>
+    private void DispatchPlayerState(IPacket packet)
+    {
         var w = World;
         switch (packet)
         {
-            case EntityEffectPacket ef:
-            {
-                var fx = new StatusEffect(ef.EffectId, ef.Amplifier, ef.Duration, DateTime.UtcNow);
-                if (ef.EntityId == w.Player.EntityId)
-                {
-                    w.Player.SetEffect(fx);
-                    Log($"effect: {PotionEffects.Name(fx.Id)} {fx.Amplifier + 1} for {(fx.DurationTicks >= short.MaxValue ? "ever" : $"{fx.DurationTicks / 20}s")}");
-                }
-                else w.Entities.SetEffect(ef.EntityId, fx);
-                break;
-            }
-            case RemoveEntityEffectPacket re:
-                if (re.EntityId == w.Player.EntityId) w.Player.RemoveEffect(re.EffectId);
-                else w.Entities.RemoveEffect(re.EntityId, re.EffectId);
-                break;
-            case EntityPropertiesMessage pm:
-            {
-                var values = pm.Attributes.Select(a => new KeyValuePair<string, double>(a.Key, a.Value)).ToList();
-                if (pm.EntityId == w.Player.EntityId) foreach (var (k, v) in values) _selfAttributes[k] = v;
-                else w.Entities.SetAttributes(pm.EntityId, values);
-                break;
-            }
-            case BlockEntityMessage be:
-                w.BlockEntities.Set(new BlockPos(be.X, be.Y, be.Z), be.Info); // the viewer's beds, banners, skulls, pots, spawners
-                break;
             case EntityHeadLookMessage hl:
                 w.Entities.SetHeadYaw(hl.EntityId, FixedPoint.FromAngle(hl.Yaw));
                 break;
@@ -78,10 +74,40 @@ public sealed partial class MinecraftClient
                 Log("death: " + dm.Message);
                 break;
             case ItemCooldownMessage cd:
-                if (cd.Ticks <= 0) _itemCooldownUntil.TryRemove(cd.ItemId, out _);
-                else _itemCooldownUntil[cd.ItemId] = TickCount + cd.Ticks;
+                OnItemCooldown(cd);
                 break;
         }
+    }
+
+    private void OnEntityEffect(EntityEffectPacket ef)
+    {
+        var fx = new StatusEffect(ef.EffectId, ef.Amplifier, ef.Duration, DateTime.UtcNow);
+        if (ef.EntityId != World.Player.EntityId)
+        {
+            World.Entities.SetEffect(ef.EntityId, fx);
+            return;
+        }
+        World.Player.SetEffect(fx);
+        Log($"effect: {PotionEffects.Name(fx.Id)} {fx.Amplifier + 1} for {(fx.DurationTicks >= short.MaxValue ? "ever" : $"{fx.DurationTicks / 20}s")}");
+    }
+
+    private void OnRemoveEntityEffect(RemoveEntityEffectPacket re)
+    {
+        if (re.EntityId == World.Player.EntityId) World.Player.RemoveEffect(re.EffectId);
+        else World.Entities.RemoveEffect(re.EntityId, re.EffectId);
+    }
+
+    private void OnEntityProperties(EntityPropertiesMessage pm)
+    {
+        var values = pm.Attributes.Select(a => new KeyValuePair<string, double>(a.Key, a.Value)).ToList();
+        if (pm.EntityId == World.Player.EntityId) foreach (var (k, v) in values) _selfAttributes[k] = v;
+        else World.Entities.SetAttributes(pm.EntityId, values);
+    }
+
+    private void OnItemCooldown(ItemCooldownMessage cd)
+    {
+        if (cd.Ticks <= 0) _itemCooldownUntil.TryRemove(cd.ItemId, out _);
+        else _itemCooldownUntil[cd.ItemId] = TickCount + cd.Ticks;
     }
 
     /// <summary>Our own metadata (1.12.2 sends the player's flags, health and absorption): only the absorption hearts are kept.</summary>

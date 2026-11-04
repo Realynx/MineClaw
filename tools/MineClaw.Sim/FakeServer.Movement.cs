@@ -58,72 +58,99 @@ public partial class FakeServer
     /// <summary>Runs before the default handling; true = the packet is dropped (ignored after a rollback, or rejected).</summary>
     private bool CheckMovement(IPacket p)
     {
-        if (p is EntityActionPacket ea) { if (ea.Action == 1) _srvSneaking = true; else if (ea.Action == 2) _srvSneaking = false; return false; }
-        double x, y, z, stance;
-        bool onGround;
+        if (!ReadMove(p, out var to, out double stance, out bool onGround)) return false;
+        if (KickedForStance(to.Y, stance)) return true;
+        var good = LastGood();
+        // After a teleport (the login's, a rollback): only a packet from exactly there turns the checks on again (b1.8.1's
+        // checkMovement; 1.12.2 ignores moves until the teleport is confirmed, which the echo is).
+        if (!_checkMovement) return !AnswersTeleport(to, good, onGround);
+        double dx = to.X - good.X, dz = to.Z - good.Z;
+        LargestStep = Math.Max(LargestStep, Math.Sqrt(dx * dx + dz * dz));
+        if (Modern ? TooQuickThisTick(to, good) : TooQuickBeta(to, good)) return true;
+        return ReplayRejects(to, good, onGround);
+    }
+
+    /// <summary>The position a movement packet carries; the others only note the sneak or the on-ground flag (false = nothing to check).</summary>
+    private bool ReadMove(IPacket p, out (double X, double Y, double Z) to, out double stance, out bool onGround)
+    {
+        (to, stance, onGround) = (default, 0, false);
         switch (p)
         {
-            case PlayerPositionPacket pp: (x, y, z, stance, onGround) = (pp.X, pp.Y, pp.Z, pp.Stance, pp.OnGround); break;
-            case PlayerPositionLookPacket pl: (x, y, z, stance, onGround) = (pl.X, pl.Y, pl.Z, pl.Stance, pl.OnGround); break;
+            case EntityActionPacket ea: if (SneakChange(ea) is { } sneak) _srvSneaking = sneak; return false;
+            case PlayerPositionPacket pp: (to, stance, onGround) = ((pp.X, pp.Y, pp.Z), pp.Stance, pp.OnGround); return true;
+            case PlayerPositionLookPacket pl: (to, stance, onGround) = ((pl.X, pl.Y, pl.Z), pl.Stance, pl.OnGround); return true;
             case PlayerOnGroundPacket og: _lastOnGround = og.OnGround; return false;
             case PlayerLookPacket lk: _lastOnGround = lk.OnGround; return false;
             default: return false;
         }
-        if (!Modern && (stance - y > 1.65 || stance - y < 0.1))
-        {
-            // b1.8.1: "Illegal stance", a kick.
-            Interlocked.Increment(ref _illegalStance);
-            Kicked = true;
-            Send(new KickPacket("Illegal stance"));
-            return true;
-        }
+    }
+
+    /// <summary>Sneak pressed (true) or released (false); null for any other entity action.</summary>
+    private static bool? SneakChange(EntityActionPacket ea) => ea.Action == 1 ? true : ea.Action == 2 ? false : null;
+
+    /// <summary>b1.8.1: "Illegal stance" (stance − y outside 0.1..1.65), a kick.</summary>
+    private bool KickedForStance(double y, double stance)
+    {
+        if (Modern || !(stance - y > 1.65 || stance - y < 0.1)) return false;
+        Interlocked.Increment(ref _illegalStance);
+        Kicked = true;
+        Send(new KickPacket("Illegal stance"));
+        return true;
+    }
+
+    /// <summary>The last accepted position; before any, the login teleport (nothing counts until the client answers from the spawn).</summary>
+    private (double X, double Y, double Z) LastGood()
+    {
         if (_good is null)
         {
-            // The login teleport: nothing counts until the client answers from the spawn.
             _good = SpawnAt;
             _checkMovement = false;
         }
-        var good = _good.Value;
-        if (!_checkMovement)
-        {
-            // After a teleport (the login's, a rollback): only a packet from exactly there turns the checks on again (b1.8.1's
-            // checkMovement; 1.12.2 ignores moves until the teleport is confirmed, which the echo is).
-            double ddy = y - good.Y;
-            if (Math.Abs(x - good.X) < 1e-6 && ddy * ddy < 0.01 && Math.Abs(z - good.Z) < 1e-6)
-            {
-                _checkMovement = true;
-                Accept(x, y, z, onGround);
-                return false;
-            }
-            return true;
-        }
-        double dx = x - good.X, dy = y - good.Y, dz = z - good.Z;
-        LargestStep = Math.Max(LargestStep, Math.Sqrt(dx * dx + dz * dz));
-        if (Modern)
-        {
-            long now = _moveClock.ElapsedMilliseconds;
-            if (_tickStartMs < 0 || now - _tickStartMs >= ServerTickMs) { _tickStartMs = now; _tickStart = good; _tickPackets = 0; }
-            int i = ++_tickPackets;
-            if (i > 5) i = 1;
-            double fx = x - _tickStart.X, fy = y - _tickStart.Y, fz = z - _tickStart.Z;
-            if (fx * fx + fy * fy + fz * fz > 100.0 * i)
-            {
-                Interlocked.Increment(ref _tooQuickly);
-                LastRejection = $"moved too quickly: {x:0.###},{y:0.###},{z:0.###} from {_tickStart.X:0.###},{_tickStart.Y:0.###},{_tickStart.Z:0.###} ({i} packets this tick)";
-                RollBack(good);
-                return true;
-            }
-        }
-        else if (dx * dx + dy * dy + dz * dz > 100.0)
-        {
-            Interlocked.Increment(ref _tooQuickly);
-            LastRejection = $"moved too quickly: {x:0.###},{y:0.###},{z:0.###} from {good.X:0.###},{good.Y:0.###},{good.Z:0.###}";
-            Kicked = true;
-            Send(new KickPacket("You moved too quickly :( (Hacking?)"));
-            return true;
-        }
+        return _good.Value;
+    }
 
-        // The replay: the server moves its player by the packet's delta with its own collision.
+    /// <summary>A packet from exactly the teleport's position turns the checks back on (and is accepted).</summary>
+    private bool AnswersTeleport((double X, double Y, double Z) to, (double X, double Y, double Z) good, bool onGround)
+    {
+        double ddy = to.Y - good.Y;
+        if (!(Math.Abs(to.X - good.X) < 1e-6 && ddy * ddy < 0.01 && Math.Abs(to.Z - good.Z) < 1e-6)) return false;
+        _checkMovement = true;
+        Accept(to.X, to.Y, to.Z, onGround);
+        return true;
+    }
+
+    /// <summary>1.12.2: more than 10 blocks a packet from where the server tick started (100 × the packets this tick, distance²): a
+    /// teleport back.</summary>
+    private bool TooQuickThisTick((double X, double Y, double Z) to, (double X, double Y, double Z) good)
+    {
+        long now = _moveClock.ElapsedMilliseconds;
+        if (_tickStartMs < 0 || now - _tickStartMs >= ServerTickMs) { _tickStartMs = now; _tickStart = good; _tickPackets = 0; }
+        int i = ++_tickPackets;
+        if (i > 5) i = 1;
+        double fx = to.X - _tickStart.X, fy = to.Y - _tickStart.Y, fz = to.Z - _tickStart.Z;
+        if (fx * fx + fy * fy + fz * fz <= 100.0 * i) return false;
+        Interlocked.Increment(ref _tooQuickly);
+        LastRejection = $"moved too quickly: {to.X:0.###},{to.Y:0.###},{to.Z:0.###} from {_tickStart.X:0.###},{_tickStart.Y:0.###},{_tickStart.Z:0.###} ({i} packets this tick)";
+        RollBack(good);
+        return true;
+    }
+
+    /// <summary>b1.8.1: more than 10 blocks from the last accepted position: a kick.</summary>
+    private bool TooQuickBeta((double X, double Y, double Z) to, (double X, double Y, double Z) good)
+    {
+        double dx = to.X - good.X, dy = to.Y - good.Y, dz = to.Z - good.Z;
+        if (dx * dx + dy * dy + dz * dz <= 100.0) return false;
+        Interlocked.Increment(ref _tooQuickly);
+        LastRejection = $"moved too quickly: {to.X:0.###},{to.Y:0.###},{to.Z:0.###} from {good.X:0.###},{good.Y:0.###},{good.Z:0.###}";
+        Kicked = true;
+        Send(new KickPacket("You moved too quickly :( (Hacking?)"));
+        return true;
+    }
+
+    /// <summary>The replay: the server moves its player by the packet's delta with its own collision. Moved wrongly (or now inside a
+    /// block) from a clear spot: a teleport back (true); otherwise the position is accepted.</summary>
+    private bool ReplayRejects((double X, double Y, double Z) to, (double X, double Y, double Z) good, bool onGround)
+    {
         var w = _serverBlocks ??= new ServerBlocks(this);
         var srv = new PhysicsState
         {
@@ -131,24 +158,29 @@ public partial class FakeServer
             Width = w.Physics.Width, Height = w.Physics.Height, YSize = 0,
         };
         bool clearBefore = w.Physics.GetCollidingBoxes(w, srv.BoundingBox.Grow(-0.0625, -0.0625, -0.0625), new List<AABB>()).Count == 0;
+        double dx = to.X - good.X, dy = to.Y - good.Y, dz = to.Z - good.Z;
         if (Modern) Physics1122.Move(w, srv, dx, dy, dz);
         else PlayerPhysics.MoveEntity(w, srv, dx, dy, dz, PlayerPhysics.StepHeight);
-        double rx = x - srv.Position.X, rz = z - srv.Position.Z;
-        bool wrongly = rx * rx + rz * rz > 0.0625;
-        if (wrongly)
-        {
-            Interlocked.Increment(ref _wrongly);
-            LastRejection = $"moved wrongly: got {x:0.###},{y:0.###},{z:0.###}, expected {srv.Position.X:0.###},{srv.Position.Y:0.###},{srv.Position.Z:0.###} from {good.X:0.###},{good.Y:0.###},{good.Z:0.###}";
-        }
-        var at = AABB.ForEntity(new Vec3d(x, y, z), w.Physics.Width, w.Physics.Height);
+        bool wrongly = MovedWronglyFrom(to, srv.Position, good);
+        var at = AABB.ForEntity(new Vec3d(to.X, to.Y, to.Z), w.Physics.Width, w.Physics.Height);
         bool clearAfter = w.Physics.GetCollidingBoxes(w, at.Grow(-0.0625, -0.0625, -0.0625), new List<AABB>()).Count == 0;
         if (clearBefore && (wrongly || !clearAfter))
         {
             RollBack(good);
             return true;
         }
-        Accept(x, y, z, onGround);
+        Accept(to.X, to.Y, to.Z, onGround);
         return false;
+    }
+
+    /// <summary>More than 0.25 off the replay horizontally: "moved wrongly" (counted and noted).</summary>
+    private bool MovedWronglyFrom((double X, double Y, double Z) to, Vec3d replayed, (double X, double Y, double Z) good)
+    {
+        double rx = to.X - replayed.X, rz = to.Z - replayed.Z;
+        if (rx * rx + rz * rz <= 0.0625) return false;
+        Interlocked.Increment(ref _wrongly);
+        LastRejection = $"moved wrongly: got {to.X:0.###},{to.Y:0.###},{to.Z:0.###}, expected {replayed.X:0.###},{replayed.Y:0.###},{replayed.Z:0.###} from {good.X:0.###},{good.Y:0.###},{good.Z:0.###}";
+        return true;
     }
 
     private void Accept(double x, double y, double z, bool onGround)
@@ -188,34 +220,51 @@ public partial class FakeServer
 
     private void TrackTrample(IPacket p)
     {
-        if (p is EntityActionPacket ea) { if (ea.Action == 1) _trSneak = true; else if (ea.Action == 2) _trSneak = false; return; }
-        double x, y, z;
-        bool ground;
-        switch (p)
+        if (p is EntityActionPacket ea)
         {
-            case PlayerPositionPacket pp: (x, y, z, ground) = (pp.X, pp.Y, pp.Z, pp.OnGround); break;
-            case PlayerPositionLookPacket pl: (x, y, z, ground) = (pl.X, pl.Y, pl.Z, pl.OnGround); break;
-            default: return;
+            if (SneakChange(ea) is { } sneak) _trSneak = sneak;
+            return;
         }
+        if (!ReadPosition(p, out double x, out double y, out double z, out bool ground)) return;
         var under = ((int)Math.Floor(x), (int)Math.Floor(y - 0.2), (int)Math.Floor(z));
         bool farm = Blocks.GetValueOrDefault(under) == MineClaw.Data.Blocks.Farmland;
         double moved = _trLast is { } last ? Math.Sqrt((x - last.X) * (x - last.X) + (z - last.Z) * (z - last.Z)) : 0;
         _trLast = (x, z);
-        string? how = null;
-        if (Modern)
-        {
-            if (ground && !_trGround && _trPeak - y > 0.5 && farm) how = $"landed from {_trPeak - y:0.00}";
-        }
-        else if (ground && !_trSneak && moved > 1e-3 && farm) how = "walked";
-        _trPeak = ground ? y : _trGround ? Math.Max(y, _trPeak) : Math.Max(_trPeak, y);
+        string? how = !farm || !ground ? null : Modern ? LandedHow(y) : WalkedHow(moved);
+        _trPeak = NextPeak(y, ground);
         _trGround = ground;
-        if (how == null) return;
+        if (how != null) TrampleCell(under, how);
+    }
+
+    private static bool ReadPosition(IPacket p, out double x, out double y, out double z, out bool ground)
+    {
+        (x, y, z, ground) = (0, 0, 0, false);
+        switch (p)
+        {
+            case PlayerPositionPacket pp: (x, y, z, ground) = (pp.X, pp.Y, pp.Z, pp.OnGround); return true;
+            case PlayerPositionLookPacket pl: (x, y, z, ground) = (pl.X, pl.Y, pl.Z, pl.OnGround); return true;
+            default: return false;
+        }
+    }
+
+    /// <summary>The highest feet height since the last ground contact (on the ground: here).</summary>
+    private double NextPeak(double y, bool ground) => ground ? y : _trGround ? Math.Max(y, _trPeak) : Math.Max(_trPeak, y);
+
+    /// <summary>1.12.2: a landing on farmland after a fall of more than 0.5.</summary>
+    private string? LandedHow(double y) => !_trGround && _trPeak - y > 0.5 ? $"landed from {_trPeak - y:0.00}" : null;
+
+    /// <summary>b1.8.1: a step on farmland that isn't sneaking.</summary>
+    private string? WalkedHow(double moved) => !_trSneak && moved > 1e-3 ? "walked" : null;
+
+    /// <summary>The farmland turns to dirt (a crop on it goes with it).</summary>
+    private void TrampleCell((int X, int Y, int Z) under, string how)
+    {
         lock (BlockLock)
         {
-            SetBlock(under.Item1, under.Item2, under.Item3, MineClaw.Data.Blocks.Dirt);
-            if (Blocks.GetValueOrDefault((under.Item1, under.Item2 + 1, under.Item3)) is not 0) SetBlock(under.Item1, under.Item2 + 1, under.Item3, 0);
+            SetBlock(under.X, under.Y, under.Z, MineClaw.Data.Blocks.Dirt);
+            if (Blocks.GetValueOrDefault((under.X, under.Y + 1, under.Z)) is not 0) SetBlock(under.X, under.Y + 1, under.Z, 0);
         }
-        Trampled.Enqueue((under.Item1, under.Item2, under.Item3, how));
+        Trampled.Enqueue((under.X, under.Y, under.Z, how));
     }
 
     /// <summary>The server's blocks as the physics reads them (everything loaded).</summary>

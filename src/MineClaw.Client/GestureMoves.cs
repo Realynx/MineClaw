@@ -96,6 +96,14 @@ public static class GestureMoves
         return new GesturePlan("hop", f);
     }
 
+    /// <summary>An absolute look wins (the other's offset added unless it is absolute too); offsets add.</summary>
+    private static GestureFrame MergeLook(GestureFrame x, GestureFrame y)
+    {
+        if (x.Absolute) return x with { Yaw = x.Yaw + (y.Absolute ? 0 : y.Yaw), Pitch = x.Pitch + (y.Absolute ? 0 : y.Pitch) };
+        if (y.Absolute) return y with { Yaw = y.Yaw + x.Yaw, Pitch = y.Pitch + x.Pitch };
+        return new GestureFrame(Yaw: x.Yaw + y.Yaw, Pitch: x.Pitch + y.Pitch);
+    }
+
     /// <summary>Plays two gestures at once (e.g. wave + look-at): flags OR-ed; an absolute look wins, offsets add.</summary>
     public static GesturePlan Merge(GesturePlan a, GesturePlan b)
     {
@@ -105,10 +113,7 @@ public static class GestureMoves
         {
             var x = i < a.Ticks ? a.Frames[i] : default;
             var y = i < b.Ticks ? b.Frames[i] : default;
-            var look = new GestureFrame(Yaw: x.Yaw + y.Yaw, Pitch: x.Pitch + y.Pitch);
-            if (x.Absolute) look = x with { Yaw = x.Yaw + (y.Absolute ? 0 : y.Yaw), Pitch = x.Pitch + (y.Absolute ? 0 : y.Pitch) };
-            else if (y.Absolute) look = y with { Yaw = y.Yaw + x.Yaw, Pitch = y.Pitch + x.Pitch };
-            f.Add(look with { Sneak = x.Sneak || y.Sneak, Swing = x.Swing || y.Swing, Jump = x.Jump || y.Jump });
+            f.Add(MergeLook(x, y) with { Sneak = x.Sneak || y.Sneak, Swing = x.Swing || y.Swing, Jump = x.Jump || y.Jump });
         }
         return new GesturePlan(a.Name + "+" + b.Name, f);
     }

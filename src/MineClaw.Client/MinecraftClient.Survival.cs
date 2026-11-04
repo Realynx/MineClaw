@@ -67,17 +67,27 @@ public sealed partial class MinecraftClient
     /// <summary>Low / critical health: one danger per episode; cancel risky actions (low) or any action (critical).</summary>
     private void SurvivalOnHealth(int health, int food)
     {
-        var me0 = World.Player.Position;
-        string? threat = World.Entities.Nearby(me0, 6, CombatRules.IsThreat).OrderBy(e => e.Position.DistanceTo(me0)).FirstOrDefault() is { } t0
-            ? $"{t0.DisplayName} {t0.Position.DistanceTo(me0):0}m away" : null;
         bool underWater = World.Player.HeadUnderWater || Surfacing;
-        if (Survival.OnHealth(health, food, HasUsableFood(food), threat, underWater) is not { } alert) return;
+        if (Survival.OnHealth(health, food, HasUsableFood(food), ThreatOnMe(), underWater) is not { } alert) return;
         var fx = SurvivalReflex.EffectFacts(World.Player.Effects);
         if (fx.Length > 0) alert = alert with { Message = alert.Message + "; " + fx };
         Log("survival: " + alert.Message);
         RaiseDanger(DangerKind.LowHealth, alert.Message, abort: false, critical: alert.Critical);
-        if (!Options.Survival.Enabled || !Options.AbortActionsOnDanger) return;
-        if (alert.Critical)
+        if (Options.Survival.Enabled && Options.AbortActionsOnDanger) AbortForHealth(alert.Critical, health);
+    }
+
+    /// <summary>"zombie 2m away": the nearest threat within 6, or null.</summary>
+    private string? ThreatOnMe()
+    {
+        var me0 = World.Player.Position;
+        return World.Entities.Nearby(me0, 6, CombatRules.IsThreat).OrderBy(e => e.Position.DistanceTo(me0)).FirstOrDefault() is { } t0
+            ? $"{t0.DisplayName} {t0.Position.DistanceTo(me0):0}m away" : null;
+    }
+
+    /// <summary>Critical: any action but eating or boxing in stops; low: only a risky one.</summary>
+    private void AbortForHealth(bool critical, int health)
+    {
+        if (critical)
         {
             if (CurrentAction is { } a && a is not ("eat" or "shelter")) AbortCurrentAction($"critical hp {health}/20: stopped {a}");
         }
@@ -267,6 +277,26 @@ public sealed partial class MinecraftClient
     }
 
     /// <summary>
+    /// Refused: eats first when food would fix it later (regeneration), then says why.
+    /// </summary>
+    private async Task<ActionResult> GateRefusedAsync(string what, string why, FoodPick? pick, int food, CancellationToken ct)
+    {
+        if (pick is { } eat && food < HungerRules.RegenFood)
+            Log($"survival: gate ate before refusing: {await UseCoreAsync(eat.ItemId, ct).ConfigureAwait(false)}");
+        Log($"survival: refused {what}: {why}");
+        return ActionResult.Fail(why);
+    }
+
+    /// <summary>Hungry at the gate: eats; a fight or spar is refused when that failed or wasn't enough.</summary>
+    private async Task<ActionResult?> EatForGateAsync(string what, FoodPick f, SurvivalOptions o, CancellationToken ct)
+    {
+        var r = await UseCoreAsync(f.ItemId, ct).ConfigureAwait(false);
+        if (SurvivalReflex.NeedsFood(what) && (!r.Ok || World.Player.Food < o.GateMinFood))
+            return ActionResult.Fail($"too hungry to {what} (food {World.Player.Food}; eating failed: {r.Message})");
+        return null;
+    }
+
+    /// <summary>
     /// Gate at the start of a risky action (<paramref name="what"/>: "bridge", "fight", "spar", "mine 32 blocks"):
     /// refuses with a clear reason when health or food is below the thresholds, eating first when that fixes it.
     /// Null = go ahead (the action is then marked risky for the low-health reflex).
@@ -280,18 +310,8 @@ public sealed partial class MinecraftClient
         var pick = SurvivalReflex.PickFood(World.Inventory.PlayerSlots(), reserved, p.Health, p.Food, o);
         if (SurvivalReflex.GateReason(what, p.Health, p.Food, pick is not null || SurvivalReflex.HasSafeFood(World.Inventory.PlayerSlots(), reserved), o,
                 effects: p.Effects) is { } why)
-        {
-            if (pick is { } eat && p.Food < HungerRules.RegenFood)
-                Log($"survival: gate ate before refusing: {await UseCoreAsync(eat.ItemId, ct).ConfigureAwait(false)}");
-            Log($"survival: refused {what}: {why}");
-            return ActionResult.Fail(why);
-        }
-        if (p.Food < o.GateMinFood && pick is { } f)
-        {
-            var r = await UseCoreAsync(f.ItemId, ct).ConfigureAwait(false);
-            if (SurvivalReflex.NeedsFood(what) && (!r.Ok || World.Player.Food < o.GateMinFood))
-                return ActionResult.Fail($"too hungry to {what} (food {World.Player.Food}; eating failed: {r.Message})");
-        }
+            return await GateRefusedAsync(what, why, pick, p.Food, ct).ConfigureAwait(false);
+        if (p.Food < o.GateMinFood && pick is { } f && await EatForGateAsync(what, f, o, ct).ConfigureAwait(false) is { } hungry) return hungry;
         // Only fights/spars are cancelled by the low-health reflex; mining, chopping, bridging carry on (critical hp stops all).
         if (SurvivalReflex.CancelAtLowHealth(what)) _actionRisk = what;
         return null;

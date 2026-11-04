@@ -120,12 +120,7 @@ public static class CombatGeometry
     {
         int sx = (int)Math.Floor(me.X), sy = (int)Math.Floor(me.Y + 1e-6), sz = (int)Math.Floor(me.Z);
         int ty = (int)Math.Floor(target.Y + 1e-6);
-        bool Near(int x, int y, int z)
-        {
-            double dx = x + 0.5 - target.X, dz = z + 0.5 - target.Z;
-            return dx * dx + dz * dz <= reach * reach && Math.Abs(y - ty) <= 2;
-        }
-        if (Near(sx, sy, sz)) return true;
+        if (NearTarget(sx, sy, sz, target, ty, reach)) return true;
         var seen = new HashSet<BlockPos> { new(sx, sy, sz) };
         var q = new Queue<BlockPos>();
         q.Enqueue(new BlockPos(sx, sy, sz));
@@ -137,23 +132,40 @@ public static class CombatGeometry
             {
                 int nx = c.X + dxs[i], nz = c.Z + dzs[i];
                 if (Math.Abs(nx - sx) > radius || Math.Abs(nz - sz) > radius) continue;
-                for (int dy = 1; dy >= -2; dy--)
-                {
-                    int ny = c.Y + dy;
-                    var n = new BlockPos(nx, ny, nz);
-                    if (seen.Contains(n) || !Safety.IsStandable(w, nx, ny, nz) || DeepWater(w, nx, ny, nz)) continue;
-                    // A step up needs head room above the current cell; a drop needs the column above the landing clear.
-                    if (dy == 1 && BlockShapes.HasCollision(w, c.X, c.Y + 2, c.Z)) continue;
-                    if (dy < 0 && (BlockShapes.HasCollision(w, nx, c.Y, nz) || BlockShapes.HasCollision(w, nx, c.Y + 1, nz))) continue;
-                    seen.Add(n);
-                    if (Near(nx, ny, nz)) return true;
-                    q.Enqueue(n);
-                    break;
-                }
+                if (WalkStepTo(w, c, nx, nz, seen) is not { } n) continue;
+                seen.Add(n);
+                if (NearTarget(n.X, n.Y, n.Z, target, ty, reach)) return true;
+                q.Enqueue(n);
             }
         }
         return false;
     }
+
+    /// <summary>Within <paramref name="reach"/> horizontally of the target and within 2 of its level.</summary>
+    private static bool NearTarget(int x, int y, int z, Vec3d target, int ty, double reach)
+    {
+        double dx = x + 0.5 - target.X, dz = z + 0.5 - target.Z;
+        return dx * dx + dz * dz <= reach * reach && Math.Abs(y - ty) <= 2;
+    }
+
+    /// <summary>The cell a walk from <paramref name="c"/> into column (nx, nz) lands on (one up, level, or up to two down; not one
+    /// already seen), or null.</summary>
+    private static BlockPos? WalkStepTo(IBlockAccess w, BlockPos c, int nx, int nz, HashSet<BlockPos> seen)
+    {
+        for (int dy = 1; dy >= -2; dy--)
+        {
+            int ny = c.Y + dy;
+            var n = new BlockPos(nx, ny, nz);
+            if (seen.Contains(n) || !Safety.IsStandable(w, nx, ny, nz) || DeepWater(w, nx, ny, nz)) continue;
+            if (!StepBlocked(w, c, nx, nz, dy)) return n;
+        }
+        return null;
+    }
+
+    /// <summary>A step up needs head room above the current cell; a drop needs the column above the landing clear.</summary>
+    private static bool StepBlocked(IBlockAccess w, BlockPos c, int nx, int nz, int dy) =>
+        dy == 1 && BlockShapes.HasCollision(w, c.X, c.Y + 2, c.Z)
+        || dy < 0 && (BlockShapes.HasCollision(w, nx, c.Y, nz) || BlockShapes.HasCollision(w, nx, c.Y + 1, nz));
 
     /// <summary>Nearest safe cell (edge distance ≥ 2) where a block hides the bot's eyes from <paramref name="shooterEye"/>.</summary>
     public static BlockPos? CoverCell(IBlockAccess w, Vec3d me, Vec3d shooterEye, int radius = 5)

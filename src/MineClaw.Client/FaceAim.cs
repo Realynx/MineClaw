@@ -33,17 +33,23 @@ public static class FaceAim
                 var p = PointOnFace(box, face, u, v);
                 double d = eye.DistanceTo(p);
                 if (d > reach || (best is not null && d >= best.Value.Distance)) continue;
-                var hit = Raycast.Cast(w, eye, p - eye, d + 0.01);
-                bool visible = liquid || id == 0
-                    ? hit is null || hit.Value.Distance >= d - 0.01
-                    : hit is { } h && h.Pos == pos && h.Face == face;
-                if (!visible) continue;
+                if (!SeenAt(w, eye, pos, face, liquid || id == 0, p, d)) continue;
                 var (yaw, pitch) = PlayerPhysics.YawPitchTo(eye, p);
                 best = new DigAim(pos, face, p, yaw, pitch, d);
                 break;
             }
         }
         return best;
+    }
+
+    /// <summary>The ray from the eye reaches <paramref name="p"/> on the face: for air or a liquid nothing in front, else the first hit
+    /// is that face of that block.</summary>
+    private static bool SeenAt(IBlockAccess w, Vec3d eye, BlockPos pos, BlockFace face, bool clear, Vec3d p, double d)
+    {
+        var hit = Raycast.Cast(w, eye, p - eye, d + 0.01);
+        return clear
+            ? hit is null || hit.Value.Distance >= d - 0.01
+            : hit is { } h && h.Pos == pos && h.Face == face;
     }
 
     /// <summary>Center of <paramref name="face"/> of the block's (first) selection box.</summary>
