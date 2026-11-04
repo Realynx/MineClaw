@@ -27,29 +27,40 @@ public static class BlockEntities1122
     public static NbtCompound Tag(int x, int y, int z, BlockEntityInfo info)
     {
         var c = new NbtCompound { ["id"] = "minecraft:" + (info.Kind == "note_block" ? "noteblock" : info.Kind), ["x"] = x, ["y"] = y, ["z"] = z };
-        switch (info.Kind)
-        {
-            case "bed": c["color"] = info.Color ?? 14; break;
-            case "banner":
-                c["Base"] = info.Color ?? 0;
-                if (info.Patterns is { Count: > 0 } ps)
-                    c["Patterns"] = new NbtList(NbtType.Compound, ps.Select(p => (object)new NbtCompound { ["Pattern"] = p.Pattern, ["Color"] = p.Color }).ToList());
-                break;
-            case "skull":
-                c["SkullType"] = (sbyte)(info.Skull ?? 0);
-                c["Rot"] = (sbyte)(info.Rotation ?? 0);
-                if (info.Owner is { } owner) c["Owner"] = new NbtCompound { ["Name"] = owner };
-                break;
-            case "flower_pot":
-                c["Item"] = info.Item is { } item ? "minecraft:" + item : "minecraft:air";
-                c["Data"] = info.Data ?? 0;
-                break;
-            case "mob_spawner":
-                if (info.Mob is { } mob) c["SpawnData"] = new NbtCompound { ["id"] = "minecraft:" + mob };
-                break;
-            case "note_block": c["note"] = (sbyte)(info.Note ?? 0); break;
-        }
+        if (TagWriters.TryGetValue(info.Kind, out var write)) write(c, info);
         return c;
+    }
+
+    // The looks each kind's tag carries (TileEntity*.writeToNBT); other kinds carry their id and position only.
+    private static readonly Dictionary<string, Action<NbtCompound, BlockEntityInfo>> TagWriters = new()
+    {
+        ["bed"] = static (c, info) => c["color"] = info.Color ?? 14,
+        ["banner"] = WriteBanner,
+        ["skull"] = WriteSkull,
+        ["flower_pot"] = static (c, info) =>
+        {
+            c["Item"] = info.Item is { } item ? "minecraft:" + item : "minecraft:air";
+            c["Data"] = info.Data ?? 0;
+        },
+        ["mob_spawner"] = static (c, info) =>
+        {
+            if (info.Mob is { } mob) c["SpawnData"] = new NbtCompound { ["id"] = "minecraft:" + mob };
+        },
+        ["note_block"] = static (c, info) => c["note"] = (sbyte)(info.Note ?? 0),
+    };
+
+    private static void WriteBanner(NbtCompound c, BlockEntityInfo info)
+    {
+        c["Base"] = info.Color ?? 0;
+        if (info.Patterns is { Count: > 0 } ps)
+            c["Patterns"] = new NbtList(NbtType.Compound, ps.Select(p => (object)new NbtCompound { ["Pattern"] = p.Pattern, ["Color"] = p.Color }).ToList());
+    }
+
+    private static void WriteSkull(NbtCompound c, BlockEntityInfo info)
+    {
+        c["SkullType"] = (sbyte)(info.Skull ?? 0);
+        c["Rot"] = (sbyte)(info.Rotation ?? 0);
+        if (info.Owner is { } owner) c["Owner"] = new NbtCompound { ["Name"] = owner };
     }
 
     /// <summary>The looks of a non-sign block entity; null for a sign or a tag without an id.</summary>
@@ -57,39 +68,44 @@ public static class BlockEntities1122
     {
         var id = Bare(tag.GetString("id")).ToLowerInvariant();
         if (id.Length == 0 || id == "sign") return null;
-        switch (id)
-        {
-            case "bed":
-                return new BlockEntityInfo("bed") { Color = tag.GetInt("color") ?? 14 };
-            case "banner":
-            {
-                var patterns = new List<BannerPattern>();
-                if (tag.GetList("Patterns") is { } list)
-                    foreach (var o in list.Items)
-                        if (o is NbtCompound p && p.GetString("Pattern") is { } code) patterns.Add(new BannerPattern(code, p.GetInt("Color") ?? 0));
-                return new BlockEntityInfo("banner") { Color = tag.GetInt("Base") ?? 0, Patterns = patterns.Count > 0 ? patterns : null };
-            }
-            case "skull":
-                return new BlockEntityInfo("skull")
-                {
-                    Skull = tag.GetInt("SkullType") ?? 0, Rotation = tag.GetInt("Rot") ?? 0, Owner = tag.GetCompound("Owner")?.GetString("Name"),
-                };
-            case "flower_pot":
-            {
-                var item = Bare(tag.GetString("Item"));
-                return new BlockEntityInfo("flower_pot") { Item = item.Length == 0 || item == "air" ? null : item, Data = item.Length == 0 ? null : tag.GetInt("Data") };
-            }
-            case "mob_spawner":
-            {
-                var mob = Bare(tag.GetCompound("SpawnData")?.GetString("id"));
-                return new BlockEntityInfo("mob_spawner") { Mob = mob.Length == 0 ? null : mob };
-            }
-            case "jukebox":
-                return new BlockEntityInfo("jukebox") { Record = tag.GetCompound("RecordItem")?.GetString("id") is { } rec ? Bare(rec) : null };
-            case "noteblock" or "note_block" or "music":
-                return new BlockEntityInfo("note_block") { Note = tag.GetInt("note") };
-            default:
-                return new BlockEntityInfo(id);
-        }
+        return InfoReaders.TryGetValue(id, out var read) ? read(tag) : new BlockEntityInfo(id);
     }
+
+    // The looks read per id (any other id: just its kind).
+    private static readonly Dictionary<string, Func<NbtCompound, BlockEntityInfo>> InfoReaders = new()
+    {
+        ["bed"] = static tag => new BlockEntityInfo("bed") { Color = tag.GetInt("color") ?? 14 },
+        ["banner"] = BannerInfo,
+        ["skull"] = static tag => new BlockEntityInfo("skull")
+        {
+            Skull = tag.GetInt("SkullType") ?? 0, Rotation = tag.GetInt("Rot") ?? 0, Owner = tag.GetCompound("Owner")?.GetString("Name"),
+        },
+        ["flower_pot"] = FlowerPotInfo,
+        ["mob_spawner"] = static tag =>
+        {
+            var mob = Bare(tag.GetCompound("SpawnData")?.GetString("id"));
+            return new BlockEntityInfo("mob_spawner") { Mob = mob.Length == 0 ? null : mob };
+        },
+        ["jukebox"] = static tag => new BlockEntityInfo("jukebox") { Record = tag.GetCompound("RecordItem")?.GetString("id") is { } rec ? Bare(rec) : null },
+        ["noteblock"] = NoteBlockInfo,
+        ["note_block"] = NoteBlockInfo,
+        ["music"] = NoteBlockInfo,
+    };
+
+    private static BlockEntityInfo BannerInfo(NbtCompound tag)
+    {
+        var patterns = new List<BannerPattern>();
+        if (tag.GetList("Patterns") is { } list)
+            foreach (var o in list.Items)
+                if (o is NbtCompound p && p.GetString("Pattern") is { } code) patterns.Add(new BannerPattern(code, p.GetInt("Color") ?? 0));
+        return new BlockEntityInfo("banner") { Color = tag.GetInt("Base") ?? 0, Patterns = patterns.Count > 0 ? patterns : null };
+    }
+
+    private static BlockEntityInfo FlowerPotInfo(NbtCompound tag)
+    {
+        var item = Bare(tag.GetString("Item"));
+        return new BlockEntityInfo("flower_pot") { Item = item.Length == 0 || item == "air" ? null : item, Data = item.Length == 0 ? null : tag.GetInt("Data") };
+    }
+
+    private static BlockEntityInfo NoteBlockInfo(NbtCompound tag) => new("note_block") { Note = tag.GetInt("note") };
 }

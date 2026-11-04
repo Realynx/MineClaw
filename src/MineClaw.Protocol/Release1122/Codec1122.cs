@@ -50,27 +50,38 @@ public static class Codec1122
     /// display.Name and display.color (dyed leather armour, <c>ItemArmor.getColor</c>).</summary>
     public static ItemTag TagOf(byte[] bytes, NbtCompound c)
     {
-        var ench = new Dictionary<int, int>();
-        if (c.GetList("ench") is { } list)
-            foreach (var o in list.Items)
-                if (o is NbtCompound e && e.GetInt("id") is { } id) ench[id] = e.GetInt("lvl") ?? 1;
+        var ench = Enchantments(c.GetList("ench"));
         var display = c.GetCompound("display");
         int? color = display?.GetInt("color") is { } rgb ? rgb & 0xFFFFFF : null;
         // The glint (ItemStack.isItemEnchanted: an "ench" list, even an empty one; an enchanted book's StoredEnchantments) and a
         // potion's effects (PotionUtils.getEffectsFromStack: its "Potion" type's effects, then CustomPotionEffects).
         bool enchanted = c.GetList("ench") is not null || c.GetList("StoredEnchantments") is { Count: > 0 };
-        var potion = c.GetString("Potion") is { } pt ? (pt.StartsWith("minecraft:", StringComparison.Ordinal) ? pt[10..] : pt) : null;
-        bool effects = (potion is not null && potion is not ("empty" or "water" or "mundane" or "thick" or "awkward"))
-                       || c.GetList("CustomPotionEffects") is { Count: > 0 };
-        var stored = new Dictionary<int, int>();
-        if (c.GetList("StoredEnchantments") is { } sl)
-            foreach (var o in sl.Items)
-                if (o is NbtCompound e && e.GetInt("id") is { } id) stored[id] = e.GetInt("lvl") ?? 1;
+        var potion = PotionType(c);
+        bool effects = HasPotionEffects(potion) || c.GetList("CustomPotionEffects") is { Count: > 0 };
+        var stored = Enchantments(c.GetList("StoredEnchantments"));
         return new ItemTag(bytes, ench, display?.GetString("Name"), color)
         {
             Enchanted = enchanted, PotionEffects = effects, Potion = potion, StoredEnchantments = stored, RepairCost = c.GetInt("RepairCost") ?? 0,
         };
     }
+
+    /// <summary>An enchantment list's id → level (level 1 when missing; entries without an id skipped).</summary>
+    private static Dictionary<int, int> Enchantments(NbtList? list)
+    {
+        var levels = new Dictionary<int, int>();
+        if (list is null) return levels;
+        foreach (var o in list.Items)
+            if (o is NbtCompound e && e.GetInt("id") is { } id) levels[id] = e.GetInt("lvl") ?? 1;
+        return levels;
+    }
+
+    /// <summary>The "Potion" type without its namespace, or null.</summary>
+    private static string? PotionType(NbtCompound c) =>
+        c.GetString("Potion") is { } pt ? (pt.StartsWith("minecraft:", StringComparison.Ordinal) ? pt[10..] : pt) : null;
+
+    /// <summary>A potion type with effects (not the empty, water, mundane, thick or awkward base potions).</summary>
+    private static bool HasPotionEffects(string? potion) =>
+        potion is not null && potion is not ("empty" or "water" or "mundane" or "thick" or "awkward");
 
     /// <summary>A tag built from a compound (fixtures, the fake server).</summary>
     public static ItemTag TagOf(NbtCompound c) => TagOf(Nbt.ToBytes(c), c);
@@ -89,42 +100,9 @@ public static class Codec1122
     public static ItemStack? ReadMetadataSlot(ReadOnlySpan<byte> data, ref int pos, int wantIndex = ItemMetadataIndex)
     {
         ItemStack? found = null;
-        while (true)
-        {
-            if (pos >= data.Length) throw new ProtocolException("entity metadata ran past the packet");
-            int index = data[pos++];
-            if (index == 0xFF) return found;
-            var r = new WireReader(data[pos..]);
-            int type = r.ReadVarInt();
-            pos += r.Position;
-            r = new WireReader(data[pos..]);
-            switch (type)
-            {
-                case 0: r.ReadUByte(); break;
-                case 1: case 10: case 12: r.ReadVarInt(); break;
-                case 2: r.ReadFloat(); break;
-                case 3: case 4: r.ReadString(); break;
-                case 5:
-                {
-                    var s = ReadSlot(data, ref pos);
-                    if (index == wantIndex) found = s;
-                    continue;
-                }
-                case 6: r.ReadBool(); break;
-                case 7: r.ReadFloat(); r.ReadFloat(); r.ReadFloat(); break;
-                case 8: r.ReadLong(); break;
-                case 9: if (r.ReadBool()) r.ReadLong(); break;
-                case 11: if (r.ReadBool()) r.ReadUuid(); break;
-                case 13:
-                {
-                    Nbt.ReadRoot(data[pos..], out int used);
-                    pos += used;
-                    continue;
-                }
-                default: throw new ProtocolException($"entity metadata serializer {type} unknown");
-            }
-            pos += r.Position;
-        }
+        foreach (var m in EntityMeta1122.Read(data, ref pos))
+            if (m.Index == wantIndex && m.Serializer == 5) found = (ItemStack)m.Value!;
+        return found;
     }
 
     /// <summary>An item entity's metadata: index 6, serializer 5 (slot), then the 0xFF end.</summary>
@@ -139,19 +117,22 @@ public static class Codec1122
     /// and anvil are sent with slot count 0 (interaction objects); window types b1.8.1 doesn't have become chest-like windows
     /// of their real size, so the player part of the layout still lines up.
     /// </summary>
-    public static (byte Type, int Slots) WindowType(string type, int slotCount) => type switch
+    public static (byte Type, int Slots) WindowType(string type, int slotCount) =>
+        FixedWindows.TryGetValue(type, out var fixedWindow) ? fixedWindow : ((byte)0, slotCount); // chest, container, shulker box, the rest: as sent
+
+    // The windows whose layout doesn't follow the slot count sent.
+    private static readonly Dictionary<string, (byte Type, int Slots)> FixedWindows = new(StringComparer.Ordinal)
     {
-        "minecraft:chest" or "minecraft:container" or "minecraft:shulker_box" => (0, slotCount),
-        "minecraft:crafting_table" => (1, 9),
-        "minecraft:furnace" => (2, 3),
-        "minecraft:dispenser" or "minecraft:dropper" => (3, 9),
-        "minecraft:hopper" => (0, 5),
-        "minecraft:enchanting_table" => (0, 2),
-        "minecraft:anvil" => (0, 3),
-        "minecraft:beacon" => (0, 1),
-        "minecraft:brewing_stand" => (0, 5),
-        "minecraft:villager" => (0, 3),
-        _ => (0, slotCount),
+        ["minecraft:crafting_table"] = (1, 9),
+        ["minecraft:furnace"] = (2, 3),
+        ["minecraft:dispenser"] = (3, 9),
+        ["minecraft:dropper"] = (3, 9),
+        ["minecraft:hopper"] = (0, 5),
+        ["minecraft:enchanting_table"] = (0, 2),
+        ["minecraft:anvil"] = (0, 3),
+        ["minecraft:beacon"] = (0, 1),
+        ["minecraft:brewing_stand"] = (0, 5),
+        ["minecraft:villager"] = (0, 3),
     };
 
     /// <summary>The string type the vanilla server sends for a canonical inventory type, and the slot count it puts in.</summary>

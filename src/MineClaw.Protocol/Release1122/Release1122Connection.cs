@@ -1,3 +1,4 @@
+using System.Collections.Frozen;
 using System.Net.Sockets;
 using MineClaw.Protocol.Packets;
 using MineClaw.Protocol.Versioning;
@@ -195,157 +196,179 @@ public sealed partial class Release1122Connection : IGameConnection
         }
     }
 
-    private IPacket? TranslatePlay(int id, ReadOnlySpan<byte> body)
+    /// <summary>A play packet → its canonical message (null = answered or recorded only): the translator registered for its id
+    /// (<c>Release1122Connection.Dispatch.cs</c>).</summary>
+    private IPacket? TranslatePlay(int id, ReadOnlySpan<byte> body) =>
+        (uint)id < (uint)PlayTranslators.Length && PlayTranslators[id] is { } translate ? translate(this, body) : null;
+
+    private IPacket? TranslateKeepAlive(ReadOnlySpan<byte> body)
+    {
+        long ka = new WireReader(body).ReadLong();
+        SendWire(WireWriter.ForPacket(Ids1122.KeepAliveOut).WriteLong(ka));
+        return null;
+    }
+
+    private IPacket? TranslateJoinGame(ReadOnlySpan<byte> body)
     {
         var r = new WireReader(body);
-        switch (id)
+        int eid = r.ReadInt();
+        _selfId = eid;
+        int mode = r.ReadUByte();
+        _dimension = r.ReadInt();
+        int difficulty = r.ReadUByte();
+        int maxPlayers = r.ReadUByte();
+        r.ReadString(16); // level type
+        r.ReadBool(); // reduced debug info
+        // handleJoinGame → gameSettings.sendSettingsToServer, then the MC|Brand payload.
+        SendWire(WireWriter.ForPacket(Ids1122.ClientSettings).WriteString("en_us", 16).WriteSByte((sbyte)ViewDistance)
+            .WriteVarInt(0).WriteBool(true).WriteUByte(0x7F).WriteVarInt(1));
+        var brand = new WireWriter().WriteString("vanilla");
+        SendWire(WireWriter.ForPacket(Ids1122.CustomPayload).WriteString("MC|Brand", 20).WriteBytes(brand.Span));
+        return new LoginRequestPacket
         {
-            case Ids1122.KeepAlive:
-            {
-                long ka = r.ReadLong();
-                SendWire(WireWriter.ForPacket(Ids1122.KeepAliveOut).WriteLong(ka));
-                return null;
-            }
-            case Ids1122.JoinGame:
-            {
-                int eid = r.ReadInt();
-                _selfId = eid;
-                int mode = r.ReadUByte();
-                _dimension = r.ReadInt();
-                int difficulty = r.ReadUByte();
-                int maxPlayers = r.ReadUByte();
-                r.ReadString(16); // level type
-                r.ReadBool(); // reduced debug info
-                // handleJoinGame → gameSettings.sendSettingsToServer, then the MC|Brand payload.
-                SendWire(WireWriter.ForPacket(Ids1122.ClientSettings).WriteString("en_us", 16).WriteSByte((sbyte)ViewDistance)
-                    .WriteVarInt(0).WriteBool(true).WriteUByte(0x7F).WriteVarInt(1));
-                var brand = new WireWriter().WriteString("vanilla");
-                SendWire(WireWriter.ForPacket(Ids1122.CustomPayload).WriteString("MC|Brand", 20).WriteBytes(brand.Span));
-                return new LoginRequestPacket
-                {
-                    EntityId = eid, ServerMode = mode & ~8, Dimension = (sbyte)_dimension, Difficulty = (sbyte)difficulty,
-                    MaxPlayers = (byte)maxPlayers,
-                };
-            }
-            case Ids1122.Respawn:
-            {
-                ResetEntities();
-                _dimension = r.ReadInt();
-                int difficulty = r.ReadUByte(), mode = r.ReadUByte();
-                return new RespawnPacket { Dimension = (sbyte)_dimension, Difficulty = (sbyte)difficulty, GameMode = (sbyte)(mode & 7), WorldHeight = 256 };
-            }
-            case Ids1122.PlayerPosLook:
-            {
-                double x = r.ReadDouble(), y = r.ReadDouble(), z = r.ReadDouble();
-                float yaw = r.ReadFloat(), pitch = r.ReadFloat();
-                int flags = r.ReadUByte();
-                int teleportId = r.ReadVarInt();
-                // handlePlayerPosLook: each set flag adds the player's current value.
-                if ((flags & 0x01) != 0) x += _x;
-                if ((flags & 0x02) != 0) y += _y;
-                if ((flags & 0x04) != 0) z += _z;
-                if ((flags & 0x10) != 0) pitch += _pitch;
-                if ((flags & 0x08) != 0) yaw += _yaw;
-                (_x, _y, _z, _yaw, _pitch) = (x, y, z, yaw, pitch);
-                SendWire(WireWriter.ForPacket(Ids1122.TeleportConfirm).WriteVarInt(teleportId));
-                return new PlayerPositionLookPacket
-                {
-                    X = x, Y = y, Stance = y + PlayerPositionLookPacket.EyeHeight, Z = z, Yaw = yaw, Pitch = pitch, OnGround = false,
-                };
-            }
-            case Ids1122.Chat:
-            {
-                var json = r.ReadString();
-                sbyte pos = r.ReadSByte();
-                return new ChatPacket(ChatComponent.ToLegacy(json, Lang)) { Json = json, Position = pos };
-            }
-            case Ids1122.Disconnect:
-                return new KickPacket(ChatComponent.ToPlain(r.ReadString(), Lang));
-            case Ids1122.TimeUpdate:
-            {
-                r.ReadLong(); // world age
-                long time = r.ReadLong();
-                return new TimeUpdatePacket { Time = time < 0 ? -time : time, Frozen = time < 0 }; // negative = doDaylightCycle off
-            }
-            case Ids1122.UpdateHealth:
-            {
-                float hp = r.ReadFloat();
-                int food = r.ReadVarInt();
-                float sat = r.ReadFloat();
-                return new UpdateHealthPacket
-                {
-                    Health = (short)Math.Clamp(Math.Ceiling(hp), short.MinValue, short.MaxValue), Food = (short)food, FoodSaturation = sat, HealthExact = hp,
-                };
-            }
-            case Ids1122.SpawnPosition:
-            {
-                var (x, y, z) = r.ReadPosition();
-                return new SpawnPositionPacket { X = x, Y = y, Z = z };
-            }
-            case Ids1122.ChangeGameState:
-            {
-                int reason = r.ReadUByte();
-                float value = r.ReadFloat();
-                // WorldServer.updateWeather: 1 = rain starts, 2 = rain stops (the b1.8.1 numbering); 3 = game mode; 7/8 = the
-                // rain/thunder strength fading 0..1 (the viewer's sky, light and streaks follow them; live 10-29 the viewer showed no weather).
-                return reason is 0 or 1 or 2 or 3 or 7 or 8
-                    ? new NewStatePacket { Reason = (sbyte)reason, GameMode = (sbyte)Math.Floor(value + 0.5f), Value = value }
-                    : null;
-            }
-            case Ids1122.PlayerListItem:
-                return TranslatePlayerList(ref r);
-            case Ids1122.ChunkData:
-            {
-                var chunk = ChunkData.Decode(body, hasSky: _dimension == 0);
-                foreach (var be in chunk.BlockEntities)
-                {
-                    if (Codec1122.SignLines(be, Lang) is { } lines && be.GetInt("x") is { } sx && be.GetInt("y") is { } sy && be.GetInt("z") is { } sz)
-                        _extra.Enqueue(new UpdateSignPacket { X = sx, Y = (short)sy, Z = sz, Lines = lines, Legacy = Codec1122.SignLegacy(be, Lang) });
-                    // The viewer's looks of every other block entity (beds, banners, skulls, pots, spawners, chests…).
-                    else if (BlockEntities1122.Info(be) is { } info && BlockEntities1122.PositionOf(be) is { } bp)
-                        _extra.Enqueue(new BlockEntityMessage { X = bp.X, Y = bp.Y, Z = bp.Z, Info = info });
-                }
-                return chunk;
-            }
-            case Ids1122.UnloadChunk:
-                return new PreChunkPacket { ChunkX = r.ReadInt(), ChunkZ = r.ReadInt(), Load = false };
-            case Ids1122.BlockChange:
-            {
-                var (x, y, z) = r.ReadPosition();
-                int state = r.ReadVarInt();
-                var (bid, meta) = Split(state);
-                return new BlockChangePacket { X = x, Y = y, Z = z, BlockId = bid, Metadata = meta };
-            }
-            case Ids1122.MultiBlockChange:
-            {
-                int cx = r.ReadInt(), cz = r.ReadInt();
-                int n = r.ReadVarInt();
-                if (n < 0 || n > r.Remaining) throw new ProtocolException($"multi block change count {n} out of range");
-                var coords = new short[n];
-                var ids = new byte[n];
-                var metas = new byte[n];
-                for (int i = 0; i < n; i++)
-                {
-                    coords[i] = r.ReadShort(); // x << 12 | z << 8 | y: the b1.8.1 layout
-                    (ids[i], metas[i]) = Split(r.ReadVarInt());
-                }
-                return new MultiBlockChangePacket { ChunkX = cx, ChunkZ = cz, Coordinates = coords, BlockIds = ids, Metadata = metas };
-            }
-            case Ids1122.Explosion:
-            {
-                // SPacketExplosion: float x, y, z, strength, int count, count × (byte dx, dy, dz) from (int)x/(int)y/(int)z, then
-                // the player's knockback (3 floats, ignored). Same records as b1.8.1's 0x3C (doubles there): the blast takes
-                // those blocks with no block change of their own, so without it a 1.12.2 crater stayed standing in the world view.
-                float x = r.ReadFloat(), y = r.ReadFloat(), z = r.ReadFloat(), radius = r.ReadFloat();
-                int n = r.ReadInt();
-                if (n < 0 || n * 3 > r.Remaining) throw new ProtocolException($"explosion record count {n} out of range");
-                var recs = new ExplosionRecord[n];
-                for (int i = 0; i < n; i++) recs[i] = new ExplosionRecord(r.ReadSByte(), r.ReadSByte(), r.ReadSByte());
-                return new ExplosionPacket { X = x, Y = y, Z = z, Radius = radius, Records = recs };
-            }
-            default:
-                return TranslatePlay2(id, body); // P2: windows, entities seen by pickup and observers, signs
+            EntityId = eid, ServerMode = mode & ~8, Dimension = (sbyte)_dimension, Difficulty = (sbyte)difficulty,
+            MaxPlayers = (byte)maxPlayers,
+        };
+    }
+
+    private IPacket? TranslateRespawn(ReadOnlySpan<byte> body)
+    {
+        var r = new WireReader(body);
+        ResetEntities();
+        _dimension = r.ReadInt();
+        int difficulty = r.ReadUByte(), mode = r.ReadUByte();
+        return new RespawnPacket { Dimension = (sbyte)_dimension, Difficulty = (sbyte)difficulty, GameMode = (sbyte)(mode & 7), WorldHeight = 256 };
+    }
+
+    private IPacket? TranslatePlayerPosLook(ReadOnlySpan<byte> body)
+    {
+        var r = new WireReader(body);
+        double x = r.ReadDouble(), y = r.ReadDouble(), z = r.ReadDouble();
+        float yaw = r.ReadFloat(), pitch = r.ReadFloat();
+        int flags = r.ReadUByte();
+        int teleportId = r.ReadVarInt();
+        // handlePlayerPosLook: each set flag adds the player's current value.
+        x = Relative(x, flags, 0x01, _x);
+        y = Relative(y, flags, 0x02, _y);
+        z = Relative(z, flags, 0x04, _z);
+        pitch = Relative(pitch, flags, 0x10, _pitch);
+        yaw = Relative(yaw, flags, 0x08, _yaw);
+        (_x, _y, _z, _yaw, _pitch) = (x, y, z, yaw, pitch);
+        SendWire(WireWriter.ForPacket(Ids1122.TeleportConfirm).WriteVarInt(teleportId));
+        return new PlayerPositionLookPacket
+        {
+            X = x, Y = y, Stance = y + PlayerPositionLookPacket.EyeHeight, Z = z, Yaw = yaw, Pitch = pitch, OnGround = false,
+        };
+    }
+
+    /// <summary>A Player Position And Look field: relative (its flag set) adds the player's current value.</summary>
+    private static double Relative(double value, int flags, int flag, double current) => (flags & flag) != 0 ? value + current : value;
+
+    private static float Relative(float value, int flags, int flag, float current) => (flags & flag) != 0 ? value + current : value;
+
+    private IPacket? TranslateChat(ReadOnlySpan<byte> body)
+    {
+        var r = new WireReader(body);
+        var json = r.ReadString();
+        sbyte pos = r.ReadSByte();
+        return new ChatPacket(ChatComponent.ToLegacy(json, Lang)) { Json = json, Position = pos };
+    }
+
+    private static IPacket? TranslateTimeUpdate(ReadOnlySpan<byte> body)
+    {
+        var r = new WireReader(body);
+        r.ReadLong(); // world age
+        long time = r.ReadLong();
+        return new TimeUpdatePacket { Time = time < 0 ? -time : time, Frozen = time < 0 }; // negative = doDaylightCycle off
+    }
+
+    private static IPacket? TranslateUpdateHealth(ReadOnlySpan<byte> body)
+    {
+        var r = new WireReader(body);
+        float hp = r.ReadFloat();
+        int food = r.ReadVarInt();
+        float sat = r.ReadFloat();
+        return new UpdateHealthPacket
+        {
+            Health = (short)Math.Clamp(Math.Ceiling(hp), short.MinValue, short.MaxValue), Food = (short)food, FoodSaturation = sat, HealthExact = hp,
+        };
+    }
+
+    private static IPacket? TranslateSpawnPosition(ReadOnlySpan<byte> body)
+    {
+        var (x, y, z) = new WireReader(body).ReadPosition();
+        return new SpawnPositionPacket { X = x, Y = y, Z = z };
+    }
+
+    private static IPacket? TranslateChangeGameState(ReadOnlySpan<byte> body)
+    {
+        var r = new WireReader(body);
+        int reason = r.ReadUByte();
+        float value = r.ReadFloat();
+        // WorldServer.updateWeather: 1 = rain starts, 2 = rain stops (the b1.8.1 numbering); 3 = game mode; 7/8 = the
+        // rain/thunder strength fading 0..1 (the viewer's sky, light and streaks follow them; live 10-29 the viewer showed no weather).
+        return reason is 0 or 1 or 2 or 3 or 7 or 8
+            ? new NewStatePacket { Reason = (sbyte)reason, GameMode = (sbyte)Math.Floor(value + 0.5f), Value = value }
+            : null;
+    }
+
+    private IPacket? TranslateChunkData(ReadOnlySpan<byte> body)
+    {
+        var chunk = ChunkData.Decode(body, hasSky: _dimension == 0);
+        foreach (var be in chunk.BlockEntities) EnqueueChunkBlockEntity(be);
+        return chunk;
+    }
+
+    /// <summary>A block entity sent with its chunk: a sign's lines, or the viewer's looks of any other (beds, banners, skulls,
+    /// pots, spawners, chests…); one without a position is dropped.</summary>
+    private void EnqueueChunkBlockEntity(NbtCompound be)
+    {
+        if (Codec1122.SignLines(be, Lang) is { } lines && be.GetInt("x") is { } sx && be.GetInt("y") is { } sy && be.GetInt("z") is { } sz)
+            _extra.Enqueue(new UpdateSignPacket { X = sx, Y = (short)sy, Z = sz, Lines = lines, Legacy = Codec1122.SignLegacy(be, Lang) });
+        else if (BlockEntities1122.Info(be) is { } info && BlockEntities1122.PositionOf(be) is { } bp)
+            _extra.Enqueue(new BlockEntityMessage { X = bp.X, Y = bp.Y, Z = bp.Z, Info = info });
+    }
+
+    private static IPacket? TranslateBlockChange(ReadOnlySpan<byte> body)
+    {
+        var r = new WireReader(body);
+        var (x, y, z) = r.ReadPosition();
+        int state = r.ReadVarInt();
+        var (bid, meta) = Split(state);
+        return new BlockChangePacket { X = x, Y = y, Z = z, BlockId = bid, Metadata = meta };
+    }
+
+    private static IPacket? TranslateMultiBlockChange(ReadOnlySpan<byte> body)
+    {
+        var r = new WireReader(body);
+        int cx = r.ReadInt(), cz = r.ReadInt();
+        int n = r.ReadVarInt();
+        if (n < 0 || n > r.Remaining) throw new ProtocolException($"multi block change count {n} out of range");
+        var coords = new short[n];
+        var ids = new byte[n];
+        var metas = new byte[n];
+        for (int i = 0; i < n; i++)
+        {
+            coords[i] = r.ReadShort(); // x << 12 | z << 8 | y: the b1.8.1 layout
+            (ids[i], metas[i]) = Split(r.ReadVarInt());
         }
+        return new MultiBlockChangePacket { ChunkX = cx, ChunkZ = cz, Coordinates = coords, BlockIds = ids, Metadata = metas };
+    }
+
+    /// <summary>
+    /// SPacketExplosion: float x, y, z, strength, int count, count × (byte dx, dy, dz) from (int)x/(int)y/(int)z, then the
+    /// player's knockback (3 floats, ignored). Same records as b1.8.1's 0x3C (doubles there): the blast takes those blocks with no
+    /// block change of their own, so without it a 1.12.2 crater stayed standing in the world view.
+    /// </summary>
+    private static IPacket? TranslateExplosion(ReadOnlySpan<byte> body)
+    {
+        var r = new WireReader(body);
+        float x = r.ReadFloat(), y = r.ReadFloat(), z = r.ReadFloat(), radius = r.ReadFloat();
+        int n = r.ReadInt();
+        if (n < 0 || n * 3 > r.Remaining) throw new ProtocolException($"explosion record count {n} out of range");
+        var recs = new ExplosionRecord[n];
+        for (int i = 0; i < n; i++) recs[i] = new ExplosionRecord(r.ReadSByte(), r.ReadSByte(), r.ReadSByte());
+        return new ExplosionPacket { X = x, Y = y, Z = z, Radius = radius, Records = recs };
     }
 
     private static (byte Id, byte Meta) Split(int state)
@@ -354,8 +377,9 @@ public sealed partial class Release1122Connection : IGameConnection
         return (uint)id > 255 ? (ChunkData.UnknownBlock, (byte)0) : ((byte)id, (byte)(state & 15));
     }
 
-    private IPacket? TranslatePlayerList(ref WireReader r)
+    private IPacket? TranslatePlayerList(ReadOnlySpan<byte> body)
     {
+        var r = new WireReader(body);
         int action = r.ReadVarInt();
         int n = r.ReadVarInt();
         if (n < 0 || n > r.Remaining) throw new ProtocolException($"player list count {n} out of range");
@@ -363,34 +387,45 @@ public sealed partial class Release1122Connection : IGameConnection
         for (int i = 0; i < n; i++)
         {
             var uuid = r.ReadUuid();
-            switch (action)
-            {
-                case 0: // add player
-                {
-                    var name = r.ReadString(16);
-                    int props = r.ReadVarInt();
-                    for (int p = 0; p < props; p++)
-                    {
-                        r.ReadString(); r.ReadString();
-                        if (r.ReadBool()) r.ReadString();
-                    }
-                    r.ReadVarInt(); // game mode
-                    int ping = r.ReadVarInt();
-                    if (r.ReadBool()) r.ReadString(); // display name
-                    _names[uuid] = name;
-                    found.Add(new PlayerListItemPacket { PlayerName = name, Online = true, Ping = (short)Math.Min(ping, short.MaxValue) });
-                    break;
-                }
-                case 1: r.ReadVarInt(); break;
-                case 2: r.ReadVarInt(); break;
-                case 3: if (r.ReadBool()) r.ReadString(); break;
-                case 4:
-                    if (_names.Remove(uuid, out var gone)) found.Add(new PlayerListItemPacket { PlayerName = gone, Online = false });
-                    break;
-                default: throw new ProtocolException($"player list action {action}");
-            }
+            if (PlayerListEntry(ref r, action, uuid) is { } item) found.Add(item);
         }
         return First(found);
+    }
+
+    /// <summary>One Player List Item entry: an add names the player (uuid → name kept for spawns), a remove takes it off; the
+    /// game mode, latency and display name updates are read past.</summary>
+    private PlayerListItemPacket? PlayerListEntry(ref WireReader r, int action, Guid uuid)
+    {
+        switch (action)
+        {
+            case 0: return PlayerListAdd(ref r, uuid);
+            case 1: r.ReadVarInt(); return null;
+            case 2: r.ReadVarInt(); return null;
+            case 3: SkipOptionalString(ref r); return null;
+            case 4: return _names.Remove(uuid, out var gone) ? new PlayerListItemPacket { PlayerName = gone, Online = false } : null;
+            default: throw new ProtocolException($"player list action {action}");
+        }
+    }
+
+    private PlayerListItemPacket PlayerListAdd(ref WireReader r, Guid uuid)
+    {
+        var name = r.ReadString(16);
+        int props = r.ReadVarInt();
+        for (int p = 0; p < props; p++)
+        {
+            r.ReadString(); r.ReadString();
+            SkipOptionalString(ref r); // signature
+        }
+        r.ReadVarInt(); // game mode
+        int ping = r.ReadVarInt();
+        SkipOptionalString(ref r); // display name
+        _names[uuid] = name;
+        return new PlayerListItemPacket { PlayerName = name, Online = true, Ping = (short)Math.Min(ping, short.MaxValue) };
+    }
+
+    private static void SkipOptionalString(ref WireReader r)
+    {
+        if (r.ReadBool()) r.ReadString();
     }
 
     // One wire packet can carry several canonical messages (players listed, entities destroyed, signs in a chunk); the first
@@ -405,80 +440,107 @@ public sealed partial class Release1122Connection : IGameConnection
 
     // ------------------------------------------------------------------ sending
 
-    public bool CanSend(IPacket packet) => packet switch
+    /// <summary>The canonical messages with a 1.12.2 form (all sealed: an exact type lookup); an arm swing is one too.</summary>
+    private static readonly FrozenSet<Type> SendableTypes = new[]
     {
-        HandshakePacket or KeepAlivePacket or KickPacket or ChatPacket or PlayerOnGroundPacket or PlayerPositionPacket
-            or PlayerPositionLookPacket or PlayerLookPacket or EntityActionPacket or RespawnPacket or HoldingChangePacket
-            or WindowClickPacket or TransactionPacket or CloseWindowPacket or PlayerDiggingPacket or PlayerBlockPlacementPacket
-            or UseEntityPacket or UpdateSignPacket or EnchantItemPacket => true,
-        AnimationPacket a => a.Animation == 1,
-        _ => false,
-    };
+        typeof(HandshakePacket), typeof(KeepAlivePacket), typeof(KickPacket), typeof(ChatPacket), typeof(PlayerOnGroundPacket),
+        typeof(PlayerPositionPacket), typeof(PlayerPositionLookPacket), typeof(PlayerLookPacket), typeof(EntityActionPacket),
+        typeof(RespawnPacket), typeof(HoldingChangePacket), typeof(WindowClickPacket), typeof(TransactionPacket), typeof(CloseWindowPacket),
+        typeof(PlayerDiggingPacket), typeof(PlayerBlockPlacementPacket), typeof(UseEntityPacket), typeof(UpdateSignPacket),
+        typeof(EnchantItemPacket),
+    }.ToFrozenSet();
+
+    public bool CanSend(IPacket packet) => packet is AnimationPacket a ? a.Animation == 1 : SendableTypes.Contains(packet.GetType());
 
     public void Send(IPacket packet)
     {
         ArgumentNullException.ThrowIfNull(packet);
         ObjectDisposedException.ThrowIf(_disposed, this);
+        if (SendSession(packet) || SendMovement(packet) || SendPlay2(packet)) return;
+        throw new NotSupportedException($"{packet.GetType().Name} is not supported on 1.12.2 yet");
+    }
+
+    /// <summary>The login, chat, respawn, entity actions, the held item and the arm swing.</summary>
+    private bool SendSession(IPacket packet)
+    {
         switch (packet)
         {
             case HandshakePacket hs:
-                lock (_sendLock)
-                {
-                    WriteLocked(WireWriter.ForPacket(Ids1122.Handshake).WriteVarInt(ProtocolVersion).WriteString(Host, 255)
-                        .WriteUShort((ushort)Port).WriteVarInt(2), packet);
-                    _state = State.Login;
-                    WriteLocked(WireWriter.ForPacket(Ids1122.LoginStart).WriteString(hs.Username, 16), packet);
-                }
-                return;
+                SendLogin(hs);
+                return true;
             case KeepAlivePacket:
-                return; // answered inside the connection
+                return true; // answered inside the connection
             case KickPacket:
-                return; // 1.12.2 has no client disconnect packet: closing the socket is the quit
+                return true; // 1.12.2 has no client disconnect packet: closing the socket is the quit
             case ChatPacket chat:
                 SendWire(WireWriter.ForPacket(Ids1122.ChatOut).WriteString(chat.Message, MaxChatLength), packet);
-                return;
+                return true;
+            case EntityActionPacket a:
+                SendEntityAction(a);
+                return true;
+            case RespawnPacket:
+                SendWire(WireWriter.ForPacket(Ids1122.ClientStatus).WriteVarInt(0), packet); // PERFORM_RESPAWN
+                return true;
+            case HoldingChangePacket h:
+                SendWire(WireWriter.ForPacket(Ids1122.HeldItemChange).WriteShort(h.Slot), packet);
+                return true;
+            case AnimationPacket { Animation: 1 } swing:
+                SendWire(WireWriter.ForPacket(Ids1122.Animation).WriteVarInt(swing.Hand), packet);
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    /// <summary>Handshake(340, host, port, next state 2) + Login Start, written together.</summary>
+    private void SendLogin(HandshakePacket hs)
+    {
+        lock (_sendLock)
+        {
+            WriteLocked(WireWriter.ForPacket(Ids1122.Handshake).WriteVarInt(ProtocolVersion).WriteString(Host, 255)
+                .WriteUShort((ushort)Port).WriteVarInt(2), hs);
+            _state = State.Login;
+            WriteLocked(WireWriter.ForPacket(Ids1122.LoginStart).WriteString(hs.Username, 16), hs);
+        }
+    }
+
+    /// <summary>b1.8.1 1 crouch, 2 uncrouch, 3 leave bed, 4/5 sprint → CPacketEntityAction.Action ordinals 0..4; others aren't sent.</summary>
+    private void SendEntityAction(EntityActionPacket a)
+    {
+        int action = a.Action is >= 1 and <= 5 ? a.Action - 1 : -1;
+        if (action < 0) return;
+        SendWire(WireWriter.ForPacket(Ids1122.EntityAction).WriteVarInt(a.EntityId).WriteVarInt(action).WriteVarInt(0), a);
+    }
+
+    /// <summary>The four movement packets (stance dropped), tracking what the server knows for relative teleports.</summary>
+    private bool SendMovement(IPacket packet)
+    {
+        switch (packet)
+        {
             case PlayerOnGroundPacket g:
                 // onUpdateWalkingPlayer: a bare CPacketPlayer only when on-ground changed (b1.8.1 sent one every tick).
-                if (_lastOnGround == g.OnGround) return;
+                if (_lastOnGround == g.OnGround) return true;
                 _lastOnGround = g.OnGround;
                 SendWire(WireWriter.ForPacket(Ids1122.Player).WriteBool(g.OnGround), packet);
-                return;
+                return true;
             case PlayerPositionPacket p:
                 (_x, _y, _z) = (p.X, p.Y, p.Z);
                 _lastOnGround = p.OnGround;
                 SendWire(WireWriter.ForPacket(Ids1122.PlayerPosition).WriteDouble(p.X).WriteDouble(p.Y).WriteDouble(p.Z).WriteBool(p.OnGround), packet);
-                return;
+                return true;
             case PlayerPositionLookPacket p:
                 (_x, _y, _z, _yaw, _pitch) = (p.X, p.Y, p.Z, p.Yaw, p.Pitch);
                 _lastOnGround = p.OnGround;
                 SendWire(WireWriter.ForPacket(Ids1122.PlayerPositionRotation).WriteDouble(p.X).WriteDouble(p.Y).WriteDouble(p.Z)
                     .WriteFloat(p.Yaw).WriteFloat(p.Pitch).WriteBool(p.OnGround), packet);
-                return;
+                return true;
             case PlayerLookPacket p:
                 (_yaw, _pitch) = (p.Yaw, p.Pitch);
                 _lastOnGround = p.OnGround;
                 SendWire(WireWriter.ForPacket(Ids1122.PlayerRotation).WriteFloat(p.Yaw).WriteFloat(p.Pitch).WriteBool(p.OnGround), packet);
-                return;
-            case EntityActionPacket a:
-            {
-                // b1.8.1 1 crouch, 2 uncrouch, 3 leave bed, 4/5 sprint → CPacketEntityAction.Action ordinals 0..4.
-                int action = a.Action switch { 1 => 0, 2 => 1, 3 => 2, 4 => 3, 5 => 4, _ => -1 };
-                if (action < 0) return;
-                SendWire(WireWriter.ForPacket(Ids1122.EntityAction).WriteVarInt(a.EntityId).WriteVarInt(action).WriteVarInt(0), packet);
-                return;
-            }
-            case RespawnPacket:
-                SendWire(WireWriter.ForPacket(Ids1122.ClientStatus).WriteVarInt(0), packet); // PERFORM_RESPAWN
-                return;
-            case HoldingChangePacket h:
-                SendWire(WireWriter.ForPacket(Ids1122.HeldItemChange).WriteShort(h.Slot), packet);
-                return;
-            case AnimationPacket { Animation: 1 } swing:
-                SendWire(WireWriter.ForPacket(Ids1122.Animation).WriteVarInt(swing.Hand), packet);
-                return;
+                return true;
             default:
-                if (SendPlay2(packet)) return;
-                throw new NotSupportedException($"{packet.GetType().Name} is not supported on 1.12.2 yet");
+                return false;
         }
     }
 
