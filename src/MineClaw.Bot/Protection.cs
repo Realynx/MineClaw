@@ -245,37 +245,56 @@ public sealed partial class Protection
 
     private ProtectionVerdict SoftReason(BlockPos p, int id, int dim, IClaimBoard? claims)
     {
-        static ProtectionVerdict S(string reason, string why, string? unlock = null) => new(ProtectionLevel.Soft, reason, why, unlock);
         string name = Blocks.Get(id).Name.Replace('_', ' ');
-        const string containerUnlock = "punch it and say 'you can break it'";
+        return BlockReason(p, id, name) ?? PlaceReason(p, id) ?? IndexReason(p, id, name)
+               ?? (claims != null && !claims.IsFree(ClaimKey.Block(p, dim)) ? Soft("claimed", ClaimedWhy) : Soft("unknown", "a protected block"));
+    }
+
+    private static ProtectionVerdict Soft(string reason, string why, string? unlock = null) => new(ProtectionLevel.Soft, reason, why, unlock);
+
+    private const string ContainerUnlock = "punch it and say 'you can break it'";
+
+    /// <summary>A protected block kind (container, sapling, farmland, station) or a farm plant (unripe, else held by a hive lease).</summary>
+    private ProtectionVerdict? BlockReason(BlockPos p, int id, string name)
+    {
         if (_blockIds.Contains(id))
             return IsContainer(id)
-                ? S("container", $"a {name}: it may hold items", containerUnlock)
-                : S(id is Blocks.Sapling ? "sapling" : id is Blocks.Farmland ? "farm" : "station", $"a {name}");
-        if (IsFarmPlant(id) && UnripeReason(p, id) is { } unripe) return S("farm", unripe);
+                ? Soft("container", $"a {name}: it may hold items", ContainerUnlock)
+                : Soft(id is Blocks.Sapling ? "sapling" : id is Blocks.Farmland ? "farm" : "station", $"a {name}");
+        if (!IsFarmPlant(id)) return null;
         // A ripe crop is only ever held back by a hive lease (AnySoft): say that, not the box/index entry it grows in.
-        if (IsFarmPlant(id)) return S("claimed", ClaimedWhy);
+        return UnripeReason(p, id) is { } unripe ? Soft("farm", unripe) : Soft("claimed", ClaimedWhy);
+    }
+
+    /// <summary>Farmland of a farm, a part of a remembered build, or a config region.</summary>
+    private ProtectionVerdict? PlaceReason(BlockPos p, int id)
+    {
         if (id == Blocks.Farmland && (InMemoryRegion(p, id) != null || IndexerKind?.Invoke(p) is IndexKinds.Farm or IndexKinds.UnknownStructure))
-            return S("farm", "farmland: breaking or trampling it undoes the farm (tilling and planting are fine)");
+            return Soft("farm", "farmland: breaking or trampling it undoes the farm (tilling and planting are fine)");
         if (!IsFarmPlant(id) && InMemoryRegion(p, id) is { } mr)
-            return S("structure", StructureWhy(mr));
+            return Soft("structure", StructureWhy(mr));
         foreach (var r in _configRegions)
-            if (Inside(p, r.Min, r.Max)) return S("config_region", "inside a protected region from my config");
-        if (IndexerKind?.Invoke(p) is { } kind)
-            return kind switch
-            {
-                IndexKinds.UnknownStructure => S("unknown_build", "part of a player build I don't know yet"),
-                IndexKinds.Generator => S("generator", "a cobble generator's wall or fluid: breaking it can spill lava/water"),
-                IndexKinds.Farm => S("farm", "farmland or irrigation of a farm"),
-                IndexKinds.Tree => S("tree_soil", "the dirt under a tree or sapling (unrenewable)"),
-                IndexKinds.Portal => S("portal", "a nether portal frame"),
-                IndexKinds.Sign => S("sign", "a sign"),
-                WorldIndexer.FloorKind => S("floor", $"a placed {name} (someone's floor, wall or path)"),
-                _ when IsContainer(id) => S("container", $"a {name}: it may hold items", containerUnlock),
-                _ => S("station", $"a {kind.Replace('_', ' ')}"),
-            };
-        if (claims != null && !claims.IsFree(ClaimKey.Block(p, dim))) return S("claimed", ClaimedWhy);
-        return S("unknown", "a protected block");
+            if (Inside(p, r.Min, r.Max)) return Soft("config_region", "inside a protected region from my config");
+        return null;
+    }
+
+    /// <summary>The fixed reason of each index kind that protects a cell.</summary>
+    private static readonly Dictionary<string, (string Reason, string Why)> IndexReasons = new(StringComparer.Ordinal)
+    {
+        [IndexKinds.UnknownStructure] = ("unknown_build", "part of a player build I don't know yet"),
+        [IndexKinds.Generator] = ("generator", "a cobble generator's wall or fluid: breaking it can spill lava/water"),
+        [IndexKinds.Farm] = ("farm", "farmland or irrigation of a farm"),
+        [IndexKinds.Tree] = ("tree_soil", "the dirt under a tree or sapling (unrenewable)"),
+        [IndexKinds.Portal] = ("portal", "a nether portal frame"),
+        [IndexKinds.Sign] = ("sign", "a sign"),
+    };
+
+    private ProtectionVerdict? IndexReason(BlockPos p, int id, string name)
+    {
+        if (IndexerKind?.Invoke(p) is not { } kind) return null;
+        if (IndexReasons.TryGetValue(kind, out var r)) return Soft(r.Reason, r.Why);
+        if (kind == WorldIndexer.FloorKind) return Soft("floor", $"a placed {name} (someone's floor, wall or path)");
+        return IsContainer(id) ? Soft("container", $"a {name}: it may hold items", ContainerUnlock) : Soft("station", $"a {kind.Replace('_', ' ')}");
     }
 
     /// <summary>A hive lease is coordination, not ownership (players own things, bots don't): its verdict reads as "busy, take

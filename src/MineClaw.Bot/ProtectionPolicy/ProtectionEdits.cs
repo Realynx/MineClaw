@@ -35,16 +35,35 @@ public sealed partial class Protection
     public string? EditCheck(BlockPos p, int id, long? only = null)
     {
         if (Edits is not { } e) return "no editing context";
-        int dim = Dim;
-        if (Marks?.NeverAt(p, dim) != null) return "a never-break mark";
-        if (IsContainer(id)) return "a container (exact permits only)";
-        if (_blockIds.Contains(id) || IsFarmPlant(id) || id == Blocks.Farmland) return "not part of a design";
-        foreach (var r in _configRegions) if (Inside(p, r.Min, r.Max)) return "a protected region from my config";
-        if (Claims != null && !Claims.IsFree(ClaimKey.Block(p, dim))) return "another hive bot's part";
-        if (IndexerKind?.Invoke(p) is { } kind && kind is not (IndexKinds.UnknownStructure or WorldIndexer.FloorKind)) return $"a {kind.Replace('_', ' ')}";
+        if (NeverEdited(p, id, Dim) is { } never) return never;
         var boxes = MemoryRegions(p, id).ToList();
         if (boxes.Count == 0) return "not a saved design or my own mark";
         if (e.Requested() == null) return "nobody asked (my own choice)";
+        return BoxRefusal(boxes, e, only);
+    }
+
+    /// <summary>What no edit ever touches: never-break marks, containers, config blocks and farms, config regions, other bots'
+    /// leases and indexed things other than unknown builds and floors.</summary>
+    private string? NeverEdited(BlockPos p, int id, int dim)
+    {
+        if (Marks?.NeverAt(p, dim) != null) return "a never-break mark";
+        if (IsContainer(id)) return "a container (exact permits only)";
+        if (_blockIds.Contains(id) || IsFarmPlant(id) || id == Blocks.Farmland) return "not part of a design";
+        return NeverEditedPlace(p, dim);
+    }
+
+    private string? NeverEditedPlace(BlockPos p, int dim)
+    {
+        foreach (var r in _configRegions) if (Inside(p, r.Min, r.Max)) return "a protected region from my config";
+        if (Claims != null && !Claims.IsFree(ClaimKey.Block(p, dim))) return "another hive bot's part";
+        if (IndexerKind?.Invoke(p) is { } kind && kind is not (IndexKinds.UnknownStructure or WorldIndexer.FloorKind)) return $"a {kind.Replace('_', ' ')}";
+        return null;
+    }
+
+    /// <summary>Every box holding the cell must yield: a design only when it's the one being worked on and open, a remembered build
+    /// only when it's the bot's own mark.</summary>
+    private static string? BoxRefusal(List<ProtectedBox> boxes, EditContext e, long? only)
+    {
         foreach (var b in boxes)
         {
             if (b.Design is { } d)
