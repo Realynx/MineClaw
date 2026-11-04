@@ -381,6 +381,17 @@ function idleGrowStatus<B extends object>(base: B, bills: number) {
   };
 }
 
+/** A zone's bills after its plant is set: none (plant cleared), the first bill's plant changed, or a first bill. */
+function plantBills(
+  bills: StoryGrowBill[] | null | undefined,
+  plant: string | null,
+  newId: () => string,
+): StoryGrowBill[] | null {
+  if (!plant) return null;
+  if (bills?.length) return [{ ...bills[0]!, plant }, ...bills.slice(1)];
+  return [{ id: newId(), plant, mode: 'forever' as const, target: 64, done: 0, paused: false }];
+}
+
 type BillRequest = Extract<StoryZoneRequest, { op: `bill_${string}` }>;
 type BillOf<O extends BillRequest['op']> = Extract<BillRequest, { op: O }>;
 
@@ -1388,39 +1399,28 @@ export class StorySim {
   private growOp(c: Colony, body: Extract<StoryZoneRequest, { op: 'update' | 'seek_seeds' }>) {
     const f = c.zones.get(String(body.id));
     if (!f) throw Object.assign(new Error('id: no such zone'), { status: 404 });
-    if (body.op === 'update') {
-      if (f.v.kind !== 'farm')
-        throw Object.assign(new Error('only farm (growing) zones take plant, sow and harvest'), { status: 400 });
-      if (body.plant && !STORY_SIM_PLANTS.some((p) => p.id === body.plant))
-        throw Object.assign(new Error(`plant must be one of ${STORY_SIM_PLANTS.map((p) => p.id).join('|')}`), {
-          status: 400,
-        });
-      const bills =
-        body.plant === undefined
-          ? f.v.bills
-          : !body.plant
-            ? null
-            : f.v.bills?.length
-              ? [{ ...f.v.bills[0]!, plant: body.plant }, ...f.v.bills.slice(1)]
-              : [
-                  {
-                    id: `gb${c.seq++}`,
-                    plant: body.plant,
-                    mode: 'forever' as const,
-                    target: 64,
-                    done: 0,
-                    paused: false,
-                  },
-                ];
-      f.v = {
-        ...f.v,
-        ...(body.plant !== undefined ? { plant: body.plant || null, bills } : {}),
-        ...(body.sow !== undefined ? { sow: body.sow } : {}),
-        ...(body.harvest !== undefined ? { harvest: body.harvest } : {}),
-      };
-      f.rev = this.bump(c);
-      return { id: f.v.id, warnings: [], rev: c.rev };
-    }
+    return body.op === 'update' ? this.updateGrowZone(c, f, body) : this.seekSeeds(c, f);
+  }
+
+  /** zones update: a growing zone's plant (its first bill's), sowing and harvesting. */
+  private updateGrowZone(c: Colony, f: Fn<StoryZone>, body: Extract<StoryZoneRequest, { op: 'update' }>) {
+    if (f.v.kind !== 'farm')
+      throw Object.assign(new Error('only farm (growing) zones take plant, sow and harvest'), { status: 400 });
+    if (body.plant) knownPlant(body.plant);
+    f.v = {
+      ...f.v,
+      ...(body.plant !== undefined
+        ? { plant: body.plant || null, bills: plantBills(f.v.bills, body.plant, () => `gb${c.seq++}`) }
+        : {}),
+      ...(body.sow !== undefined ? { sow: body.sow } : {}),
+      ...(body.harvest !== undefined ? { harvest: body.harvest } : {}),
+    };
+    f.rev = this.bump(c);
+    return { id: f.v.id, warnings: [], rev: c.rev };
+  }
+
+  /** zones seek_seeds: wheat seeds come from cutting tall grass around the zone; a fruit's from a crafting bill. */
+  private seekSeeds(c: Colony, f: Fn<StoryZone>) {
     const plant = STORY_SIM_PLANTS.find((p) => p.id === (this.activeBill(c, f.v)?.plant ?? f.v.plant));
     if (!plant) throw Object.assign(new Error('the zone grows nothing: set its plant first'), { status: 400 });
     if (plant.id === 'wheat') {
