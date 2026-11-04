@@ -86,6 +86,8 @@ export interface StoryUiStates {
   worked: StoryColonyState;
   list: ReturnType<StorySim['list']>;
   architect: ReturnType<StorySim['architect']>;
+  /** The deltas from `ordered` on (each since the one before), the last one after the failures. */
+  deltas: StoryColonyState[];
 }
 
 /** Runs the scripted colony (call inside a test: it seeds Math.random and Date.now for the run, then restores them). */
@@ -165,7 +167,14 @@ export function storyUiStates(): StoryUiStates {
     op(() => sim.setSeats(id, 0, 1));
     op(() => sim.setOffline(id, b, 'cap', 60_000));
     const ordered = sim.state(id);
-    step(300, 500);
+    // The deltas a client gets while the colony works: every 50 steps, the changes since the last one.
+    const deltas: StoryColonyState[] = [];
+    let rev = ordered.rev;
+    for (let i = 0; i < 6; i++) {
+      step(50, 500);
+      deltas.push(sim.state(id, rev));
+      rev = sim.state(id).rev;
+    }
     sim.failDesignations(
       id,
       sim
@@ -175,7 +184,8 @@ export function storyUiStates(): StoryUiStates {
       "can't reach it",
     );
     const worked = sim.state(id);
-    return { founded, ordered, worked, list: sim.list(), architect: sim.architect(id) };
+    deltas.push(sim.state(id, rev));
+    return { founded, ordered, worked, deltas, list: sim.list(), architect: sim.architect(id) };
   } finally {
     rnd.mockRestore();
     now.mockRestore();
