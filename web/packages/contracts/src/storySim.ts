@@ -75,6 +75,7 @@ import {
   type StoryOnlineRequest,
   type StoryOnlineResponse,
   type StoryPawn,
+  type StorySpeed,
   type StoryPawnsRequest,
   type StoryPawnsResponse,
   type StoryPlant,
@@ -460,6 +461,25 @@ function architectEntry(
     short: made.short,
   };
 }
+
+/** The colony options a request copies when given, in this order (`speed` has its own step). */
+const OPTION_FIELDS = [
+  'idle',
+  'autoCraftTools',
+  'spareTools',
+  'autoPlaceBenches',
+  'detectBenches',
+  'rescueTeleport',
+  'unfilteredStorageTakesAnything',
+  'keepDisallowed',
+  'stuckTeleportAfterS',
+  'allowLava',
+  'speedEffect',
+] as const;
+
+const spareToolsCopy = (t: NonNullable<StoryOptionsRequest['spareTools']>) => ({ count: t.count, kinds: [...t.kinds] });
+
+const SPEED_MULTIPLIER: Record<StorySpeed, number> = { normal: 1, fast: 2, faster: 3 };
 
 type BillRequest = Extract<StoryZoneRequest, { op: `bill_${string}` }>;
 type BillOf<O extends BillRequest['op']> = Extract<BillRequest, { op: O }>;
@@ -2470,30 +2490,26 @@ export class StorySim {
   }
 
   /** POST …/options. */
+  /** Fast / Faster: every online pawn's body runs at the multiplier (the mock server never rejects it). */
+  private setPawnSpeed(c: Colony, speed: StorySpeed) {
+    c.options.speed = speed;
+    const m = SPEED_MULTIPLIER[speed];
+    for (const p of c.pawns.values()) {
+      p.p.speed = p.p.online === false ? null : { level: speed, multiplier: m, requested: m, serverFactor: 1, rollbacks: 0 };
+      p.rev = this.bump(c);
+    }
+  }
+
   options(id: string, body: StoryOptionsRequest): StoryColonyOptions {
     const c = this.colony(id);
     if (Object.values(body).every((v) => v === undefined))
       throw Object.assign(new Error('autoPlaceBenches, detectBenches, idle, autoCraftTools, spareTools, rescueTeleport, unfilteredStorageTakesAnything, keepDisallowed, speed or speedEffect required'), { status: 400 });
-    if (body.idle !== undefined) c.options.idle = body.idle;
-    if (body.autoCraftTools !== undefined) c.options.autoCraftTools = body.autoCraftTools;
-    if (body.spareTools !== undefined) c.options.spareTools = { count: body.spareTools.count, kinds: [...body.spareTools.kinds] };
-    if (body.autoPlaceBenches !== undefined) c.options.autoPlaceBenches = body.autoPlaceBenches;
-    if (body.detectBenches !== undefined) c.options.detectBenches = body.detectBenches;
-    if (body.rescueTeleport !== undefined) c.options.rescueTeleport = body.rescueTeleport;
-    if (body.unfilteredStorageTakesAnything !== undefined) c.options.unfilteredStorageTakesAnything = body.unfilteredStorageTakesAnything;
-    if (body.keepDisallowed !== undefined) c.options.keepDisallowed = body.keepDisallowed;
-    if (body.stuckTeleportAfterS !== undefined) c.options.stuckTeleportAfterS = body.stuckTeleportAfterS;
-    if (body.allowLava !== undefined) c.options.allowLava = body.allowLava;
-    if (body.speedEffect !== undefined) c.options.speedEffect = body.speedEffect;
-    if (body.speed !== undefined) {
-      // Fast / Faster: every online pawn's body runs at the multiplier (the mock server never rejects it).
-      c.options.speed = body.speed;
-      const m = body.speed === 'faster' ? 3 : body.speed === 'fast' ? 2 : 1;
-      for (const p of c.pawns.values()) {
-        p.p.speed = p.p.online === false ? null : { level: body.speed, multiplier: m, requested: m, serverFactor: 1, rollbacks: 0 };
-        p.rev = this.bump(c);
-      }
+    for (const k of OPTION_FIELDS) {
+      const v = body[k];
+      if (v === undefined) continue;
+      Object.assign(c.options, { [k]: k === 'spareTools' ? spareToolsCopy(body.spareTools!) : v });
     }
+    if (body.speed !== undefined) this.setPawnSpeed(c, body.speed);
     this.bump(c);
     this.plan(c);
     return { ...c.options };
@@ -3208,19 +3224,25 @@ function designationLabel(kind: string): string {
   );
 }
 
-function directiveSummary(d: StoryDirectiveRequest['directive']): string {
+/** A directive's summary for its kind alone: "Chop in 4×3 (2 targets)". */
+function directiveKindSummary(d: StoryDirectiveRequest['directive']): string {
   const area = d.area ? ` in ${Math.abs(d.area[3] - d.area[0]) + 1}×${Math.abs(d.area[5] - d.area[2]) + 1}` : '';
+  return `${d.kind[0]!.toUpperCase()}${d.kind.slice(1)}${area}${d.targets?.length ? ` (${d.targets.length} targets)` : ''}`;
+}
+
+function directiveSummary(d: StoryDirectiveRequest['directive']): string {
+  const builds = d.build?.length ?? 0;
   switch (d.kind) {
     case 'text':
       return d.text ?? 'Message';
     case 'build':
-      return `Build ${d.build?.length ?? 0} item${d.build?.length === 1 ? '' : 's'}`;
+      return `Build ${builds} item${builds === 1 ? '' : 's'}`;
     case 'craft':
       return `Craft ${d.bill?.recipe ?? 'items'}`;
     case 'move':
       return `Move to ${d.targets?.[0]?.join(', ') ?? 'the spot'}`;
     default:
-      return `${d.kind[0]!.toUpperCase()}${d.kind.slice(1)}${area}${d.targets?.length ? ` (${d.targets.length} targets)` : ''}`;
+      return directiveKindSummary(d);
   }
 }
 
