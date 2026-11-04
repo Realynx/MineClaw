@@ -429,14 +429,19 @@ blocks from my eyes`, and `194,63,395 is occupied by planks` raised as a warning
 
 Now:
 
-- **A build job is a batch.** It holds up to 24 cells of one item (and facing) within 3 blocks of its first open cell, all in
-  reach (4.3 blocks from the eyes) of one `stand`. The stand is a cell with feet and head open and solid ground under it, not in,
-  on or under a batch cell, in reach of the first cell and of the most others. Another builder's stand, a still-open cell of the
-  build, or (for a wall or fence) a spot inside the footprint cost extra, so builders never wall themselves in. The cells are
-  ordered so each one has support when its turn comes: bottom-up (a wall's upper cell joins the batch over a cell the batch places
-  first), then touching something solid or an earlier cell, then nearest the last one, along the row.
-- **Fair share.** The batch is the pawn's share of the build's open cells (`ceil(open / builders)`, 1 to 24), no more than it can
-  get items for. Ten builders on a 16×16 floor each get a part, and a seed next to another pawn's batch comes after the rest, so
+- **A build job is a batch.** It holds up to 24 cells of one item (and facing) within 6 blocks of its first open cell, and comes
+  with one `stand`.
+  - The stand has feet and head open and solid ground under it. It is not the first cell and not on a batch cell. It must have
+    the first cell in reach (4.3 blocks from the eyes), then as many as possible of the cells within 3 blocks of it.
+  - The stand may be another open cell of the patch, so the pawn stands in the middle of its patch. That cell is then left out.
+  - Another builder's stand, a still-open cell of the build, or (for a wall or fence) a spot inside the footprint costs extra, so
+    builders never wall themselves in.
+  - The cells in reach of the stand come first, then the ones a few steps on. Cells left over between earlier batches are taken
+    along this way instead of becoming one-block jobs.
+  - Within each group, each cell has support when its turn comes: bottom-up (a wall's upper cell joins the batch over a cell
+    the batch places first), then touching something solid or an earlier cell, then nearest the last one, along the row.
+- **Fair share.** The batch is the pawn's share of the build's cells still to place (`ceil(left / builders)`, 1 to 24), no more
+  than it can get items for. Ten builders on a 16×16 floor each get a part, and a seed next to another pawn's batch comes after the rest, so
   they spread out. Each cell is leased (`g:<build>|x,y,z`) to the pawn until it reports that cell. The cells stay its own while it
   works: they are renewed with the job's lease by the tick and by progress. A probe claims nothing: cells are leased only when the
   job is handed out (`ActiveJob.Assign`).
@@ -457,7 +462,8 @@ Now:
   - When the pawn runs out of items, the rest of the batch goes back to the queue.
 
   The job ends `done` with `batch: n/m placed`. A cell left unreported at the end goes back to the queue with no failure, unless
-  the world shows it built.
+  the world shows it built. (A job's own message now rides with every `done`. Before, the stash step's empty result replaced
+  it, so a chop's `partial: …` note never reached the director.)
 - **Already built is done.** A cell that holds the same block and variant (`DesignFacing.VariantMask`; a facing is the
   placement's own) is done at pick time, when the pawn reports it, and when a job ends or fails. "Occupied by" anything else is
   transient: the next pick clears the cell first (`clear`), and only repeated refusals count. A "done" for a cell that shows another
@@ -467,12 +473,23 @@ Now:
 
 Measured on the director with a simulated colony (`StoryBuildBenchmarkTests`): 10 pawns with only Build on, a 16×16 planks
 floor and a 4×4×3 cobblestone wall ring, the planks and cobblestone split over two chests. The model: walking at 3.3 blocks/s,
-a 2.5 s chest session with the chest held, 0.6 s per placement, 0.5 s per job to ask and report.
+a 1.5 s chest session with the chest held, 0.6 s per placement, 0.5 s per job to ask and report. "Exact" stock is what the builds
+need and no more (what their auto bills make). "Plenty" is 320 planks and 42 cobblestone. Before is the old director with the old
+client, whose withdraw failed at once on a busy chest. After is the new director with a withdraw that waits its turn.
 
-BENCHMARK_TABLE
+| stock | before: blocks/min | before: idle | before: jobs, failed | after: blocks/min | after: idle | after: jobs, failed |
+|---|---|---|---|---|---|---|
+| exact | 108.6 (161 s) | 63 % | 328, 36 busy | 188.7 (93 s) | 14 % | 57, 0 |
+| plenty | 150.9 (116 s) | 47 % | 347, 54 busy | 188.7 (93 s) | 14 % | 57, 0 |
+
+The old run also depends on timing. In one variant of the model, ten cells hit their third busy failure, were `blocked` for good,
+and the build never finished: 282 of 292 cells after 30 simulated minutes, 99 % idle. That is the live picture. The simulation
+leaves out pathfinding and the reach failures, so live gains should be larger. Its pawns walk in straight lines, and every place
+within reach works.
 
 FakeServer 1.12.2 (`StoryFakeServerTests.Three_pawns_lay_a_6x6_floor_from_one_chest_fast_and_without_failures`): three pawns lay
-a 6×6 floor from one chest with no failed cell, FAKESERVER_RESULT.
+a 6×6 floor from one chest with no failed cell (no busy chest, no "too far", no "occupied") in 4.2 s of wall time. The fake
+clients tick every 5 ms, so that is about 40 s of game time. The test allows 60 s.
 
 ## Storage
 
