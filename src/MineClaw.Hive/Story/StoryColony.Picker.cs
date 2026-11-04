@@ -437,9 +437,13 @@ public sealed partial class StoryColony
         if (s.W is not { } w) return null;
         // Cutting and harvesting are surface work: a plant in a cave under the box waits (live 11-04: pawns went into caves).
         if (s.Kind is "cut" or "harvest" && StoryWander.Underground(w, at)) return MarkPass.Cave;
-        if (!s.Digs) return null;
-        // Only what a pawn can get at now: a buried cell waits (no failure) until the one over or beside it is gone. Never the block
-        // under someone else's feet (the client refuses it: "won't dig: someone is standing on it").
+        return s.Digs ? DigPassedOver(w, pawn, at, ref stoodOn) : null;
+    }
+
+    /// <summary>Only what a pawn can get at now: a buried cell waits (no failure) until the one over or beside it is gone. Never the
+    /// block under someone else's feet (the client refuses it: "won't dig: someone is standing on it").</summary>
+    private MarkPass? DigPassedOver(IStoryWorld w, string pawn, P3 at, ref HashSet<P3>? stoodOn)
+    {
         if (!Exposed(w, at)) return MarkPass.Buried;
         return (stoodOn ??= StoodOnByOthers(pawn)).Contains(at) ? MarkPass.Underfoot : null;
     }
