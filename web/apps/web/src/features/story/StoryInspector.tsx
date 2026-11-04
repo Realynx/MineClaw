@@ -601,6 +601,41 @@ export function PawnInspector({
 // ------------------------------------------------------------------ several bodies, AI
 
 /** A selected bed: who sleeps in it, and a picker to give it to a pawn (their other bed is freed) or clear it. */
+/** The house zone a bed is in (when it is in one). */
+function bedZone(state: StoryColonyState | undefined, bed: StoryBed) {
+  if (bed.zone === null || bed.zone === undefined) return undefined;
+  return state?.zones.find((z) => String(z.id) === String(bed.zone));
+}
+
+/** "x, y, z · Main house". */
+function bedSub(state: StoryColonyState | undefined, bed: StoryBed): string {
+  const zone = bedZone(state, bed);
+  return `${bed.pos[0]}, ${bed.pos[1]}, ${bed.pos[2]}${zone ? ` · ${zone.name || zone.label || 'a house'}` : ''}`;
+}
+
+/** Who sleeps in the bed (nobody). */
+function BedOwner({ bed, state }: { bed: StoryBed; state: StoryColonyState | undefined }) {
+  const owner = bed.pawn ? state?.pawns.find((p) => p.name === bed.pawn) : undefined;
+  return (
+    <div className="flex items-center gap-2">
+      <span className="text-muted">Owner</span>
+      {owner || bed.pawn ? (
+        <span className="flex items-center gap-1.5 font-medium">
+          <Avatar name={bed.pawn!} size={18} />
+          {owner?.display ?? bed.pawn}
+        </span>
+      ) : (
+        <span className="text-subtle">nobody</span>
+      )}
+    </div>
+  );
+}
+
+/** A pawn as a bed owner choice ("Ann (moves from their bed)" when she has another bed). */
+function bedOwnerLabel(p: StoryPawn, bed: StoryBed, beds: readonly StoryBed[]): string {
+  return `${p.display}${beds.some((b) => b.pawn === p.name && b !== bed) ? ' (moves from their bed)' : ''}`;
+}
+
 export function BedInspector({
   bed,
   state,
@@ -615,36 +650,22 @@ export function BedInspector({
   onClose: () => void;
 }) {
   const [busy, setBusy] = useState(false);
-  const owner = bed.pawn ? state?.pawns.find((p) => p.name === bed.pawn) : undefined;
-  const zone =
-    bed.zone !== null && bed.zone !== undefined
-      ? state?.zones.find((z) => String(z.id) === String(bed.zone))
-      : undefined;
   const pos = { x: bed.pos[0], y: bed.pos[1], z: bed.pos[2] };
   const run = (body: Parameters<StoryWrite>[1]) => {
     setBusy(true);
     void write('story.beds', body as never).finally(() => setBusy(false));
   };
+  const beds = state?.beds ?? [];
   return (
     <Shell
       title="Bed"
-      sub={`${bed.pos[0]}, ${bed.pos[1]}, ${bed.pos[2]}${zone ? ` · ${zone.name || zone.label || 'a house'}` : ''}`}
+      sub={bedSub(state, bed)}
       onClose={onClose}
       testid="bed-inspector"
       avatar={<BedDouble className="size-6 text-muted" />}
     >
       <div className="space-y-2 text-xs">
-        <div className="flex items-center gap-2">
-          <span className="text-muted">Owner</span>
-          {owner || bed.pawn ? (
-            <span className="flex items-center gap-1.5 font-medium">
-              <Avatar name={bed.pawn!} size={18} />
-              {owner?.display ?? bed.pawn}
-            </span>
-          ) : (
-            <span className="text-subtle">nobody</span>
-          )}
-        </div>
+        <BedOwner bed={bed} state={state} />
         <label className="flex items-center gap-2">
           <span className="text-muted">Set owner</span>
           <select
@@ -659,8 +680,7 @@ export function BedInspector({
             <option value="">nobody</option>
             {(state?.pawns ?? []).map((p) => (
               <option key={p.name} value={p.name}>
-                {p.display}
-                {(state?.beds ?? []).some((b) => b.pawn === p.name && b !== bed) ? ' (moves from their bed)' : ''}
+                {bedOwnerLabel(p, bed, beds)}
               </option>
             ))}
           </select>
@@ -1256,6 +1276,57 @@ export function FuelPicker({
   );
 }
 
+/** What a bench says before its bills: an unsupported kind, a furnace's fuel and smelting, station facts, its contents. */
+function BenchFacts({ bench, canWrite, write }: { bench: StoryWorkbench; canWrite: boolean; write: StoryWrite }) {
+  const pos = bench.pos;
+  return (
+    <>
+      {bench.supported === false ? (
+        <p
+          className="rounded-md bg-surface-2 px-2 py-1.5 text-muted"
+          title="b1.8.1 has no brewing stands, anvils or enchanting tables"
+        >
+          This version has no {bench.kind.replace(/_/g, ' ')} bills.
+        </p>
+      ) : null}
+      {bench.kind === 'furnace' && bench.fuelChoices?.length ? (
+        <FuelPicker
+          value={bench.fuel ?? 'auto'}
+          choices={bench.fuelChoices}
+          disabled={!canWrite}
+          onPick={(f) => void write('story.workbenches', fuelBody(pos, f) as never)}
+        />
+      ) : null}
+      {smeltingLine(bench) ? (
+        <p className="rounded-md bg-surface-2 px-2 py-1 text-[11px] text-muted" data-testid="furnace-smelting">
+          {smeltingLine(bench)}
+        </p>
+      ) : null}
+      {stationLines(bench).length ? (
+        <ul className="space-y-0.5 rounded-md bg-surface-2 px-2 py-1.5 text-[11px] text-muted" data-testid="station-facts">
+          {stationLines(bench).map((l) => (
+            <li key={l} className={l.includes('gone') || l.startsWith('No water') ? 'text-danger' : undefined}>
+              {l}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      {bench.kind === 'furnace' || bench.kind === 'brewing_stand' ? (
+        <ContainerContents target={{ dim: 0, x: pos[0], y: pos[1], z: pos[2] }} heading />
+      ) : null}
+    </>
+  );
+}
+
+/** The items the bench's bills take (`id:meta`), for the reservations they hold. */
+function billInputs(recipes: readonly StoryRecipe[], bills: readonly StoryBill[]): Set<string> {
+  return new Set(
+    recipes
+      .filter((r) => bills.some((b) => b.recipe === r.id))
+      .flatMap((r) => r.inputs.flatMap((i) => (i.options ?? []).map(([a, m]) => `${a}:${m}`))),
+  );
+}
+
 export function BillsInspector({
   bench,
   state,
@@ -1313,39 +1384,7 @@ export function BillsInspector({
       wide
     >
       <div className="space-y-2 text-xs">
-        {bench.supported === false ? (
-          <p
-            className="rounded-md bg-surface-2 px-2 py-1.5 text-muted"
-            title="b1.8.1 has no brewing stands, anvils or enchanting tables"
-          >
-            This version has no {bench.kind.replace(/_/g, ' ')} bills.
-          </p>
-        ) : null}
-        {bench.kind === 'furnace' && bench.fuelChoices?.length ? (
-          <FuelPicker
-            value={bench.fuel ?? 'auto'}
-            choices={bench.fuelChoices}
-            disabled={!canWrite}
-            onPick={(f) => void write('story.workbenches', fuelBody(pos, f) as never)}
-          />
-        ) : null}
-        {smeltingLine(bench) ? (
-          <p className="rounded-md bg-surface-2 px-2 py-1 text-[11px] text-muted" data-testid="furnace-smelting">
-            {smeltingLine(bench)}
-          </p>
-        ) : null}
-        {stationLines(bench).length ? (
-          <ul className="space-y-0.5 rounded-md bg-surface-2 px-2 py-1.5 text-[11px] text-muted" data-testid="station-facts">
-            {stationLines(bench).map((l) => (
-              <li key={l} className={l.includes('gone') || l.startsWith('No water') ? 'text-danger' : undefined}>
-                {l}
-              </li>
-            ))}
-          </ul>
-        ) : null}
-        {bench.kind === 'furnace' || bench.kind === 'brewing_stand' ? (
-          <ContainerContents target={{ dim: 0, x: pos[0], y: pos[1], z: pos[2] }} heading />
-        ) : null}
+        <BenchFacts bench={bench} canWrite={canWrite} write={write} />
         <div className="flex items-center gap-1.5">
           <Button
             size="sm"
@@ -1368,7 +1407,7 @@ export function BillsInspector({
         </div>
         <ReservationList
           reservations={state?.reservations}
-          items={new Set((recipes.data ?? []).filter((r) => bench.bills.some((b) => b.recipe === r.id)).flatMap((r) => r.inputs.flatMap((i) => (i.options ?? []).map(([a, m]) => `${a}:${m}`))))}
+          items={billInputs(recipes.data ?? [], bench.bills)}
           canWrite={canWrite}
           write={write}
         />
