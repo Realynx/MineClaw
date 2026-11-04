@@ -1,14 +1,14 @@
 # Cyclomatic complexity: inventory and work plan
 
-Measured at commit `3600cd78` (2026-11-04). Threshold: **complexity > 10** is a violation. *Excess* means
+Measured on `main` at `6ff72385` (2026-11-04). Threshold: **complexity > 10** is a violation. *Excess* means
 `complexity - 10`, summed over the violations. It approximates how much branching has to move out of a function.
 
 | language | files | functions | > 10 | excess | 11-15 | 16-25 | 26-50 | 51+ |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| C# (`src/`, `tools/`) | 1041 | 23980 | **1692** | 19426 | 757 | 576 | 280 | 79 |
+| C# (`src/`, `tools/`) | 1042 | 24020 | **1700** | 19486 | 764 | 576 | 281 | 79 |
 | TypeScript (`web/apps/*/src`, `web/packages/*/src`) | 333 | 7714 | **437** | 5774 | 198 | 133 | 75 | 31 |
 | JavaScript (SDK modules + `story_pawn.js`) | 12 | 274 | **24** | 263 | 8 | 10 | 6 | 0 |
-| **total** | | | **2153** | **25463** | | | | |
+| **total** | | | **2161** | **25523** | | | | |
 
 The raw reports are in [`complexity/cs.json`](complexity/cs.json), [`complexity/ts.json`](complexity/ts.json) and
 [`complexity/js.json`](complexity/js.json). Both tools write the same JSON shape (`tool, language, convention,
@@ -68,11 +68,11 @@ script.
 | project | > 10 | excess | worst | | project | > 10 | excess | worst |
 |---|---:|---:|---:|---|---|---:|---:|---:|
 | MineClaw.Bot | 378 | 4309 | 99 | | tools/ViewerBridge | 47 | 414 | 61 |
-| MineClaw.Hive | 204 | 2454 | 119 | | tools/MineClaw.Sim | 20 | 299 | 103 |
+| MineClaw.Hive | 205 | 2461 | 119 | | tools/MineClaw.Sim | 20 | 299 | 103 |
 | MineClaw.Agent | 240 | 2301 | 96 | | MineClaw.Raptor | 24 | 154 | 31 |
-| MineClaw.World | 127 | 1759 | 99 | | tools/VisionAB | 8 | 107 | 51 |
+| MineClaw.World | 129 | 1763 | 99 | | tools/VisionAB | 8 | 107 | 51 |
 | MineClaw.Render | 83 | 1474 | 221 | | other small tools | 14 | 147 | 54 |
-| MineClaw.Client | 127 | 1445 | 137 | | web/apps/web | 216 | 2611 | 176 |
+| MineClaw.Client | 132 | 1494 | 137 | | web/apps/web | 216 | 2611 | 176 |
 | MineClaw.App | 103 | 1298 | 159 | | web/packages/world-viewer | 141 | 1974 | 233 |
 | tools/MemoryExplorer | 91 | 856 | 61 | | web/packages/contracts | 52 | 852 | 87 |
 | MineClaw.Scripting | 72 | 767 | 78 | | web/apps/api | 28 | 337 | 80 |
@@ -145,11 +145,11 @@ Done means that command reports `over: 0`, or only documented exceptions remain 
 
 | WP | scope (owns) | fns > 10 | excess | worst | main risk |
 |---|---|---:|---:|---:|---|
-| WP01 | `src/MineClaw.Hive/Story/**` (C# director + `story_pawn.js`) | 160 | 1921 | 119 | Story picker / director, live-critical |
+| WP01 | `src/MineClaw.Hive/Story/**` (C# director + `story_pawn.js`) | 161 | 1928 | 119 | Story picker / director, live-critical |
 | WP02 | `src/MineClaw.Bot/Blueprints/**`, `src/MineClaw.Bot/Building/**` | 155 | 2056 | 99 | blueprint format, model-facing messages |
 | WP03 | `src/MineClaw.Bot/**` except WP02 (GameTools, WorldIndex, Perception, Brainstem, …) | 223 | 2253 | 69 | tool surface the LLM sees, protection |
-| WP04 | `src/MineClaw.World/**`, `src/MineClaw.Protocol/**` | 162 | 2229 | 104 | pathfinding, physics parity, wire protocol |
-| WP05 | `src/MineClaw.Client/**`, `src/MineClaw.Data/**`, `tools/MineClaw.Sim/**`, `tools/SimServer/**` | 173 | 2168 | 155 | packet dispatch, combat; FakeServer is shared test infra |
+| WP04 | `src/MineClaw.World/**`, `src/MineClaw.Protocol/**` | 164 | 2233 | 104 | pathfinding, physics parity, wire protocol |
+| WP05 | `src/MineClaw.Client/**`, `src/MineClaw.Data/**`, `tools/MineClaw.Sim/**`, `tools/SimServer/**` | 178 | 2217 | 155 | packet dispatch, combat; FakeServer is shared test infra |
 | WP06 | `src/MineClaw.Agent/**` | 240 | 2301 | 96 | brain loop, prompts (cache), chat routing |
 | WP07 | `src/MineClaw.App/**`, `src/MineClaw.Hive/**` except Story, `tools/ViewerBridge/**` | 197 | 2274 | 159 | supervisor JSON consumed by the web, hive lifecycle |
 | WP08 | `src/MineClaw.Render/**`, `tools/MemoryExplorer/**` | 174 | 2330 | 221 | render / vision parity (pixels the model sees) |
@@ -187,9 +187,9 @@ Done means that command reports `over: 0`, or only documented exceptions remain 
 All `dotnet test` commands run from the repo root with `-m:1`. Web commands run from `web/`. Playwright starts and
 stops its own mock dev server on port 3200.
 
-**WP01 Story director** (`src/MineClaw.Hive/Story/**`, 50 files with violations, 160 fns, +1921)
+**WP01 Story director** (`src/MineClaw.Hive/Story/**`, 50 files with violations, 161 fns, +1928)
 - Worst: `StoryConstruction.Expand` 119, `StoryColony.GearOp` 87, `RefreshMaterials` 75, `ZoneOp` 67, `BillJob` 65.
-  Heaviest files: `StoryColony.Gear.cs` +246, `StoryConstruction.cs` +189, `.Builds.cs` +153, `.Bills.cs` +150, `.Picker.cs` +133.
+  Heaviest files: `StoryColony.Gear.cs` +246, `StoryConstruction.cs` +189, `.Builds.cs` +153, `.Bills.cs` +150, `.Picker.cs` +140.
 - Measure: `Complexity.dll src/MineClaw.Hive/Story` and `node web/scripts/complexity.mjs --lang js --only src/MineClaw.Hive/Story`
 - Tests: `dotnet test tests/MineClaw.Hive.Tests --filter "FullyQualifiedName~MineClaw.Hive.Tests.Story"`,
   `dotnet test tests/MineClaw.App.Tests --filter "FullyQualifiedName~Story"`,
@@ -218,8 +218,8 @@ stops its own mock dev server on port 3200.
   caching and token cost, which is a hard requirement. `WorldIndex` / `Protection*` hold the protection rules (self-placed blocks are
   always minable). `GeneratorLoop` runs during live play.
 
-**WP04 World and protocol** (`src/MineClaw.World/**`, `src/MineClaw.Protocol/**`, 59 files, 162 fns, +2229)
-- Areas: `World/Physics` +560, `World/Pathing` +519, `Protocol/Release1122` +447, `World/Release1122` +325, `World/Inventory` +185.
+**WP04 World and protocol** (`src/MineClaw.World/**`, `src/MineClaw.Protocol/**`, 60 files, 164 fns, +2233)
+- Areas: `World/Physics` +560, `World/Pathing` +523, `Protocol/Release1122` +447, `World/Release1122` +325, `World/Inventory` +185.
 - Worst: `Release1122Connection.TranslateEntities` 104, `InventoryManager.SlotClick1122` 99, `Shapes1122.SideUndefined` 92, `PathFollower.Drive` 83, `BlockShapes.AddSelectionBoxes` 82.
 - Measure: `Complexity.dll src/MineClaw.World src/MineClaw.Protocol`
 - Tests: `dotnet test tests/MineClaw.World.Tests`, `dotnet test tests/MineClaw.Protocol.Tests`, `dotnet test tests/MineClaw.Client.Tests`
@@ -229,8 +229,8 @@ stops its own mock dev server on port 3200.
   Protocol translation is wire compatibility. Shape and orientation lookups should become tables with exhaustive
   equivalence tests.
 
-**WP05 Client, data and sim** (`src/MineClaw.Client/**`, `src/MineClaw.Data/**`, `tools/MineClaw.Sim/**`, `tools/SimServer/**`, 59 files, 173 fns, +2168)
-- Areas: `MinecraftClient.*.cs` (root, 31 files) +1042, `Client/Combat` +334, `Data/Versioning` +229, `Data` root +190, `tools/MineClaw.Sim` +299.
+**WP05 Client, data and sim** (`src/MineClaw.Client/**`, `src/MineClaw.Data/**`, `tools/MineClaw.Sim/**`, `tools/SimServer/**`, 59 files, 178 fns, +2217)
+- Areas: `MinecraftClient.*.cs` (root, 31 files) +1091, `Client/Combat` +334, `Data/Versioning` +229, `Data` root +190, `tools/MineClaw.Sim` +299.
 - Worst: `Release1122Drops.For` 155, `CombatEngine.MobTick` 137, `FakeServer.Handle` 103, `MinecraftClient.Dispatch` 99, `CombatEngine.Scan` 80.
 - Measure: `Complexity.dll src/MineClaw.Client src/MineClaw.Data tools/MineClaw.Sim tools/SimServer`
 - Tests: `dotnet test tests/MineClaw.Client.Tests`, `dotnet test tests/MineClaw.Data.Tests`, `dotnet test tests/MineClaw.Skills.Tests`,
@@ -316,7 +316,7 @@ Only files with at least one violation are listed, shown as `file: functions > 1
 
 <!-- generated from docs/dev/complexity/*.json -->
 
-<details><summary>WP01: 50 files, 160 functions, +1921</summary>
+<details><summary>WP01: 50 files, 161 functions, +1928</summary>
 
 - `src/MineClaw.Hive/Story/StoryAnvil.cs`: 1, +7, 17
 - `src/MineClaw.Hive/Story/StoryArchitect.cs`: 2, +12, 21
@@ -344,7 +344,7 @@ Only files with at least one violation are listed, shown as `file: functions > 1
 - `src/MineClaw.Hive/Story/StoryColony.Ledger.cs`: 3, +5, 13
 - `src/MineClaw.Hive/Story/StoryColony.Materials.cs`: 6, +97, 75
 - `src/MineClaw.Hive/Story/StoryColony.PickIndex.cs`: 1, +3, 13
-- `src/MineClaw.Hive/Story/StoryColony.Picker.cs`: 9, +133, 35
+- `src/MineClaw.Hive/Story/StoryColony.Picker.cs`: 10, +140, 38
 - `src/MineClaw.Hive/Story/StoryColony.Quarry.cs`: 3, +20, 21
 - `src/MineClaw.Hive/Story/StoryColony.Reach.cs`: 1, +4, 14
 - `src/MineClaw.Hive/Story/StoryColony.Recreation.cs`: 4, +24, 26
@@ -497,7 +497,7 @@ Only files with at least one violation are listed, shown as `file: functions > 1
 
 </details>
 
-<details><summary>WP04: 59 files, 162 functions, +2229</summary>
+<details><summary>WP04: 60 files, 164 functions, +2233</summary>
 
 - `src/MineClaw.Protocol/ChunkDataDecoder.cs`: 1, +10, 20
 - `src/MineClaw.Protocol/MinecraftReader.cs`: 1, +1, 11
@@ -530,6 +530,7 @@ Only files with at least one violation are listed, shown as `file: functions > 1
 - `src/MineClaw.World/Light/LightEngine.cs`: 4, +25, 24
 - `src/MineClaw.World/Light/SpawnRules.cs`: 1, +4, 14
 - `src/MineClaw.World/Math/AABB.cs`: 3, +3, 11
+- `src/MineClaw.World/Pathing/Goals.cs`: 1, +2, 12
 - `src/MineClaw.World/Pathing/MechanismLearner.cs`: 3, +28, 22
 - `src/MineClaw.World/Pathing/Mechanisms.cs`: 1, +1, 11
 - `src/MineClaw.World/Pathing/Openables.cs`: 2, +9, 17
@@ -538,7 +539,7 @@ Only files with at least one violation are listed, shown as `file: functions > 1
 - `src/MineClaw.World/Pathing/PathFollower.cs`: 7, +150, 83
 - `src/MineClaw.World/Pathing/Pathfinder.Mechanisms.cs`: 4, +31, 32
 - `src/MineClaw.World/Pathing/Pathfinder.Parkour.cs`: 2, +51, 53
-- `src/MineClaw.World/Pathing/Pathfinder.cs`: 14, +186, 77
+- `src/MineClaw.World/Pathing/Pathfinder.cs`: 15, +188, 77
 - `src/MineClaw.World/Pathing/StuckProbe.cs`: 1, +2, 12
 - `src/MineClaw.World/Physics/Aiming.cs`: 3, +15, 18
 - `src/MineClaw.World/Physics/BlockOrientation.cs`: 7, +157, 75
@@ -561,7 +562,7 @@ Only files with at least one violation are listed, shown as `file: functions > 1
 
 </details>
 
-<details><summary>WP05: 59 files, 173 functions, +2168</summary>
+<details><summary>WP05: 59 files, 178 functions, +2217</summary>
 
 - `src/MineClaw.Client/ChatText.cs`: 1, +32, 42
 - `src/MineClaw.Client/Combat/CombatEngine.cs`: 9, +291, 137
@@ -571,7 +572,7 @@ Only files with at least one violation are listed, shown as `file: functions > 1
 - `src/MineClaw.Client/Combat/WeaponChoice.cs`: 3, +12, 15
 - `src/MineClaw.Client/FaceAim.cs`: 1, +4, 14
 - `src/MineClaw.Client/GestureMoves.cs`: 1, +1, 11
-- `src/MineClaw.Client/MinecraftClient.Actions.cs`: 6, +75, 42
+- `src/MineClaw.Client/MinecraftClient.Actions.cs`: 7, +81, 42
 - `src/MineClaw.Client/MinecraftClient.Blocks.cs`: 6, +78, 37
 - `src/MineClaw.Client/MinecraftClient.Body.cs`: 2, +13, 18
 - `src/MineClaw.Client/MinecraftClient.Breath.cs`: 3, +52, 31
@@ -587,13 +588,13 @@ Only files with at least one violation are listed, shown as `file: functions > 1
 - `src/MineClaw.Client/MinecraftClient.Interact.cs`: 4, +37, 30
 - `src/MineClaw.Client/MinecraftClient.Observe.cs`: 2, +20, 23
 - `src/MineClaw.Client/MinecraftClient.Protection.cs`: 3, +22, 20
-- `src/MineClaw.Client/MinecraftClient.Safety.cs`: 6, +10, 13
+- `src/MineClaw.Client/MinecraftClient.Safety.cs`: 7, +11, 13
 - `src/MineClaw.Client/MinecraftClient.Shelter.cs`: 3, +27, 27
 - `src/MineClaw.Client/MinecraftClient.Stations.cs`: 4, +59, 36
 - `src/MineClaw.Client/MinecraftClient.Survival.cs`: 3, +53, 59
 - `src/MineClaw.Client/MinecraftClient.TemporaryBlocks.cs`: 1, +5, 15
 - `src/MineClaw.Client/MinecraftClient.Tick.cs`: 3, +45, 42
-- `src/MineClaw.Client/MinecraftClient.Trees.cs`: 11, +89, 32
+- `src/MineClaw.Client/MinecraftClient.Trees.cs`: 14, +131, 39
 - `src/MineClaw.Client/MinecraftClient.Turned.cs`: 3, +13, 15
 - `src/MineClaw.Client/MinecraftClient.VoidStep.cs`: 2, +6, 14
 - `src/MineClaw.Client/MinecraftClient.Windows.cs`: 9, +47, 20

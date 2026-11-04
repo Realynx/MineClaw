@@ -4,10 +4,10 @@
   "convention": "McCabe: 1 + if, ?:, while, do, for, foreach, catch, &&, ||, ??, ??=, non-default case labels, switch-expression arms except a bare `_`, `and`/`or` patterns. Not counted: else, default, ?. (unless --count-conditional-access). Local functions and lambdas are measured separately (unless --inline-lambdas).",
   "threshold": 10,
   "totals": {
-    "files": 1041,
-    "functions": 23980,
-    "over": 1692,
-    "excess": 19426
+    "files": 1042,
+    "functions": 24020,
+    "over": 1700,
+    "excess": 19486
   },
   "byProject": [
     {
@@ -19,9 +19,9 @@
     },
     {
       "project": "MineClaw.Hive",
-      "functions": 2971,
-      "over": 204,
-      "excess": 2454,
+      "functions": 2975,
+      "over": 205,
+      "excess": 2461,
       "max": 119
     },
     {
@@ -33,10 +33,17 @@
     },
     {
       "project": "MineClaw.World",
-      "functions": 1430,
-      "over": 127,
-      "excess": 1759,
+      "functions": 1433,
+      "over": 129,
+      "excess": 1763,
       "max": 99
+    },
+    {
+      "project": "MineClaw.Client",
+      "functions": 1515,
+      "over": 132,
+      "excess": 1494,
+      "max": 137
     },
     {
       "project": "MineClaw.Render",
@@ -44,13 +51,6 @@
       "over": 83,
       "excess": 1474,
       "max": 221
-    },
-    {
-      "project": "MineClaw.Client",
-      "functions": 1482,
-      "over": 127,
-      "excess": 1445,
-      "max": 137
     },
     {
       "project": "MineClaw.App",
@@ -1376,12 +1376,12 @@
     },
     {
       "file": "src/MineClaw.Client/MinecraftClient.Actions.cs",
-      "line": 227,
-      "endLine": 324,
+      "line": 230,
+      "endLine": 328,
       "member": "MinecraftClient.GotoCoreAsync",
       "kind": "method",
       "complexity": 42,
-      "loc": 98,
+      "loc": 99,
       "project": "MineClaw.Client"
     },
     {
@@ -1655,6 +1655,16 @@
       "project": "MineClaw.Bot"
     },
     {
+      "file": "src/MineClaw.Client/MinecraftClient.Trees.cs",
+      "line": 430,
+      "endLine": 494,
+      "member": "MinecraftClient.FellAsync",
+      "kind": "method",
+      "complexity": 39,
+      "loc": 65,
+      "project": "MineClaw.Client"
+    },
+    {
       "file": "src/MineClaw.Data/Enchanting.cs",
       "line": 78,
       "endLine": 100,
@@ -1752,6 +1762,16 @@
       "kind": "method",
       "complexity": 38,
       "loc": 34,
+      "project": "MineClaw.Hive"
+    },
+    {
+      "file": "src/MineClaw.Hive/Story/StoryColony.Picker.cs",
+      "line": 503,
+      "endLine": 570,
+      "member": "StoryColony.Done",
+      "kind": "method",
+      "complexity": 38,
+      "loc": 68,
       "project": "MineClaw.Hive"
     },
     {
@@ -2015,16 +2035,6 @@
       "project": "MineClaw.Hive"
     },
     {
-      "file": "src/MineClaw.Hive/Story/StoryColony.Picker.cs",
-      "line": 484,
-      "endLine": 540,
-      "member": "StoryColony.Done",
-      "kind": "method",
-      "complexity": 35,
-      "loc": 57,
-      "project": "MineClaw.Hive"
-    },
-    {
       "file": "src/MineClaw.Protocol/Release1122/Release1122ServerConnection.cs",
       "line": 424,
       "endLine": 533,
@@ -2136,8 +2146,8 @@
     },
     {
       "file": "src/MineClaw.Hive/Story/StoryColony.Picker.cs",
-      "line": 604,
-      "endLine": 672,
+      "line": 634,
+      "endLine": 702,
       "member": "StoryColony.Failed",
       "kind": "method",
       "complexity": 34,
@@ -2296,8 +2306,8 @@
     },
     {
       "file": "src/MineClaw.Client/MinecraftClient.Trees.cs",
-      "line": 964,
-      "endLine": 1019,
+      "line": 1138,
+      "endLine": 1193,
       "member": "MinecraftClient.Finish",
       "kind": "method",
       "complexity": 32,
@@ -2312,6 +2322,16 @@
       "kind": "method",
       "complexity": 32,
       "loc": 50,
+      "project": "MineClaw.Hive"
+    },
+    {
+      "file": "src/MineClaw.Hive/Story/StoryColony.Picker.cs",
+      "line": 261,
+      "endLine": 320,
+      "member": "StoryColony.Candidate",
+      "kind": "method",
+      "complexity": 32,
+      "loc": 60,
       "project": "MineClaw.Hive"
     },
     {
@@ -2522,16 +2542,6 @@
       "kind": "method",
       "complexity": 31,
       "loc": 61,
-      "project": "MineClaw.Hive"
-    },
-    {
-      "file": "src/MineClaw.Hive/Story/StoryColony.Picker.cs",
-      "line": 261,
-      "endLine": 319,
-      "member": "StoryColony.Candidate",
-      "kind": "method",
-      "complexity": 31,
-      "loc": 59,
       "project": "MineClaw.Hive"
     },
     {
@@ -2776,8 +2786,8 @@
     },
     {
       "file": "src/MineClaw.Hive/Story/StoryColony.Picker.cs",
-      "line": 322,
-      "endLine": 368,
+      "line": 341,
+      "endLine": 387,
       "member": "StoryColony.DesignationJob",
       "kind": "method",
       "complexity": 30,
@@ -3416,8 +3426,8 @@
     },
     {
       "file": "src/MineClaw.World/Pathing/Pathfinder.cs",
-      "line": 706,
-      "endLine": 733,
+      "line": 707,
+      "endLine": 734,
       "member": "Pathfinder.CellUncached",
       "kind": "method",
       "complexity": 27,
@@ -4016,12 +4026,22 @@
     },
     {
       "file": "src/MineClaw.Client/MinecraftClient.Trees.cs",
-      "line": 158,
-      "endLine": 211,
-      "member": "MinecraftClient.ChopTreeAsync.lambda@L158",
+      "line": 166,
+      "endLine": 219,
+      "member": "MinecraftClient.ChopTreeAsync.lambda@L166",
       "kind": "lambda",
       "complexity": 25,
       "loc": 54,
+      "project": "MineClaw.Client"
+    },
+    {
+      "file": "src/MineClaw.Client/MinecraftClient.Trees.cs",
+      "line": 972,
+      "endLine": 1029,
+      "member": "MinecraftClient.GatherSaplingsAsync",
+      "kind": "method",
+      "complexity": 25,
+      "loc": 58,
       "project": "MineClaw.Client"
     },
     {
@@ -4252,6 +4272,16 @@
       "kind": "method",
       "complexity": 24,
       "loc": 30,
+      "project": "MineClaw.Client"
+    },
+    {
+      "file": "src/MineClaw.Client/MinecraftClient.Trees.cs",
+      "line": 842,
+      "endLine": 879,
+      "member": "MinecraftClient.GatherPillarDirtAsync",
+      "kind": "method",
+      "complexity": 24,
+      "loc": 38,
       "project": "MineClaw.Client"
     },
     {
@@ -4656,8 +4686,8 @@
     },
     {
       "file": "src/MineClaw.Client/MinecraftClient.Actions.cs",
-      "line": 356,
-      "endLine": 417,
+      "line": 408,
+      "endLine": 469,
       "member": "MinecraftClient.FollowCoreAsync",
       "kind": "method",
       "complexity": 23,
@@ -4676,8 +4706,8 @@
     },
     {
       "file": "src/MineClaw.Client/MinecraftClient.Trees.cs",
-      "line": 287,
-      "endLine": 365,
+      "line": 297,
+      "endLine": 375,
       "member": "MinecraftClient.PickTree",
       "kind": "method",
       "complexity": 23,
@@ -4953,16 +4983,6 @@
       "complexity": 22,
       "loc": 48,
       "project": "MineClaw.Bot"
-    },
-    {
-      "file": "src/MineClaw.Client/MinecraftClient.Trees.cs",
-      "line": 418,
-      "endLine": 463,
-      "member": "MinecraftClient.FellAsync",
-      "kind": "method",
-      "complexity": 22,
-      "loc": 46,
-      "project": "MineClaw.Client"
     },
     {
       "file": "src/MineClaw.Data/Items.cs",
@@ -6666,8 +6686,8 @@
     },
     {
       "file": "src/MineClaw.Client/MinecraftClient.Actions.cs",
-      "line": 447,
-      "endLine": 497,
+      "line": 499,
+      "endLine": 549,
       "member": "MinecraftClient.UnstickAsync",
       "kind": "method",
       "complexity": 19,
@@ -6722,16 +6742,6 @@
       "kind": "method",
       "complexity": 19,
       "loc": 34,
-      "project": "MineClaw.Client"
-    },
-    {
-      "file": "src/MineClaw.Client/MinecraftClient.Trees.cs",
-      "line": 596,
-      "endLine": 637,
-      "member": "MinecraftClient.PillarUpAsync",
-      "kind": "method",
-      "complexity": 19,
-      "loc": 42,
       "project": "MineClaw.Client"
     },
     {
@@ -7415,6 +7425,16 @@
       "project": "MineClaw.Bot"
     },
     {
+      "file": "src/MineClaw.Client/MinecraftClient.Actions.cs",
+      "line": 579,
+      "endLine": 609,
+      "member": "MinecraftClient.NoRouteHint",
+      "kind": "method",
+      "complexity": 18,
+      "loc": 31,
+      "project": "MineClaw.Client"
+    },
+    {
       "file": "src/MineClaw.Client/MinecraftClient.Body.cs",
       "line": 183,
       "endLine": 219,
@@ -7432,6 +7452,16 @@
       "kind": "method",
       "complexity": 18,
       "loc": 7,
+      "project": "MineClaw.Client"
+    },
+    {
+      "file": "src/MineClaw.Client/MinecraftClient.Trees.cs",
+      "line": 637,
+      "endLine": 694,
+      "member": "MinecraftClient.PillarUpAsync",
+      "kind": "method",
+      "complexity": 18,
+      "loc": 58,
       "project": "MineClaw.Client"
     },
     {
@@ -7686,8 +7716,8 @@
     },
     {
       "file": "src/MineClaw.World/Pathing/Pathfinder.cs",
-      "line": 904,
-      "endLine": 931,
+      "line": 905,
+      "endLine": 932,
       "member": "Pathfinder.FindActuator",
       "kind": "method",
       "complexity": 18,
@@ -8255,16 +8285,6 @@
       "project": "MineClaw.Client"
     },
     {
-      "file": "src/MineClaw.Client/MinecraftClient.Actions.cs",
-      "line": 527,
-      "endLine": 556,
-      "member": "MinecraftClient.NoRouteHint",
-      "kind": "method",
-      "complexity": 17,
-      "loc": 30,
-      "project": "MineClaw.Client"
-    },
-    {
       "file": "src/MineClaw.Client/MinecraftClient.Combat.cs",
       "line": 294,
       "endLine": 327,
@@ -8312,16 +8332,6 @@
       "kind": "method",
       "complexity": 17,
       "loc": 46,
-      "project": "MineClaw.Client"
-    },
-    {
-      "file": "src/MineClaw.Client/MinecraftClient.Trees.cs",
-      "line": 809,
-      "endLine": 862,
-      "member": "MinecraftClient.GatherSaplingsAsync",
-      "kind": "method",
-      "complexity": 17,
-      "loc": 54,
       "project": "MineClaw.Client"
     },
     {
@@ -8426,8 +8436,8 @@
     },
     {
       "file": "src/MineClaw.Hive/Story/StoryColony.Picker.cs",
-      "line": 546,
-      "endLine": 562,
+      "line": 576,
+      "endLine": 592,
       "member": "StoryColony.StillThere",
       "kind": "method",
       "complexity": 17,
@@ -10055,6 +10065,16 @@
       "project": "MineClaw.Client"
     },
     {
+      "file": "src/MineClaw.Client/MinecraftClient.Actions.cs",
+      "line": 336,
+      "endLine": 362,
+      "member": "MinecraftClient.CheckRouteAsync",
+      "kind": "method",
+      "complexity": 15,
+      "loc": 27,
+      "project": "MineClaw.Client"
+    },
+    {
       "file": "src/MineClaw.Client/MinecraftClient.Body.cs",
       "line": 126,
       "endLine": 137,
@@ -10206,8 +10226,8 @@
     },
     {
       "file": "src/MineClaw.Hive/Story/StoryColony.Picker.cs",
-      "line": 406,
-      "endLine": 435,
+      "line": 425,
+      "endLine": 454,
       "member": "StoryColony.ZoneTasks",
       "kind": "method",
       "complexity": 15,
@@ -11216,8 +11236,8 @@
     },
     {
       "file": "src/MineClaw.Client/MinecraftClient.Trees.cs",
-      "line": 912,
-      "endLine": 949,
+      "line": 1086,
+      "endLine": 1123,
       "member": "MinecraftClient.ReplantAsync",
       "kind": "method",
       "complexity": 14,
@@ -12706,9 +12726,9 @@
     },
     {
       "file": "src/MineClaw.Client/MinecraftClient.Actions.cs",
-      "line": 616,
-      "endLine": 678,
-      "member": "MinecraftClient.FollowPlayerAsync.lambda@L616",
+      "line": 669,
+      "endLine": 731,
+      "member": "MinecraftClient.FollowPlayerAsync.lambda@L669",
       "kind": "lambda",
       "complexity": 13,
       "loc": 63,
@@ -12736,9 +12756,9 @@
     },
     {
       "file": "src/MineClaw.Client/MinecraftClient.Gear.cs",
-      "line": 41,
-      "endLine": 56,
-      "member": "MinecraftClient.HoldAsync.lambda@L41",
+      "line": 49,
+      "endLine": 64,
+      "member": "MinecraftClient.HoldAsync.lambda@L49",
       "kind": "lambda",
       "complexity": 13,
       "loc": 16,
@@ -12746,9 +12766,9 @@
     },
     {
       "file": "src/MineClaw.Client/MinecraftClient.Gear.cs",
-      "line": 82,
-      "endLine": 100,
-      "member": "MinecraftClient.UnwearAsync.lambda@L82",
+      "line": 90,
+      "endLine": 108,
+      "member": "MinecraftClient.UnwearAsync.lambda@L90",
       "kind": "lambda",
       "complexity": 13,
       "loc": 19,
@@ -12776,12 +12796,22 @@
     },
     {
       "file": "src/MineClaw.Client/MinecraftClient.Trees.cs",
-      "line": 532,
-      "endLine": 585,
+      "line": 572,
+      "endLine": 625,
       "member": "MinecraftClient.JumpDigAsync",
       "kind": "method",
       "complexity": 13,
       "loc": 54,
+      "project": "MineClaw.Client"
+    },
+    {
+      "file": "src/MineClaw.Client/MinecraftClient.Trees.cs",
+      "line": 829,
+      "endLine": 831,
+      "member": "MinecraftClient.NaturalGround",
+      "kind": "method",
+      "complexity": 13,
+      "loc": 3,
       "project": "MineClaw.Client"
     },
     {
@@ -12926,8 +12956,18 @@
     },
     {
       "file": "src/MineClaw.Hive/Story/StoryColony.Picker.cs",
-      "line": 454,
-      "endLine": 480,
+      "line": 328,
+      "endLine": 338,
+      "member": "StoryColony.LeaveToSurfacePawn",
+      "kind": "method",
+      "complexity": 13,
+      "loc": 11,
+      "project": "MineClaw.Hive"
+    },
+    {
+      "file": "src/MineClaw.Hive/Story/StoryColony.Picker.cs",
+      "line": 473,
+      "endLine": 499,
       "member": "StoryColony.FarmZoneJob",
       "kind": "method",
       "complexity": 13,
@@ -13386,8 +13426,8 @@
     },
     {
       "file": "src/MineClaw.World/Pathing/Pathfinder.cs",
-      "line": 736,
-      "endLine": 755,
+      "line": 737,
+      "endLine": 756,
       "member": "Pathfinder.SupportHeight",
       "kind": "method",
       "complexity": 13,
@@ -14206,9 +14246,9 @@
     },
     {
       "file": "src/MineClaw.Client/MinecraftClient.Gear.cs",
-      "line": 60,
-      "endLine": 78,
-      "member": "MinecraftClient.WearAsync.lambda@L60",
+      "line": 68,
+      "endLine": 86,
+      "member": "MinecraftClient.WearAsync.lambda@L68",
       "kind": "lambda",
       "complexity": 12,
       "loc": 19,
@@ -14236,8 +14276,8 @@
     },
     {
       "file": "src/MineClaw.Client/MinecraftClient.Trees.cs",
-      "line": 759,
-      "endLine": 794,
+      "line": 922,
+      "endLine": 957,
       "member": "MinecraftClient.FreeStuckDropsAsync",
       "kind": "method",
       "complexity": 12,
@@ -14725,6 +14765,16 @@
       "project": "MineClaw.World"
     },
     {
+      "file": "src/MineClaw.World/Pathing/Goals.cs",
+      "line": 185,
+      "endLine": 202,
+      "member": "GoalFiltered.ClearLine",
+      "kind": "method",
+      "complexity": 12,
+      "loc": 18,
+      "project": "MineClaw.World"
+    },
+    {
       "file": "src/MineClaw.World/Pathing/Openables.cs",
       "line": 72,
       "endLine": 87,
@@ -14746,8 +14796,18 @@
     },
     {
       "file": "src/MineClaw.World/Pathing/Pathfinder.cs",
-      "line": 856,
-      "endLine": 885,
+      "line": 663,
+      "endLine": 677,
+      "member": "Pathfinder.TerrainPenalty",
+      "kind": "method",
+      "complexity": 12,
+      "loc": 15,
+      "project": "MineClaw.World"
+    },
+    {
+      "file": "src/MineClaw.World/Pathing/Pathfinder.cs",
+      "line": 857,
+      "endLine": 886,
       "member": "Pathfinder.TransitOk",
       "kind": "method",
       "complexity": 12,
@@ -15995,6 +16055,16 @@
       "project": "MineClaw.Client"
     },
     {
+      "file": "src/MineClaw.Client/MinecraftClient.Safety.cs",
+      "line": 449,
+      "endLine": 469,
+      "member": "MinecraftClient.GoalOverVoid",
+      "kind": "method",
+      "complexity": 11,
+      "loc": 21,
+      "project": "MineClaw.Client"
+    },
+    {
       "file": "src/MineClaw.Client/MinecraftClient.Shelter.cs",
       "line": 73,
       "endLine": 82,
@@ -16006,9 +16076,9 @@
     },
     {
       "file": "src/MineClaw.Client/MinecraftClient.Trees.cs",
-      "line": 648,
-      "endLine": 680,
-      "member": "MinecraftClient.PillarOnceAsync.lambda@L648",
+      "line": 705,
+      "endLine": 737,
+      "member": "MinecraftClient.PillarOnceAsync.lambda@L705",
       "kind": "lambda",
       "complexity": 11,
       "loc": 33,
@@ -16016,12 +16086,22 @@
     },
     {
       "file": "src/MineClaw.Client/MinecraftClient.Trees.cs",
-      "line": 693,
-      "endLine": 720,
+      "line": 750,
+      "endLine": 777,
       "member": "MinecraftClient.CleanupPillarAsync",
       "kind": "method",
       "complexity": 11,
       "loc": 28,
+      "project": "MineClaw.Client"
+    },
+    {
+      "file": "src/MineClaw.Client/MinecraftClient.Trees.cs",
+      "line": 794,
+      "endLine": 810,
+      "member": "MinecraftClient.LeavesFromPillarAsync",
+      "kind": "method",
+      "complexity": 11,
+      "loc": 17,
       "project": "MineClaw.Client"
     },
     {
@@ -16846,8 +16926,8 @@
     },
     {
       "file": "src/MineClaw.World/Pathing/Pathfinder.cs",
-      "line": 788,
-      "endLine": 805,
+      "line": 789,
+      "endLine": 806,
       "member": "Pathfinder.ComputeDeadly",
       "kind": "method",
       "complexity": 11,
@@ -16856,8 +16936,8 @@
     },
     {
       "file": "src/MineClaw.World/Pathing/Pathfinder.cs",
-      "line": 968,
-      "endLine": 994,
+      "line": 969,
+      "endLine": 995,
       "member": "Pathfinder.TryOpenThrough",
       "kind": "method",
       "complexity": 11,
