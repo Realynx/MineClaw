@@ -230,7 +230,7 @@ public sealed partial class StoryColony
     }
 
     /// <summary>The colony's idle option (recreation | wander | stay); null keeps it.</summary>
-    internal string? SetIdle(string? mode)
+    public string? SetIdle(string? mode)
     {
         if (mode == null) return null;
         if (!IdleModes.Contains(mode)) return $"idle must be {string.Join("|", IdleModes)}";
