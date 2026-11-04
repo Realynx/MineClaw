@@ -194,12 +194,13 @@ public sealed class Gestures
             case "bow": return GestureMoves.Bow(sneak: bodyFree);
             case "bob": return bodyFree ? GestureMoves.CrouchBob() : GestureMoves.Wave(2);
             case "hop": return bodyFree ? (HopSafe() ? GestureMoves.Hop() : GestureMoves.CrouchBob(2)) : GestureMoves.Wave(2);
-            case "excite":
-                if (!bodyFree) return GestureMoves.Wave(2);
-                return (_excited++ % 2 == 1 && HopSafe()) ? GestureMoves.Hop() : GestureMoves.CrouchBob();
+            case "excite": return bodyFree ? Excite() : GestureMoves.Wave(2);
             default: return null;
         }
     }
+
+    /// <summary>Alternates a crouch-bob and (when safe) a hop.</summary>
+    private GesturePlan Excite() => (_excited++ % 2 == 1 && HopSafe()) ? GestureMoves.Hop() : GestureMoves.CrouchBob();
 
     private static GesturePlan With(GesturePlan a, GesturePlan? look) => look == null ? a : GestureMoves.Merge(look, a);
 

@@ -336,4 +336,49 @@ public class GestureDetectorTests
         var v = new List<double> { 0, 3, -2, 4, 20, 18, 22, 5, 2, 25, 0 };
         Assert.Equal([0, 6, 8, 9, 10], GestureDetector.Pivots(v, 10));
     }
+
+    [Fact]
+    public void Zigzag_pivots_match_the_reference_walk_on_random_series()
+    {
+        var rnd = new Random(7);
+        for (int n = 0; n < 2000; n++)
+        {
+            var v = new List<double>();
+            int len = rnd.Next(0, 40);
+            double x = 0;
+            for (int i = 0; i < len; i++) { x += rnd.Next(-20, 21) * (rnd.Next(4) == 0 ? 0.5 : 1); v.Add(x); }
+            double h = rnd.Next(1, 25);
+            Assert.Equal(ReferencePivots(v, h), GestureDetector.Pivots(v, h));
+        }
+    }
+
+    /// <summary>The zigzag walk as first written (one branch per direction): the refactored one must match it exactly.</summary>
+    private static List<int> ReferencePivots(IReadOnlyList<double> v, double h)
+    {
+        var piv = new List<int>();
+        if (v.Count == 0) return piv;
+        piv.Add(0);
+        int dir = 0, ext = 0;
+        for (int i = 1; i < v.Count; i++)
+        {
+            if (dir == 0)
+            {
+                if (v[i] - v[0] >= h) { dir = 1; ext = i; }
+                else if (v[0] - v[i] >= h) { dir = -1; ext = i; }
+                else if (Math.Abs(v[i] - v[0]) > Math.Abs(v[ext] - v[0])) ext = i;
+            }
+            else if (dir == 1)
+            {
+                if (v[i] > v[ext]) ext = i;
+                else if (v[ext] - v[i] >= h) { piv.Add(ext); dir = -1; ext = i; }
+            }
+            else
+            {
+                if (v[i] < v[ext]) ext = i;
+                else if (v[i] - v[ext] >= h) { piv.Add(ext); dir = 1; ext = i; }
+            }
+        }
+        if (dir != 0) piv.Add(ext);
+        return piv;
+    }
 }

@@ -30,36 +30,49 @@ public sealed class Obtainer(IGameClient c, AcquisitionSources? sources = null)
     {
         count = Math.Max(1, count);
         int? dmg = damage >= 0 && Items.Exists(id) && Items.Get(id).MaxDamage <= 0 ? damage : null;
-        int Have() => W.Inventory.CountItem(id, dmg);
         string name = Names.Item(id, dmg ?? 0);
-        if (Have() >= count) return new(true, $"had {count} {name}");
+        if (Have(id, dmg) >= count) return new(true, $"had {count} {name}");
 
         var parts = new List<string>();
         var chests = ChestStock.Read(c, _s?.Observations, _s?.SkipChest);
-        int start = Have();
-        if (chests.Count(id, dmg ?? -1) > 0)
-        {
-            var took = await WithdrawAsync(id, dmg, count - Have(), chests, ct).ConfigureAwait(false);
-            if (took.Count > 0) parts.Add("took " + string.Join("; ", took));
-            if (Have() >= count) return new(true, string.Join("; ", parts));
-            if (Have() > start && Room(id, dmg) == 0) return new(false, $"{string.Join("; ", parts)}; inventory full at {Have()}/{count} {name}");
-        }
+        if (chests.Count(id, dmg ?? -1) > 0 && await FromChestsAsync(id, dmg, count, name, chests, parts, ct).ConfigureAwait(false) is { } done)
+            return done;
 
-        if (Recipes.ForOutput(id, dmg ?? -1).Count > 0)
-        {
-            OnStep?.Invoke("craft");
-            var r = await new Crafter(c) { Observations = _s?.Observations }.CraftAsync(id, dmg ?? -1, count - Have(), ct).ConfigureAwait(false);
-            parts.Add(r.Message);
-            return new(Have() >= count, string.Join("; ", parts));
-        }
-        int left = count - Have();
-        int stored = chests.Count(id, dmg ?? -1);
-        string where = chests.Known == 0 ? "none in inventory and no known chests"
-            : stored > 0 ? $"{stored} left in the {chests.Known} known chests"
-            : Have() > 0 ? $"have {Have()}, none in the {chests.Known} known chests"
-            : $"none in inventory or the {chests.Known} known chests";
-        parts.Add($"need {left} more {name} (no recipe); {where}");
+        if (Recipes.ForOutput(id, dmg ?? -1).Count > 0) return await CraftRestAsync(id, dmg, count, parts, ct).ConfigureAwait(false);
+        parts.Add($"need {count - Have(id, dmg)} more {name} (no recipe); {NoRecipeWhere(id, dmg, chests)}");
         return new(false, string.Join("; ", parts));
+    }
+
+    private async Task<ObtainResult> CraftRestAsync(int id, int? dmg, int count, List<string> parts, CancellationToken ct)
+    {
+        OnStep?.Invoke("craft");
+        var r = await new Crafter(c) { Observations = _s?.Observations }.CraftAsync(id, dmg ?? -1, count - Have(id, dmg), ct).ConfigureAwait(false);
+        parts.Add(r.Message);
+        return new(Have(id, dmg) >= count, string.Join("; ", parts));
+    }
+
+    private int Have(int id, int? dmg) => W.Inventory.CountItem(id, dmg);
+
+    /// <summary>Withdraws what storage holds; the result when that settles it (enough, or the inventory filled up), else null.</summary>
+    private async Task<ObtainResult?> FromChestsAsync(int id, int? dmg, int count, string name, ChestStock chests, List<string> parts, CancellationToken ct)
+    {
+        int start = Have(id, dmg);
+        var took = await WithdrawAsync(id, dmg, count - start, chests, ct).ConfigureAwait(false);
+        if (took.Count > 0) parts.Add("took " + string.Join("; ", took));
+        int have = Have(id, dmg);
+        if (have >= count) return new(true, string.Join("; ", parts));
+        if (have > start && Room(id, dmg) == 0) return new(false, $"{string.Join("; ", parts)}; inventory full at {Have(id, dmg)}/{count} {name}");
+        return null;
+    }
+
+    private string NoRecipeWhere(int id, int? dmg, ChestStock chests)
+    {
+        int stored = chests.Count(id, dmg ?? -1);
+        int have = Have(id, dmg);
+        return chests.Known == 0 ? "none in inventory and no known chests"
+            : stored > 0 ? $"{stored} left in the {chests.Known} known chests"
+            : have > 0 ? $"have {have}, none in the {chests.Known} known chests"
+            : $"none in inventory or the {chests.Known} known chests";
     }
 
     /// <summary>Withdraws up to <paramref name="want"/> of the exact variant, chest by chest nearest first, as the inventory has room.</summary>

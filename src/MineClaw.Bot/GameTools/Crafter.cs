@@ -283,13 +283,19 @@ public sealed class Crafter(IGameClient client)
         foreach (var g in take.GroupBy(t => (t.Need.Id, t.Need.Damage)))
         {
             int max = Math.Max(1, (int)Items.Get(g.Key.Id).MaxStack);
-            int partial = 0;
-            for (int i = 9; i < 45 && i < slots.Length; i++)
-                if (!slots[i].IsEmpty && slots[i].Id == g.Key.Id && slots[i].Damage == g.Key.Damage) partial += Math.Max(0, max - slots[i].Count);
-            int n = Math.Max(0, g.Sum(t => t.Need.Count) - partial);
+            int n = Math.Max(0, g.Sum(t => t.Need.Count) - PartialRoom(slots, g.Key.Id, g.Key.Damage, max));
             need += (n + max - 1) / max;
         }
         return need <= empty;
+    }
+
+    /// <summary>Room left in the main inventory's partial stacks of the item.</summary>
+    private static int PartialRoom(ItemStack[] slots, int id, int damage, int max)
+    {
+        int partial = 0;
+        for (int i = 9; i < 45 && i < slots.Length; i++)
+            if (!slots[i].IsEmpty && slots[i].Id == id && slots[i].Damage == damage) partial += Math.Max(0, max - slots[i].Count);
+        return partial;
     }
 
     /// <summary>Takes the planned amounts, chest by chest; a short take makes that chest's memory of the item stale.</summary>
@@ -336,24 +342,44 @@ public sealed class Crafter(IGameClient client)
         var have = new List<string>();
         foreach (var m in plan.Missing)
         {
-            // A wildcard of a variant item reads as its family ("log", not "oak wood").
-            string mn = m.Damage < 0 && Items.VariantName(m.Id, 0) != Items.VariantName(m.Id, 1) ? Items.Get(m.Id).Name.Replace('_', ' ')
-                : Names.Item(m.Id, Math.Max(0, m.Damage));
-            parts.Add($"{m.Count} more {(m.Count > 1 ? Plural(mn) : mn)}");
+            string mn = MissingName(m);
+            parts.Add($"{m.Count} more {Counted(mn, m.Count)}");
             int avail = carried.Where(s => s.Id == m.Id && (m.Damage < 0 || s.Damage == m.Damage)).Sum(s => s.Count) + chests.Count(m.Id, m.Damage);
-            if (avail > 0) have.Add($"{avail} {(avail > 1 ? Plural(mn) : mn)}");
+            if (avail > 0) have.Add($"{avail} {Counted(mn, avail)}");
         }
+        return $"need {string.Join(", ", parts)} for {target}; {WhereText(chests, have)}{ShortfallHint(id, dmg, count, chests)}";
+    }
+
+    private static string Counted(string name, int n) => n > 1 ? Plural(name) : name;
+
+    /// <summary>A wildcard of a variant item reads as its family ("log", not "oak wood").</summary>
+    private static string MissingName(MaterialNeed m) =>
+        m.Damage < 0 && Items.VariantName(m.Id, 0) != Items.VariantName(m.Id, 1) ? Items.Get(m.Id).Name.Replace('_', ' ')
+            : Names.Item(m.Id, Math.Max(0, m.Damage));
+
+    private static string WhereText(ChestStock chests, List<string> have)
+    {
         string chestsText = $"{chests.Known} known chest{(chests.Known == 1 ? "" : "s")}";
-        string where = chests.Known == 0 ? "none in inventory and no known chests"
+        return chests.Known == 0 ? "none in inventory and no known chests"
             : have.Count == 0 ? $"none in inventory or the {chestsText}"
             : $"inventory + the {chestsText} have only {string.Join(", ", have)}";
+    }
+
+    /// <summary>" (cobblestone slab can be made now; smelting would do it, but no furnace is in range)", or "".</summary>
+    private string ShortfallHint(int id, int dmg, int count, ChestStock chests)
+    {
         var hints = new List<string>();
-        if (dmg >= 0)
-            foreach (var d in Recipes.ForOutput(id, -1).Select(r => r.OutputDamage).Distinct().Where(d => d != dmg))
-                if (Plan(id, d, count, chests, false).Complete) { hints.Add($"{Names.Item(id, d)} can be made now"); break; }
+        if (dmg >= 0 && CraftableVariant(id, dmg, count, chests) is { } d) hints.Add($"{Names.Item(id, d)} can be made now");
         if (!FurnaceAvailable() && Plan(id, dmg, count, chests, true).Complete) hints.Add("smelting would do it, but no furnace is in range");
-        string hint = hints.Count > 0 ? $" ({string.Join("; ", hints)})" : "";
-        return $"need {string.Join(", ", parts)} for {target}; {where}{hint}";
+        return hints.Count > 0 ? $" ({string.Join("; ", hints)})" : "";
+    }
+
+    /// <summary>Another variant of the item the current materials complete, or null.</summary>
+    private int? CraftableVariant(int id, int dmg, int count, ChestStock chests)
+    {
+        foreach (var d in Recipes.ForOutput(id, -1).Select(r => r.OutputDamage).Distinct().Where(d => d != dmg))
+            if (Plan(id, d, count, chests, false).Complete) return d;
+        return null;
     }
 
     /// <summary>"sticks", "logs"; mass nouns stay ("cobblestone", "oak wood", "glass", "wheat").</summary>
