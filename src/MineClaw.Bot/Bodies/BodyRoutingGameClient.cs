@@ -131,6 +131,8 @@ public sealed class BodyRoutingGameClient(BodyRegistry registry, Func<IBody, IGa
     public Task<ActionResult> PlaceBlockAsync(int x, int y, int z, int itemId, CancellationToken ct = default) => T().PlaceBlockAsync(x, y, z, itemId, ct);
     public Task<ActionResult> PlaceVariantAsync(int x, int y, int z, int itemId, int? damage, BlockFace? face, CancellationToken ct = default) =>
         T().PlaceVariantAsync(x, y, z, itemId, damage, face, ct);
+    public Task<ActionResult> PlaceTurnedAsync(int x, int y, int z, int itemId, int? damage, int meta, CancellationToken ct = default) =>
+        T().PlaceTurnedAsync(x, y, z, itemId, damage, meta, ct);
     public Task<ActionResult> DigBlockAsync(int x, int y, int z, CancellationToken ct = default) => T().DigBlockAsync(x, y, z, ct);
     public Task<ActionResult> ActivateBlockAsync(int x, int y, int z, CancellationToken ct = default) => T().ActivateBlockAsync(x, y, z, ct);
     public Task<ActionResult> UseItemOnBlockAsync(BlockPos pos, BlockFace face, int itemId, int? damage = null, CancellationToken ct = default) =>

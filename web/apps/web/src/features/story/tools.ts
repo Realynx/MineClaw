@@ -28,6 +28,7 @@ import {
   waterToolCells,
   type WaterToolId,
 } from '@mineclaw/contracts';
+import { hasFacing, withFacing, type Dir } from '../studio/facing';
 
 type V3 = [number, number, number];
 
@@ -431,7 +432,7 @@ export const STRUCTURE_TOOLS: ReadonlyArray<{ id: StructureId; label: string; hi
   { id: 'window', label: 'Window', hint: 'Click wall cells (drag for a row)', drag: 'line' },
   { id: 'stairs', label: 'Stairs', hint: 'Drag a run; Q/E turns', drag: 'line' },
   { id: 'fence', label: 'Fence', hint: 'Drag a rectangle', drag: 'rect' },
-  { id: 'block', label: 'Single block', hint: 'Click, or drag a box', drag: 'box' },
+  { id: 'block', label: 'Single block', hint: 'Click, or drag a box; Q/E turns a block that faces', drag: 'box' },
   { id: 'remove', label: 'Deconstruct', hint: 'Drag a box to clear', drag: 'box' },
 ];
 
@@ -471,6 +472,19 @@ export interface BuildOpts {
 }
 
 export const FACINGS: readonly StoryFacing[] = ['n', 'e', 's', 'w'];
+
+const FACING_DIR: Record<StoryFacing, Dir> = { n: 'north', e: 'east', s: 'south', w: 'west' };
+
+/** Whether a single block of this material turns with Q / E (it has a facing: a furnace, stairs, a pumpkin, a trapdoor…). */
+export function materialTurns(m: StoryMaterial | null | undefined): boolean {
+  return m !== null && m !== undefined && hasFacing(materialKey(m)[0]);
+}
+
+/** The material as the block faces `facing` ([id, meta]); one with no facing unchanged. */
+export function turnedMaterial(m: StoryMaterial, facing: StoryFacing): StoryMaterial {
+  const [id, meta] = materialKey(m);
+  return hasFacing(id) ? [id, withFacing(id, meta, FACING_DIR[facing])] : m;
+}
 
 /** Q / E: turn the facing (counter)clockwise. */
 export function rotateFacing(f: StoryFacing, dir: 1 | -1): StoryFacing {
@@ -520,8 +534,12 @@ export function buildItem(tool: BuildToolId, a: V3, b: V3, o: BuildOpts): StoryB
       return { kind: 'stairs', area: flat, material: o.material, facing: o.facing };
     case 'fence':
       return { kind: 'fence', area: flat, material: o.material };
-    case 'block':
-      return a[0] === b[0] && a[1] === b[1] && a[2] === b[2] ? { kind: 'block', blocks: [a], material: o.material } : { kind: 'block', area: [a[0], a[1], a[2], b[0], b[1], b[2]], material: o.material };
+    case 'block': {
+      // A block that faces somewhere (a furnace, stairs, a pumpkin…) takes the Q/E turn as its meta: the hologram shows it and the
+      // pawn places it that way.
+      const material = turnedMaterial(o.material, o.facing);
+      return a[0] === b[0] && a[1] === b[1] && a[2] === b[2] ? { kind: 'block', blocks: [a], material } : { kind: 'block', area: [a[0], a[1], a[2], b[0], b[1], b[2]], material };
+    }
     case 'remove':
       return { kind: 'remove', area: [a[0], a[1], a[2], b[0], b[1], b[2]], material: 'stone' };
   }

@@ -201,6 +201,19 @@ export function facingOf(id: number, meta: number): Dir | null {
 }
 
 const FRONT_OF = (d: Dir) => FRONT_DIRS.indexOf(d) + 2;
+
+/**
+ * A meta turned to face `d` in its family's own sense (the bot's `StoryConstruction.Faced`, the Architect's Q/E turn): a furnace's
+ * or chest's front, the way stairs rise, a door's facing, a bed's foot → head, a pumpkin's face, a trapdoor's wall; a piston,
+ * dispenser or hopper pointing up or down turns to face `d` too. A floor torch, an upright log or a block with no facing is
+ * unchanged.
+ */
+export function withFacing(id: number, meta: number, d: Dir): number {
+  const fam = familyOf(id);
+  if (fam === 'wall' || fam === 'front' || ((fam === 'facing6' || fam === 'hopper') && (meta & 7) <= 1)) return (meta & 8) | FRONT_OF(d);
+  const c = codecOf(id);
+  return c ? c.set(meta, d) : meta;
+}
 const ROT16: Record<Dir, number> = { south: 0, west: 4, north: 8, east: 12 };
 
 /**

@@ -602,7 +602,8 @@ export function StoryMode() {
     }
     if (tool.kind === 'build') {
       const item = buildItem(tool.id, r.a, r.b, build);
-      const pv = preview(item, stock.get(materialKey(item.material).join(':')));
+      // A turned single block keeps its stock key (the item, not the facing meta).
+      const pv = preview(item, stock.get(materialKey(item.kind === 'block' ? build.material : item.material).join(':')));
       if (!pv.valid) return say(pv.reason ?? 'cannot place that', 'warn');
       await run(
         { route: 'story.builds', body: { op: 'add', items: [item] } },

@@ -11,22 +11,26 @@
   };
   const FAR = /from my eyes|couldn't get closer|not visible|in reach|can't reach/i, IN_WAY = /standing in it|in the way/i;
   // A build job's cells in order from its stand: a cell already built counts as done; out of reach (or standing in it) -> step
-  // closer (or back to the stand) and try once more; each cell is reported; out of items, the rest go back to the queue.
+  // closer (or back to the stand) and try once more; each cell is reported; out of items, the rest go back to the queue. j.metas
+  // (a design's turned blocks): each cell placed with its meta's facing, axis or half (place_turned); a wrong one is never "built".
+  const TURN = /wrong rotation/i;
   const place = j => {
-    const cells = j.cells || [j.at], clear = Array.isArray(j.clear) ? j.clear : j.clear ? [j.at] : [];
+    const cells = j.cells || [j.at], clear = Array.isArray(j.clear) ? j.clear : j.clear ? [j.at] : [], metas = j.metas || [];
     if (j.stand && eyes(j.stand) > 1.8) call('go', j.stand, 0);
     let n = 0;
-    for (const c of cells) {
+    for (let i = 0; i < cells.length; i++) {
+      const c = cells[i], m = metas[i];
       const built = () => j.want && H.block(c) == j.want;
+      const put = () => (m == null ? call('place', j.block, c) : call('place_turned', j.block, c, m));
       if (!clear.includes(c) && built()) { if (j.cells) report(j, 'progress', 'cell ' + c + ' done'); n++; continue; }
       if (j.cells && !(H.inv(j.block) > 0)) break;
       if (clear.includes(c)) call('dig', c);
       if (eyes(c) > 4) call('go', c, 2);
-      let r = call('place', j.block, c);
-      if (!good(r) && built()) r = { ok: true };
+      let r = put();
+      if (!good(r) && !TURN.test(why(r)) && built()) r = { ok: true };
       else if (!good(r) && (FAR.test(why(r)) || IN_WAY.test(why(r)))) {
         if (IN_WAY.test(why(r)) && j.stand) call('go', j.stand, 0); else call('go', c, 2);
-        r = call('place', j.block, c);
+        r = put();
       }
       if (!j.cells) return r;
       report(j, 'progress', 'cell ' + c + (good(r) ? ' done' : ' failed: ' + why(r)));

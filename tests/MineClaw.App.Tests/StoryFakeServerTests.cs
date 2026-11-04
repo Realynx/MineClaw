@@ -343,6 +343,59 @@ public sealed class StoryFakeServerTests(ITestOutputHelper output)
     }, s => s.Chests[(WoodChest.X, WoodChest.Y, WoodChest.Z)][0] = new ItemStack((short)Blocks.Planks, 64, 0));
 
     /// <summary>
+    /// Rotation (docs/web/story-mode.md "Rotation"; Fox 11-04: "they don't take into consideration the direction they're facing when
+    /// they place it"): a pawn builds a small design with a furnace facing east, stairs rising each way, a wall torch and (1.12.2) a log
+    /// on its side, on a fake server that turns placed blocks by the vanilla rules. The world ends with exactly the designed metas.
+    /// </summary>
+    [Theory]
+    [InlineData("b1.8.1")]
+    [InlineData("1.12.2")]
+    public Task A_pawn_builds_a_design_with_each_block_turned_as_drawn(string version) => Colony(version, 1, async x =>
+    {
+        var c = x.C;
+        Only(x, WorkTypes.Build);
+        Assert.Null(c.StorageOp("set", [WoodChest], null, "normal", "Wood").Error);
+        var chest = c.StorageAt(WoodChest)!;
+        c.AddContents(chest, new Stack(Blocks.Furnace, 0, 1));
+        c.AddContents(chest, new Stack(Blocks.WoodenStairs, 0, 4));
+        c.AddContents(chest, new Stack(Blocks.Torch, 0, 1));
+        c.AddContents(chest, new Stack(Blocks.Log, 0, 1));
+        // The design: [x, y, z, id, meta] (the posts at 13,64,17 and 18,64,17 are the log's and the torch's walls).
+        var want = new List<(int X, int Y, int Z, int Id, int Meta)>
+        {
+            (15, 64, 15, Blocks.Furnace, 5),                                    // front east
+            (17, 64, 15, Blocks.WoodenStairs, 0), (18, 64, 15, Blocks.WoodenStairs, 1), // rising east, west
+            (19, 64, 15, Blocks.WoodenStairs, 2), (20, 64, 15, Blocks.WoodenStairs, 3), // south, north
+            (17, 64, 17, Blocks.Torch, 2),                                      // on the east wall
+        };
+        if (x.Modern) want.Add((14, 64, 17, Blocks.Log, 4));                     // along x
+        var items = new JsonArray(want.Select(w => (JsonNode)new JsonObject
+        {
+            ["kind"] = "block", ["blocks"] = new JsonArray(new JsonArray(w.X, w.Y, w.Z)), ["material"] = new JsonArray(w.Id, w.Meta), ["name"] = "turned",
+        }).ToArray());
+        Assert.Null(c.BuildsOp("add", items, null).Error);
+        Assert.True(await Until(() => c.Builds.All(b => b.Status == "done"), 180_000),
+            string.Join("; ", c.Builds.Select(b => $"{b.Label} {b.Status} {b.Reason}")) + " | " + x.Diag());
+        var srv = x.Servers[x.Pawns[0]];
+        foreach (var w in want)
+        {
+            Assert.Equal(w.Id, srv.Blocks.GetValueOrDefault((w.X, w.Y, w.Z)));
+            Assert.True(srv.Metas.GetValueOrDefault((w.X, w.Y, w.Z)) == w.Meta, $"{w}: meta {srv.Metas.GetValueOrDefault((w.X, w.Y, w.Z))}");
+        }
+        Assert.DoesNotContain(c.Builds.SelectMany(b => b.Ghosts), g => g.State == "misrotated");
+    }, s =>
+    {
+        s.OrientBlocks = true;
+        s.Blocks[(13, 64, 17)] = Blocks.Cobblestone;
+        s.Blocks[(18, 64, 17)] = Blocks.Cobblestone;
+        var box = s.Chests[(WoodChest.X, WoodChest.Y, WoodChest.Z)];
+        box[0] = new ItemStack((short)Blocks.Furnace, 1, 0);
+        box[1] = new ItemStack((short)Blocks.WoodenStairs, 4, 0);
+        box[2] = new ItemStack((short)Blocks.Torch, 1, 0);
+        box[3] = new ItemStack((short)Blocks.Log, 1, 0);
+    });
+
+    /// <summary>
     /// Water (docs/web/story-mode.md "Water"; live 11-04 "the pawns have a really difficult time pouring water in the canals"). The
     /// pawn, holding two full buckets, digs and pours a 2×2 infinite pool (two corners: the fake server's water settles the other two),
     /// then digs a 4-long canal and pours it every other cell, filling its buckets at the colony's own pool (which refills). The

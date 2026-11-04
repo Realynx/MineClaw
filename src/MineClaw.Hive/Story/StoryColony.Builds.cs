@@ -203,7 +203,11 @@ public sealed partial class StoryColony
                     continue;
                 }
                 var (cur, curMeta) = w.Block(g.At.X, g.At.Y, g.At.Z);
-                if (cur != 0 && Matches(g, cur, curMeta)) { CellDone(b, g); continue; } // already there: done, never a job
+                if (cur != 0 && Matches(g, cur, curMeta, Modern)) { CellDone(b, g); continue; } // already there: done, never a job
+                // There but turned the wrong way: taken back and placed again once (a clear), unless it was tried already or it holds
+                // things (a chest, a furnace: never broken open for its rotation). Then the cell says so on the map.
+                if (cur != 0 && WrongTurn(g, cur, curMeta, Modern) && (_turnRedo.GetValueOrDefault(key) >= 1 || KeepsItems(cur)))
+                { Misrotated(b, g, curMeta); continue; }
                 // A block in the way is dug first: with its tool (stone in a wall's line takes a pickaxe). The batch clears only cells
                 // of that same block (one tool per job).
                 var clearTool = !StoryBlocks.Replaceable.Contains(cur) ? PlanTool(p, live, cur) : null;
@@ -266,11 +270,21 @@ public sealed partial class StoryColony
                     f["cells"] = new JsonArray(cells.Select(c => (JsonNode)c.At.ToString()).ToArray());
                     if (clear.Count > 0) f["clear"] = new JsonArray(clear.Select(c => (JsonNode)c).ToArray());
                     if (g.Facing is { } fc) f["facing"] = fc;
+                    // A design's turned blocks (a furnace's front, stairs, a log's axis, a wall torch): each cell's meta, placed with
+                    // place_turned (docs/web/story-mode.md "Rotation").
+                    if (cells.Any(c => MineClaw.World.BlockOrientation.Turns(c.Id, c.Meta, Modern)))
+                        f["metas"] = new JsonArray(cells.Select(c => (JsonNode)c.Meta).ToArray());
                     if (stand is { } sp) f["stand"] = sp.ToString(); // where the whole batch is within reach
                     if (fetch.Count > 0) f["fetch"] = fetch;
                 }, xp: Math.Min(60, 8 + 4 * cells.Count));
                 job.Takes.AddRange(takes);
-                return Claim(b, cells, p.Name, WithTool(clear.Count > 0 ? clearTool : null, job));
+                var claimed = Claim(b, cells, p.Name, WithTool(clear.Count > 0 ? clearTool : null, job));
+                // A wrong-turned cell this batch takes back and places again: its one second chance, counted when handed out.
+                var redo = cells.Where(c => w.Block(c.At.X, c.At.Y, c.At.Z) is var (rid, rmeta) && WrongTurn(c, rid, rmeta, Modern))
+                    .Select(c => $"g:{b.Id}|{c.At}").ToList();
+                if (redo.Count > 0 && claimed.Assign is { } assign)
+                    claimed.Assign = () => { assign(); foreach (var k in redo) _turnRedo[k] = _turnRedo.GetValueOrDefault(k) + 1; };
+                return claimed;
             }
             nextBuild:;
         }
@@ -282,17 +296,60 @@ public sealed partial class StoryColony
         open.OrderBy(t => StoryConstruction.Supported(t.At, Solid) ? 0 : 1)
             .ThenBy(t => t.At.Dist(from) + (busy.Any(o => Math.Abs(o.X - t.At.X) <= StandRadius + 1 && Math.Abs(o.Z - t.At.Z) <= StandRadius + 1) ? 12 : 0));
 
-    /// <summary>A cell holds what the ghost wants: the same block and variant (a facing is the placement's own).</summary>
-    internal static bool Matches(GhostState g, int id, int meta)
+    /// <summary>A cell holds what the ghost wants: the same block and variant, turned the same way where the placement decides it (a
+    /// furnace's front, a stair's rise and half, a log's axis: <see cref="MineClaw.World.BlockOrientation.Same"/>); runtime bits
+    /// (open, powered, lit) are not compared.</summary>
+    internal static bool Matches(GhostState g, int id, int meta, bool modern)
     {
         if (StoryConstruction.IsLiquid(g)) return LiquidSource(g.Id, id, meta); // a source of its liquid, still or just poured (StoryColony.Water.cs)
+        return SameVariant(g, id, meta) && MineClaw.World.BlockOrientation.Same(id, g.Meta, meta, modern);
+    }
+
+    private static bool SameVariant(GhostState g, int id, int meta)
+    {
         if (id != g.Id) return false;
         int mask = MineClaw.Bot.Blueprints.DesignFacing.VariantMask(id);
         return (meta & mask) == (g.Meta & mask);
     }
 
+    /// <summary>The cell holds the ghost's block and variant, turned another way than the design has it.</summary>
+    internal static bool WrongTurn(GhostState g, int id, int meta, bool modern) =>
+        !g.Remove && !StoryConstruction.IsLiquid(g) && SameVariant(g, id, meta) && !MineClaw.World.BlockOrientation.Same(id, g.Meta, meta, modern);
+
+    /// <summary>The colony's server keeps 1.12.2's placement rules (else b1.8.1's).</summary>
+    private bool Modern => World?.Data.VersionId != "b1.8.1";
+
+    /// <summary>Blocks that hold items: never broken for their rotation (a wrong chest or furnace is said, not emptied onto the floor).</summary>
+    private static bool KeepsItems(int id) => id is 54 or 146 or 61 or 62 or 23 or 158 or 154 or 117 or 84 or (>= 219 and <= 234);
+
+    /// <summary>Cells taken back once for a wrong rotation (<c>g:build|x,y,z</c>): the second time the cell is left misrotated.</summary>
+    private readonly Dictionary<string, int> _turnRedo = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// The cell stands, turned the wrong way: after one more try (or for a block that holds items) it is left that way, a
+    /// <c>misrotated</c> ghost the map shows over it with the reason, said once in an alert; it counts as finished for the build.
+    /// </summary>
+    private void Misrotated(BuildState b, GhostState g, int got, string? why = null)
+    {
+        if (g.State is "misrotated" or "done") return;
+        bool modern = Modern;
+        string Words(int m) => MineClaw.World.BlockOrientation.Describe(g.Id, m, modern) ?? $"meta {m}";
+        g.State = "misrotated";
+        g.Reason = why ?? $"placed {Words(got)}, wants {Words(g.Meta)}";
+        g.Rev = Touch();
+        _leases.Remove($"g:{b.Id}|{g.At}");
+        MaterialsChanged();
+        var name = World?.Data is { } d && d.BlockExists(g.Id) ? d.Block(g.Id).DisplayName.ToLowerInvariant() : "block";
+        Alert("warn", $"Build {b.Id} ({b.Kind}): the {name} at {g.At} was placed with the wrong rotation ({g.Reason})");
+        if (b.Ghosts.Where(x => x.Job).All(x => x.State is "done" or "misrotated"))
+        {
+            b.Status = "done"; b.Reason = null; b.Rev = Touch();
+            Alert("info", $"Build {b.Id} ({b.Label}) is done");
+        }
+    }
+
     /// <summary>Whether the cell is built (see <see cref="View"/>).</summary>
-    private bool Built(string pawn, GhostState g) => View(pawn, g) is var (id, meta) && id != 0 && Matches(g, id, meta);
+    private bool Built(string pawn, GhostState g) => View(pawn, g) is var (id, meta) && id != 0 && Matches(g, id, meta, Modern);
 
     /// <summary>The cell's block as the pawn's own view sees it when that holds the cell, else as the colony's ((0, 0) with no view).</summary>
     private (int Id, int Meta) View(string pawn, GhostState g)
@@ -355,7 +412,9 @@ public sealed partial class StoryColony
                 if (Math.Abs(x.At.X - seed.At.X) > WalkRadius || Math.Abs(x.At.Z - seed.At.Z) > WalkRadius || x.At.Y != seed.At.Y) continue;
                 if (!Open($"g:{b.Id}|{x.At}", pawn, x.At) || Occupied(x.At)) continue;
                 var (cur, curMeta) = w.Block(x.At.X, x.At.Y, x.At.Z);
-                if (cur != 0 && Matches(x, cur, curMeta)) { CellDone(b, x); continue; }
+                if (cur != 0 && Matches(x, cur, curMeta, Modern)) { CellDone(b, x); continue; }
+                if (cur != 0 && WrongTurn(x, cur, curMeta, Modern) && (_turnRedo.GetValueOrDefault($"g:{b.Id}|{x.At}") >= 1 || KeepsItems(cur)))
+                { Misrotated(b, x, curMeta); continue; }
                 if (!StoryBlocks.Replaceable.Contains(cur) && cur != clearId) continue; // another block to clear: another tool, another job
                 cand.Add(x);
             }
@@ -535,6 +594,10 @@ public sealed partial class StoryColony
         // Done when the world agrees, or doesn't know yet (its copy of the block change can come a moment later); a cell that holds
         // something else (another variant: the script saw the block's name) still has to be cleared and built.
         if (Built(p.Name, g) || status == "done" && View(p.Name, g) is var (vid, _) && (StoryConstruction.IsLiquid(g) ? vid == 0 : OpenCell(vid))) { CellDone(b, g); return; }
+        // Placed, but turned the wrong way: the client already took it back and tried once more (or couldn't): the cell says so.
+        if (View(p.Name, g) is var (tid, tmeta) && WrongTurn(g, tid, tmeta, Modern)
+            && (status.Contains("wrong rotation", StringComparison.OrdinalIgnoreCase) || status == "done"))
+        { Misrotated(b, g, tmeta); return; }
         if (status == "done")
             status = $"failed: {g.At} is occupied by {(World?.Data is { } d && d.BlockExists(View(p.Name, g).Id) ? d.Block(View(p.Name, g).Id).Name : "another block")}";
         if (g.State == "leased") { g.State = "todo"; g.Rev = Touch(); }
@@ -583,7 +646,7 @@ public sealed partial class StoryColony
         // A door's / bed's other half came with it.
         foreach (var other in b.Ghosts.Where(o => !o.Job && o.State != "done" && Math.Abs(o.At.X - g.At.X) + Math.Abs(o.At.Y - g.At.Y) + Math.Abs(o.At.Z - g.At.Z) == 1))
         { other.State = "done"; other.Rev = g.Rev; }
-        if (b.Ghosts.Where(x => x.Job).All(x => x.State == "done"))
+        if (b.Ghosts.Where(x => x.Job).All(x => x.State is "done" or "misrotated"))
         {
             b.Status = "done"; b.Reason = null; b.Rev = Touch();
             Alert("info", $"Build {b.Id} ({b.Label}) is done");

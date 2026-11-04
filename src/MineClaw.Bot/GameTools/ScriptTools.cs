@@ -36,6 +36,7 @@ public sealed partial class ScriptBridge
         FaceTool.ToolName, // hidden: face{at} (turn the head; Story pawns' recreation)
         EscapeDigTool.ToolName, // hidden: escape_dig{at} (a Story pawn getting out: any tool, the drop may be lost)
         FishingTool.ToolName, // hidden tool: fish(at, seconds) with a rod
+        TurnedPlaceTool.ToolName, // hidden: place_turned(block, at, meta) (a design's facing, axis or half)
         Blueprints.BlueprintWiring.BuildTool, Blueprints.BlueprintWiring.InfoTool, // hidden: build{bp, part, of, layer} / blueprint(id)
     ];
 
@@ -43,6 +44,7 @@ public sealed partial class ScriptBridge
     private static readonly HashSet<string> AtomicTools = new(StringComparer.OrdinalIgnoreCase)
     {
         "craft", "smelt", "collect_furnace", "deposit", "withdraw", "organize_chest", "place", "dig", "use_block", "eat", EquipTool.ToolName, EscapeDigTool.ToolName,
+        TurnedPlaceTool.ToolName,
     };
 
     private static readonly AsyncLocal<bool> InWorker = new();

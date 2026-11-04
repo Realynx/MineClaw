@@ -28,7 +28,7 @@ public sealed partial class StoryColony
     {
         if (!g.Job || g.State is "done" or "unsupported") return false;
         var id = $"{b.Id}|{g.At}";
-        return g.State == "blocked" || _ghostFails.ContainsKey(id) || _softFails.ContainsKey("g:" + id) || _skip.ContainsKey("g:" + id);
+        return g.State is "blocked" or "misrotated" || _ghostFails.ContainsKey(id) || _softFails.ContainsKey("g:" + id) || _skip.ContainsKey("g:" + id);
     }
 
     /// <summary>How many build cells have failed (the web's "Retry all failed (N)" counts them with the failed designations).</summary>
@@ -43,7 +43,7 @@ public sealed partial class StoryColony
         if (op == "retry" && ids is not { Count: > 0 }) return (null, "id (or ids) required");
         lock (_lock)
         {
-            var hit = op == "retry_all" ? Builds.Where(b => b.Status != "done").ToList() : Builds.Where(b => ids!.Contains(b.Id)).ToList();
+            var hit = op == "retry_all" ? Builds.Where(b => b.Status != "done" || b.Ghosts.Any(g => g.State == "misrotated")).ToList() : Builds.Where(b => ids!.Contains(b.Id)).ToList();
             if (op == "retry" && hit.Count == 0) return (null, "no such build");
             var cellSet = cells?.ToHashSet();
             int reopened = 0;
@@ -60,6 +60,7 @@ public sealed partial class StoryColony
                     g.Rev = Touch();
                 }
                 if (b.Status is "blocked" or "waiting") { b.Status = "queued"; b.Reason = null; }
+                if (b.Status == "done" && b.Ghosts.Any(g => g.Job && g.State == "todo")) b.Status = "queued"; // a misrotated cell reopened
                 b.Rev = Touch();
                 _buildAlerted.Remove(b.Id);
                 if (RetryCheck(b, targets) is { } why)
@@ -83,7 +84,8 @@ public sealed partial class StoryColony
     {
         var id = $"{b.Id}|{g.At}";
         var key = "g:" + id;
-        if (g.State == "blocked") g.State = "todo";
+        if (g.State is "blocked" or "misrotated") g.State = "todo";
+        _turnRedo.Remove(key); // a misrotated cell gets its one take-back again (StoryColony.Builds.cs)
         g.Reason = null;
         _ghostFails.Remove(id);
         _softFails.Remove(key);

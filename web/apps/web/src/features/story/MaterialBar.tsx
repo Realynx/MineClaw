@@ -13,7 +13,7 @@ import { useEffect, useRef, useState } from 'react';
 import { cn } from '@/lib/utils';
 import { stockText, type MaterialOption } from './materials';
 import { panel } from './StoryHud';
-import { FURNITURE_TOOLS, rotateFacing, STRUCTURE_TOOLS, type BuildOpts, type BuildToolId } from './tools';
+import { FURNITURE_TOOLS, materialTurns, rotateFacing, STRUCTURE_TOOLS, type BuildOpts, type BuildToolId } from './tools';
 import { ItemIcon, ToolIcon } from './visuals';
 
 const TIER_LABEL: Record<string, string> = {
@@ -190,7 +190,7 @@ export function MaterialBar({
           </button>
         </>
       ) : null}
-      {toolId === 'door' || toolId === 'stairs' || furniture ? (
+      {toolId === 'door' || toolId === 'stairs' || furniture || (toolId === 'block' && materialTurns(build.material)) ? (
         <span className="flex items-center gap-0.5 rounded bg-surface-2 p-0.5" title="Facing (Q / E)">
           <button
             type="button"
