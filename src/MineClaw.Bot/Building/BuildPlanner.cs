@@ -703,41 +703,47 @@ public sealed partial class BuildPlanner
     {
         var at = new Dictionary<BlockPos, int>();
         for (int k = 0; k < _out.Infeasible.Count; k++) at.TryAdd(_out.Infeasible[k].Pos, k);
-        static bool NoSupport(string w) => w.StartsWith("no support within", StringComparison.Ordinal);
-        static bool Waits(string w) => w.StartsWith(BuildSkips.Waiting, StringComparison.Ordinal);
-        // The root reason behind a cell: follow "rests on" links; null when the chain comes back to `self` or loops. A link to a
-        // cell that isn't infeasible is a held-back block (no item yet): a real root.
-        string? Root(BlockPos? from, BlockPos self)
-        {
-            var seen = new HashSet<BlockPos> { self };
-            for (var p = from; p is { } q && seen.Add(q);)
-            {
-                if (!at.TryGetValue(q, out var j)) return "held";
-                var w = _out.Infeasible[j].Why;
-                if (!Waits(w)) return w;
-                p = RestsOn(w);
-            }
-            return null;
-        }
         for (bool changed = true; changed;)
         {
             changed = false;
-            for (int k = 0; k < _out.Infeasible.Count; k++)
-            {
-                var i = _out.Infeasible[k];
-                if (!NoSupport(i.Why) && !Waits(i.Why)) continue; // a root of its own (out of reach, protected…)
-                var mine = Waits(i.Why) ? Root(RestsOn(i.Why), i.Pos) : i.Why;
-                if (mine != null && !NoSupport(mine)) continue; // already leads to a real root
-                foreach (var f in BlockFaceExtensions.All)
-                {
-                    var n = i.Pos.Offset(f);
-                    if (!at.ContainsKey(n) || Root(n, i.Pos) is not { } root || NoSupport(root)) continue;
-                    _out.Infeasible[k] = i with { Why = $"{BuildSkips.Waiting}; rests on {n.X},{n.Y},{n.Z}, which can't be placed" };
-                    changed = true;
-                    break;
-                }
-            }
+            for (int k = 0; k < _out.Infeasible.Count; k++) changed |= BlameSupport(k, at);
         }
+    }
+
+    private static bool NoSupportWhy(string w) => w.StartsWith("no support within", StringComparison.Ordinal);
+    private static bool WaitsWhy(string w) => w.StartsWith(BuildSkips.Waiting, StringComparison.Ordinal);
+
+    /// <summary>Points infeasible cell <paramref name="k"/> (no support, or a wait without a real root) at a neighbour whose wait
+    /// leads to a real root; true when it changed.</summary>
+    private bool BlameSupport(int k, Dictionary<BlockPos, int> at)
+    {
+        var i = _out.Infeasible[k];
+        if (!NoSupportWhy(i.Why) && !WaitsWhy(i.Why)) return false; // a root of its own (out of reach, protected…)
+        var mine = WaitsWhy(i.Why) ? RootWhy(at, RestsOn(i.Why), i.Pos) : i.Why;
+        if (mine != null && !NoSupportWhy(mine)) return false; // already leads to a real root
+        foreach (var f in BlockFaceExtensions.All)
+        {
+            var n = i.Pos.Offset(f);
+            if (!at.ContainsKey(n) || RootWhy(at, n, i.Pos) is not { } root || NoSupportWhy(root)) continue;
+            _out.Infeasible[k] = i with { Why = $"{BuildSkips.Waiting}; rests on {n.X},{n.Y},{n.Z}, which can't be placed" };
+            return true;
+        }
+        return false;
+    }
+
+    /// <summary>The root reason behind a cell: follow "rests on" links; null when the chain comes back to <paramref name="self"/>
+    /// or loops. A link to a cell that isn't infeasible is a held-back block (no item yet): a real root.</summary>
+    private string? RootWhy(Dictionary<BlockPos, int> at, BlockPos? from, BlockPos self)
+    {
+        var seen = new HashSet<BlockPos> { self };
+        for (var p = from; p is { } q && seen.Add(q);)
+        {
+            if (!at.TryGetValue(q, out var j)) return "held";
+            var w = _out.Infeasible[j].Why;
+            if (!WaitsWhy(w)) return w;
+            p = RestsOn(w);
+        }
+        return null;
     }
 
     private void Fail(BlockPos p, int id, string why)
@@ -783,28 +789,39 @@ public sealed partial class BuildPlanner
     private bool ResolveCore(Target t, ref string? why)
     {
         bool below = t.Pos.Y < LowestStandNear(t.Pos) - 1;
-        if (!Supported(t))
-        {
-            if (ScaffoldPath(t.Pos, t.Kind is BuildKind.Gravity or BuildKind.Door) is not { } chain)
-            {
-                why = $"no support within {_o.MaxScaffold} scaffold blocks"
-                      + (MineClaw.Data.Versioning.WorldMode.Current.HasVoidBelow ? " (over the void)" : " (nothing to build up from)");
-                return false;
-            }
-            if (Chain(chain, ref why)) return true;
-            if (!_o.WaterAvailable) { why = (why ?? "no stand reaches the scaffold chain") + (below ? "; below the floor: a water bucket would let me descend" : ""); return false; }
-            if (!Column(chain.Last(), ref why)) return false;
-            return Chain(chain, ref why);
-        }
+        if (!Supported(t)) return ResolveUnsupported(t, below, ref why);
         if (Placements(t).Any()) { why = "every stand that reaches it would wall me in"; return true; } // the main loop retries later
-        // Wholly above every stand near it: climb first (the design's own blocks are stands already; else a pillar, a stair);
-        // level with them but out of reach: a floor walkway first.
-        bool above = !below && t.Pos.Y >= HighestStandNear(t.Pos) + PlayerPhysics.EyeHeight;
-        if (above && Climb(t)) return true;
-        if (!below && Walkway(t.Pos) is { } walk && Chain(walk, ref why)) return true;
-        if (!below && !above && Climb(t)) return true;
+        if (ClimbOrWalkway(t, below, ref why)) return true;
         if (!_o.WaterAvailable) { why = below ? "below the floor and out of reach: needs a water bucket to descend" : NoStandWhy(t.Pos); return false; }
         return Column(t.Pos, ref why) && Placements(t).Any();
+    }
+
+    /// <summary>Nothing holds it: a scaffold chain to the nearest support, from the ground, else from a water column.</summary>
+    private bool ResolveUnsupported(Target t, bool below, ref string? why)
+    {
+        if (ScaffoldPath(t.Pos, t.Kind is BuildKind.Gravity or BuildKind.Door) is not { } chain)
+        {
+            why = $"no support within {_o.MaxScaffold} scaffold blocks"
+                  + (MineClaw.Data.Versioning.WorldMode.Current.HasVoidBelow ? " (over the void)" : " (nothing to build up from)");
+            return false;
+        }
+        if (Chain(chain, ref why)) return true;
+        if (!_o.WaterAvailable) { why = (why ?? "no stand reaches the scaffold chain") + (below ? "; below the floor: a water bucket would let me descend" : ""); return false; }
+        if (!Column(chain.Last(), ref why)) return false;
+        return Chain(chain, ref why);
+    }
+
+    /// <summary>
+    /// Not below the floor: wholly above every stand near it, climb first (the design's own blocks are stands already; else a
+    /// pillar, a stair); level with them but out of reach, a floor walkway first.
+    /// </summary>
+    private bool ClimbOrWalkway(Target t, bool below, ref string? why)
+    {
+        if (below) return false;
+        bool above = t.Pos.Y >= HighestStandNear(t.Pos) + PlayerPhysics.EyeHeight;
+        if (above && Climb(t)) return true;
+        if (Walkway(t.Pos) is { } walk && Chain(walk, ref why)) return true;
+        return !above && Climb(t);
     }
 
     private int LowestStandNear(BlockPos p)
@@ -845,24 +862,48 @@ public sealed partial class BuildPlanner
             foreach (var f in straightDown ? [BlockFace.Bottom] : BlockFaceExtensions.All)
             {
                 var n = p.Offset(f);
-                if (prev.ContainsKey(n) || n.Y < 1 || n.Y >= height || !Free(n) || !_part.Allows(n)) continue;
-                if (_plan.Blocks.ContainsKey(n) || !_s.Sim.IsLoaded(n.X, n.Z) || BlockShapes.IsLava(_s.Sim.Get(n))) continue;
-                if (_s.Columns.Any(c => !c.Removed && c.Source.X == n.X && c.Source.Z == n.Z)) continue; // keep columns open
+                if (prev.ContainsKey(n) || !ScaffoldCell(n, height)) continue;
                 prev[n] = p;
-                if (BlockFaceExtensions.All.Any(g => Solid(n.Offset(g))))
-                {
-                    var path = new List<BlockPos>();
-                    for (var c = n; c != start; c = prev[c]) path.Add(c);
-                    return path; // support side first, toward the target
-                }
+                if (BlockFaceExtensions.All.Any(g => Solid(n.Offset(g)))) return PathBack(prev, n, start); // support side first, toward the target
                 q.Enqueue((n, d + 1));
             }
         }
         return null;
     }
 
+    /// <summary>A free cell scaffold may fill: in the world and the part's strip, not planned, loaded, no lava, no water column
+    /// through it (columns stay open).</summary>
+    private bool ScaffoldCell(BlockPos n, int height) =>
+        n.Y >= 1 && n.Y < height && Free(n) && _part.Allows(n)
+        && !_plan.Blocks.ContainsKey(n) && _s.Sim.IsLoaded(n.X, n.Z) && !BlockShapes.IsLava(_s.Sim.Get(n)) && !InWaterColumn(n);
+
+    /// <summary>The cells from <paramref name="end"/> back to (not including) <paramref name="start"/>.</summary>
+    private static List<BlockPos> PathBack(Dictionary<BlockPos, BlockPos> prev, BlockPos end, BlockPos start)
+    {
+        var path = new List<BlockPos>();
+        for (var c = end; c != start; c = prev[c]) path.Add(c);
+        return path;
+    }
+
     /// <summary>A floor walkway of scaffold from the nearest walkable cell toward the target until a stand is in reach.</summary>
     private List<BlockPos>? Walkway(BlockPos t)
+    {
+        if (NearestLevelStand(t) is not { } f) return null;
+        var path = new List<BlockPos>();
+        var cur = f;
+        for (int i = 0; i < _o.MaxScaffold; i++)
+        {
+            if (WalkwayNext(cur, t) is not { } next) break;
+            var floor = next.Down();
+            if (!Solid(floor)) path.Add(floor);
+            cur = next;
+            if (new Vec3d(cur.X + 0.5, cur.Y + 1.62, cur.Z + 0.5).DistanceTo(t.Center) <= _o.Reach - 0.5) return path;
+        }
+        return null;
+    }
+
+    /// <summary>The walkable stand nearest <paramref name="t"/> from 3 below to 1 above it, or null.</summary>
+    private BlockPos? NearestLevelStand(BlockPos t)
     {
         BlockPos? from = null;
         double best = double.MaxValue;
@@ -872,21 +913,19 @@ public sealed partial class BuildPlanner
             double d = s.DistanceSquaredTo(t);
             if (d < best) { best = d; from = s; }
         }
-        if (from is not { } f) return null;
-        var path = new List<BlockPos>();
-        var cur = f;
-        for (int i = 0; i < _o.MaxScaffold; i++)
-        {
-            int sx = Math.Sign(t.X - cur.X), sz = Math.Sign(t.Z - cur.Z);
-            if (sx == 0 && sz == 0) break;
-            var next = Math.Abs(t.X - cur.X) >= Math.Abs(t.Z - cur.Z) ? cur.Offset(sx, 0, 0) : cur.Offset(0, 0, sz);
-            var floor = next.Down();
-            if (!_part.Allows(floor) || _plan.Blocks.ContainsKey(floor) || !Free(next) || !Free(next.Up())) break;
-            if (!Solid(floor)) { if (!Free(floor)) break; path.Add(floor); }
-            cur = next;
-            if (new Vec3d(cur.X + 0.5, cur.Y + 1.62, cur.Z + 0.5).DistanceTo(t.Center) <= _o.Reach - 0.5) return path;
-        }
-        return null;
+        return from;
+    }
+
+    /// <summary>The walkway's next cell toward <paramref name="t"/> (along the longer axis): room for the body, its floor in the
+    /// part's strip, not planned, solid or free for a scaffold; null when there or blocked.</summary>
+    private BlockPos? WalkwayNext(BlockPos cur, BlockPos t)
+    {
+        int sx = Math.Sign(t.X - cur.X), sz = Math.Sign(t.Z - cur.Z);
+        if (sx == 0 && sz == 0) return null;
+        var next = Math.Abs(t.X - cur.X) >= Math.Abs(t.Z - cur.Z) ? cur.Offset(sx, 0, 0) : cur.Offset(0, 0, sz);
+        var floor = next.Down();
+        if (!_part.Allows(floor) || _plan.Blocks.ContainsKey(floor) || !Free(next) || !Free(next.Up())) return null;
+        return Solid(floor) || Free(floor) ? next : null;
     }
 
     /// <summary>
@@ -897,57 +936,84 @@ public sealed partial class BuildPlanner
     private bool Column(BlockPos near, ref string? why)
     {
         int depth = near.Y - 1;
+        var options = ColumnOptions(near, depth);
+        if (options.Count == 0) { why = "no edge with open space below to pour a water column"; return false; }
+        foreach (var (entry, src, face, _) in options.OrderBy(o => o.Score).Take(4))
+            if (TryPour(entry, src, face, depth, ref why)) return true;
+        return false;
+    }
+
+    /// <summary>Every edge near <paramref name="near"/> to pour from (a walkable stand above it, the source beside its floor
+    /// block falling into open space, near enough, the column open down to the depth), scored by distance, travel and the
+    /// stuck-layer cells it covers.</summary>
+    private List<(BlockPos Entry, BlockPos Source, BlockFace Face, double Score)> ColumnOptions(BlockPos near, int depth)
+    {
         var options = new List<(BlockPos Entry, BlockPos Source, BlockFace Face, double Score)>();
         foreach (var (e, cost) in FloodAll)
         {
-            if (Math.Abs(e.X - near.X) > 6 || Math.Abs(e.Z - near.Z) > 6 || e.Y <= near.Y) continue;
-            var floor = e.Down();
-            if (!Solid(floor)) continue;
+            if (Math.Abs(e.X - near.X) > 6 || Math.Abs(e.Z - near.Z) > 6 || e.Y <= near.Y || !Solid(e.Down())) continue;
             foreach (var f in Sides)
-            {
-                var src = floor.Offset(f);
-                var above = e.Offset(f);
-                if (_s.Sim.Get(src) != 0 || !Free(above) || !Free(above.Up())) continue;
-                if (_plan.Blocks.ContainsKey(src) || _s.Columns.Any(c => c.Source == src)) continue;
-                double h = Math.Sqrt((src.X - near.X) * (src.X - near.X) + (src.Z - near.Z) * (src.Z - near.Z));
-                if (h > 3.6) continue;
-                if (!ColumnOpen(src, depth - 2)) continue;
-                int covered = _cover.Count(c => (c.X - src.X) * (c.X - src.X) + (c.Z - src.Z) * (c.Z - src.Z) <= 3.6 * 3.6);
-                options.Add((e, src, f, h * 10 + cost / 20 - covered * 15));
-            }
+                if (ColumnScore(e, f, near, depth, cost) is { } score) options.Add((e, e.Down().Offset(f), f, score));
         }
-        if (options.Count == 0) { why = "no edge with open space below to pour a water column"; return false; }
-        foreach (var (entry, src, face, _) in options.OrderBy(o => o.Score).Take(4))
+        return options;
+    }
+
+    private double? ColumnScore(BlockPos e, BlockFace f, BlockPos near, int depth, double cost)
+    {
+        var src = e.Down().Offset(f);
+        var above = e.Offset(f);
+        if (_s.Sim.Get(src) != 0 || !Free(above) || !Free(above.Up())) return null;
+        if (_plan.Blocks.ContainsKey(src) || _s.Columns.Any(c => c.Source == src)) return null;
+        double h = Math.Sqrt((src.X - near.X) * (src.X - near.X) + (src.Z - near.Z) * (src.Z - near.Z));
+        if (h > 3.6 || !ColumnOpen(src, depth - 2)) return null;
+        int covered = _cover.Count(c => (c.X - src.X) * (c.X - src.X) + (c.Z - src.Z) * (c.Z - src.Z) <= 3.6 * 3.6);
+        return h * 10 + cost / 20 - covered * 15;
+    }
+
+    /// <summary>Simulates the descent to the depth and the climb back out of a column poured at <paramref name="src"/>; when both
+    /// succeed, pours it (<see cref="CommitColumn"/>).</summary>
+    private bool TryPour(BlockPos entry, BlockPos src, BlockFace face, int depth, ref string? why)
+    {
+        var col = new SwimColumn(src.X, src.Y, src.Z);
+        var wet = _s.Sim.Fork();
+        PourInto(wet, src);
+        int hoverY = Math.Max(depth, WaterColumn.Extent(_s.Sim, src).BottomY + 1);
+        var down = SwimSim.SimulateDescent(wet, entry, col, hoverY);
+        if (!down.Ok) { why = $"water descent at {src.X},{src.Y},{src.Z}: {down.Why}"; return false; }
+        var up = SwimSim.SimulateAscent(wet, down.End, col, entry);
+        if (!up.Ok) { why = $"climbing back up at {src.X},{src.Y},{src.Z}: {up.Why}"; return false; }
+        CommitColumn(entry, src, face, hoverY, down.Ticks, up.Ticks);
+        return true;
+    }
+
+    /// <summary>Sets the water column a source at <paramref name="src"/> makes (as the plan world stands) into <paramref name="into"/>.</summary>
+    private void PourInto(PlanWorld into, BlockPos src)
+    {
+        foreach (var (p, m) in WaterColumn.Cells(_s.Sim, src)) into.Set(p, m == 0 ? Blocks.Water : Blocks.FlowingWater, m);
+    }
+
+    /// <summary>The pour step: one bucket per standing column (the oldest taken back first), out of any other column, poured from
+    /// the edge stand (leaning out).</summary>
+    private void CommitColumn(BlockPos entry, BlockPos src, BlockFace face, int hoverY, int descendTicks, int ascendTicks)
+    {
+        var pc = new PlanColumn
         {
-            var col = new SwimColumn(src.X, src.Y, src.Z);
-            var wet = _s.Sim.Fork();
-            foreach (var (p, m) in WaterColumn.Cells(_s.Sim, src)) wet.Set(p, m == 0 ? Blocks.Water : Blocks.FlowingWater, m);
-            int hoverY = Math.Max(depth, WaterColumn.Extent(_s.Sim, src).BottomY + 1);
-            var down = SwimSim.SimulateDescent(wet, entry, col, hoverY);
-            if (!down.Ok) { why = $"water descent at {src.X},{src.Y},{src.Z}: {down.Why}"; continue; }
-            var up = SwimSim.SimulateAscent(wet, down.End, col, entry);
-            if (!up.Ok) { why = $"climbing back up at {src.X},{src.Y},{src.Z}: {up.Why}"; continue; }
-            var pc = new PlanColumn
-            {
-                Index = _s.Columns.Count, Source = src, Face = face, Entry = entry, Depth = hoverY, DescendTicks = down.Ticks, AscendTicks = up.Ticks,
-                Poured = true,
-            };
-            // One bucket per standing column: take the oldest back first (it may be poured again later).
-            while (_s.Columns.Count(c => c.Poured && !c.Removed) >= Math.Max(1, _o.Buckets)) PickupColumn(_s.Columns.First(c => c.Poured && !c.Removed));
-            // Get out of any other column first; the pour is done from the edge stand (leaning out).
-            double travel = (_s.Col >= 0 ? AscendCost(_s.Columns[_s.Col], _s.ColY) : 0) + (FloodAll.TryGetValue(entry, out var tc) ? tc : 0);
-            _s.Columns.Add(pc);
-            Add(new PlanStep
-            {
-                Action = StepAction.PourWater, Technique = Technique.Water, Target = src, Id = Blocks.Water, Item = Items.WaterBucket,
-                Stand = entry, Face = face, Column = -1, Cost = travel + 40,
-                Note = $"descent {down.Ticks} ticks, climb {up.Ticks}",
-            });
-            foreach (var (p, m) in WaterColumn.Cells(_s.Sim, src)) _s.Sim.Set(p, m == 0 ? Blocks.Water : Blocks.FlowingWater, m);
-            MoveTo(entry, -1);
-            return true;
-        }
-        return false;
+            Index = _s.Columns.Count, Source = src, Face = face, Entry = entry, Depth = hoverY, DescendTicks = descendTicks, AscendTicks = ascendTicks,
+            Poured = true,
+        };
+        // One bucket per standing column: take the oldest back first (it may be poured again later).
+        while (_s.Columns.Count(c => c.Poured && !c.Removed) >= Math.Max(1, _o.Buckets)) PickupColumn(_s.Columns.First(c => c.Poured && !c.Removed));
+        // Get out of any other column first; the pour is done from the edge stand (leaning out).
+        double travel = (_s.Col >= 0 ? AscendCost(_s.Columns[_s.Col], _s.ColY) : 0) + (FloodAll.TryGetValue(entry, out var tc) ? tc : 0);
+        _s.Columns.Add(pc);
+        Add(new PlanStep
+        {
+            Action = StepAction.PourWater, Technique = Technique.Water, Target = src, Id = Blocks.Water, Item = Items.WaterBucket,
+            Stand = entry, Face = face, Column = -1, Cost = travel + 40,
+            Note = $"descent {descendTicks} ticks, climb {ascendTicks}",
+        });
+        PourInto(_s.Sim, src);
+        MoveTo(entry, -1);
     }
 
     private static readonly BlockFace[] Sides = [BlockFace.North, BlockFace.South, BlockFace.West, BlockFace.East];
@@ -1007,26 +1073,35 @@ public sealed partial class BuildPlanner
         double fromColumn = _s.Col >= 0 ? AscendCost(_s.Columns[_s.Col], _s.ColY) : 0;
         var block = AABB.Block(p.X, p.Y, p.Z);
         foreach (var (s, travel) in FloodAll)
-        {
-            if (Math.Abs(s.X - p.X) > 5 || Math.Abs(s.Z - p.Z) > 5 || s.Y < p.Y - 6 || s.Y > p.Y + 4) continue;
-            if (_o.StandOk?.Invoke(s) == false) continue;
-            var eye = GoalUseBlock.EyeAt(_s.Sim, s.X, s.Y, s.Z);
-            var feet = eye with { Y = eye.Y - PlayerPhysics.EyeHeight };
-            if (AABB.ForPlayer(feet).Intersects(block) || Safety.SupportBlocks(_s.Sim, feet).Contains(p)) continue;
-            if (Aiming.FindDigAim(_s.Sim, eye, p, _o.Reach) is null) continue;
-            yield return new Dig(s, -1, travel + fromColumn);
-        }
+            if (DigsFrom(s, p, block)) yield return new Dig(s, -1, travel + fromColumn);
         foreach (var c in _s.Columns.Where(c => c.Poured && !c.Removed))
             for (int y = c.Source.Y - 1; y >= Math.Max(1, p.Y - 4); y--)
             {
                 var cell = new BlockPos(c.Source.X, y, c.Source.Z);
                 if (!BlockShapes.IsWater(_s.Sim.Get(cell))) break;
-                if (y > p.Y + 3) continue;
-                var eye = new Vec3d(cell.X + 0.5, y + PlayerPhysics.EyeHeight, cell.Z + 0.5);
-                if (Aiming.FindDigAim(_s.Sim, eye, p, _o.Reach - 0.3) is null) continue;
-                double cost = (_s.Col == c.Index ? Math.Abs(_s.ColY - y) * 12 : fromColumn + 30 + (c.Source.Y - y) * 12) + 200; // digging afloat is slow
-                yield return new Dig(cell, c.Index, cost);
+                if (y <= p.Y + 3 && AfloatDigCost(c, cell, p, fromColumn) is { } cost) yield return new Dig(cell, c.Index, cost);
             }
+    }
+
+    /// <summary>A walkable stand near <paramref name="p"/> (allowed, not inside it, not standing on it) with a visible face in reach.</summary>
+    private bool DigsFrom(BlockPos s, BlockPos p, AABB block)
+    {
+        if (Math.Abs(s.X - p.X) > 5 || Math.Abs(s.Z - p.Z) > 5 || s.Y < p.Y - 6 || s.Y > p.Y + 4) return false;
+        if (_o.StandOk?.Invoke(s) == false) return false;
+        var eye = GoalUseBlock.EyeAt(_s.Sim, s.X, s.Y, s.Z);
+        var feet = eye with { Y = eye.Y - PlayerPhysics.EyeHeight };
+        if (AABB.ForPlayer(feet).Intersects(block) || Safety.SupportBlocks(_s.Sim, feet).Contains(p)) return false;
+        return Aiming.FindDigAim(_s.Sim, eye, p, _o.Reach) is not null;
+    }
+
+    /// <summary>The cost of digging <paramref name="p"/> afloat from <paramref name="cell"/> in column <paramref name="c"/> (slow),
+    /// or null when no face is in reach.</summary>
+    private double? AfloatDigCost(PlanColumn c, BlockPos cell, BlockPos p, double fromColumn)
+    {
+        var eye = new Vec3d(cell.X + 0.5, cell.Y + PlayerPhysics.EyeHeight, cell.Z + 0.5);
+        if (Aiming.FindDigAim(_s.Sim, eye, p, _o.Reach - 0.3) is null) return null;
+        int y = cell.Y;
+        return (_s.Col == c.Index ? Math.Abs(_s.ColY - y) * 12 : fromColumn + 30 + (c.Source.Y - y) * 12) + 200; // digging afloat is slow
     }
 
     private double DigTicks(int id, bool afloat) => id == 0 ? 0 : Math.Min(2000, Tools.DigTicks(id, _o.DigTool, onGround: !afloat, inWater: afloat));
@@ -1046,16 +1121,17 @@ public sealed partial class BuildPlanner
         var anchor = layer.OrderBy(p => p.DistanceSquaredTo(_s.Land)).ThenBy(p => p.X).ThenBy(p => p.Z).First();
         bool alongX = _plan.Max.X - _plan.Min.X >= _plan.Max.Z - _plan.Min.Z;
         var (cx, _, cz) = _plan.Center;
-        int dirMain = alongX ? (anchor.X <= cx ? 1 : -1) : (anchor.Z <= cz ? 1 : -1);
-        int dirCross = alongX ? (anchor.Z <= cz ? 1 : -1) : (anchor.X <= cx ? 1 : -1);
+        int towardX = anchor.X <= cx ? 1 : -1, towardZ = anchor.Z <= cz ? 1 : -1;
+        // Along the longer axis toward the centre, then one across it.
+        var (main, cross) = alongX ? (new BlockPos(towardX, 0, 0), new BlockPos(0, 0, towardZ)) : (new BlockPos(0, 0, towardZ), new BlockPos(towardX, 0, 0));
         cells.Add(anchor);
         for (int k = 1; k < Math.Max(1, _o.GateBlocks - 1); k++)
         {
-            var p = alongX ? anchor.Offset(dirMain * k, 0, 0) : anchor.Offset(0, 0, dirMain * k);
+            var p = anchor.Offset(main.X * k, 0, main.Z * k);
             if (!layer.Contains(p)) break;
             cells.Add(p);
         }
-        var across = alongX ? anchor.Offset(0, 0, dirCross) : anchor.Offset(dirCross, 0, 0);
+        var across = anchor.Offset(cross.X, 0, cross.Z);
         if (layer.Contains(across) && cells.Count < _o.GateBlocks) cells.Add(across);
         return cells;
     }

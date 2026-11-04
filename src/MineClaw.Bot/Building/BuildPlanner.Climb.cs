@@ -76,8 +76,13 @@ public sealed partial class BuildPlanner
     private bool ClimbCell(IBlockAccess w, BlockPos c) =>
         c.Y >= 1 && c.Y < w.WorldHeight - 3 && w.IsLoaded(c.X, c.Z) && w.GetBlock(c.X, c.Y, c.Z) == 0
         && !_plan.Blocks.ContainsKey(c) && _part.Allows(c) && !_o.Keep.Contains(c)
-        && c.X >= _plan.Min.X - 3 && c.X <= _plan.Max.X + 3 && c.Z >= _plan.Min.Z - 3 && c.Z <= _plan.Max.Z + 3
-        && !_s.Columns.Any(k => !k.Removed && k.Source.X == c.X && k.Source.Z == c.Z) && !Safety.LavaNear(w, c.X, c.Y, c.Z, 1);
+        && InClaim(c) && !InWaterColumn(c) && !Safety.LavaNear(w, c.X, c.Y, c.Z, 1);
+
+    /// <summary>Inside the build's claim: the footprint ±3.</summary>
+    private bool InClaim(BlockPos c) => c.X >= _plan.Min.X - 3 && c.X <= _plan.Max.X + 3 && c.Z >= _plan.Min.Z - 3 && c.Z <= _plan.Max.Z + 3;
+
+    /// <summary>A standing (not taken back) water column runs through this x,z.</summary>
+    private bool InWaterColumn(BlockPos c) => _s.Columns.Any(k => !k.Removed && k.Source.X == c.X && k.Source.Z == c.Z);
 
     /// <summary>The cheapest face cost for <paramref name="t"/> from eyes at <paramref name="eye"/>, or null when none is in reach.</summary>
     private double? ReachCost(Target t, List<BlockFace> faces, Vec3d eye, float? yaw, Dir? look)
@@ -113,33 +118,8 @@ public sealed partial class BuildPlanner
         var options = new List<(BlockPos Base, int K, double Score)>();
         int walks = 0;
         foreach (var (b, travel) in FloodAll)
-        {
-            if (Math.Abs(b.X - t.Pos.X) > 6 || Math.Abs(b.Z - t.Pos.Z) > 6 || b.Y > t.Pos.Y || t.Pos.Y - b.Y > _o.MaxPillar + 6) continue;
-            if (!BuildBlocks.NormalCube(_s.Sim.Get(b.Down())) || !Open(_s.Sim, b) || !Open(_s.Sim, b.Up())) continue;
-            if (!SafeLevel(_s.Sim, b)) { _voidSpots++; continue; }
-            for (int k = 1; k <= _o.MaxPillar; k++)
-            {
-                BlockPos cell = b.Up(k - 1), top = b.Up(k);
-                if (!ClimbCell(_s.Sim, cell) || cell == t.Pos || top == t.Pos || top.Up() == t.Pos || !Open(_s.Sim, top) || !Open(_s.Sim, top.Up())) break;
-                if (!SafeLevel(_s.Sim, top)) { _voidSpots++; break; }
-                var eye = new Vec3d(top.X + 0.5, top.Y + PlayerPhysics.EyeHeight, top.Z + 0.5);
-                if (t.Pos.Y - eye.Y > _o.Reach) continue; // still far below it
-                // From the top itself, else (a floor of the design's beside it) from where I can walk to up there. Walking on, the
-                // whole floor up there is reach: a pillar onto the platform (out of the shaft) beats one under every rim cell.
-                int covered;
-                if (ReachCost(t, faces, eye, yaw, look) is { } here) covered = _cover.Count(p => eye.DistanceTo(p.Center) <= _o.Reach);
-                else if (WalkOnCost(b, k, top, t, faces, yaw, look, ref walks, out var reached) is { } walk) (here, covered) = (walk, reached);
-                else
-                {
-                    if (eye.Y > t.Pos.Y + 2) break; // past it: higher only gets farther
-                    continue;
-                }
-                double cost = here;
-                int walls = Sides.Count(f => BlockShapes.HasCollision(_s.Sim, top.X + f.Normal().X, top.Y - 1, top.Z + f.Normal().Z));
-                options.Add((b, k, travel + k * PillarTicks + cost - covered * 6 - walls * 4));
-                break;
-            }
-        }
+            if (PillarBase(b, t.Pos) && PillarHeight(b, travel, t, faces, yaw, look, ref walks) is { } h)
+                options.Add((b, h.K, h.Score));
         foreach (var (b, k, _) in options.OrderBy(o => o.Score).Take(3))
         {
             var saved = _s.Clone();
@@ -150,6 +130,60 @@ public sealed partial class BuildPlanner
         return false;
     }
 
+    /// <summary>A walkable stand near <paramref name="target"/> (not above it, not too far below) on a full block, with headroom
+    /// and no void beside it.</summary>
+    private bool PillarBase(BlockPos b, BlockPos target)
+    {
+        if (Math.Abs(b.X - target.X) > 6 || Math.Abs(b.Z - target.Z) > 6 || b.Y > target.Y || target.Y - b.Y > _o.MaxPillar + 6) return false;
+        if (!BuildBlocks.NormalCube(_s.Sim.Get(b.Down())) || !Open(_s.Sim, b) || !Open(_s.Sim, b.Up())) return false;
+        if (SafeLevel(_s.Sim, b)) return true;
+        _voidSpots++;
+        return false;
+    }
+
+    /// <summary>The lowest pillar from <paramref name="b"/> whose top reaches <paramref name="t"/> and its score (travel, height,
+    /// reach cost, stuck-layer cells covered, walls beside the top), or null.</summary>
+    private (int K, double Score)? PillarHeight(BlockPos b, double travel, Target t, List<BlockFace> faces, float? yaw, Dir? look, ref int walks)
+    {
+        for (int k = 1; k <= _o.MaxPillar; k++)
+        {
+            BlockPos cell = b.Up(k - 1), top = b.Up(k);
+            if (!PillarLevel(cell, top, t.Pos)) break;
+            var eye = new Vec3d(top.X + 0.5, top.Y + PlayerPhysics.EyeHeight, top.Z + 0.5);
+            if (t.Pos.Y - eye.Y > _o.Reach) continue; // still far below it
+            if (PillarTopReach(b, k, top, eye, t, faces, yaw, look, ref walks) is not { } reach)
+            {
+                if (eye.Y > t.Pos.Y + 2) break; // past it: higher only gets farther
+                continue;
+            }
+            int walls = Sides.Count(f => BlockShapes.HasCollision(_s.Sim, top.X + f.Normal().X, top.Y - 1, top.Z + f.Normal().Z));
+            return (k, travel + k * PillarTicks + reach.Cost - reach.Covered * 6 - walls * 4);
+        }
+        return null;
+    }
+
+    /// <summary>One more pillar level: the cell a scaffold may fill, the top clear of the target with headroom, no void beside it.</summary>
+    private bool PillarLevel(BlockPos cell, BlockPos top, BlockPos target)
+    {
+        if (!ClimbCell(_s.Sim, cell) || cell == target || top == target || top.Up() == target || !Open(_s.Sim, top) || !Open(_s.Sim, top.Up())) return false;
+        if (SafeLevel(_s.Sim, top)) return true;
+        _voidSpots++;
+        return false;
+    }
+
+    /// <summary>
+    /// From the top itself, else (a floor of the design's beside it) from where I can walk to up there: the reach cost and the
+    /// stuck-layer cells covered. Walking on, the whole floor up there is reach: a pillar onto the platform (out of the shaft)
+    /// beats one under every rim cell.
+    /// </summary>
+    private (double Cost, int Covered)? PillarTopReach(BlockPos b, int k, BlockPos top, Vec3d eye, Target t, List<BlockFace> faces, float? yaw, Dir? look,
+        ref int walks)
+    {
+        if (ReachCost(t, faces, eye, yaw, look) is { } here) return (here, _cover.Count(p => eye.DistanceTo(p.Center) <= _o.Reach));
+        if (WalkOnCost(b, k, top, t, faces, yaw, look, ref walks, out var reached) is { } walk) return (walk, reached);
+        return null;
+    }
+
     /// <summary>
     /// The pillar's top steps onto something walkable (the design's own floor, placed already): the cheapest stand reachable on
     /// foot from up there that places <paramref name="t"/> (walk + face cost), or null. A few floods per climb at most.
@@ -157,13 +191,7 @@ public sealed partial class BuildPlanner
     private double? WalkOnCost(BlockPos b, int k, BlockPos top, Target t, List<BlockFace> faces, float? yaw, Dir? look, ref int walks, out int covered)
     {
         covered = 0;
-        bool Walkable(BlockFace f)
-        {
-            var n = top + f.Normal();
-            return Open(_s.Sim, n) && Open(_s.Sim, n.Up()) && SolidIn(_s.Sim, n.Down())                    // level
-                   || SolidIn(_s.Sim, n) && Open(_s.Sim, n.Up()) && Open(_s.Sim, n.Up(2)) && Open(_s.Sim, top.Up(2)); // a step up
-        }
-        if (walks >= 6 || !Sides.Any(Walkable))
+        if (walks >= 6 || !Sides.Any(f => StepsOnto(top, f)))
             return null;
         walks++;
         var fork = _s.Sim.Fork();
@@ -172,19 +200,35 @@ public sealed partial class BuildPlanner
         double? best = null;
         var flood = Flood(fork, top);
         foreach (var (s, travel) in flood)
-        {
-            if (Math.Abs(s.X - t.Pos.X) > 5 || Math.Abs(s.Z - t.Pos.Z) > 5 || s.Y > t.Pos.Y + 3 || s.Y < t.Pos.Y - 6) continue;
-            var eye = GoalUseBlock.EyeAt(fork, s.X, s.Y, s.Z);
-            if (AABB.ForPlayer(eye with { Y = eye.Y - PlayerPhysics.EyeHeight }).Intersects(block) || t.Pos == s.Down()) continue;
-            if (ReachCost(t, faces, eye, yaw, look) is { } c && (best == null || c + travel < best)) best = c + travel;
-        }
-        if (best != null)
-        {
-            // The stuck layer's cells some stand up there reaches (the platform grows from its own placed cells).
-            var eyes = flood.Keys.Where(s => s.Y >= top.Y - 1).Select(s => new Vec3d(s.X + 0.5, s.Y + PlayerPhysics.EyeHeight, s.Z + 0.5)).ToList();
-            covered = _cover.Count(p => eyes.Any(e => e.DistanceTo(p.Center) <= _o.Reach));
-        }
+            if (WalkOnReach(fork, s, t, block, faces, yaw, look) is { } c && (best == null || c + travel < best)) best = c + travel;
+        if (best != null) covered = CoveredFrom(flood, top.Y - 1);
         return best;
+    }
+
+    /// <summary>From the pillar's top the body walks off toward <paramref name="f"/>: level onto a solid floor, or a step up.</summary>
+    private bool StepsOnto(BlockPos top, BlockFace f)
+    {
+        var n = top + f.Normal();
+        return Open(_s.Sim, n) && Open(_s.Sim, n.Up()) && SolidIn(_s.Sim, n.Down())                    // level
+               || SolidIn(_s.Sim, n) && Open(_s.Sim, n.Up()) && Open(_s.Sim, n.Up(2)) && Open(_s.Sim, top.Up(2)); // a step up
+    }
+
+    /// <summary>The face cost of placing <paramref name="t"/> from the stand <paramref name="s"/> up there (near it, not inside
+    /// it, not standing on it), or null.</summary>
+    private double? WalkOnReach(PlanWorld fork, BlockPos s, Target t, AABB block, List<BlockFace> faces, float? yaw, Dir? look)
+    {
+        if (Math.Abs(s.X - t.Pos.X) > 5 || Math.Abs(s.Z - t.Pos.Z) > 5 || s.Y > t.Pos.Y + 3 || s.Y < t.Pos.Y - 6) return null;
+        var eye = GoalUseBlock.EyeAt(fork, s.X, s.Y, s.Z);
+        if (AABB.ForPlayer(eye with { Y = eye.Y - PlayerPhysics.EyeHeight }).Intersects(block) || t.Pos == s.Down()) return null;
+        return ReachCost(t, faces, eye, yaw, look);
+    }
+
+    /// <summary>The stuck layer's cells some stand of <paramref name="flood"/> at or above <paramref name="minY"/> reaches (the
+    /// platform grows from its own placed cells).</summary>
+    private int CoveredFrom(Dictionary<BlockPos, double> flood, int minY)
+    {
+        var eyes = flood.Keys.Where(s => s.Y >= minY).Select(s => new Vec3d(s.X + 0.5, s.Y + PlayerPhysics.EyeHeight, s.Z + 0.5)).ToList();
+        return _cover.Count(p => eyes.Any(e => e.DistanceTo(p.Center) <= _o.Reach));
     }
 
     /// <summary>Pillars <paramref name="k"/> scaffold blocks up from the stand <paramref name="b"/>: each placed into the feet cell
@@ -210,149 +254,6 @@ public sealed partial class BuildPlanner
         MoveTo(b.Up(k), -1);
     }
 
-    // ------------------------------------------------------------------ stair
-
-    /// <summary>
-    /// A scaffold staircase from a walkable stand near <paramref name="t"/> (an existing stair's top first: it grows by the steps
-    /// the next layer needs): each step one up and one across, its tread held by something already there or by a block under
-    /// it, headroom for the jump, never through a design cell or a cell the stair itself walks through, every step void-free on
-    /// all sides. Searched depth-first (straight on first), the cheapest that reaches <paramref name="t"/> is built with the
-    /// ordinary placements, then verified: the pathfinder walks to its top and <paramref name="t"/> is placeable from there.
-    /// </summary>
-    private bool TryStair(Target t, List<BlockFace> faces)
-    {
-        var (yaw, look) = LookFor(t);
-        var found = new List<(List<BlockPos> Cells, BlockPos Top, double Score, BlockPos Base)>();
-        // An existing stair's treads first (it grows by the steps the next layer needs: one stair for repeated access, not many).
-        bool OnStair(BlockPos c) => _s.Stair.Contains(c.Down());
-        var bases = FloodAll.Where(kv => Math.Max(Math.Abs(kv.Key.X - t.Pos.X), Math.Abs(kv.Key.Z - t.Pos.Z)) <= (OnStair(kv.Key) ? 10 : 6) && kv.Key.Y <= t.Pos.Y
-                && SolidIn(_s.Sim, kv.Key.Down()) && Open(_s.Sim, kv.Key) && Open(_s.Sim, kv.Key.Up()))
-            .OrderByDescending(kv => OnStair(kv.Key)).ThenByDescending(kv => kv.Key.Y).ThenBy(kv => kv.Value).Take(12).ToList();
-        int budget = 12000;
-        foreach (var (b, travel) in bases)
-        {
-            if (!SafeLevel(_s.Sim, b)) { _voidSpots++; continue; }
-            int rmin = Math.Max(1, (int)Math.Ceiling(t.Pos.Y - b.Y - PlayerPhysics.EyeHeight - _o.Reach + 0.5));
-            int rmax = rmin + 4;
-            var w = _s.Sim.Fork();
-            var cells = new List<BlockPos>();
-            var keepFree = new Dictionary<BlockPos, int>();
-            int nodes = 0, before = found.Count;
-
-            void Hold(BlockPos p, int d) { keepFree[p] = keepFree.GetValueOrDefault(p) + d; if (keepFree[p] <= 0) keepFree.Remove(p); }
-            // A new flight never cuts the walk space of the stairs already up (they stay walkable, both ways).
-            foreach (var c in _s.Stair) { Hold(c.Up(), 1); Hold(c.Up(2), 1); Hold(c.Up(3), 1); }
-
-            // Rises (one up and one across) and landings (one across, a tread under it: around a corner to the far side).
-            void Walk(BlockPos f, int rises, int flats, int last)
-            {
-                if (++nodes > 2500 || --budget < 0 || found.Count - before >= 4) return;
-                if (rises + flats > 0 && rises >= rmin && f != t.Pos && f.Up() != t.Pos)
-                {
-                    var eye = new Vec3d(f.X + 0.5, f.Y + PlayerPhysics.EyeHeight, f.Z + 0.5);
-                    if (ReachCost(t, faces, eye, yaw, look) is { } cost)
-                    {
-                        int covered = _cover.Count(p => eye.DistanceTo(p.Center) <= _o.Reach);
-                        found.Add((cells.ToList(), f, travel + cells.Count * (_o.PlaceTicks + 4) + rises * 4 + flats * 6 + cost - covered * 6
-                                                       + (OnStair(b) ? 0 : 60), b));
-                        return;
-                    }
-                }
-                foreach (int di in Order(last, f))
-                {
-                    var d = Steps4[di];
-                    if (rises < rmax) Rise(f, d, di);
-                    if (flats < 8 && rises > 0) Flat(f, d, di);
-                }
-
-                void Rise(BlockPos f, BlockPos d, int di)
-                {
-                    var tread = f + d;
-                    var under = tread.Down();
-                    var next = tread.Up();
-                    if (tread == t.Pos || next == t.Pos || next.Up() == t.Pos || keepFree.ContainsKey(tread) || !ClimbCell(w, tread)) return;
-                    if (!Open(w, f.Up(2)) || !Open(w, next) || !Open(w, next.Up())) return;
-                    // Walking back down drops onto f; past it (one more across) must not be a deadly drop (the pathfinder's
-                    // overshoot guard): a stair turns only where something stands beyond the step below.
-                    var past = f - d;
-                    if (Safety.IsDeadlyColumn(w, past.X, f.Y, past.Z, _path.MaxDrop)) return;
-                    bool held = BlockFaceExtensions.All.Select(g => tread.Offset(g)).Any(n => n != f && n != next && SolidIn(w, n));
-                    if (!held && (keepFree.ContainsKey(under) || !ClimbCell(w, under))) return;
-                    if (!held) w.Set(under, ConstructionPlanner.Scaffold);
-                    w.Set(tread, ConstructionPlanner.Scaffold);
-                    if (SafeLevel(w, next))
-                    {
-                        int n0 = cells.Count;
-                        if (!held) cells.Add(under);
-                        cells.Add(tread);
-                        Hold(f.Up(2), 1); Hold(next, 1); Hold(next.Up(), 1);
-                        Walk(next, rises + 1, flats, di);
-                        Hold(f.Up(2), -1); Hold(next, -1); Hold(next.Up(), -1);
-                        cells.RemoveRange(n0, cells.Count - n0);
-                    }
-                    else _voidSpots++;
-                    w.Set(tread, 0);
-                    if (!held) w.Set(under, 0);
-                }
-
-                void Flat(BlockPos f, BlockPos d, int di)
-                {
-                    var next = f + d;
-                    var tread = next.Down();
-                    if (tread == t.Pos || next == t.Pos || next.Up() == t.Pos || keepFree.ContainsKey(tread) || !Open(w, next) || !Open(w, next.Up())) return;
-                    bool solid = SolidIn(w, tread);
-                    if (!solid && !ClimbCell(w, tread)) return;
-                    if (!solid) w.Set(tread, ConstructionPlanner.Scaffold); // held by the block I stand on
-                    if (SafeLevel(w, next))
-                    {
-                        if (!solid) cells.Add(tread);
-                        Hold(next, 1); Hold(next.Up(), 1);
-                        Walk(next, rises, flats + 1, di);
-                        Hold(next, -1); Hold(next.Up(), -1);
-                        if (!solid) cells.RemoveAt(cells.Count - 1);
-                    }
-                    else _voidSpots++;
-                    if (!solid) w.Set(tread, 0);
-                }
-            }
-
-            // Straight on first, then the turn toward the target, never back.
-            IEnumerable<int> Order(int last, BlockPos f)
-            {
-                var all = Enumerable.Range(0, 4).Where(i => last < 0 || i != (last + 2) % 4)
-                    .OrderBy(i => i == last ? 0 : 1).ThenBy(i => (f + Steps4[i]).DistanceSquaredTo(t.Pos));
-                return all.ToList();
-            }
-
-            Hold(b.Up(), 1);
-            Walk(b, 0, 0, -1);
-            if (budget < 0) break;
-        }
-        foreach (var (stair, top, _, from) in found.OrderBy(f => f.Score).Take(3))
-        {
-            var saved = _s.Clone();
-            bool ok = true;
-            // Each tread waits for the one below it (walked up to it): a crew's other lanes wait for the whole flight.
-            int prev = _s.Stair.Contains(from.Down()) && _s.PlacedBy.TryGetValue(from.Down(), out var b0) ? b0 : -1;
-            foreach (var c in stair)
-            {
-                if (Solid(c)) continue;
-                if (!TryPlace(new Target(c, ConstructionPlanner.Scaffold, 0, true), false)) { ok = false; break; }
-                var st = _s.Steps[^1];
-                st.Technique = Technique.Stair;
-                if (prev >= 0 && !st.Deps.Contains(prev)) st.Deps.Add(prev);
-                prev = st.Index;
-                _s.Stair.Add(c);
-            }
-            // Walkable both ways: up to its top, and back down from there to where it starts.
-            if (ok && FloodAll.ContainsKey(top) && PlaceableNow(t)
-                && Pathfinder.FindPath(_s.Sim, top, new GoalBlock(from), _path with { AllowPartial = false, AllowOneWay = true, MaxNodes = _o.FloodNodes }).Success)
-                return true;
-            _s = saved;
-        }
-        return false;
-    }
-
     // ------------------------------------------------------------------ down again
 
     /// <summary>
@@ -364,31 +265,62 @@ public sealed partial class BuildPlanner
     private bool CanLeave(PlanWorld w, BlockPos from, Func<BlockPos, bool> exit, BlockPos? changed = null, bool placing = false)
     {
         bool known = ReferenceEquals(exit, _outside) || ReferenceEquals(exit, _grounded);
-        // A partial flood can't tell that no way out exists (a goal search answers instead).
-        bool shut = known && placing && !_s.Partial && _s.Flood.ContainsKey(from) && !FloodExits(exit);
+        bool shut = known && placing && ShutIn(from, exit);
         if (!shut && Reaches(w, from, exit)) return true;
         if (_s.Pillar.Count == 0) return false;
+        return LeavesByPillar(w, from, exit, changed, known, shut);
+    }
+
+    /// <summary>The current (complete) flood holds <paramref name="from"/> and no exit: a placement keeps it shut. A partial flood
+    /// can't tell that no way out exists (a goal search answers instead).</summary>
+    private bool ShutIn(BlockPos from, Func<BlockPos, bool> exit) => !_s.Partial && _s.Flood.ContainsKey(from) && !FloodExits(exit);
+
+    /// <summary>Some pillar top I can walk to (when <paramref name="shut"/>: one the current flood holds, checked by a goal
+    /// search) leads down and out.</summary>
+    private bool LeavesByPillar(PlanWorld w, BlockPos from, Func<BlockPos, bool> exit, BlockPos? changed, bool known, bool shut)
+    {
         foreach (var top in (shut ? _s.Flood.Keys : Flood(w, from).Keys).ToList())
         {
-            if (!_s.Pillar.Contains(top.Down()) || !BuildBlocks.Supports(w.Get(top.Down())) || !Open(w, top) || !Open(w, top.Up())) continue;
-            if (shut && top != from && !Pathfinder.FindPath(w, from, new GoalBlock(top), _path with { AllowPartial = false, AllowOneWay = true, MaxNodes = _o.FloodNodes }).Success) continue;
-            var fork = w.Fork();
-            var feet = top;
-            for (var b = feet.Down(); _s.Pillar.Contains(b) && BuildBlocks.Supports(fork.Get(b)) && BuildBlocks.NormalCube(fork.Get(b.Down()))
-                     && SafeLevel(fork, b); b = feet.Down())
-            {
-                fork.Set(b, 0);
-                feet = b;
-            }
-            if (feet == top) continue;
-            // The way on from the pillar's foot only changes with what is built down there (cached by those steps).
-            var low = changed is { } q && q.Y <= feet.Y + 3 ? q : default;
-            var key = (feet, ReferenceEquals(exit, _outside), LowStamp(feet.Y + 3), low);
-            if (!known) { if (Reaches(fork, feet, exit)) return true; continue; }
-            if (!_leaveCache.TryGetValue(key, out var ok)) _leaveCache[key] = ok = Reaches(fork, feet, exit);
-            if (ok) return true;
+            if (!PillarTop(w, top) || shut && top != from && !WalksTo(w, from, top)) continue;
+            if (LeavesDownPillar(w, top, exit, changed, known)) return true;
         }
         return false;
+    }
+
+    /// <summary><paramref name="top"/> stands on one of my pillars (still there, holding), with room for the body.</summary>
+    private bool PillarTop(PlanWorld w, BlockPos top) =>
+        _s.Pillar.Contains(top.Down()) && BuildBlocks.Supports(w.Get(top.Down())) && Open(w, top) && Open(w, top.Up());
+
+    /// <summary>A full (no partial) walk from <paramref name="from"/> to <paramref name="to"/>.</summary>
+    private bool WalksTo(PlanWorld w, BlockPos from, BlockPos to) =>
+        Pathfinder.FindPath(w, from, new GoalBlock(to), _path with { AllowPartial = false, AllowOneWay = true, MaxNodes = _o.FloodNodes }).Success;
+
+    /// <summary>Digging the pillar under <paramref name="top"/> back down onto solid footing, the way on from its foot reaches
+    /// <paramref name="exit"/> (cached for the known exits: it only changes with what is built down there).</summary>
+    private bool LeavesDownPillar(PlanWorld w, BlockPos top, Func<BlockPos, bool> exit, BlockPos? changed, bool known)
+    {
+        var fork = w.Fork();
+        var feet = DigDownPillar(fork, top);
+        if (feet == top) return false;
+        var low = changed is { } q && q.Y <= feet.Y + 3 ? q : default;
+        var key = (feet, ReferenceEquals(exit, _outside), LowStamp(feet.Y + 3), low);
+        if (!known) return Reaches(fork, feet, exit);
+        if (!_leaveCache.TryGetValue(key, out var ok)) _leaveCache[key] = ok = Reaches(fork, feet, exit);
+        return ok;
+    }
+
+    /// <summary>Digs my pillar under <paramref name="top"/> away one block at a time (in <paramref name="fork"/>) while the block
+    /// below is a full cube and the level is void-free: the feet where it ends.</summary>
+    private BlockPos DigDownPillar(PlanWorld fork, BlockPos top)
+    {
+        var feet = top;
+        for (var b = feet.Down(); _s.Pillar.Contains(b) && BuildBlocks.Supports(fork.Get(b)) && BuildBlocks.NormalCube(fork.Get(b.Down()))
+                 && SafeLevel(fork, b); b = feet.Down())
+        {
+            fork.Set(b, 0);
+            feet = b;
+        }
+        return feet;
     }
 
     private Dictionary<BlockPos, double>? _exitsOf;
