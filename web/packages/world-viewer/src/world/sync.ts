@@ -1,7 +1,7 @@
 // Polling loops (explorer-spec §12.2): the world index → chunk deltas loop, plus a generic sequential poller with the
 // per-route back-off the Explorer uses (exponential 0.5 → 15 s, ±25 % jitter, reset on success).
 
-import type { Dim, WorldSource } from '../types';
+import type { Dim, WorldIndex, WorldSource } from '../types';
 import type { MeshHost } from '../mesh/host';
 import type { ApplyResult } from '../mesh/columns';
 import { normalizeIndex } from '../wire/normalize';
@@ -168,30 +168,13 @@ export class WorldSync {
   /** One pass (exposed for tests): index the next due interest, then fetch what changed. */
   async tick(now: number): Promise<void> {
     if (this.busy || !this.interests.size || this.indexBackoff.waiting(now)) return;
-    const keys = [...this.interests.keys()];
-    let key: string | null = null;
-    for (let n = 0; n < keys.length; n++) {
-      const k = keys[(this.rr + n) % keys.length];
-      if (this.due(k, this.interests.get(k)!, now)) {
-        key = k;
-        this.rr = (this.rr + n + 1) % keys.length;
-        break;
-      }
-    }
+    const key = this.nextDue(now);
     if (key == null) return;
     const it = this.interests.get(key)!;
     this.busy = true;
     try {
-      let raw;
-      try {
-        raw = await this.source.index(it.dim, Math.floor(it.x), Math.floor(it.z), it.r);
-        this.indexBackoff.ok();
-      } catch (e) {
-        this.indexBackoff.fail(Date.now());
-        this.ev.onError('index', e);
-        return;
-      }
-      const index = normalizeIndex(raw);
+      const index = await this.fetchIndex(it);
+      if (!index) return;
       this.indexedAt.set(key, { at: it, t: now });
       this.cache.setWorldInfo(index, now);
       this.ev.onInfo();
@@ -199,40 +182,82 @@ export class WorldSync {
       const rec = this.cache.reconcile(it.dim, cx0, cz0, cx1, cz1, index.columns);
       if (rec.dropped.length) this.ev.onDropped(it.dim, rec.dropped, await this.host.drop(it.dim, rec.dropped));
       if (rec.touched.length) this.ev.onTouched(it.dim, await this.host.touch(it.dim, rec.touched));
-      const ccx = Math.floor(it.x) >> 4, ccz = Math.floor(it.z) >> 4;
-      for (const batch of planBatches(rec.want, ccx, ccz, this.batchColumns, this.maxBatches)) {
-        if (!this.running || this.chunkBackoff.waiting(Date.now())) break;
-        let buf: ArrayBuffer;
-        try {
-          buf = await this.source.chunks(it.dim, batch);
-          this.chunkBackoff.ok();
-        } catch (e) {
-          this.chunkBackoff.fail(Date.now());
-          this.ev.onError('chunks', e);
-          this.indexedAt.delete(key); // retried on the next pass
-          break;
-        }
-        let res: ApplyResult;
-        try {
-          res = await this.host.apply(buf);
-        } catch (e) {
-          this.ev.onError('chunks', e);
-          this.indexedAt.delete(key);
-          break;
-        }
-        this.cache.applyStored(res.dim, res.columns, res.bytes);
-        this.ev.onApplied(res);
-      }
-      const centres = [...this.interests.values()].filter((i) => i.dim === it.dim).map((i) => [Math.floor(i.x) >> 4, Math.floor(i.z) >> 4] as [number, number]);
-      const trimmed = this.cache.trim(it.dim, centres.length ? centres : [[ccx, ccz]], 0, this.maxColumns);
-      if (trimmed.length) this.ev.onDropped(it.dim, trimmed, await this.host.drop(it.dim, trimmed));
-      // Columns of dimensions no view looks at are not drawn; free them.
-      for (const [d, cols] of this.cache.otherDims([...this.interests.values()].map((i) => i.dim))) {
-        this.cache.clearDim(d);
-        this.ev.onDropped(d, cols, await this.host.drop(d, cols));
-      }
+      await this.fetchColumns(key, it, rec.want);
+      await this.trimAround(it);
     } finally {
       this.busy = false;
+    }
+  }
+
+  /** The next interest due for indexing (round robin), or null. */
+  private nextDue(now: number): string | null {
+    const keys = [...this.interests.keys()];
+    for (let n = 0; n < keys.length; n++) {
+      const k = keys[(this.rr + n) % keys.length];
+      if (this.due(k, this.interests.get(k)!, now)) {
+        this.rr = (this.rr + n + 1) % keys.length;
+        return k;
+      }
+    }
+    return null;
+  }
+
+  private async fetchIndex(it: Interest): Promise<WorldIndex | null> {
+    let raw;
+    try {
+      raw = await this.source.index(it.dim, Math.floor(it.x), Math.floor(it.z), it.r);
+      this.indexBackoff.ok();
+    } catch (e) {
+      this.indexBackoff.fail(Date.now());
+      this.ev.onError('index', e);
+      return null;
+    }
+    return normalizeIndex(raw);
+  }
+
+  /** The changed columns, nearest the interest's centre first, in batches; a failed batch is retried on the next pass. */
+  private async fetchColumns(key: string, it: Interest, want: Array<[number, number]>): Promise<void> {
+    const ccx = Math.floor(it.x) >> 4, ccz = Math.floor(it.z) >> 4;
+    for (const batch of planBatches(want, ccx, ccz, this.batchColumns, this.maxBatches)) {
+      if (!this.running || this.chunkBackoff.waiting(Date.now())) break;
+      const res = await this.fetchBatch(it.dim, batch);
+      if (!res) {
+        this.indexedAt.delete(key); // retried on the next pass
+        break;
+      }
+      this.cache.applyStored(res.dim, res.columns, res.bytes);
+      this.ev.onApplied(res);
+    }
+  }
+
+  private async fetchBatch(dim: Dim, batch: Array<[number, number]>): Promise<ApplyResult | null> {
+    let buf: ArrayBuffer;
+    try {
+      buf = await this.source.chunks(dim, batch);
+      this.chunkBackoff.ok();
+    } catch (e) {
+      this.chunkBackoff.fail(Date.now());
+      this.ev.onError('chunks', e);
+      return null;
+    }
+    try {
+      return await this.host.apply(buf);
+    } catch (e) {
+      this.ev.onError('chunks', e);
+      return null;
+    }
+  }
+
+  /** Columns beyond the most kept around the interests of this dimension, and those of dimensions no view looks at. */
+  private async trimAround(it: Interest): Promise<void> {
+    const ccx = Math.floor(it.x) >> 4, ccz = Math.floor(it.z) >> 4;
+    const centres = [...this.interests.values()].filter((i) => i.dim === it.dim).map((i) => [Math.floor(i.x) >> 4, Math.floor(i.z) >> 4] as [number, number]);
+    const trimmed = this.cache.trim(it.dim, centres.length ? centres : [[ccx, ccz]], 0, this.maxColumns);
+    if (trimmed.length) this.ev.onDropped(it.dim, trimmed, await this.host.drop(it.dim, trimmed));
+    // Columns of dimensions no view looks at are not drawn; free them.
+    for (const [d, cols] of this.cache.otherDims([...this.interests.values()].map((i) => i.dim))) {
+      this.cache.clearDim(d);
+      this.ev.onDropped(d, cols, await this.host.drop(d, cols));
     }
   }
 }
