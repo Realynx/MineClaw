@@ -61,20 +61,43 @@ public sealed class GraphDrawGoldenTests(ITestOutputHelper output)
     }
 
     private static readonly FieldInfo AnimStart = typeof(LayeredGraph).GetField("_animStart", BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly FieldInfo To = typeof(LayeredGraph).GetField("_to", BindingFlags.Instance | BindingFlags.NonPublic)!;
 
-    /// <summary>Ends any view animation (the frame then shows its target, as it would 200 ms later).</summary>
-    private static void Settle(LayeredGraph g)
+    /// <summary>Lets queued input land (a frame is rendered and the dispatcher drained), then ends any view animation, so the
+    /// next frame shows its target, as it would 200 ms later.</summary>
+    private static void Settle(LayeredGraph g, Window w)
     {
         Dispatcher.UIThread.RunJobs();
+        w.CaptureRenderedFrame();
+        Dispatcher.UIThread.RunJobs();
         AnimStart.SetValue(g, -1.0);
+        // The frame rendered above may be mid-animation: its text layouts are cached under a rounded max width, so a
+        // time-dependent frame would leak into the next one. Drop them and redraw at the target.
+        ((System.Collections.IDictionary)TextCache.GetValue(g)!).Clear();
+        g.InvalidateVisual();
+        Dispatcher.UIThread.RunJobs();
     }
 
-    private static string Frame(Window w)
+    private static readonly FieldInfo TextCache = typeof(LayeredGraph).GetField("_text", BindingFlags.Instance | BindingFlags.NonPublic)!;
+
+    private static string Private(LayeredGraph g)
+    {
+        var sb = new StringBuilder();
+        foreach (var name in new[] { "_hover", "_cursor", "_keyboardTip", "_pinTip", "_pointer", "_press", "_moved", "_dragMinimap", "_minimapShown" })
+            sb.Append(' ').Append(name).Append('=').Append(FormattableString.Invariant($"{typeof(LayeredGraph).GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(g)}"));
+        sb.Append(" focused=").Append(g.IsFocused);
+        return sb.ToString();
+    }
+
+    private static string Frame(Window w, string? dumpName = null)
     {
         var bmp = w.CaptureRenderedFrame()!;
         using var fb = bmp.Lock();
         var bytes = new byte[fb.RowBytes * fb.Size.Height];
         Marshal.Copy(fb.Address, bytes, 0, bytes.Length);
+        var outDir = Environment.GetEnvironmentVariable("EXPLORER_GOLDEN_OUT");
+        if (dumpName != null && outDir is { Length: > 0 } && Environment.GetEnvironmentVariable("EXPLORER_GOLDEN_RAW") is { Length: > 0 } pick && dumpName.Contains(pick))
+            File.WriteAllBytes(Path.Combine(outDir, dumpName.Replace('/', '_').Replace(' ', '_').Replace(',', '_') + $".{fb.RowBytes}.raw"), bytes);
         return Hash(bytes);
     }
 
@@ -98,8 +121,10 @@ public sealed class GraphDrawGoldenTests(ITestOutputHelper output)
         g.Model = m;
         void Shot(string step)
         {
-            Settle(g);
-            rows.Add(($"{seed}/{kind}/{colorBy}/{step}", Frame(w) + $" sel={g.SelectedIndex} focus={g.FocusIndex}"));
+            Settle(g, w);
+            var v = (ViewState)To.GetValue(g)!;
+            rows.Add(($"{seed}/{kind}/{colorBy}/{step}", Frame(w, $"{seed}/{kind}/{colorBy}/{step}") + FormattableString.Invariant(
+                $" sel={g.SelectedIndex} focus={g.FocusIndex} view={v.X0:R},{v.Span:R},{v.Scale:R},{v.PanX:R},{v.PanY:R}") + Private(g)));
         }
         void Press(Key k)
         {
@@ -177,6 +202,6 @@ public sealed class GraphDrawGoldenTests(ITestOutputHelper output)
         Assert.Equal(Golden, all);
     }
 
-    private const string Canary_ = "";
-    private const string Golden = "";
+    private const string Canary_ = "A9DAF6CC63AC80CEC185 -300";
+    private const string Golden = "1282E579C57EDBC6C338";
 }

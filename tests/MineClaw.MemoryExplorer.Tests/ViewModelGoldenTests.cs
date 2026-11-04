@@ -111,6 +111,7 @@ public sealed class ViewModelGoldenTests(ITestOutputHelper output)
         vm.Tick(T0.AddSeconds(20));
         sb.Append("== stale\n").Append(StateDump.Of(vm)).Append('\n');
         vm.Failed("timeout");
+        vm.Tick(T0.AddSeconds(25)); // Failed ticks with the wall clock: recompute against the fixed one
         sb.Append("== stale failed\n").Append(StateDump.Of(vm)).Append('\n');
         foreach (var s in new[] { Full, Full with { Live = false, Action = null }, Full with { Action = null }, Full with { Stack = [] },
                      Full with { Stack = [new ScriptFrame("main", "m.js", 1, 1, true)] },
@@ -213,6 +214,8 @@ public sealed class ViewModelGoldenTests(ITestOutputHelper output)
     }
 
     private const string Golden = """
-        pending
+        startup-args 2D08596C2D47DBE8303C
+        script-debug 7B87E70C262B75DC59F8
+        controller 181ECAE98C6FDBF92022
         """;
 }

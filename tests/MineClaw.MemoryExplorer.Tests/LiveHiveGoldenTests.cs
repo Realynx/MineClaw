@@ -2,6 +2,7 @@ using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using MineClaw.MemoryExplorer.LiveHive;
+using MineClaw.MemoryExplorer.LiveHive.Gpu;
 using MineClaw.Render;
 using MineClaw.World;
 using Xunit.Abstractions;
@@ -128,14 +129,53 @@ public sealed class LiveHiveGoldenTests(ITestOutputHelper output)
         return sb.ToString();
     }
 
+    /// <summary>The GPU scene's overlay lines and screen labels (models and rain depend on the wall clock: not pinned here).</summary>
+    private static string FrameSceneDump()
+    {
+        var cache = World();
+        BotDto[] bots =
+        [
+            new("maid_chan", "main", true, 0, 2.5, 64, 2.5, 0, 0, 0, 20, 20, null, null, null, null, true, 0),
+            new("maid_chan_67", "67", false, 0, -3.5, 64, 6.5, 90, 0, 0, 20, 20, null, null, null, null, true, 0),
+            new("nether_bot", "68", false, -1, 0, 64, 0, 0, 0, 0, 20, 20, null, null, null, null, true, 0),
+        ];
+        var sb = new StringBuilder();
+        var poses = new[] { new CamPose(0.5, 70, -8, 0, 25, 0), new CamPose(12, 66, 12, 135, 10, 0), new CamPose(2, 64.6, 2, 270, -30, 0), new CamPose(5.5, 64.5, 9.5, 180, 0, 0) };
+        foreach (var flags in new[] { Overlay.Default, Overlay.Plans, Overlay.Claims | Overlay.Places, Overlay.Chests | Overlay.Dangers, Overlay.Bots, Overlay.None })
+            foreach (var ov in new[] { Overlays(0), null, Overlays(-1) })
+            {
+                var scene = new FrameScene(cache) { Textured = false, Flags = flags, Overlays = () => ov, Bots = () => bots, MaxDistance = 48 };
+                foreach (var pose in poses)
+                {
+                    scene.LinesChanged = false;
+                    scene.Prepare(pose, 320, 200, Now);
+                    sb.Append(flags).Append(' ').Append(ov?.Dim.ToString() ?? "null").Append(' ').Append(pose).Append(" origin ").Append(scene.LinesOrigin)
+                        .Append(" changed ").Append(scene.LinesChanged).Append('\n');
+                    var lines = new StringBuilder();
+                    for (int i = 0; i < scene.Lines.Count; i++)
+                    {
+                        var v = scene.Lines.V[i];
+                        lines.Append(BitConverter.SingleToInt32Bits(v.X)).Append(',').Append(BitConverter.SingleToInt32Bits(v.Y)).Append(',')
+                            .Append(BitConverter.SingleToInt32Bits(v.Z)).Append(' ').Append(v.Rgba).Append(' ').Append(v.Light).Append(';');
+                    }
+                    sb.Append("  lines ").Append(scene.Lines.Count).Append(' ').Append(Hash(lines.ToString())).Append('\n');
+                    foreach (var l in scene.Labels)
+                        sb.Append("  ").Append(l.Text).Append(' ').Append(l.X.ToString("R")).Append(',').Append(l.Y.ToString("R")).Append(',')
+                            .Append(l.Dist.ToString("R")).Append(' ').Append(l.Colour).Append(' ').Append(l.Occluded).Append('\n');
+                }
+            }
+        return sb.ToString();
+    }
+
     [Fact]
     public void Live_hive_drawing_matches_the_golden_hashes()
     {
-        var rows = new List<(string, string)> { ("overlays", OverlayDump()) };
+        var rows = new List<(string, string)> { ("overlays", OverlayDump()), ("frame-scene", FrameSceneDump()) };
         Compare(rows, Golden);
     }
 
     private const string Golden = """
-        pending
+        overlays D77CFAED0ACC2526858F
+        frame-scene 8ED65BA19FAB094EF9EF
         """;
 }
