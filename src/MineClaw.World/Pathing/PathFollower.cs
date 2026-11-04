@@ -45,6 +45,9 @@ public sealed record PathFollowerOptions
     public int TriggerWaitTicks { get; init; } = 20;
     /// <summary>Whether sprinting is possible right now (b1.8.1: food &gt; 6). Checked before and during a sprint-jump run-up.</summary>
     public Func<bool>? CanSprint { get; init; }
+    /// <summary>The body moves faster than vanilla (Story Mode's Fast / Faster, <see cref="SpeedBoost"/>): it keeps sprinting along
+    /// straight runs (<see cref="PathFollower.BoostRoom"/>) instead of easing off near each cell centre. Null = never.</summary>
+    public Func<bool>? Boosted { get; init; }
     /// <summary>Max distance between the run-up and its planned trajectory before the jump is aborted.</summary>
     public double ParkourDeviation { get; init; } = 0.12;
 }
@@ -55,7 +58,7 @@ public sealed record PathFollowerOptions
 /// the player from walking off), centers precisely before edge/bridge/pillar moves, and fails fast when falling
 /// toward the void, stuck, or knocked off the path.
 /// </summary>
-public sealed class PathFollower
+public sealed partial class PathFollower
 {
     private readonly IReadOnlyList<PathStep> _steps;
     private readonly PathFollowerOptions _o;
@@ -416,8 +419,9 @@ public sealed class PathFollower
         }
         if (s.InWater && step.Kind != MoveKind.Swim && step.Floor >= pos.Y - 0.2) jump = true;
 
+        // A boosted body (Story Mode's Fast / Faster) keeps sprinting on a straight line: cells go by in a tick or two.
         bool sprint = _o.AllowSprint && !sneak && forward > 0 && step.Kind is MoveKind.Walk or MoveKind.Diagonal
-                      && StepIndex + 3 < _steps.Count && dist > 0.8;
+                      && StepIndex + 3 < _steps.Count && (dist > 0.8 || _o.Boosted?.Invoke() == true && BoostRoom(s) >= 0.8);
         return Move(new MoveInput(forward, 0, jump, sneak, sprint, moveYaw, 0));
     }
 

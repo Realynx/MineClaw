@@ -69,7 +69,8 @@ There is one per colony. It holds:
 
   Jobs are leased so that two pawns never take the same tree, block or drop. The existing crew lease logic can be reused.
 - **State** is persisted in the agent db (new tables, `story_*`). It survives restarts, and the colony resumes.
-- **Pause.** "Pause colony" makes every pawn hold. There is no time control: the Minecraft server owns the clock.
+- **Pause.** "Pause colony" makes every pawn hold. There is no time control: the Minecraft server owns the clock. Fast and Faster
+  speed up the pawns' movement instead (see "Speed").
 
 ## Supervisor routes (bot)
 
@@ -116,13 +117,16 @@ storage is chests (see "Storage").
 {id, rev, since, full, at, time_of_day, time_frozen, hour, paused, active, home:[x,y,z]|null, tie_break: "column"|"skill", version,
  work_types:[guard, doctor, cook, hunt, build, farm, mine, chop, craft, haul],
  pawns:[Pawn], seats:{online, wanted, cap_free, kept_for_regulars, pending}, zones:[{id, kind, area, rows, cells, name, plant?, active_plant?, bills?, active_bill?, sow?, harvest?, status?, seeds?, needs_hoe?}], plants:[Plant] (full only), beds:[{pos:[x,y,z], dim, pawn, zone}], designations:[Designation], orders:[{id, pawn, kind, target, design, given, left}],
- alerts:[{at, level: info|warn, text, pawn}], builds:[Build], ghosts:{rev, blocks:[[x,y,z,id,meta,build_id,state]]},
+ alerts:[{at, level: info|warn, text, pawn}], builds:[Build], ghosts:{rev, blocks:[[x,y,z,id,meta,build_id,state,kind]]},
  storages:[Storage], workbenches:[Workbench], categories:[Category] (full only), ai:[Ai], directives:[Directive],
  time_control:{available: bool, by: account|null}, policies:[Policy], material_rules:[MaterialRule], materials:[MaterialInfo] (full only),
  removed:{zones:[id], designations:[id], builds:[id], storages:["x,y,z"]} (delta only)}
 ```
 
 A delta (`since=rev`) carries only the objects with a newer revision, plus every pawn (they move all the time) and `removed`.
+That holds for `ghosts.blocks` too: a delta lists only the ghosts that changed (often none), so the client merges them into
+what it holds by build and cell, and a build in `removed.builds` takes its ghosts with it (fixed 2026-11-04: the web replaced
+the whole list with each delta's, so the holograms and flat ghosts vanished a few seconds after the page loaded).
 Pass the answer's `rev` back as the next `since`. This is the `story` event source the bridge polls, at 2 Hz while a client
 watches.
 
@@ -419,6 +423,50 @@ that meets all of these:
 - **Not just missed by this pawn.** One it couldn't find rests 60 s for that pawn only. That is not a failure: no alert, no rest.
 
 Among guards with nothing better to do (idle or wandering), the nearest goes. Drafted pawns' attack orders are separate and unchanged.
+
+### Speed: Fast and Faster (added 2026-11-04)
+
+Fox 11-04: "next to the pause button on the bottom right, add a Fast and Faster mode. They should just change the movement speed
+through the network itself." There is still no time control (the server owns the clock): Fast and Faster make the colony's pawns
+**move** about 2× and 3× as fast. Main and every other body are never touched.
+
+- **The option.** `POST …/options {speed: normal|fast|faster, speed_effect?: bool}`; state `options.speed` (default `normal`) and
+  `options.speed_effect` (default on), saved with the colony. Each pawn carries `speed: {level, multiplier, requested,
+  server_factor, rollbacks}` (null while offline): `level`/`multiplier` are what the body actually runs at.
+- **How (client).** The director gives every online pawn body the multiplier each tick (`MinecraftClient.SpeedMultiplier`, 1..3;
+  default 1 for every body). After the normal physics tick (input, friction, gravity, jumps, falls all vanilla), the body is moved
+  again by `(factor − 1) ×` what the tick moved horizontally, with the version's own `Entity.move` (b1.8.1 `PlayerPhysics.MoveEntity`,
+  ySize zeroed like the server's replay; 1.12.2 `Physics1122.Move`: the same swept collision, step-up and ground contact), in
+  segments of at most 0.75 blocks, **each its own position packet** after the normal tick's own packet (`SpeedBoost`,
+  MinecraftClient.Speed.cs). Velocity, fall distance and fall damage stay the normal tick's.
+- **Only where it's safe.** On the ground (not sneaking, not in a web, never near lava), swimming (capped at ×1.5) and climbing a
+  ladder up (×1.5, the feet must stay on the ladder); never in the air, so jumps, gap jumps, drops and falls are vanilla. Each extra
+  move must end with ground within a step below and out of liquids (in water when swimming), else it is halved, then dropped. An edge,
+  drop or liquid within about a block past where it would end lowers the factor to ×1.25. Only the path follower boosts, and only
+  as far as its **room** allows (`PathFollower.BoostRoom`: a plain walk or diagonal to its cell centre plus the steps that go on in
+  a straight line at the same floor, at most 1 block a tick, so no cell is skipped; 0 for precise steps, actions, sneaking, jumps,
+  drops, bridges, pillars, doors and the last step). A boosted body keeps sprinting on straights. Fights, holds, planned drops,
+  gap jumps, void steps and the 10 ticks after any teleport are never boosted. Stuck detection and escape work as before (they
+  count ticks, not distance).
+- **The server's checks.** Vanilla replays each packet's delta with that same `Entity.move`: "moved wrongly" past 0.25 blocks off
+  (horizontally; b1.8.1 `NetServerHandler`, 1.12.2 `NetHandlerPlayServer`) means a teleport back, "moved too quickly" past 10
+  blocks a packet a kick (b1.8.1) or a teleport back (1.12.2, against the start of the server tick, × the packets in it). One
+  packet per collision pass keeps the replay identical; no packet carries more than about 1.1 blocks; b1.8.1's stance stays legal.
+- **Rollback safety.** A correction (a teleport back within 8 blocks, not a login, respawn or `/tp`) within 2 s of a boosted tick
+  counts against the boost; two within 30 s step the body down one level (3 → 2 → 1) and the colony raises one alert per level:
+  "Server rejected faster movement — using Fast" (or "— using normal speed"). The HUD marks the level the slowest pawn runs at.
+  Choosing a speed again clears the step-down.
+- **Speed effect (1.12.2, `speed_effect`).** With an op account (main is op: the server's word, else `Supervisor:Viewer:OpAccounts`),
+  Fast and Faster also ask the server for `/effect <pawn> minecraft:speed 30 1|2 true` (Speed II / III: +40 % / +60 % on the
+  movement attribute, which the 1.12.2 physics applies), renewed every 20 s, through the command gate's scoped exception
+  (`CommandGate.ArmManagedSpeed`: only that shape, only the hive's own managed accounts, never main or a player, never when the
+  config blocks `/effect`; audited). The server then sees part of the speed as legit and the client adds only the rest
+  (`multiplier / server_factor`). Back to normal, the option off, a pawn leaving or a released colony clears it
+  (`/effect <pawn> minecraft:speed 0`). b1.8.1 has no effects: the client boost only.
+- **Measured** (the fake server enforcing both checks, 30-block corridor, sprinting, timed from the first step; 5 ms test ticks):
+  b1.8.1 131 ticks normal, 67 fast (1.96×), 49 faster (2.67×); 1.12.2 127 / 67 (1.90×) / 49 (2.59×); zero rollbacks, zero
+  "moved wrongly", largest packet under 0.8 blocks. Faster stays under 3× because accelerating and braking for the goal run at
+  vanilla speed.
 
 ### Idle behaviour (added 2026-11-03)
 
@@ -1086,7 +1134,7 @@ Build state gains `materials: [{item, label, need, have, crafting, short, via: c
 `no_craft: [item]` and `station: {kind, pos}|null`. The web's build queue shows have/need, crafting and short per item, the
 recipe chain and the raw shortfall on hover; the bench inspector lists the auto bills tagged "for build #N", cancel only.
 
-`POST …/options` `{auto_place_benches?, detect_benches?, idle?: recreation|wander|stay}` → the options (see "Idle behaviour" for `idle`); the colony state carries `options`.
+`POST …/options` `{auto_place_benches?, detect_benches?, idle?: recreation|wander|stay, speed?: normal|fast|faster, speed_effect?}` → the options (see "Idle behaviour" for `idle`, "Speed" for `speed`); the colony state carries `options`.
 
 ### Architect palette and tiers (added 2026-11-03)
 
@@ -1370,6 +1418,16 @@ The design grew while it was built. The wire forms are in `docs/web/api.md` §6 
     way, green where it fits and red where a block is in the way. The viewer setting "Build holograms" (default on) turns
     them off; the map then draws the flat ghosts as before. Measured (SwiftShader, 1440 × 900, top view at the default
     zoom, the mock colony): 58 fps before, 48 fps with a 2,000-cell build queued, 41 fps in the angled view.
+    Fixed 2026-11-04 (Fox: "I still can't see holograms for queued builds like chests, or other blocks"): the live bot sends
+    only the changed ghosts in a delta, and the web replaced its whole list with them, so every hologram went with the first
+    catch-up a few seconds after the page loaded (the mock sends all of them, so mock mode never showed it). The client now
+    merges ghost deltas (see "The colony state"). Ghosts are read by their 8th element: a `dig` ghost carries the block
+    expected there, and is drawn as a red outline until the cell is air (by id it looked built and was hidden). Every block
+    kind is the section mesher's own model, block entities included: chests (a double chest as one), beds, signs, banners,
+    skulls, shulker boxes, doors, torches, slabs, stairs, fences, panes, ladders. A b1.8.1 door's upper half takes the
+    lower half's facing (the queue sends it as plain 8, the 1.12.2 form, so the halves stood on different sides of the
+    cell). A furniture tool's placement (chest, bed,
+    furnace…) previews as a hologram too. The test hook `hologramKinds()` counts each build kind's queued and drawn cells.
 - **Selection.**
   - A left-drag box selects many pawns, or objects (trees, blocks, drops) in designation mode.
   - A click selects one, shift adds, a double-click selects every visible pawn of the same kind, and Esc clears.
@@ -1378,6 +1436,11 @@ The design grew while it was built. The wire forms are in `docs/web/api.md` §6 
   - a mob gives attack
   - a drop gives haul
   - a design gives build
+- **Speed (added 2026-11-04).** Beside Pause in the bottom-right controls, a RimWorld-style segmented control ▶ / ▶▶ / ▶▶▶
+  (normal, fast, faster) sets `options.speed`; its tooltips say it is a movement-speed boost for the colony's pawns, not time.
+  Keys **1 / 2 / 3** set it while no tool is in hand (the select tool); with a tool they stay the tool's (Mine / Deconstruct
+  height modes, a structure tool's recent materials). A level some pawn was stepped down to by the server's rejections has a
+  warning ring. See "Speed" for what it does.
 - **Mining height (added 2026-11-03).** Live 11-03: Fox flattening the ground mined too deep, because a Mine drag took a whole
   storey (level − 1 to the wall height) and nothing showed how deep. A Mine or Deconstruct drag now has an explicit height mode,
   picked on the tool's options bar or with 1–5 while the tool is active:

@@ -32,6 +32,10 @@ public sealed class SupervisorStoryRouteTests
         public PawnLive Live(string account) => new(true, 20, 20, 0.5, 64, 0.5, 0, "stone_axe", [new Stack(17, 0, 3)], true);
         public string? StartPawn(string account, string colony) => null;
         public void Interrupt(string account, string why) { }
+        /// <summary>Fast / Faster: the multiplier each pawn body was given.</summary>
+        public System.Collections.Concurrent.ConcurrentDictionary<string, double> Speeds { get; } = new(StringComparer.OrdinalIgnoreCase);
+        public void SetSpeed(string account, double multiplier) => Speeds[account] = multiplier;
+        public PawnSpeed? Speed(string account) => Speeds.TryGetValue(account, out var m) ? new PawnSpeed(m, m, 1, 0) : null;
     }
 
     private static (SupervisorStoryRoutes R, Host H, World W, FakeViewerData V, ViewerFeed F) Make(Action<SupervisorOptions>? tune = null)
@@ -381,6 +385,65 @@ public sealed class SupervisorStoryRouteTests
         Assert.False(strict.ArmManagedTeleport("/tp maid_chan_101 1 64 1", "x")); // the config blocks /tp: never
         var none = new MineClaw.Agent.Chat.CommandGate(new MineClaw.Agent.Chat.CommandOptions(), () => ["poofimafox"]);
         Assert.False(none.ArmManagedTeleport("/tp maid_chan_101 1 64 1", "x")); // no hive: no exception
+    }
+
+    [Fact]
+    public async Task Options_take_a_speed_for_the_colony_pawns_only()
+    {
+        var (r, h, _, _, _) = Make();
+        var id = await Colony(r);
+        var (_, state) = await Call(r, "GET", $"/api/story/colonies/{id}");
+        Assert.Equal("normal", state!["options"]!["speed"]!.GetValue<string>());
+        Assert.True(state["options"]!["speed_effect"]!.GetValue<bool>());
+
+        var (s, j) = await Call(r, "POST", $"/api/story/colonies/{id}/options", new { speed = "fast" });
+        Assert.Equal(200, s);
+        Assert.Equal("fast", j!["speed"]!.GetValue<string>());
+        Assert.Equal(2, h.Speeds.Count);                     // the colony's two pawns, nobody else
+        Assert.All(h.Speeds.Values, m => Assert.Equal(2, m));
+        (_, state) = await Call(r, "GET", $"/api/story/colonies/{id}");
+        var pawn = state!["pawns"]![0]!["speed"]!;
+        Assert.Equal("fast", pawn["level"]!.GetValue<string>());
+        Assert.Equal(2, pawn["multiplier"]!.GetValue<double>());
+
+        (s, j) = await Call(r, "POST", $"/api/story/colonies/{id}/options", new { speed = "faster", speed_effect = false });
+        Assert.Equal(200, s);
+        Assert.Equal("faster", j!["speed"]!.GetValue<string>());
+        Assert.False(j["speed_effect"]!.GetValue<bool>());
+        Assert.All(h.Speeds.Values, m => Assert.Equal(3, m));
+        Assert.Equal(400, (await Call(r, "POST", $"/api/story/colonies/{id}/options", new { speed = "warp" })).Status);
+        Assert.Equal(400, (await Call(r, "POST", $"/api/story/colonies/{id}/options", new { speed = 3 })).Status);
+        Assert.Equal(400, (await Call(r, "POST", $"/api/story/colonies/{id}/options", new { speed_effect = "yes" })).Status);
+        (s, j) = await Call(r, "POST", $"/api/story/colonies/{id}/options", new { speed = "normal" });
+        Assert.Equal("normal", j!["speed"]!.GetValue<string>());
+        Assert.All(h.Speeds.Values, m => Assert.Equal(1, m));
+    }
+
+    [Fact]
+    public void The_gate_arms_one_speed_effect_for_a_managed_account_only()
+    {
+        var gate = new MineClaw.Agent.Chat.CommandGate(new MineClaw.Agent.Chat.CommandOptions(), () => ["poofimafox"])
+        {
+            ManagedAccount = n => n.StartsWith("maid_chan_", StringComparison.Ordinal),
+        };
+        Assert.False(gate.AllowOutgoing("/effect maid_chan_101 minecraft:speed 30 1 true")); // not armed
+        Assert.True(gate.ArmManagedSpeed("/effect maid_chan_101 minecraft:speed 30 1 true", "story story-1: fast speed"));
+        Assert.True(gate.AllowOutgoing("/effect maid_chan_101 minecraft:speed 30 1 true"));
+        Assert.False(gate.AllowOutgoing("/effect maid_chan_101 minecraft:speed 30 1 true")); // one arm, one send
+        Assert.True(gate.ArmManagedSpeed("/effect maid_chan_101 minecraft:speed 0", "story story-1: normal speed")); // clearing it
+        Assert.True(gate.AllowOutgoing("/effect maid_chan_101 minecraft:speed 0"));
+        Assert.False(gate.ArmManagedSpeed("/effect poofimafox minecraft:speed 30 1 true", "x"));       // a player: never
+        Assert.False(gate.ArmManagedSpeed("/effect maid_chan_101 minecraft:strength 30 1 true", "x")); // only speed
+        Assert.False(gate.ArmManagedSpeed("/effect maid_chan_101 minecraft:speed 30 9 true", "x"));    // amplifier 0..4
+        Assert.False(gate.ArmManagedSpeed("/effect @a minecraft:speed 30 1 true", "x"));
+        Assert.False(gate.ArmManagedSpeed("/effect maid_chan_101 clear", "x"));
+        var strict = new MineClaw.Agent.Chat.CommandGate(new MineClaw.Agent.Chat.CommandOptions { Blocked = ["/effect"] }, () => ["poofimafox"])
+        {
+            ManagedAccount = _ => true,
+        };
+        Assert.False(strict.ArmManagedSpeed("/effect maid_chan_101 minecraft:speed 30 1 true", "x")); // the config blocks /effect
+        var none = new MineClaw.Agent.Chat.CommandGate(new MineClaw.Agent.Chat.CommandOptions(), () => ["poofimafox"]);
+        Assert.False(none.ArmManagedSpeed("/effect maid_chan_101 minecraft:speed 30 1 true", "x")); // no hive: no exception
     }
 
     private sealed class Ticker : TimeProvider

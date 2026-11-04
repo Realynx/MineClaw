@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using MineClaw.Client.Versioning;
 using MineClaw.Data;
 using MineClaw.World;
@@ -131,16 +132,45 @@ public sealed class CombatEngine
 
     // The 1.9 attack cooldown: ticksSinceLastSwing is reset by our own swings (any the server sees) and held-item changes.
     private long _ownSwing = long.MinValue / 4, _heldChanged = long.MinValue / 4;
+    // ... and when they went out on the wall clock (Stopwatch timestamps): the server counts the charge in its own ticks, which
+    // follow real time, not ours (see SinceSwing).
+    private long _ownSwingAt = long.MinValue / 4, _heldChangedAt = long.MinValue / 4;
     private int _heldId = int.MinValue;
     private Vec3d _prevPos;
     private double _walked;
     private bool _emergency, _tick0 = true;
 
     /// <summary>An arm swing the client sent (digging, gestures, attacks): on 1.12.2 it resets the attack charge server-side.</summary>
-    public void NoteOwnSwing(long tick) => Interlocked.Exchange(ref _ownSwing, Math.Max(Interlocked.Read(ref _ownSwing), tick));
+    public void NoteOwnSwing(long tick)
+    {
+        Interlocked.Exchange(ref _ownSwing, Math.Max(Interlocked.Read(ref _ownSwing), tick));
+        Interlocked.Exchange(ref _ownSwingAt, Stopwatch.GetTimestamp());
+    }
+
+    /// <summary>
+    /// The client's tick length (the server's nominal tick). Set: the charge also counts only the server ticks that have really
+    /// passed since the last swing went out. The client's tick loop catches up in bursts (Windows sleeps in ~15.6 ms steps: three
+    /// 5 ms test ticks at once, a third of a live 50 ms tick), so N of our ticks can be fewer than N of the server's, which
+    /// follow real time; a swing on our count alone landed at 0.75 instead of 0.93. Zero = ticks only (unit tests drive ticks).
+    /// </summary>
+    public TimeSpan TickInterval { get; set; }
 
     /// <summary>The attack charge right now (1 on b1.8.1).</summary>
-    public float Charge => Rules.AttackStrength((int)Math.Clamp(_tick - Math.Max(Interlocked.Read(ref _ownSwing), _heldChanged), 0, 10000), Math.Max(0, _heldId));
+    public float Charge => Rules.AttackStrength(SinceSwing(), Math.Max(0, _heldId));
+
+    /// <summary>The server's <c>ticksSinceLastSwing</c> as far as we can be sure of it: our ticks since the last swing or held-item
+    /// change, but never more than the server ticks that fit in the real time since then (<see cref="TickInterval"/>), less half a
+    /// tick for the two packets' different trips (the server counts from when it handled the swing, not when we sent it).</summary>
+    private int SinceSwing()
+    {
+        long ticks = _tick - Math.Max(Interlocked.Read(ref _ownSwing), _heldChanged);
+        if (TickInterval > TimeSpan.Zero)
+        {
+            long at = Math.Max(Interlocked.Read(ref _ownSwingAt), _heldChangedAt);
+            if (at > 0) ticks = Math.Min(ticks, (long)Math.Floor(Stopwatch.GetElapsedTime(at).TotalMilliseconds / TickInterval.TotalMilliseconds - 0.5));
+        }
+        return (int)Math.Clamp(ticks, 0, 10000);
+    }
     /// <summary>Bot username (its own chat lines are ignored for stop words).</summary>
     public string Username { get; set; } = "";
     /// <summary>Items never wielded (the client's reserved items).</summary>
@@ -293,7 +323,7 @@ public sealed class CombatEngine
         Interlocked.Exchange(ref _tick, tick);
         var ctx = new Ctx();
         int heldNow = _w.Inventory.HeldItem(_w.Player.HeldSlot).Id;
-        if (heldNow != _heldId) { if (_heldId != int.MinValue) _heldChanged = tick; _heldId = heldNow; } // EntityPlayer.onUpdate resetCooldown
+        if (heldNow != _heldId) { if (_heldId != int.MinValue) { _heldChanged = tick; _heldChangedAt = Stopwatch.GetTimestamp(); } _heldId = heldNow; } // EntityPlayer.onUpdate resetCooldown
         double mdx = phys.Position.X - _prevPos.X, mdz = phys.Position.Z - _prevPos.Z;
         _walked = _tick0 ? 0 : Math.Sqrt(mdx * mdx + mdz * mdz) * 0.6; // distanceWalkedModified − prev (Entity.move)
         _prevPos = phys.Position;
@@ -979,8 +1009,13 @@ public sealed class CombatEngine
         // ---- swing timing: one full hit per invulnerability window; crit when falling
         bool inReach = reach <= Options.Reach && CombatGeometry.HasLineOfSight(_w, phys.EyePosition, CombatRules.AimPoint(target));
         bool safeForJump = Safety.EdgeDistance(_w, (int)Math.Floor(me.X), (int)Math.Floor(me.Y + 1e-6), (int)Math.Floor(me.Z), 4) > Options.KnockbackDepth;
-        bool jump = Options.Crits && inReach && phys.OnGround && cooldown is >= 4 and <= 6 && safeForJump && moveTo is null;
-        bool rising = !phys.OnGround && phys.Velocity.Y > 0 && cooldown > -6;
+        // 1.9+: every charged hit knocks a melee mob ~2.5 blocks back, so the next one is charged before it walks back into reach.
+        // Jump as it comes (within a block of reach) so the fall meets it; on the ground only a jump in reach could crit.
+        bool meetIt = Rules.AttackCooldownTicks(Math.Max(0, _heldId)) > 0 && prof.Tactic == MobTactic.Melee && !inReach && approaching
+                      && reach <= Options.Reach + 1.0 && cooldown <= 6;
+        bool jump = Options.Crits && (inReach && cooldown is >= 4 and <= 6 || meetIt) && phys.OnGround && safeForJump && moveTo is null;
+        // Off the ground and not falling yet (rising, or at the top of the jump with no fall distance): hold the swing for the crit.
+        bool rising = !phys.OnGround && !phys.InWater && !phys.OnLadder && (phys.Velocity.Y > 0 || phys.FallDistance <= 0) && cooldown > -6;
         if (inReach && cooldown <= 0 && !rising)
         {
             // 1.9+: a charged sword hit on the ground sweeps everything around the target: never into a player, a pet or a
@@ -1068,7 +1103,7 @@ public sealed class CombatEngine
         if (_lastHurt.TryGetValue(id, out var h)) ready = Math.Max(ready, h + Rules.InvulnerabilityTicks);
         int held = Math.Max(0, _heldId);
         if (!_emergency && Rules.AttackCooldownTicks(held) > 0)
-            ready = Math.Max(ready, Math.Max(Interlocked.Read(ref _ownSwing), _heldChanged) + ChargeTicks(held));
+            ready = Math.Max(ready, _tick + ChargeTicks(held) - SinceSwing());
         return (int)Math.Max(-1000, ready - _tick);
     }
 
@@ -1088,8 +1123,7 @@ public sealed class CombatEngine
     private AttackContext Context(PhysicsState phys, Entity? target)
     {
         int held = Math.Max(0, _heldId);
-        int since = (int)Math.Clamp(_tick - Math.Max(Interlocked.Read(ref _ownSwing), _heldChanged), 0, 10000);
-        return new AttackContext(Rules.AttackStrength(since, held), phys.Velocity.Y, phys.FallDistance, phys.OnGround, phys.OnLadder, phys.InWater,
+        return new AttackContext(Rules.AttackStrength(SinceSwing(), held), phys.Velocity.Y, phys.FallDistance, phys.OnGround, phys.OnLadder, phys.InWater,
             phys.Sprinting, held, Blind: _w.Player.HasEffect(PotionEffects.Blindness), Riding: false,
             TargetLiving: target is null || target.Kind is EntityKind.Mob or EntityKind.Player, WalkedThisTick: _walked,
             AiMoveSpeed: float.IsNaN(phys.LandSpeed) ? 0.1 : phys.LandSpeed);

@@ -117,6 +117,17 @@ export function meshCells(cells: readonly number[], table: StateTable): HoloMesh
       col.meta[i] = cells[o + 4] & 15;
       sections.add(`${cx},${y >> 4},${cz}`);
     }
+    // b1.8.1 doors: the upper half carries the lower's facing and open bit (ItemDoor sets meta + 8), while a queued door's
+    // upper half comes as plain 8 (the 1.12.2 form: facing lives in the lower half). Take them from the half below, or the
+    // two halves face different ways.
+    if (table.version === 'b1.8.1')
+      for (const o of list) {
+        const x = cells[o], y = cells[o + 1], z = cells[o + 2];
+        const i = cellIndex(x & 15, y, z & 15);
+        if (!BETA_DOORS.has(col.ids[i]) || !(col.meta[i] & 8) || y < 1) continue;
+        const b = cellIndex(x & 15, y - 1, z & 15);
+        if (col.ids[b] === col.ids[i] && !(col.meta[b] & 8)) col.meta[i] = 8 | (col.meta[b] & 7);
+      }
     store.cols.set(`${HOLO_DIM},${cx},${cz}`, col);
   }
   const origin: [number, number, number] = [Math.floor(minX / 16) * 16, Math.floor(minY / 16) * 16, Math.floor(minZ / 16) * 16];
@@ -130,6 +141,9 @@ export function meshCells(cells: readonly number[], table: StateTable): HoloMesh
   }
   return merge(parts, origin);
 }
+
+/** Wooden and iron doors (b1.8.1). */
+const BETA_DOORS = new Set([64, 71]);
 
 /** The private store's dimension (any number: the store holds nothing else). */
 const HOLO_DIM = 0;

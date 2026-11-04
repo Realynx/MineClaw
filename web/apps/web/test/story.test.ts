@@ -395,6 +395,40 @@ describe('selection and the colonist bar', () => {
     expect(next.alerts).toHaveLength(1);
     expect(mergeColony(next, { ...next, rev: 3, full: false })).toBe(next);
   });
+
+  it("merges the bot's ghost deltas (only the changed ghosts) by build and cell; a removed build takes its ghosts", () => {
+    const delta = (rev: number, blocks: unknown[], extra: object = {}) =>
+      ({ rev, at: rev, full: false, workTypes: [], pawns: [], zones: [], designations: [], orders: [], alerts: [], ghosts: { rev, blocks }, ...extra }) as unknown as Parameters<typeof mergeColony>[1];
+    const base = state({
+      builds: [
+        { id: 'b1', kind: 'chest', label: 'chest', status: 'queued', blocksTotal: 1, blocksDone: 0 },
+        { id: 'b2', kind: 'wall', label: 'wall', status: 'active', blocksTotal: 2, blocksDone: 0 },
+      ],
+      ghosts: {
+        rev: 5,
+        blocks: [
+          [0, 64, 0, 54, 0, 'b1', 'todo', 'place'],
+          [1, 64, 0, 4, 0, 'b2', 'todo', 'place'],
+          [2, 64, 0, 4, 0, 'b2', 'todo', 'place'],
+        ],
+      },
+    } as never);
+    // The bot's usual delta: nothing changed in the queue, an empty list. The ghosts stay, the very same object.
+    const quiet = mergeColony(base, delta(6, []));
+    expect(quiet.ghosts).toBe(base.ghosts);
+    // One ghost leased: it changes in place, the others stay, in their order.
+    const leased = mergeColony(quiet, delta(7, [[1, 64, 0, 4, 0, 'b2', 'leased', 'place']]));
+    expect(leased.ghosts!.blocks.map((g) => g[6])).toEqual(['todo', 'leased', 'todo']);
+    expect(leased.ghosts!.rev).toBe(7);
+    // A new build's ghosts (7 elements, an older bot) are added.
+    const added = mergeColony(leased, delta(8, [[5, 64, 5, 64, 1, 'b3', 'todo']]));
+    expect(added.ghosts!.blocks).toHaveLength(4);
+    // The wall is removed: its ghosts go with it.
+    const removed = mergeColony(added, delta(9, [], { removed: { builds: ['b2'] } }));
+    expect(removed.ghosts!.blocks.map((g) => g[5])).toEqual(['b1', 'b3']);
+    // A full reply replaces everything.
+    expect(mergeColony(removed, { ...delta(10, []), full: true }).ghosts!.blocks).toEqual([]);
+  });
 });
 
 describe('the Work grid', () => {

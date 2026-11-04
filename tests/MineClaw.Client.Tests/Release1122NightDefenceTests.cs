@@ -23,6 +23,7 @@ public class Release1122NightDefenceTests
             for (int z = 0; z <= 16; z++)
                 srv.Blocks[(x, 63, z)] = Blocks.Grass;
             srv.Difficulty = 2; // normal, as live
+            srv.ConsumeOnPlace = true; // a vanilla server takes the placed block (else every box block waits out the 300 ms check)
             setup?.Invoke(srv);
         }, release1122: true);
 
