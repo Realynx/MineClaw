@@ -144,6 +144,6 @@ public sealed partial class StoryColony
                 j => { j["bed"] = bed.Pos.ToString(); j["s"] = 30; j["dist"] = 2; }, xp: 0);
         }
         if (_noBedAlerted.Add(p.Name)) Alert("info", $"{p.Display} has no bed: sleeping rough at home", p.Name);
-        return Hold($"sleeping, no bed ({hour:00}:00)", "sleeping", home, 30, "schedule");
+        return RestHold(p, live, $"sleeping, no bed ({hour:00}:00)", "sleeping", home, 30, "schedule"); // its own spot at home: never a pile
     }
 }

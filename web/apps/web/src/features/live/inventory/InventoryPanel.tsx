@@ -47,7 +47,7 @@ export function useBodyInventory(bot: string | null | undefined, enabled = true)
 }
 
 /** The item icon lookup for a version (null until its atlases load, or when the viewer can't load). */
-function useItemIcons(version: GameVersion | null | undefined): IconOf | null {
+export function useItemIcons(version: GameVersion | null | undefined): IconOf | null {
   const [icons, setIcons] = useState<{ v: GameVersion; of: IconOf } | null>(null);
   useEffect(() => {
     if (!version) return;
@@ -67,7 +67,7 @@ function abbrev(name: string): string {
   return (parts.length > 1 ? parts.map((p) => p[0]).join('') : name.slice(0, 2)).slice(0, 3).toUpperCase();
 }
 
-interface SlotProps {
+export interface SlotProps {
   cell: GridCell;
   version: BodyInventory['version'];
   icons: IconOf | null;
@@ -77,9 +77,21 @@ interface SlotProps {
   ghost?: ReactNode;
   label: string;
   onTip: (cell: GridCell | null, el: HTMLElement | null) => void;
+  /** Test id prefix (`inv-slot` by default; the container panel uses `ctr-slot`). */
+  testid?: string;
 }
 
-const Slot = memo(function Slot({ cell, version, icons, held, pulse, ghost, label, onTip }: SlotProps) {
+export const Slot = memo(function Slot({
+  cell,
+  version,
+  icons,
+  held,
+  pulse,
+  ghost,
+  label,
+  onTip,
+  testid = 'inv-slot',
+}: SlotProps) {
   const it = cell.item;
   // A damaged tool's meta is its damage, not a variant: its icon is the undamaged one.
   const url = it && icons ? icons(it.id, it.durability ? 0 : it.meta) : null;
@@ -91,7 +103,7 @@ const Slot = memo(function Slot({ cell, version, icons, held, pulse, ghost, labe
   return (
     <div
       className={cn(s.slot, held && s.held)}
-      data-testid={`inv-slot-${cell.index}`}
+      data-testid={`${testid}-${cell.index}`}
       data-slot={cell.index}
       data-item={it ? it.name : undefined}
       data-count={it ? it.count : undefined}
@@ -158,11 +170,12 @@ function sameSlot(a: SlotProps, b: SlotProps): boolean {
     a.pulse === b.pulse &&
     a.label === b.label &&
     a.onTip === b.onTip &&
+    a.testid === b.testid &&
     !!a.ghost === !!b.ghost
   );
 }
 
-function Tip({ item, at }: { item: InventorySlot; at: CSSProperties }) {
+export function Tip({ item, at }: { item: InventorySlot; at: CSSProperties }) {
   const [first, ...rest] = tooltipLines(item);
   return (
     <div className={s.tip} style={at} role="tooltip" data-testid="inv-tooltip">
@@ -174,6 +187,30 @@ function Tip({ item, at }: { item: InventorySlot; at: CSSProperties }) {
       ))}
     </div>
   );
+}
+
+/** The hover/focus tooltip of a grid of slots: anchored to the slot's outer edge (so it never runs off the panel) and above it,
+ * or below it for the top rows. `box` is the grid's root element. */
+export function useSlotTip() {
+  const box = useRef<HTMLDivElement>(null);
+  const [tip, setTip] = useState<{ index: number; at: CSSProperties } | null>(null);
+  const onTip = useCallback((cell: GridCell | null, el: HTMLElement | null) => {
+    const root = box.current;
+    if (!cell || !el || !root) return setTip(null);
+    const a = el.getBoundingClientRect(),
+      b = root.getBoundingClientRect();
+    const right = a.left - b.left > b.width / 2,
+      below = a.top - b.top < 64;
+    setTip({
+      index: cell.index,
+      at: {
+        ...(right ? { right: b.right - a.right } : { left: a.left - b.left }),
+        top: below ? a.bottom - b.top + 6 : a.top - b.top - 6,
+        transform: below ? undefined : 'translateY(-100%)',
+      },
+    });
+  }, []);
+  return { box, tip, onTip };
 }
 
 /** The grid itself (exported for tests and other panels). */
@@ -188,25 +225,7 @@ export function InventoryGrid({
 }) {
   const grid = useMemo(() => inventoryGrid(inv), [inv]);
   const icons = useItemIcons(inv.version ?? 'b1.8.1');
-  const box = useRef<HTMLDivElement>(null);
-  const [tip, setTip] = useState<{ index: number; at: CSSProperties } | null>(null);
-  const onTip = useCallback((cell: GridCell | null, el: HTMLElement | null) => {
-    const root = box.current;
-    if (!cell || !el || !root) return setTip(null);
-    // Anchored to the slot's outer edge (so it never runs off the panel) and above it, or below for the top rows.
-    const a = el.getBoundingClientRect(),
-      b = root.getBoundingClientRect();
-    const right = a.left - b.left > b.width / 2,
-      below = a.top - b.top < 64;
-    setTip({
-      index: cell.index,
-      at: {
-        ...(right ? { right: b.right - a.right } : { left: a.left - b.left }),
-        top: below ? a.bottom - b.top + 6 : a.top - b.top - 6,
-        transform: below ? undefined : 'translateY(-100%)',
-      },
-    });
-  }, []);
+  const { box, tip, onTip } = useSlotTip();
   const cells = [...grid.armor, ...(grid.offhand ? [grid.offhand] : []), ...grid.main.flat(), ...grid.hotbar];
   const tipItem = tip ? cells.find((c) => c.index === tip.index)?.item : null;
   const pulse = (i: number) => (changed?.has(i) ? (stamp ?? 0) : null);

@@ -30,7 +30,7 @@ import type {
   WorldIndex,
   WorldOverlays,
 } from '@mineclaw/contracts';
-import { mockInventory } from '@mineclaw/contracts/testing';
+import { mockContainer, mockContainers, mockInventory } from '@mineclaw/contracts/testing';
 import { iso, isoAgo, minsAgo, nowIso, pick, rng, T0 } from '../util';
 import { raptorLeaves, raptorParents } from './raptor';
 import { SCRIPT_CODE } from './scripts';
@@ -356,6 +356,16 @@ export const sim: Sim = {
 
 /** A body's inventory (the shared mock bodies: a b1.8.1 miner, a 1.12.2 nether scout, a farmer, the chop crew); counts move
  * with the simulation. A body not in game answers its last known inventory (`online: false`). */
+/** A container on the fixture island (or an unknown chest): the live one's counts move with the simulation. */
+export function container(dim: number, x: number, y: number, z: number) {
+  return mockContainer(dim, x, y, z, sim.tick);
+}
+
+/** The known containers in a box (map badges). */
+export function containers(dim: number, box: { x0: number; z0: number; x1: number; z1: number; y0?: number; y1?: number }, limit?: number) {
+  return mockContainers(dim, box, limit, sim.tick);
+}
+
 export function bodyInventory(b: MockBot): BodyInventory {
   const inv = mockInventory(b.name, BOTS.indexOf(b), sim.tick);
   return b.status === 'online' ? inv : { ...inv, online: false, at: Date.now() - 90_000 };

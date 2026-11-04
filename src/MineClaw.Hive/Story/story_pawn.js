@@ -4,13 +4,12 @@ const each = (list, f) => {
   for (const s of list || []) { const r = f(s); if (!ok(r)) return r }
   return { ok: true }
 }
-// Walk over first when the target is far: a block out of this body's view reads as air, and a tool acting on it then does nothing.
+// Walk over first: a block out of view reads as air.
 function reach(a, d) {
   if (!a || dist(pos(a)) <= d + 2) return { ok: true }
   return go(a, d)
 }
-// A tree from an empty inventory: chop_tree fells what it can reach of THAT tree (" only"). When some logs came down but not all,
-// make planks (2x2 grid: clutch and pillar blocks up high) and go once more at the lowest log left. The rest is a partial job.
+// THAT tree (" only"); some logs down: planks (clutch/pillar), once more at the lowest log left; the rest is partial.
 function chopTree(j) {
   const wood = j.wood || ['log']
   const held = () => wood.reduce((n, w) => n + inv(w), 0)
@@ -32,9 +31,9 @@ function chopTree(j) {
   }
   return { ok: true, partial: true, msg: 'partial: ' + got + ' log(s) taken; ' + ((r && r.msg) || 'the rest is out of reach') }
 }
-// Sleep at the bed (only at night: the server refuses a bed by day), else rest by it.
+// Bed at night (refused by day), else rest by it; no bed: its own spot.
 function sleepAt(j) {
-  const there = reach(j.bed || j.at, 2)
+  const there = j.bed ? reach(j.bed, 2) : j.at ? go(j.at, j.dist ?? 2) : { ok: true }
   if (j.bed && ok(there) && night()) use_block(j.bed)
   return wait(j.s || 5)
 }
@@ -70,6 +69,12 @@ function work(j) {
       if (ok(r) && j.replant && inv(j.replant) > 0) place(j.replant, a)
       return r
     }
+    case 'till': {
+      const there = reach(a, 3)
+      if (!ok(there)) return there
+      skill('hold_item', j.hoe)
+      return use(a)
+    }
     case 'collect': {
       const there = go(a, 1)
       const r = collect(j.r || 4)
@@ -89,8 +94,9 @@ function work(j) {
     case 'give': return handTo(j.to, j.item, j.n, { gather: false })
     case 'blueprint': return build(j.design)
     case 'sleep': return sleepAt(j)
-    case 'idle': case 'hold':
-      if (a) go(a, j.dist || 2)
+    case 'idle': return story.idle(j)
+    case 'hold':
+      if (a) go(a, j.dist ?? 2)
       return wait(j.s || 5)
     default: return { ok: true }
   }

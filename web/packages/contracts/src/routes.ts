@@ -187,6 +187,8 @@ import {
   StoryPauseRequest,
   StoryOnlineRequest,
   StoryOnlineResponse,
+  StoryPawnsRequest,
+  StoryPawnsResponse,
   StoryPrioritiesRequest,
   StoryRecipesQuery,
   StoryRecipesResponse,
@@ -215,6 +217,7 @@ import {
 import { LiveStreamQuery } from './sse.js';
 import { ChatAccepted, ChatRequest, FeedQuery, FeedResponse, BotNow } from './viewer.js';
 import { BodyInventory } from './inventory.js';
+import { ContainerBoxQuery, ContainerList, ContainerQuery, ContainerView } from './containers.js';
 import { VisionList, VisionListQuery, VisionRenderQuery, VisionSheetInfo, VisionSheetParams } from './vision.js';
 
 export type HttpMethod = 'GET' | 'POST';
@@ -950,6 +953,27 @@ export const ROUTES = {
     summary:
       'Block entities (sign text, bed colours, banners, skulls, flower pots, spawners) of some columns, hashed per column.',
   }),
+  'world.container': get('/api/world/container', {
+    access: 'viewer',
+    query: ContainerQuery,
+    response: ContainerView,
+    responseKind: 'json',
+    bridge: b('/v1/sup/world/containers'),
+    supervisor: '/api/world/containers?dim&x&y&z',
+    audit: null,
+    summary:
+      "One container's contents by any of its blocks (live while a body has it open, else the freshest look, memory or Story ledger; source unknown = never opened).",
+  }),
+  'world.containers': get('/api/world/containers', {
+    access: 'viewer',
+    query: ContainerBoxQuery,
+    response: ContainerList,
+    responseKind: 'json',
+    bridge: b('/v1/sup/world/containers'),
+    supervisor: '/api/world/containers?dim&x0&y0&z0&x1&y1&z1&limit',
+    audit: null,
+    summary: 'Known containers in a box (≤ 512 wide) with their top items, fill and freshness, for map badges; capped.',
+  }),
   'bots.tile': get('/api/bots/:bot/tile.png', {
     access: 'viewer',
     params: BotParams,
@@ -1244,6 +1268,20 @@ export const ROUTES = {
       'Brings offline pawns in now (null = every offline one): whitelisted again through main and (re)started, the player cap ' +
       'permitting; overCap uses the seats kept for offline regulars (can lock a regular out until a pawn leaves). 404 unknown colony or pawn.',
   }),
+  'story.pawns': post('/api/story/colonies/:id/pawns', {
+    access: 'story',
+    params: StoryColonyParams,
+    body: StoryPawnsRequest,
+    response: StoryPawnsResponse,
+    responseKind: 'json',
+    bridge: b('/v1/sup/story/colonies/{id}/pawns', 'POST'),
+    supervisor: '/api/story/colonies/{id}/pawns',
+    audit: 'story',
+    summary:
+      'Adds pawns (as many as the free seats allow now, never the seats kept for regulars; the rest join as seats free up; at most 12) ' +
+      'or removes one (its claims and bed go back, it stores its things, logs out and its account is released). The last pawn ' +
+      'cannot be removed. 404 unknown colony or pawn.',
+  }),
   'story.pause': post('/api/story/colonies/:id/pause', {
     access: 'story',
     params: StoryColonyParams,
@@ -1331,7 +1369,9 @@ export const ROUTES = {
     bridge: b('/v1/sup/story/colonies/{id}/zones', 'POST'),
     supervisor: '/api/story/colonies/{id}/zones',
     audit: 'story',
-    summary: 'Adds, removes or renames zones (home zones are the houses).',
+    summary:
+      'Adds, removes or renames zones (home zones are the houses); growing zones take a plant, sow and harvest (update), ' +
+      'and seek_seeds designates tall grass to cut (wheat) or queues a seed bill (pumpkin, melon).',
   }),
   'story.designations': post('/api/story/colonies/:id/designations', {
     access: 'story',

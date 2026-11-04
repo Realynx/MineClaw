@@ -35,6 +35,7 @@ import {
   type ViewMats,
 } from './math';
 import { anchorLift, bodyLook, hologramCells, type BodyLook } from './bodyLook';
+import { chestBadge, drawChestBadge, useContainerBadges } from './chestBadges';
 import { clusterFailed, placeLabels, type FailedCluster, type FailedMark, type PlacedLabel } from './failedLabels';
 import { type Selection } from './model';
 import {
@@ -325,6 +326,9 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
     result: null,
   });
   const chests = useRef<{ at: number; cells: Array<{ pos: V3; id: number }> }>({ at: 0, cells: [] });
+  // What the hive knows is in those chests (their fill, for the badges drawn when zoomed in).
+  const chestCells = useMemo(() => () => chests.current.cells, []);
+  const badges = useContainerBadges(chestCells);
   const mats = useRef<ViewMats | null>(null);
   const lastClick = useRef<{ t: number; name: string } | null>(null);
   const placed = useRef(false);
@@ -919,6 +923,11 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
             ctx.fillStyle = pri >= 3 ? '#ff9f43' : '#ffd166';
             ctx.fillRect(at.x + 9, at.y + 5 - i * 4, 3, 3);
           }
+        }
+        const known = cell > LABEL_ZOOM ? badges.current.get(k3(s ? s.chest : pos)) : undefined;
+        if (cell > LABEL_ZOOM && (s || !known || k3(known.pos) === k3(pos))) {
+          const badge = chestBadge(s, known, st?.categories); // one badge per container (a double chest's first half)
+          if (badge) drawChestBadge(ctx, at, badge);
         }
         if (sel) {
           ctx.strokeStyle = COLORS.select;

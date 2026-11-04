@@ -65,6 +65,12 @@ internal sealed class FakeStoryHost(FakeStoryWorld world) : IStoryHost
     /// <summary>Attack permits in force: (pawn, entity).</summary>
     public HashSet<(string Pawn, int Entity)> Permits { get; } = new();
     public void PermitAttack(string account, int entity, bool on) { if (on) Permits.Add((account, entity)); else Permits.Remove((account, entity)); }
+    /// <summary>Pawns released one by one (removed from the colony).</summary>
+    public List<string> ReleasedPawns { get; } = new();
+    public string? ReleasePawn(string account, string why) { ReleasedPawns.Add(account); Lives.Remove(account); return null; }
+    /// <summary>The server's seats (free, kept for regulars); null = unknown.</summary>
+    public (int Free, int Kept)? SeatsNow;
+    public (int Free, int Kept)? Seats() => SeatsNow;
 
     /// <summary>A pawn in game with <paramref name="inv"/> and a stone pickaxe (the fixture world's floor is stone, which takes one: a
     /// pawn without is <see cref="Bare"/>).</summary>
