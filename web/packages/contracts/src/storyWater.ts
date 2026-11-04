@@ -119,27 +119,25 @@ export function liquidFlow(
     }
   };
   const q: Array<[V3, number]> = [...cells].sort((p, r) => p[1] - r[1] || p[0] - r[0] || p[2] - r[2]).map((c) => [c, 0]);
-  while (q.length && spread.length < max) {
-    const [c, d] = q.shift()!;
-    const below: V3 = [c[0], c[1] - 1, c[2]];
-    if (open(below)) {
-      let f = below,
-        fallen = 1;
-      const mark = (x: V3) => {
-        if (seen.has(key(x))) return;
-        seen.add(key(x));
-        reachCell(x);
-      };
+  /** Falls straight down from `below` (12 at most); where it lands it spreads again. */
+  const fall = (below: V3) => {
+    let f = below,
+      fallen = 1;
+    const mark = (x: V3) => {
+      if (seen.has(key(x))) return;
+      seen.add(key(x));
+      reachCell(x);
+    };
+    mark(f);
+    while (fallen < maxFall && open([f[0], f[1] - 1, f[2]])) {
+      f = [f[0], f[1] - 1, f[2]];
       mark(f);
-      while (fallen < maxFall && open([f[0], f[1] - 1, f[2]])) {
-        f = [f[0], f[1] - 1, f[2]];
-        mark(f);
-        fallen++;
-      }
-      if (fallen < maxFall) q.push([f, 0]);
-      continue;
+      fallen++;
     }
-    if (d >= reach) continue;
+    if (fallen < maxFall) q.push([f, 0]);
+  };
+  /** Runs one step sideways into each open neighbour. */
+  const sideways = (c: V3, d: number) => {
     for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
       const n: V3 = [c[0] + dx, c[1], c[2] + dz];
       if (open(n) && !seen.has(key(n))) {
@@ -148,6 +146,12 @@ export function liquidFlow(
         q.push([n, d + 1]);
       }
     }
+  };
+  while (q.length && spread.length < max) {
+    const [c, d] = q.shift()!;
+    const below: V3 = [c[0], c[1] - 1, c[2]];
+    if (open(below)) fall(below);
+    else if (d < reach) sideways(c, d);
   }
   return { spread, touches };
 }
