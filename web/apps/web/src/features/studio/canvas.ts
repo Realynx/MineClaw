@@ -70,6 +70,41 @@ export interface Change {
   backward: Cell[];
 }
 
+/** An `apply` in progress: each touched cell's state before it (first touch) in touch order. */
+interface ApplyRun {
+  before: Map<number, number>;
+  touched: number[];
+  pairDoors: boolean;
+}
+
+function remember(run: ApplyRun, k: number, was: number) {
+  if (run.before.has(k)) return;
+  run.before.set(k, was);
+  run.touched.push(k);
+}
+
+/**
+ * The state a set makes: a block; air below ground digs; earth (or a removed block on a mine's bedrock, which never digs)
+ * below ground is ground again (-1); above ground both are plain air.
+ */
+function nextState(x: number, y: number, z: number, id: number, meta: number): number {
+  if (id > 0) return id * 16 + (meta & 15);
+  return (id === EARTH || bedrock(x, y, z)) && below(x, y, z) ? -1 : 0;
+}
+
+const stateCell = (x: number, y: number, z: number, v: number): Cell => (v < 0 ? [x, y, z, EARTH, 0] : [x, y, z, v >> 4, v & 15]);
+
+/** A neighbour chest facing `f` on side dx (else dz) faces across the pair (so the new chest takes its facing). */
+const acrossPair = (dx: number, f: string): boolean => (dx !== 0 ? f === 'north' || f === 'south' : f === 'east' || f === 'west');
+
+/** The four sides a chest pairs across. */
+const CHEST_SIDES: ReadonlyArray<readonly [number, number]> = [
+  [-1, 0],
+  [1, 0],
+  [0, -1],
+  [0, 1],
+];
+
 export class Canvas {
   /** key → id * 16 + meta. */
   readonly blocks = new Map<number, number>();
@@ -138,22 +173,18 @@ export class Canvas {
    */
   private chestMeta(x: number, y: number, z: number, id: number, meta: number): number {
     if (id !== 54 && id !== 146) return meta;
-    const sides: Array<[number, number]> = [
-      [-1, 0],
-      [1, 0],
-      [0, -1],
-      [0, 1],
-    ];
-    for (const [dx, dz] of sides) {
+    for (const [dx, dz] of CHEST_SIDES) {
       const [oid, ometa] = this.get(x + dx, y, z + dz);
       const f = oid === id ? facingOf(oid, ometa) : null;
-      if (!f) continue;
-      const paired = sides.some(([sx, sz]) => !(sx === -dx && sz === -dz) && this.get(x + dx + sx, y, z + dz + sz)[0] === id);
-      if (paired) continue;
-      const across = dx !== 0 ? f === 'north' || f === 'south' : f === 'east' || f === 'west';
-      return across ? ometa : meta;
+      if (!f || this.pairedAway(x + dx, y, z + dz, dx, dz, id)) continue;
+      return acrossPair(dx, f) ? ometa : meta;
     }
     return meta;
+  }
+
+  /** The chest at (x, y, z) already has a partner of kind `id` on a side other than the one back toward (−dx, −dz). */
+  private pairedAway(x: number, y: number, z: number, dx: number, dz: number, id: number): boolean {
+    return CHEST_SIDES.some(([sx, sz]) => !(sx === -dx && sz === -dz) && this.get(x + sx, y, z + sz)[0] === id);
   }
 
   /**
@@ -162,60 +193,60 @@ export class Canvas {
    * (what the bot's canvas does too).
    */
   apply(cells: readonly Cell[], pairDoors = true): Change {
-    const before = new Map<number, number>();
-    const touched: number[] = [];
-    const put = (k: number, next: number) => {
-      const [x, y, z] = posOf(k);
-      this.blocks.delete(k);
-      this.dug.delete(k);
-      if (next > 0) this.blocks.set(k, next);
-      else if (next === 0 && below(x, y, z)) this.dug.add(k);
-    };
-    const set = (x: number, y: number, z: number, id: number, meta: number) => {
-      if (!inside(x, y, z)) return;
-      const k = keyOf(x, y, z);
-      const old = this.state(k);
-      // Air below ground is dug; earth above ground is plain air. A mine's bedrock never digs (a block removed there is
-      // ground again).
-      const rock = id <= 0 && bedrock(x, y, z);
-      const next = id > 0 ? id * 16 + (meta & 15) : (id === EARTH || rock) && below(x, y, z) ? -1 : 0;
-      if (old === next) return;
-      if (!before.has(k)) {
-        before.set(k, old);
-        touched.push(k);
-      }
-      if (pairDoors && old > 0 && twoCell(old >> 4) && id !== old >> 4) {
-        const rel = firstHalfOf(old >> 4, old & 15) ?? partnerOf(old >> 4, old & 15);
-        const [ox, oy, oz] = rel ? [x + rel[0], y + rel[1], z + rel[2]] : [x, y, z];
-        const ok = rel && inside(ox, oy, oz) ? keyOf(ox, oy, oz) : -1;
-        const other = ok >= 0 ? this.blocks.get(ok) : undefined;
-        if (other !== undefined && other >> 4 === old >> 4) {
-          if (!before.has(ok)) {
-            before.set(ok, other);
-            touched.push(ok);
-          }
-          put(ok, bedrock(ox, oy, oz) ? -1 : 0);
-        }
-      }
-      put(k, next);
-    };
+    const run: ApplyRun = { before: new Map(), touched: [], pairDoors };
     for (const c of cells) {
       const meta = pairDoors && c[3] > 0 ? this.chestMeta(c[0], c[1], c[2], c[3], c[4]) : c[4];
-      set(c[0], c[1], c[2], c[3], meta);
+      this.setCell(run, c[0], c[1], c[2], c[3], meta);
       const p = pairDoors && c[3] > 0 ? partnerOf(c[3], meta) : null;
-      if (p) set(c[0] + p[0], c[1] + p[1], c[2] + p[2], c[3], p[3]);
+      if (p) this.setCell(run, c[0] + p[0], c[1] + p[1], c[2] + p[2], c[3], p[3]);
     }
+    return this.changeOf(run);
+  }
+
+  /** Sets one cell (out of the plot: skipped), first clearing the other half of a two-cell block it replaces. */
+  private setCell(run: ApplyRun, x: number, y: number, z: number, id: number, meta: number) {
+    if (!inside(x, y, z)) return;
+    const k = keyOf(x, y, z);
+    const old = this.state(k);
+    const next = nextState(x, y, z, id, meta);
+    if (old === next) return;
+    remember(run, k, old);
+    if (run.pairDoors && old > 0 && twoCell(old >> 4) && id !== old >> 4) this.clearPartner(run, x, y, z, old);
+    this.put(k, next);
+  }
+
+  /** Clears the other half of the two-cell block `old` at (x, y, z), when it is still there. */
+  private clearPartner(run: ApplyRun, x: number, y: number, z: number, old: number) {
+    const rel = firstHalfOf(old >> 4, old & 15) ?? partnerOf(old >> 4, old & 15);
+    if (!rel) return;
+    const [ox, oy, oz] = [x + rel[0], y + rel[1], z + rel[2]];
+    const ok = inside(ox, oy, oz) ? keyOf(ox, oy, oz) : -1;
+    const other = ok >= 0 ? this.blocks.get(ok) : undefined;
+    if (other === undefined || other >> 4 !== old >> 4) return;
+    remember(run, ok, other);
+    this.put(ok, bedrock(ox, oy, oz) ? -1 : 0);
+  }
+
+  /** Writes a state: a block, air (dug when below ground) or earth (-1: neither a block nor dug). */
+  private put(k: number, next: number) {
+    const [x, y, z] = posOf(k);
+    this.blocks.delete(k);
+    this.dug.delete(k);
+    if (next > 0) this.blocks.set(k, next);
+    else if (next === 0 && below(x, y, z)) this.dug.add(k);
+  }
+
+  /** What the run really changed (cells as they became) and its inverse (as they were). */
+  private changeOf(run: ApplyRun): Change {
     const forward: Cell[] = [];
     const backward: Cell[] = [];
-    const cell = (x: number, y: number, z: number, v: number): Cell =>
-      v < 0 ? [x, y, z, EARTH, 0] : [x, y, z, v >> 4, v & 15];
-    for (const k of touched) {
+    for (const k of run.touched) {
       const [x, y, z] = posOf(k);
       const now = this.state(k);
-      const was = before.get(k)!;
+      const was = run.before.get(k)!;
       if (now === was) continue;
-      forward.push(cell(x, y, z, now));
-      backward.push(cell(x, y, z, was));
+      forward.push(stateCell(x, y, z, now));
+      backward.push(stateCell(x, y, z, was));
     }
     return { forward, backward };
   }
@@ -403,25 +434,27 @@ export function connected(c: Canvas, start: V3, same: boolean, limit = 50_000): 
   const out = new Set<number>();
   const startV = c.blocks.get(keyOf(...start));
   if (startV === undefined) return out;
-  const want = startV >> 4;
+  const want = same ? startV >> 4 : null;
   const stack = [keyOf(...start)];
   out.add(stack[0]!);
   while (stack.length && out.size < limit) {
     const [x, y, z] = posOf(stack.pop()!);
     for (const [dx, dy, dz] of N6) {
-      const nx = x + dx,
-        ny = y + dy,
-        nz = z + dz;
-      if (!inside(nx, ny, nz)) continue;
-      const k = keyOf(nx, ny, nz);
-      if (out.has(k)) continue;
-      const v = c.blocks.get(k);
-      if (v === undefined || (same && v >> 4 !== want)) continue;
+      const k = joinedKey(c, x + dx, y + dy, z + dz, want);
+      if (k < 0 || out.has(k)) continue;
       out.add(k);
       stack.push(k);
     }
   }
   return out;
+}
+
+/** The key of a block at (x, y, z) inside the plot (of type `want` when given), or -1. */
+function joinedKey(c: Canvas, x: number, y: number, z: number, want: number | null): number {
+  if (!inside(x, y, z)) return -1;
+  const k = keyOf(x, y, z);
+  const v = c.blocks.get(k);
+  return v === undefined || (want !== null && v >> 4 !== want) ? -1 : k;
 }
 
 export const N6: ReadonlyArray<V3> = [

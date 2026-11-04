@@ -53,29 +53,48 @@ public sealed partial class PerceptionCritic(Func<PerceptionService?> service, U
             r = await model.AskAsync(new PerceptionQuery(picture.Png, picture.Width, picture.Height, Question(description), picture.Legend), ct).ConfigureAwait(false);
         }
         catch (Exception ex) when (!ct.IsCancellationRequested) { return Critique.Skip("perception failed: " + ex.GetType().Name); }
-        decimal usd = 0;
-        if (r.Usage != LlmUsage.Zero)
-            try { usd = usage?.Record(r.Model, r.Usage, label: UsageTracker.PerceptionLabel) ?? 0; } catch (Exception) { }
+        decimal usd = Book(r);
         if (!r.Ok) return new Critique(true, "", [], usd, Skipped: true) { Why = r.Error };
-        var issues = new List<string>();
-        foreach (var f in r.Facts.Take(3))
-        {
-            var claim = f.Claim.Trim();
-            if (claim.Length == 0) continue;
-            // Coordinates the model read off the rulers, as the author's own (local) coords when they fall on the build.
-            var at = f.Coords.Select(c => new BlockPos(c.X, c.Y, c.Z)).Where(p => plan.Inside(p)).Select(plan.Local).Take(2).ToList();
-            issues.Add(at.Count > 0 ? $"{claim} @{string.Join(" ", at)}" : claim);
-        }
-        var answer = (r.Answer ?? "").Trim();
-        bool ok = OkRx().IsMatch(answer) && issues.Count == 0 || answer.Length == 0 && issues.Count == 0;
-        var text = ok ? "ok" : string.Join("; ", new[] { answer }.Where(a => a.Length > 0 && !OkRx().IsMatch(a)).Concat(issues));
-        if (text.Length > 240) text = text[..239] + "…";
-        var c = new Critique(ok, text, issues, usd);
+        var c = Judge(r, plan, usd);
         lock (_lock)
         {
             if (_cache.Count > 64) _cache.Clear();
             _cache[key] = c;
         }
         return c;
+    }
+
+    /// <summary>Books the look under the perception tier: its cost, or 0.</summary>
+    private decimal Book(PerceptionResult r)
+    {
+        if (r.Usage == LlmUsage.Zero) return 0;
+        try { return usage?.Record(r.Model, r.Usage, label: UsageTracker.PerceptionLabel) ?? 0; }
+        catch (Exception) { return 0; }
+    }
+
+    /// <summary>ok (an ok word or nothing, and no issues), else the main problem and the issues, at most 240 characters.</summary>
+    private static Critique Judge(PerceptionResult r, VoxelPlan plan, decimal usd)
+    {
+        var issues = Issues(r.Facts, plan);
+        var answer = (r.Answer ?? "").Trim();
+        bool ok = OkRx().IsMatch(answer) && issues.Count == 0 || answer.Length == 0 && issues.Count == 0;
+        var text = ok ? "ok" : string.Join("; ", new[] { answer }.Where(a => a.Length > 0 && !OkRx().IsMatch(a)).Concat(issues));
+        if (text.Length > 240) text = text[..239] + "…";
+        return new Critique(ok, text, issues, usd);
+    }
+
+    /// <summary>Up to three facts' claims, each with the coordinates the model read off the rulers, as the author's own (local)
+    /// coords when they fall on the build.</summary>
+    private static List<string> Issues(IReadOnlyList<PerceptionFact> facts, VoxelPlan plan)
+    {
+        var issues = new List<string>();
+        foreach (var f in facts.Take(3))
+        {
+            var claim = f.Claim.Trim();
+            if (claim.Length == 0) continue;
+            var at = f.Coords.Select(c => new BlockPos(c.X, c.Y, c.Z)).Where(p => plan.Inside(p)).Select(plan.Local).Take(2).ToList();
+            issues.Add(at.Count > 0 ? $"{claim} @{string.Join(" ", at)}" : claim);
+        }
+        return issues;
     }
 }

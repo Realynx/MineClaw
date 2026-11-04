@@ -271,54 +271,7 @@ export function MinePanel(p: MinePanelProps) {
         </form>
       </Section>
       <Section title="Ore heights">
-        <OreRuler terrain={terrain} top={top} level={level} onLevel={p.onLevel} />
-        <label className="mt-1.5 flex items-center gap-1.5 text-[11px] text-muted" title="Layers above this one are cut away">
-          Show to y
-          <input
-            type="range"
-            min={1}
-            max={127}
-            value={level ?? top}
-            onChange={(e) => p.onLevel(Number(e.target.value))}
-            aria-label="Underground level"
-            className="min-w-0 flex-1"
-          />
-          <span className="w-7 text-right font-mono tabular-nums">{level ?? '-'}</span>
-        </label>
-        <div className="mt-1 flex items-center justify-between">
-          <span className="text-[11px] text-muted">
-            {level === null ? 'Click the ruler, drag the slider or press K' : `At y ${level}:`}
-          </span>
-          <button
-            type="button"
-            aria-pressed={p.xray}
-            onClick={() => p.onXray(!p.xray)}
-            className={cn(
-              'flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px]',
-              p.xray ? 'bg-accent text-white' : 'border border-border text-muted hover:bg-surface-2',
-            )}
-            title="X-ray: show the generated ores through the stone"
-          >
-            <Eye className="size-3" /> X-ray
-          </button>
-        </div>
-        {readout ? (
-          <ul className="mt-1 space-y-0.5" data-testid="level-readout">
-            {readout.map((r) => (
-              <li key={r.ore.id} className={cn('flex items-center gap-1.5', !r.inBand && 'opacity-40')}>
-                <span className="inline-block size-2 rounded-full" style={{ background: r.ore.color ?? '#888' }} />
-                <span className="flex-1">
-                  {r.ore.name}
-                  {r.best ? ' ★' : ''}
-                </span>
-                <span className="font-mono text-[10px] text-muted">
-                  {r.inBand ? (r.weight < 1 ? `${Math.round(r.weight * 100)}%` : 'in band') : 'out'} · {r.count}
-                </span>
-              </li>
-            ))}
-            <li className="text-[10px] text-subtle">band density here · generated ores in this layer of the plot</li>
-          </ul>
-        ) : null}
+        <OreHeights terrain={terrain} top={top} level={level} readout={readout} xray={p.xray} onLevel={p.onLevel} onXray={p.onXray} />
       </Section>
       <Section title="Spiral shaft">
         <div className="grid grid-cols-2 gap-x-2 gap-y-1">
@@ -488,51 +441,128 @@ export function MinePanel(p: MinePanelProps) {
             </li>
           ))}
         </ul>
-        {p.preferredFor ? (
-          <p className="mt-1 text-[11px] text-ok">This design is tagged preferred for {p.preferredFor}.</p>
-        ) : null}
+        <PreferredNote preferredFor={p.preferredFor} />
       </Section>
       <Section title="Dig estimate">
-        <p className="text-[11px] text-fg" data-testid="mine-stats">
-          {stats.toMine} blocks to mine
-          {stats.yRange ? ` · y ${stats.yRange.min}–${stats.yRange.max}` : ''}
-        </p>
-        {stats.materials.length ? (
-          <ul className="mt-1 space-y-0.5">
-            {stats.materials.slice(0, 8).map((m) => (
-              <li key={m.name} className="flex justify-between">
-                <span>{m.name}</span>
-                <span className="font-mono text-muted">{m.count}</span>
-              </li>
-            ))}
-          </ul>
-        ) : null}
-        <table className="mt-1.5 w-full text-[11px]">
-          <thead>
-            <tr className="text-left text-subtle">
-              <th className="font-normal">Ore (band)</th>
-              <th className="text-right font-normal">mined</th>
-              <th className="text-right font-normal">in walls</th>
-            </tr>
-          </thead>
-          <tbody>
-            {stats.ores.map((o) => (
-              <tr key={o.ore.id}>
-                <td>
-                  <span
-                    className="mr-1 inline-block size-2 rounded-full"
-                    style={{ background: `#${oreColour(o.ore).toString(16).padStart(6, '0')}` }}
-                  />
-                  {o.ore.id} <span className="text-subtle">y{o.ore.min}–{o.ore.max}</span>
-                </td>
-                <td className="text-right font-mono">{o.mined}</td>
-                <td className="text-right font-mono">{o.exposed}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        <p className="mt-1 text-[10px] text-subtle">Estimated from the generated terrain; the real world will differ.</p>
+        <DigEstimate stats={stats} />
       </Section>
     </aside>
   );
+}
+
+/** The ore ruler, the level slider, X-ray, and the ores at the level (band density, count here). */
+function OreHeights(p: {
+  terrain: MinePanelProps['terrain'];
+  top: number;
+  level: number | null;
+  readout: ReturnType<typeof levelOres> | null;
+  xray: boolean;
+  onLevel: (y: number) => void;
+  onXray: (on: boolean) => void;
+}) {
+  const { terrain, top, level, readout } = p;
+  return (
+    <>
+    <OreRuler terrain={terrain} top={top} level={level} onLevel={p.onLevel} />
+    <label className="mt-1.5 flex items-center gap-1.5 text-[11px] text-muted" title="Layers above this one are cut away">
+      Show to y
+      <input
+        type="range"
+        min={1}
+        max={127}
+        value={level ?? top}
+        onChange={(e) => p.onLevel(Number(e.target.value))}
+        aria-label="Underground level"
+        className="min-w-0 flex-1"
+      />
+      <span className="w-7 text-right font-mono tabular-nums">{level ?? '-'}</span>
+    </label>
+    <div className="mt-1 flex items-center justify-between">
+      <span className="text-[11px] text-muted">
+        {level === null ? 'Click the ruler, drag the slider or press K' : `At y ${level}:`}
+      </span>
+      <button
+        type="button"
+        aria-pressed={p.xray}
+        onClick={() => p.onXray(!p.xray)}
+        className={cn(
+          'flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px]',
+          p.xray ? 'bg-accent text-white' : 'border border-border text-muted hover:bg-surface-2',
+        )}
+        title="X-ray: show the generated ores through the stone"
+      >
+        <Eye className="size-3" /> X-ray
+      </button>
+    </div>
+    {readout ? (
+      <ul className="mt-1 space-y-0.5" data-testid="level-readout">
+        {readout.map((r) => (
+          <li key={r.ore.id} className={cn('flex items-center gap-1.5', !r.inBand && 'opacity-40')}>
+            <span className="inline-block size-2 rounded-full" style={{ background: r.ore.color ?? '#888' }} />
+            <span className="flex-1">
+              {r.ore.name}
+              {r.best ? ' ★' : ''}
+            </span>
+            <span className="font-mono text-[10px] text-muted">
+              {r.inBand ? (r.weight < 1 ? `${Math.round(r.weight * 100)}%` : 'in band') : 'out'} · {r.count}
+            </span>
+          </li>
+        ))}
+        <li className="text-[10px] text-subtle">band density here · generated ores in this layer of the plot</li>
+      </ul>
+    ) : null}
+    </>
+  );
+}
+
+/** The dig estimate: blocks to mine and their y range, materials, ores mined and exposed. */
+function DigEstimate({ stats }: { stats: ReturnType<typeof mineStats> }) {
+  return (
+    <>
+    <p className="text-[11px] text-fg" data-testid="mine-stats">
+      {stats.toMine} blocks to mine
+      {stats.yRange ? ` · y ${stats.yRange.min}–${stats.yRange.max}` : ''}
+    </p>
+    {stats.materials.length ? (
+      <ul className="mt-1 space-y-0.5">
+        {stats.materials.slice(0, 8).map((m) => (
+          <li key={m.name} className="flex justify-between">
+            <span>{m.name}</span>
+            <span className="font-mono text-muted">{m.count}</span>
+          </li>
+        ))}
+      </ul>
+    ) : null}
+    <table className="mt-1.5 w-full text-[11px]">
+      <thead>
+        <tr className="text-left text-subtle">
+          <th className="font-normal">Ore (band)</th>
+          <th className="text-right font-normal">mined</th>
+          <th className="text-right font-normal">in walls</th>
+        </tr>
+      </thead>
+      <tbody>
+        {stats.ores.map((o) => (
+          <tr key={o.ore.id}>
+            <td>
+              <span
+                className="mr-1 inline-block size-2 rounded-full"
+                style={{ background: `#${oreColour(o.ore).toString(16).padStart(6, '0')}` }}
+              />
+              {o.ore.id} <span className="text-subtle">y{o.ore.min}–{o.ore.max}</span>
+            </td>
+            <td className="text-right font-mono">{o.mined}</td>
+            <td className="text-right font-mono">{o.exposed}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+    <p className="mt-1 text-[10px] text-subtle">Estimated from the generated terrain; the real world will differ.</p>
+    </>
+  );
+}
+
+function PreferredNote({ preferredFor }: { preferredFor: string | null | undefined }) {
+  if (!preferredFor) return null;
+  return <p className="mt-1 text-[11px] text-ok">This design is tagged preferred for {preferredFor}.</p>;
 }

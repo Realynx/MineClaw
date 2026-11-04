@@ -10,6 +10,12 @@ import { flattenHive, KIND_LABEL } from './common';
 
 const kindIcon = { main: Crown, hive: Brain, subhive: GitBranch, script: Code2 } as const;
 
+/** Whose brain drives a body: its owner's (a subhive), its own (a hive). */
+function BrainNote({ node }: { node: HiveTreeNode }) {
+  if (node.kind === 'subhive' && node.owner) return <span className="text-subtle"> · driven by {node.owner}’s brain</span>;
+  return node.kind === 'hive' && node.brain ? <span className="text-subtle"> · own brain</span> : null;
+}
+
 function Row({ node, depth, last }: { node: HiveTreeNode; depth: number; last: boolean }) {
   const Icon = kindIcon[node.kind];
   return (
@@ -31,8 +37,7 @@ function Row({ node, depth, last }: { node: HiveTreeNode; depth: number; last: b
             </div>
             <div className="truncate text-xs text-muted">
               {node.task ?? 'idle'}
-              {node.kind === 'subhive' && node.owner ? <span className="text-subtle"> · driven by {node.owner}’s brain</span> : null}
-              {node.kind === 'hive' && node.brain ? <span className="text-subtle"> · own brain</span> : null}
+              <BrainNote node={node} />
             </div>
           </div>
           <span className="hidden text-xs text-subtle sm:block">{node.state}</span>

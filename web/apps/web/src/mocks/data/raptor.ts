@@ -87,6 +87,18 @@ const L1 = 48;
 const L2 = 8;
 let roots: number[] = [];
 
+/** A leaf's doc ref prefix: notes and structures have their own, other kinds their first three letters. */
+function refPrefix(kind: string): string {
+  if (kind === 'note') return 'note';
+  return kind === 'structure' ? 'st' : kind.slice(0, 3);
+}
+
+/** What a layer-1 cluster of a category is mostly about. */
+const CAT_BLURB: Record<string, string> = {
+  Fact: 'Mostly preferences of Fox and Robin.',
+  World: 'Places and builds around the island.',
+};
+
 (function build() {
   // Layer 1 clusters each lean to one category.
   const l1Cat: number[] = Array.from({ length: L1 }, (_, i) => (i * 5 + Math.floor(i / 7)) % CATS.length);
@@ -105,7 +117,7 @@ let roots: number[] = [];
       text: `${title}. ${pick(r, ['Noted while working the generator.', 'Fox was nearby.', 'Robin mentioned it in chat.', 'Seen during the morning loop.'])}`,
       category: c.cat,
       docKind: c.kind,
-      docRef: `${c.kind === 'note' ? 'note' : c.kind === 'structure' ? 'st' : c.kind.slice(0, 3)}:${i + 1}`,
+      docRef: `${refPrefix(c.kind)}:${i + 1}`,
       tokens: 30 + Math.floor(r() * 120),
       newest: minsAgo(age),
       terms: [title.split(' ')[0]!.toLowerCase()],
@@ -130,7 +142,7 @@ let roots: number[] = [];
       parents: [parent],
       children: kids,
       title: `${terms.join(' · ')}`,
-      text: `Summary of ${kids.length} memories about ${terms.join(', ')}. ${c.cat === 'Fact' ? 'Mostly preferences of Fox and Robin.' : c.cat === 'World' ? 'Places and builds around the island.' : 'Things that happened around the generator and farms.'}`,
+      text: `Summary of ${kids.length} memories about ${terms.join(', ')}. ${CAT_BLURB[c.cat] ?? 'Things that happened around the generator and farms.'}`,
       category: c.cat,
       docKind: 'summary',
       docRef: `raptor:${id}`,

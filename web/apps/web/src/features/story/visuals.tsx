@@ -87,6 +87,29 @@ const SKIN = ['#f2d2b6', '#e3b48f', '#c98e66', '#9c6a48', '#6e4a33'];
 const HAIR = ['#2b1f17', '#5a3a22', '#a2652f', '#d9b25f', '#e8e2d0', '#7d2d24', '#3b4a6b'];
 
 /** A blocky face drawn from the name: skin, hair colour and cut, eyes; the back is the pawn's colour. */
+function faceOf(name: string): { skin: string; hair: string; cut: number; eye: string } {
+  const h = hashOf(name);
+  return {
+    skin: SKIN[h % SKIN.length]!,
+    hair: HAIR[(h >> 4) % HAIR.length]!,
+    cut: (h >> 8) % 4,
+    eye: (h >> 12) % 3 === 0 ? '#3d6fb5' : (h >> 12) % 3 === 1 ? '#4a7d3a' : '#4a3424',
+  };
+}
+
+/** The hair: a fringe (short for cut 2), with sides (cut 0), a wide band (cut 1) or a parting (cut 3). */
+function Hair({ cut, hair }: { cut: number; hair: string }) {
+  return (
+    <>
+      <rect x="4" y="3" width="8" height={cut === 2 ? 1 : 2} fill={hair} />
+      {cut === 0 ? <rect x="4" y="5" width="1" height="3" fill={hair} /> : null}
+      {cut === 0 ? <rect x="11" y="5" width="1" height="3" fill={hair} /> : null}
+      {cut === 1 ? <rect x="3" y="4" width="10" height="2" fill={hair} /> : null}
+      {cut === 3 ? <rect x="4" y="5" width="2" height="1" fill={hair} /> : null}
+    </>
+  );
+}
+
 /** A pawn's pixel portrait (pure by name: memoised, the colonist bar re-renders on every state poll). */
 export const Avatar = memo(function Avatar({
   name,
@@ -99,11 +122,7 @@ export const Avatar = memo(function Avatar({
   ai?: boolean;
   className?: string;
 }) {
-  const h = hashOf(name);
-  const skin = SKIN[h % SKIN.length]!;
-  const hair = HAIR[(h >> 4) % HAIR.length]!;
-  const cut = (h >> 8) % 4;
-  const eye = (h >> 12) % 3 === 0 ? '#3d6fb5' : (h >> 12) % 3 === 1 ? '#4a7d3a' : '#4a3424';
+  const { skin, hair, cut, eye } = faceOf(name);
   const back = ai ? '#2a2445' : pawnColor(name);
   return (
     <svg
@@ -116,12 +135,7 @@ export const Avatar = memo(function Avatar({
     >
       <rect width="16" height="16" fill={back} opacity={ai ? 1 : 0.85} />
       <rect x="4" y="3" width="8" height="9" fill={skin} />
-      {/* hair */}
-      <rect x="4" y="3" width="8" height={cut === 2 ? 1 : 2} fill={hair} />
-      {cut === 0 ? <rect x="4" y="5" width="1" height="3" fill={hair} /> : null}
-      {cut === 0 ? <rect x="11" y="5" width="1" height="3" fill={hair} /> : null}
-      {cut === 1 ? <rect x="3" y="4" width="10" height="2" fill={hair} /> : null}
-      {cut === 3 ? <rect x="4" y="5" width="2" height="1" fill={hair} /> : null}
+      <Hair cut={cut} hair={hair} />
       {/* eyes and mouth */}
       <rect x="5" y="7" width="2" height="1" fill="#fff" />
       <rect x="9" y="7" width="2" height="1" fill="#fff" />

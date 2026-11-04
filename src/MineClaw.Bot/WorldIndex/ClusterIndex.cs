@@ -108,6 +108,30 @@ internal sealed class ClusterIndex
         var removed = new List<string>();
         if (_dirty.Count == 0 && _touched.Count == 0) return (changed, removed);
 
+        var affected = AffectedKeys();
+        var seeds = Seeds(affected);
+        var visited = new HashSet<BlockPos>();
+        var components = new List<HashSet<BlockPos>>();
+        var queue = new Queue<BlockPos>();
+        foreach (var s in seeds)
+            if (visited.Add(s)) components.Add(Flood(s, visited, queue, affected)); // reaching an untouched cluster merges it
+        CoverPulledIn(affected, visited, queue, components);
+
+        var (compKey, usedKeys) = MatchKeys(components);
+        DropOldKeys(affected, usedKeys, removed);
+        AssignKeys(components, compKey, usedKeys, newKey, changed);
+        // Cells that left the layer keep no owner.
+        foreach (var d in _dirty) if (!_cells.Contains(d)) _owner.Remove(d);
+        foreach (var t in _touched)
+            if (_clusters.TryGetValue(t, out var cells) && changed.All(c => c.Key != t)) changed.Add(new ClusterChange(t, cells, false));
+        _dirty.Clear();
+        _touched.Clear();
+        return (changed, removed);
+    }
+
+    /// <summary>The clusters owning a dirty cell or one next to it.</summary>
+    private HashSet<string> AffectedKeys()
+    {
         var affected = new HashSet<string>(StringComparer.Ordinal);
         foreach (var d in _dirty)
         {
@@ -115,54 +139,53 @@ internal sealed class ClusterIndex
             foreach (var o in _offsets)
                 if (_owner.TryGetValue(d + o, out var k2)) affected.Add(k2);
         }
+        return affected;
+    }
 
+    /// <summary>Dirty cells still in the layer, then every cell of the affected clusters.</summary>
+    private List<BlockPos> Seeds(HashSet<string> affected)
+    {
         var seeds = new List<BlockPos>();
         foreach (var d in _dirty) if (_cells.Contains(d)) seeds.Add(d);
         foreach (var k in affected)
             foreach (var c in ClusterCells(k)) if (_cells.Contains(c)) seeds.Add(c);
+        return seeds;
+    }
 
-        var visited = new HashSet<BlockPos>();
-        var components = new List<HashSet<BlockPos>>();
-        var queue = new Queue<BlockPos>();
-        foreach (var s in seeds)
+    /// <summary>The connected component of <paramref name="start"/> (already visited); every owned cell it reaches adds its
+    /// cluster to <paramref name="reached"/> when given.</summary>
+    private HashSet<BlockPos> Flood(BlockPos start, HashSet<BlockPos> visited, Queue<BlockPos> queue, HashSet<string>? reached)
+    {
+        var comp = new HashSet<BlockPos> { start };
+        queue.Enqueue(start);
+        while (queue.Count > 0)
         {
-            if (!visited.Add(s)) continue;
-            var comp = new HashSet<BlockPos> { s };
-            queue.Enqueue(s);
-            while (queue.Count > 0)
+            var c = queue.Dequeue();
+            if (reached != null && _owner.TryGetValue(c, out var ok)) reached.Add(ok);
+            foreach (var o in _offsets)
             {
-                var c = queue.Dequeue();
-                if (_owner.TryGetValue(c, out var ok)) affected.Add(ok); // reached an untouched cluster: it merges
-                foreach (var o in _offsets)
-                {
-                    var n = c + o;
-                    if (_cells.Contains(n) && visited.Add(n)) { comp.Add(n); queue.Enqueue(n); }
-                }
+                var n = c + o;
+                if (_cells.Contains(n) && visited.Add(n)) { comp.Add(n); queue.Enqueue(n); }
             }
-            components.Add(comp);
         }
-        // Cells of clusters pulled in by the walk above but not seeded must still be covered.
+        return comp;
+    }
+
+    /// <summary>Cells of clusters pulled in by the walk but not seeded must still be covered.</summary>
+    private void CoverPulledIn(HashSet<string> affected, HashSet<BlockPos> visited, Queue<BlockPos> queue, List<HashSet<BlockPos>> components)
+    {
         foreach (var k in affected.ToList())
             foreach (var c in ClusterCells(k))
             {
                 if (!_cells.Contains(c) || visited.Contains(c)) continue;
-                var comp = new HashSet<BlockPos>();
-                queue.Enqueue(c);
                 visited.Add(c);
-                comp.Add(c);
-                while (queue.Count > 0)
-                {
-                    var x = queue.Dequeue();
-                    foreach (var o in _offsets)
-                    {
-                        var n = x + o;
-                        if (_cells.Contains(n) && visited.Add(n)) { comp.Add(n); queue.Enqueue(n); }
-                    }
-                }
-                components.Add(comp);
+                components.Add(Flood(c, visited, queue, null));
             }
+    }
 
-        // Greedy overlap matching: biggest overlaps first, each old key used once.
+    /// <summary>Greedy overlap matching: biggest overlaps first, each old key used once.</summary>
+    private (string?[] CompKey, HashSet<string> Used) MatchKeys(List<HashSet<BlockPos>> components)
+    {
         var pairs = new List<(int Comp, string Key, int Overlap)>();
         for (int i = 0; i < components.Count; i++)
         {
@@ -176,15 +199,27 @@ internal sealed class ClusterIndex
         var usedKeys = new HashSet<string>(StringComparer.Ordinal);
         foreach (var (ci, k, _) in pairs)
             if (compKey[ci] == null && !usedKeys.Contains(k)) { compKey[ci] = k; usedKeys.Add(k); }
+        return (compKey, usedKeys);
+    }
 
+    /// <summary>The affected clusters' old ownership goes; keys no component kept are reported removed.</summary>
+    private void DropOldKeys(HashSet<string> affected, HashSet<string> usedKeys, List<string> removed)
+    {
         foreach (var k in affected)
         {
             foreach (var c in ClusterCells(k)) if (_owner.TryGetValue(c, out var ok) && ok == k) _owner.Remove(c);
             _clusters.Remove(k);
             if (!usedKeys.Contains(k)) removed.Add(k);
         }
-        // Components keeping an old key first, then brand-new ones: a fresh key must never take a key another component of
-        // this pass still holds (that left cells owned by a key whose cluster was later replaced: KeyNotFound next pass).
+    }
+
+    /// <summary>
+    /// Components keeping an old key first, then brand-new ones: a fresh key must never take a key another component of this
+    /// pass still holds (that left cells owned by a key whose cluster was later replaced: KeyNotFound next pass).
+    /// </summary>
+    private void AssignKeys(List<HashSet<BlockPos>> components, string?[] compKey, HashSet<string> usedKeys,
+        Func<HashSet<BlockPos>, string> newKey, List<ClusterChange> changed)
+    {
         foreach (var i in Enumerable.Range(0, components.Count).OrderBy(i => compKey[i] == null ? 1 : 0))
         {
             bool isNew = compKey[i] == null;
@@ -194,13 +229,6 @@ internal sealed class ClusterIndex
             foreach (var c in components[i]) _owner[c] = key;
             changed.Add(new ClusterChange(key, components[i], isNew));
         }
-        // Cells that left the layer keep no owner.
-        foreach (var d in _dirty) if (!_cells.Contains(d)) _owner.Remove(d);
-        foreach (var t in _touched)
-            if (_clusters.TryGetValue(t, out var cells) && changed.All(c => c.Key != t)) changed.Add(new ClusterChange(t, cells, false));
-        _dirty.Clear();
-        _touched.Clear();
-        return (changed, removed);
     }
 
     private IEnumerable<BlockPos> ClusterCells(string key) => _clusters.TryGetValue(key, out var cells) ? cells : [];

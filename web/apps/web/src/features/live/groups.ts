@@ -34,6 +34,12 @@ const byShort = (a: BotStatusView, b: BotStatusView) => shortNum(a) - shortNum(b
  * Groups every body by the hive that drives it: main (with main's own subhive and script bodies), then each hive with its
  * bodies. A hive's sub-hives (a hive owned by a hive) get a group of their own after their parent. Pure (unit-tested).
  */
+/** The group a driven body joins: its owner's when that is a hive (or not listed at all), else main's. */
+function homeOf(b: BotStatusView, main: string, kind: ReadonlyMap<string, string>, tree: ReadonlyMap<string, HiveTreeNode>): string {
+  const owner = ownerOf(b, main, tree.get(b.name)) ?? main;
+  return kind.get(owner) === 'hive' || (owner !== main && !kind.has(owner)) ? owner : main;
+}
+
 export function groupBodies(
   bots: readonly BotStatusView[],
   main: string,
@@ -47,19 +53,14 @@ export function groupBodies(
     return g;
   };
   group(main);
-  for (const b of bots) {
+  // main's body heads main's group, a hive's its own; any other body joins the group of the hive that drives it
+  const place = (b: BotStatusView) => {
     const k = kind.get(b.name);
-    if (b.name === main || k === 'main') {
-      group(main).head = b;
-      continue;
-    }
-    if (k === 'hive') {
-      group(b.name).head = b;
-      continue;
-    }
-    const owner = ownerOf(b, main, tree.get(b.name)) ?? main;
-    group(kind.get(owner) === 'hive' || (owner !== main && !kind.has(owner)) ? owner : main).bodies.push(b);
-  }
+    if (b.name === main || k === 'main') group(main).head = b;
+    else if (k === 'hive') group(b.name).head = b;
+    else group(homeOf(b, main, kind, tree)).bodies.push(b);
+  };
+  for (const b of bots) place(b);
   // Order: main, then hives depth-first in name order (a hive owned by a hive follows its parent).
   const parentOf = (id: string) => {
     const head = groups.get(id)?.head;

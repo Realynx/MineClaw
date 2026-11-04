@@ -1,0 +1,243 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`heat from the server table and context staleness (golden, pinned before they were split) > reads the same last access and staleness for every filter 1`] = `
+[
+  {
+    "last": [
+      [
+        1,
+        {
+          "at": 1793534391000,
+          "brain": "maid",
+        },
+      ],
+      [
+        2,
+        {
+          "at": 1793534396000,
+          "brain": "",
+        },
+      ],
+      [
+        4,
+        {
+          "at": 1793534330000,
+          "brain": "main",
+        },
+      ],
+      [
+        5,
+        {
+          "at": null,
+          "brain": "x",
+        },
+      ],
+    ],
+    "stale": [
+      [
+        1,
+        {
+          "brain": "main",
+          "evicted": false,
+          "stalenessS": 30,
+        },
+      ],
+      [
+        2,
+        {
+          "brain": "main",
+          "evicted": true,
+          "stalenessS": 5,
+        },
+      ],
+      [
+        3,
+        {
+          "brain": "maid",
+          "evicted": false,
+          "stalenessS": 1,
+        },
+      ],
+      [
+        4,
+        {
+          "brain": "maid",
+          "evicted": false,
+          "stalenessS": 2,
+        },
+      ],
+    ],
+  },
+  {
+    "last": [
+      [
+        1,
+        {
+          "at": 1793534380000,
+          "brain": "main",
+        },
+      ],
+      [
+        4,
+        {
+          "at": 1793534330000,
+          "brain": "main",
+        },
+      ],
+    ],
+    "stale": [
+      [
+        1,
+        {
+          "brain": "main",
+          "evicted": false,
+          "stalenessS": 30,
+        },
+      ],
+      [
+        2,
+        {
+          "brain": "main",
+          "evicted": true,
+          "stalenessS": 5,
+        },
+      ],
+      [
+        3,
+        {
+          "brain": "main",
+          "evicted": false,
+          "stalenessS": "Infinity",
+        },
+      ],
+    ],
+  },
+  {
+    "last": [
+      [
+        1,
+        {
+          "at": 1793534391000,
+          "brain": "maid",
+        },
+      ],
+    ],
+    "stale": [
+      [
+        1,
+        {
+          "brain": "maid",
+          "evicted": true,
+          "stalenessS": 10,
+        },
+      ],
+      [
+        2,
+        {
+          "brain": "maid",
+          "evicted": true,
+          "stalenessS": 50,
+        },
+      ],
+      [
+        3,
+        {
+          "brain": "maid",
+          "evicted": false,
+          "stalenessS": 1,
+        },
+      ],
+      [
+        4,
+        {
+          "brain": "maid",
+          "evicted": false,
+          "stalenessS": 2,
+        },
+      ],
+    ],
+  },
+  {
+    "last": [],
+    "stale": [
+      [
+        1,
+        {
+          "brain": "main",
+          "evicted": false,
+          "stalenessS": 30,
+        },
+      ],
+      [
+        2,
+        {
+          "brain": "main",
+          "evicted": true,
+          "stalenessS": 5,
+        },
+      ],
+      [
+        3,
+        {
+          "brain": "maid",
+          "evicted": false,
+          "stalenessS": 1,
+        },
+      ],
+      [
+        4,
+        {
+          "brain": "maid",
+          "evicted": false,
+          "stalenessS": 2,
+        },
+      ],
+    ],
+  },
+  {
+    "last": [
+      [
+        1,
+        {
+          "at": 1793534391000,
+          "brain": "maid",
+        },
+      ],
+    ],
+    "stale": [
+      [
+        1,
+        {
+          "brain": "maid",
+          "evicted": true,
+          "stalenessS": 10,
+        },
+      ],
+      [
+        2,
+        {
+          "brain": "maid",
+          "evicted": true,
+          "stalenessS": 50,
+        },
+      ],
+      [
+        3,
+        {
+          "brain": "maid",
+          "evicted": false,
+          "stalenessS": 1,
+        },
+      ],
+      [
+        4,
+        {
+          "brain": "maid",
+          "evicted": false,
+          "stalenessS": 2,
+        },
+      ],
+    ],
+  },
+]
+`;

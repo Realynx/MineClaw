@@ -37,50 +37,38 @@ export const liveKeys = {
 };
 
 export function applyLiveEvent(qc: QueryClient, event: LiveEventName, data: unknown): void {
-  switch (event) {
-    case 'bots':
-      qc.setQueryData<StatusResponse>(liveKeys.status, data as StatusResponse);
-      break;
-    case 'now': {
-      const now = data as BotNow;
-      qc.setQueryData<BotNow>(liveKeys.now(now.bot), now);
-      break;
-    }
-    case 'feed':
-      qc.setQueryData<FeedResponse>(liveKeys.feed, (prev) => mergeFeed(prev, data as FeedResponse));
-      publishFeed(data as FeedResponse); // chat bubbles over heads in the world views (new lines only)
-      break;
-    case 'event':
-      qc.setQueryData<EventsResponse>(liveKeys.events, (prev) => mergeEvents(prev, data as EventsResponse));
-      break;
-    case 'entities':
-      qc.setQueryData<WorldEntities>(liveKeys.entities, (prev) => mergeEntities(prev, data as WorldEntities));
-      publishEntityFrame(); // the world viewers read the merged frame at once (features/world/entityFrames.ts)
-      break;
-    case 'hive':
-      qc.setQueryData<HiveTreeNode>(liveKeys.hive, data as HiveTreeNode);
-      break;
-    case 'memoryActivity':
-      qc.setQueryData<MemoryActivityResponse>(liveKeys.memoryActivity, (prev) =>
-        mergeMemoryActivity(prev, data as MemoryActivityResponse),
-      );
-      break;
-    case 'status':
-      qc.setQueryData<LiveStatus>(liveKeys.connection, data as LiveStatus);
-      break;
-    case 'blocks':
-      // Live per-block world updates go to the world viewer's subscribers, not the query cache (they are a stream).
-      publishBlocks(data as WorldBlockDeltas);
-      break;
-    case 'story': {
-      // One colony's delta: merged into that colony's state query (fetched once by the Story Mode page).
-      const f = data as StoryColonyFrame;
-      noteStoryFrame(f.id);
-      qc.setQueryData(qk('story.get', { id: f.id }), (prev: StoryColonyFrame | undefined) => (prev ? mergeColony(prev, f) : prev));
-      break;
-    }
-  }
+  LIVE_HANDLERS[event]?.(qc, data);
 }
+
+/** What each stream topic does with its frame. */
+const LIVE_HANDLERS: Partial<Record<LiveEventName, (qc: QueryClient, data: unknown) => void>> = {
+  bots: (qc, data) => void qc.setQueryData<StatusResponse>(liveKeys.status, data as StatusResponse),
+  now: (qc, data) => {
+    const now = data as BotNow;
+    qc.setQueryData<BotNow>(liveKeys.now(now.bot), now);
+  },
+  feed: (qc, data) => {
+    qc.setQueryData<FeedResponse>(liveKeys.feed, (prev) => mergeFeed(prev, data as FeedResponse));
+    publishFeed(data as FeedResponse); // chat bubbles over heads in the world views (new lines only)
+  },
+  event: (qc, data) => void qc.setQueryData<EventsResponse>(liveKeys.events, (prev) => mergeEvents(prev, data as EventsResponse)),
+  entities: (qc, data) => {
+    qc.setQueryData<WorldEntities>(liveKeys.entities, (prev) => mergeEntities(prev, data as WorldEntities));
+    publishEntityFrame(); // the world viewers read the merged frame at once (features/world/entityFrames.ts)
+  },
+  hive: (qc, data) => void qc.setQueryData<HiveTreeNode>(liveKeys.hive, data as HiveTreeNode),
+  memoryActivity: (qc, data) =>
+    void qc.setQueryData<MemoryActivityResponse>(liveKeys.memoryActivity, (prev) => mergeMemoryActivity(prev, data as MemoryActivityResponse)),
+  status: (qc, data) => void qc.setQueryData<LiveStatus>(liveKeys.connection, data as LiveStatus),
+  // Live per-block world updates go to the world viewer's subscribers, not the query cache (they are a stream).
+  blocks: (_qc, data) => publishBlocks(data as WorldBlockDeltas),
+  story: (qc, data) => {
+    // One colony's delta: merged into that colony's state query (fetched once by the Story Mode page).
+    const f = data as StoryColonyFrame;
+    noteStoryFrame(f.id);
+    qc.setQueryData(qk('story.get', { id: f.id }), (prev: StoryColonyFrame | undefined) => (prev ? mergeColony(prev, f) : prev));
+  },
+};
 
 /** After a resync: re-fetch the REST state of every live topic (merges keep what the stream already delivered). */
 export function resyncLive(qc: QueryClient): Promise<void> {

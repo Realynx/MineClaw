@@ -419,44 +419,69 @@ public sealed class DangerMonitor
     private void CheckDeaths(DateTimeOffset now)
     {
         foreach (var d in _deaths.Values.ToList())
-        {
-            bool evidence = d.Vanish || d.Status || d.Respawn;
-            bool confirmed = d.Status || (d.Chat && evidence) || (d.Vanish && d.Respawn);
-            var age = now - d.At;
-            double conf;
-            if (confirmed) conf = 0.95;
-            else if (d.Chat && age > TimeSpan.FromSeconds(_o.DeathDedupeSeconds)) conf = d.Tracked ? 0.6 : 0.8; // untracked: nothing could corroborate
-            else if (!d.Chat && age > TimeSpan.FromSeconds(60)) { _deaths.Remove(d.Player); continue; } // vanish without respawn: not a death
-            else continue;
-            _deaths.Remove(d.Player);
-            _deathPosted[d.Player] = now;
-            var cause = d.Cause ?? "died";
-            var place = d.Pos is { } p ? PlaceAt?.Invoke(p) : null;
-            string where = place == null ? "" : place.Kind == IndexKinds.Island ? (cause.Contains("void") ? " off the " : " on ") + place.Name : ActivityText.At(place, d.Pos);
-            var track = _tracks.GetValueOrDefault(d.Player);
-            if (track?.PendingFall is { Edge.Length: > 0 } hf) where = $" ({hf.Edge})";
-            else if (track?.LastEdge is { Length: > 0 } le && cause.Contains("void")) where = $" ({le})";
-            Activity?.Invoke(new ActivityEvent(d.Player, ActivityKinds.Died, now, conf) { Detail = cause + where, Pos = d.Pos });
-            var text = $"{(conf < 0.7 ? "probably: " : "")}{d.Player} {cause}{where}";
-            bool bot = OtherBot(d.Player);
-            if (track?.PendingFall is { } held)
-            {
-                // The fall alarm was still held: one wake carrying both facts.
-                track.PendingFall = null;
-                track.FallWokeAt = now;
-                text = $"{(conf < 0.7 ? "probably: " : "")}{d.Player} fell into the void and died{where}";
-                if (bot) Wake?.Invoke(GameEvent.Activity(text, d.Player, EventPriority.Background) with { At = now });
-                else if (_gate.TryWake(d.Player, "death", DangerLevel.Critical, TimeSpan.FromSeconds(_o.CooldownSeconds), _w.MaxWakesPer5Min))
-                    Wake?.Invoke(Loss(text, d.Player, now));
-            }
-            else if (!_w.PlayerDeath || bot)
-                Wake?.Invoke(GameEvent.Activity(text, d.Player, EventPriority.Background) with { At = now });
-            else if (track != null && track.FallWokeAt != default && now - track.FallWokeAt <= TimeSpan.FromSeconds(_o.FollowUpSeconds))
-                Wake?.Invoke(GameEvent.Activity(text, d.Player, EventPriority.Normal) with { At = now }); // follow-up to the fall alarm
-            else if (_gate.TryWake(d.Player, "death", DangerLevel.Critical, TimeSpan.FromSeconds(_o.CooldownSeconds), _w.MaxWakesPer5Min))
-                Wake?.Invoke(Loss(text, d.Player, now));
-            if (_tracks.TryGetValue(d.Player, out var t)) { t.Fall.Reset(); t.Fight = null; }
-        }
+            if (DeathConfidence(d, now) is { } conf) PostDeath(d, conf, now);
+    }
+
+    /// <summary>A pending death that is confirmed (or ran out of time to be), with its confidence; null = keep waiting (or, a
+    /// vanish without respawn after a minute, not a death: dropped).</summary>
+    private double? DeathConfidence(PendingDeath d, DateTimeOffset now)
+    {
+        var age = now - d.At;
+        if (Confirmed(d)) return 0.95;
+        if (d.Chat && age > TimeSpan.FromSeconds(_o.DeathDedupeSeconds)) return d.Tracked ? 0.6 : 0.8; // untracked: nothing could corroborate
+        if (!d.Chat && age > TimeSpan.FromSeconds(60)) _deaths.Remove(d.Player); // vanish without respawn: not a death
+        return null;
+    }
+
+    private static bool Confirmed(PendingDeath d)
+    {
+        bool evidence = d.Vanish || d.Status || d.Respawn;
+        return d.Status || (d.Chat && evidence) || (d.Vanish && d.Respawn);
+    }
+
+    private void PostDeath(PendingDeath d, double conf, DateTimeOffset now)
+    {
+        _deaths.Remove(d.Player);
+        _deathPosted[d.Player] = now;
+        var cause = d.Cause ?? "died";
+        var track = _tracks.GetValueOrDefault(d.Player);
+        var where = DeathWhere(d, cause, track);
+        Activity?.Invoke(new ActivityEvent(d.Player, ActivityKinds.Died, now, conf) { Detail = cause + where, Pos = d.Pos });
+        WakeForDeath(d.Player, conf, $"{(conf < 0.7 ? "probably: " : "")}{d.Player} {cause}{where}", where, track, now);
+        if (_tracks.TryGetValue(d.Player, out var t)) { t.Fall.Reset(); t.Fight = null; }
+    }
+
+    /// <summary>" off the main island", " at the cobble gen", " (east edge of main island)": where it happened.</summary>
+    private string DeathWhere(PendingDeath d, string cause, Track? track)
+    {
+        var place = d.Pos is { } p ? PlaceAt?.Invoke(p) : null;
+        string where = place == null ? "" : place.Kind == IndexKinds.Island ? (cause.Contains("void") ? " off the " : " on ") + place.Name : ActivityText.At(place, d.Pos);
+        if (track?.PendingFall is { Edge.Length: > 0 } hf) where = $" ({hf.Edge})";
+        else if (track?.LastEdge is { Length: > 0 } le && cause.Contains("void")) where = $" ({le})";
+        return where;
+    }
+
+    private void WakeForDeath(string player, double conf, string text, string where, Track? track, DateTimeOffset now)
+    {
+        bool bot = OtherBot(player);
+        if (track?.PendingFall is not null) WakeHeldFall(track, player, conf, where, bot, now);
+        else if (!_w.PlayerDeath || bot)
+            Wake?.Invoke(GameEvent.Activity(text, player, EventPriority.Background) with { At = now });
+        else if (track != null && track.FallWokeAt != default && now - track.FallWokeAt <= TimeSpan.FromSeconds(_o.FollowUpSeconds))
+            Wake?.Invoke(GameEvent.Activity(text, player, EventPriority.Normal) with { At = now }); // follow-up to the fall alarm
+        else if (_gate.TryWake(player, "death", DangerLevel.Critical, TimeSpan.FromSeconds(_o.CooldownSeconds), _w.MaxWakesPer5Min))
+            Wake?.Invoke(Loss(text, player, now));
+    }
+
+    /// <summary>The fall alarm was still held: one wake carrying both facts.</summary>
+    private void WakeHeldFall(Track track, string player, double conf, string where, bool bot, DateTimeOffset now)
+    {
+        track.PendingFall = null;
+        track.FallWokeAt = now;
+        var text = $"{(conf < 0.7 ? "probably: " : "")}{player} fell into the void and died{where}";
+        if (bot) Wake?.Invoke(GameEvent.Activity(text, player, EventPriority.Background) with { At = now });
+        else if (_gate.TryWake(player, "death", DangerLevel.Critical, TimeSpan.FromSeconds(_o.CooldownSeconds), _w.MaxWakesPer5Min))
+            Wake?.Invoke(Loss(text, player, now));
     }
 
     /// <summary>Re-checks pending deaths whose corroboration window ran out (call each pass).</summary>

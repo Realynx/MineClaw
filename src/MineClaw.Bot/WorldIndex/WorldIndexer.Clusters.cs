@@ -215,9 +215,11 @@ public sealed partial class WorldIndexer
 
     // ------------------------------------------------------------------ farms / trees
 
+    private static readonly HashSet<string> TwoCellFarms = new(StringComparer.Ordinal) { "wheat", "mushroom", "carrot", "potato", "beetroot", "nether_wart" };
+
     private void ApplyFarm(string type, ClusterChange c)
     {
-        int min = type is "wheat" or "mushroom" or "carrot" or "potato" or "beetroot" or "nether_wart" ? 2 : 1;
+        int min = TwoCellFarms.Contains(type) ? 2 : 1;
         // Wild plants of a normal world (river cane, desert cactus): a resource to know, their sand and water aren't guarded.
         bool wildOk = ScarceSoil || !BlockClass.WildFarmType(type);
         if (c.Cells.Count < min)
@@ -227,58 +229,92 @@ public sealed partial class WorldIndexer
         }
         var e = ClusterEntry(IndexKinds.Farm, c, out _);
         e.SubType = type;
-        var protect = new HashSet<BlockPos>();
-        int farmland = 0, crops = 0, ripe = 0, stems = 0, fruit = 0, tallest = 0, plants = 0;
-        var waterCells = new HashSet<BlockPos>();
-        var soilIds = new Dictionary<int, int>();
-        foreach (var p in c.Cells)
-        {
-            int id = _world.GetBlock(p);
-            switch (id)
-            {
-                case Blocks.Farmland: farmland++; protect.Add(p); break;
-                case Blocks.Crops or Ids1122.Carrots or Ids1122.Potatoes or Ids1122.Beetroots or Ids1122.NetherWart:
-                    crops++; if (_world.GetMeta(p) >= Ids1122.RipeStage(id)) ripe++; break;
-                case Blocks.MelonStem or Blocks.PumpkinStem:
-                    stems++; protect.Add(p);
-                    if (_world.GetBlock(p.Down()) == Blocks.Farmland) protect.Add(p.Down());
-                    break;
-                case Blocks.Melon or Blocks.Pumpkin: fruit++; break;
-                case Blocks.SugarCane or Blocks.Cactus:
-                    plants++;
-                    if (_world.GetBlock(p.Down()) != id)
-                    {
-                        int h = 1;
-                        while (h < 8 && _world.GetBlock(p.Up(h)) == id) h++;
-                        tallest = Math.Max(tallest, h);
-                        var soil = p.Down();
-                        if (wildOk) protect.Add(soil);
-                        int sid = _world.GetBlock(soil);
-                        soilIds[sid] = soilIds.GetValueOrDefault(sid) + 1;
-                        if (wildOk) foreach (var o in Six) if (o.Y == 0 && Blocks.IsWater(_world.GetBlock(soil + o))) waterCells.Add(soil + o);
-                    }
-                    break;
-                default: plants++; break;
-            }
-            if (id == Blocks.Farmland)
-                for (int dx = -4; dx <= 4; dx++)
-                for (int dz = -4; dz <= 4; dz++)
-                    if (Math.Abs(dx) + Math.Abs(dz) <= 4 && Blocks.IsWater(_world.GetBlock(p.X + dx, p.Y, p.Z + dz))) waterCells.Add(new BlockPos(p.X + dx, p.Y, p.Z + dz));
-        }
+        var tally = new FarmTally(_world, wildOk);
+        foreach (var p in c.Cells) tally.Add(p);
         // Sources only (any water id with meta 0: a settled flow is id 9 with its level, a fresh source id 8 meta 0);
         // flowing water isn't "the" irrigation.
-        protect.UnionWith(waterCells.Where(w => Blocks.IsWaterSource(_world.GetBlock(w), _world.GetMeta(w))));
-        SetProtect(e, protect);
-        e.Extra.Clear();
-        e.Extra["type"] = type;
-        if (farmland > 0) e.Extra["farmland"] = farmland;
-        if (crops > 0) { e.Extra["crops"] = crops; e.Extra["ripe"] = ripe; }
-        if (stems > 0) e.Extra["stems"] = stems;
-        if (fruit > 0) e.Extra["fruit"] = fruit;
-        if (plants > 0 && type is "sugar_cane" or "cactus" or "mushroom") e.Extra["plants"] = plants;
-        if (tallest > 0) e.Extra["tallest"] = tallest;
-        if (soilIds.Count > 0) e.Extra["soil"] = Blocks.Get(soilIds.MaxBy(kv => kv.Value).Key).Name;
-        e.Extra["water"] = waterCells.Count;
+        tally.Protect.UnionWith(tally.Water.Where(w => Blocks.IsWaterSource(_world.GetBlock(w), _world.GetMeta(w))));
+        SetProtect(e, tally.Protect);
+        tally.WriteExtra(e.Extra, type);
+    }
+
+    /// <summary>What a farm cluster holds, cell by cell: counts for its entry and the cells it protects.</summary>
+    private sealed class FarmTally(WorldState world, bool wildOk)
+    {
+        private enum Part { Other, Farmland, Crop, Stem, Fruit, Tall }
+
+        private static readonly Dictionary<int, Part> Parts = new()
+        {
+            [Blocks.Farmland] = Part.Farmland,
+            [Blocks.Crops] = Part.Crop, [Ids1122.Carrots] = Part.Crop, [Ids1122.Potatoes] = Part.Crop, [Ids1122.Beetroots] = Part.Crop,
+            [Ids1122.NetherWart] = Part.Crop,
+            [Blocks.MelonStem] = Part.Stem, [Blocks.PumpkinStem] = Part.Stem,
+            [Blocks.Melon] = Part.Fruit, [Blocks.Pumpkin] = Part.Fruit,
+            [Blocks.SugarCane] = Part.Tall, [Blocks.Cactus] = Part.Tall,
+        };
+
+        public readonly HashSet<BlockPos> Protect = new();
+        public readonly HashSet<BlockPos> Water = new();
+        private readonly Dictionary<int, int> _soilIds = new();
+        private int _farmland, _crops, _ripe, _stems, _fruit, _tallest, _plants;
+
+        public void Add(BlockPos p)
+        {
+            int id = world.GetBlock(p);
+            switch (Parts.GetValueOrDefault(id))
+            {
+                case Part.Farmland: _farmland++; Protect.Add(p); IrrigationAround(p); break;
+                case Part.Crop: _crops++; if (world.GetMeta(p) >= Ids1122.RipeStage(id)) _ripe++; break;
+                case Part.Stem:
+                    _stems++; Protect.Add(p);
+                    if (world.GetBlock(p.Down()) == Blocks.Farmland) Protect.Add(p.Down());
+                    break;
+                case Part.Fruit: _fruit++; break;
+                case Part.Tall: _plants++; TallPlant(p, id); break;
+                default: _plants++; break;
+            }
+        }
+
+        /// <summary>Water within 4 (taxicab, same layer) of farmland: its irrigation.</summary>
+        private void IrrigationAround(BlockPos p)
+        {
+            for (int dx = -4; dx <= 4; dx++)
+            for (int dz = -4; dz <= 4; dz++)
+                if (Math.Abs(dx) + Math.Abs(dz) <= 4 && Blocks.IsWater(world.GetBlock(p.X + dx, p.Y, p.Z + dz))) Water.Add(new BlockPos(p.X + dx, p.Y, p.Z + dz));
+        }
+
+        /// <summary>The bottom of a cane/cactus column: its height, its soil (protected unless wild) and the water beside the soil.</summary>
+        private void TallPlant(BlockPos p, int id)
+        {
+            if (world.GetBlock(p.Down()) == id) return;
+            int h = 1;
+            while (h < 8 && world.GetBlock(p.Up(h)) == id) h++;
+            _tallest = Math.Max(_tallest, h);
+            var soil = p.Down();
+            if (wildOk) Protect.Add(soil);
+            int sid = world.GetBlock(soil);
+            _soilIds[sid] = _soilIds.GetValueOrDefault(sid) + 1;
+            if (!wildOk) return;
+            foreach (var o in Six)
+                if (o.Y == 0 && Blocks.IsWater(world.GetBlock(soil + o))) Water.Add(soil + o);
+        }
+
+        private static bool CountsPlants(string type) => type is "sugar_cane" or "cactus" or "mushroom";
+
+        /// <summary>The entry's fields, in their stored order.</summary>
+        public void WriteExtra(Dictionary<string, object?> x, string type)
+        {
+            x.Clear();
+            x["type"] = type;
+            if (_farmland > 0) x["farmland"] = _farmland;
+            if (_crops > 0) { x["crops"] = _crops; x["ripe"] = _ripe; }
+            if (_stems > 0) x["stems"] = _stems;
+            if (_fruit > 0) x["fruit"] = _fruit;
+            if (_plants > 0 && CountsPlants(type)) x["plants"] = _plants;
+            if (_tallest > 0) x["tallest"] = _tallest;
+            if (_soilIds.Count > 0) x["soil"] = Blocks.Get(_soilIds.MaxBy(kv => kv.Value).Key).Name;
+            x["water"] = Water.Count;
+        }
     }
 
     private void ApplyTree(ClusterChange c)

@@ -60,16 +60,11 @@ export function torchOn(dx: number, dz: number): number {
 
 /** The ring edge of a walkway cell: 0 north, 1 east, 2 south, 3 west (corners go clockwise). */
 export function edgeOf(lx: number, lz: number, n: number): number {
-  const dN = lz,
-    dE = n - 1 - lx,
-    dS = n - 1 - lz,
-    dW = lx;
-  const m = Math.min(dN, dE, dS, dW);
-  if (dN === m && dE === m) return 1;
-  if (dE === m && dS === m) return 2;
-  if (dS === m && dW === m) return 3;
-  if (dW === m && dN === m) return 0;
-  return dN === m ? 0 : dE === m ? 1 : dS === m ? 2 : 3;
+  const d = [lz, n - 1 - lx, n - 1 - lz, lx]; // distance to the north, east, south and west edge
+  const m = Math.min(d[0]!, d[1]!, d[2]!, d[3]!);
+  // a corner belongs to the edge after it, clockwise
+  for (let e = 0; e < 4; e++) if (d[e] === m && d[(e + 1) % 4] === m) return (e + 1) % 4;
+  return d.indexOf(m);
 }
 
 export function ringIndex(lx: number, lz: number, n: number): number {
@@ -116,12 +111,9 @@ function outSide(lx: number, lz: number, n: number): [number, number] {
 export function spiral(s: SpiralSpec): MineCells {
   const n = clamp(s.size ?? 4, MIN_SIZE, MAX_SIZE),
     c = clamp(s.core ?? 2, 1, n - 2),
-    off = Math.trunc((n - c) / 2),
     ring = 4 * (n - 1);
   const cw = s.cw ?? true;
-  const core = (lx: number, lz: number) => lx >= off && lx < off + c && lz >= off && lz < off + c;
-  const byPlace: Array<Array<[number, number]>> = Array.from({ length: ring }, () => []);
-  for (let lz = 0; lz < n; lz++) for (let lx = 0; lx < n; lx++) if (!core(lx, lz)) byPlace[ringIndex(lx, lz, n)]!.push([lx, lz]);
+  const byPlace = ringPlaces(n, c);
   const place = (k: number) => (cw ? k % ring : (ring - (k % ring)) % ring);
   const cells: MineCell[] = [];
   const path: P3[] = [];
@@ -134,62 +126,123 @@ export function spiral(s: SpiralSpec): MineCells {
     const [ox, oz] = outer(at, n);
     path.push([s.x + ox, y, s.z + oz]);
   }
+  digLandings(cells, s, n, bottom, top);
+  spiralTorches(cells, s, n, path);
+  const entry: P3 = path[0] ?? [s.x, top, s.z];
+  return { cells, entry, path, label: spiralLabel(s, n, c, bottom, cw) };
+}
+
+/** The walkway cells (the n × n square less its c × c core) by their ring place. */
+function ringPlaces(n: number, c: number): Array<Array<[number, number]>> {
+  const off = Math.trunc((n - c) / 2);
+  const inCore = (v: number) => v >= off && v < off + c;
+  const byPlace: Array<Array<[number, number]>> = Array.from({ length: 4 * (n - 1) }, () => []);
+  for (let lz = 0; lz < n; lz++)
+    for (let lx = 0; lx < n; lx++) if (!(inCore(lx) && inCore(lz))) byPlace[ringIndex(lx, lz, n)]!.push([lx, lz]);
+  return byPlace;
+}
+
+/** Each landing (inside the shaft's span, once, low to high) digs the whole square two high. */
+function digLandings(cells: MineCell[], s: SpiralSpec, n: number, bottom: number, top: number) {
   const landings = [...new Set(s.landings ?? [])].filter((l) => l >= bottom && l <= top).sort((a, b) => a - b);
   for (const ly of landings)
     for (let dy = 0; dy < 2; dy++)
       for (let lz = 0; lz < n; lz++) for (let lx = 0; lx < n; lx++) cells.push([s.x + lx, ly + dy, s.z + lz, 0, 0]);
+}
+
+/** A torch every `torchEvery` steps, two above the step, hung on the shaft's outer wall. */
+function spiralTorches(cells: MineCell[], s: SpiralSpec, n: number, path: readonly P3[]) {
   const every = s.torchEvery ?? 0;
-  if (every > 0)
-    for (let k = every; k < path.length; k += every) {
-      const p = path[k]!;
-      const [dx, dz] = outSide(p[0] - s.x, p[2] - s.z, n);
-      cells.push([p[0], p[1] + 2, p[2], TORCH, torchOn(dx, dz)]);
-    }
-  const entry: P3 = path[0] ?? [s.x, top, s.z];
-  const label = `spiral shaft ${n}×${n} (core ${c}×${c}) y${top}→${bottom}${cw ? '' : ' ccw'}${s.landings?.length ? ', landings ' + s.landings.join('/') : ''}`;
-  return { cells, entry, path, label };
+  if (every <= 0) return;
+  for (let k = every; k < path.length; k += every) {
+    const p = path[k]!;
+    const [dx, dz] = outSide(p[0] - s.x, p[2] - s.z, n);
+    cells.push([p[0], p[1] + 2, p[2], TORCH, torchOn(dx, dz)]);
+  }
+}
+
+function spiralLabel(s: SpiralSpec, n: number, c: number, bottom: number, cw: boolean): string {
+  const landings = s.landings?.length ? ', landings ' + s.landings.join('/') : '';
+  return `spiral shaft ${n}×${n} (core ${c}×${c}) y${s.top}→${bottom}${cw ? '' : ' ccw'}${landings}`;
 }
 
 /** The strip mine (see MineTemplates.Strip): a main corridor with 1×2 branches `spacing` solid blocks apart. */
 export function strip(s: StripSpec): MineCells {
-  const len = clamp(s.length ?? 30, 1, 64),
-    w = clamp(s.width ?? 1, 1, 2),
-    h = clamp(s.height ?? 2, 2, 3),
-    sp = clamp(s.spacing ?? 3, 1, 8),
-    bl = clamp(s.branchLength ?? 12, 0, 64);
-  const alongX = (s.axis ?? 'x') !== 'z';
-  const P = (a: number, across: number): [number, number] => (alongX ? [s.x + a, s.z + across] : [s.x + across, s.z + a]);
-  const cells: MineCell[] = [];
-  const dig = (a: number, across: number, y: number) => {
-    const [x, z] = P(a, across);
-    cells.push([x, y, z, 0, 0]);
-  };
-  for (let a = 0; a < len; a++) for (let across = 0; across < w; across++) for (let dy = 0; dy < h; dy++) dig(a, across, s.y + dy);
+  const f = stripFrame(s);
+  for (let a = 0; a < f.len; a++) for (let across = 0; across < f.w; across++) for (let dy = 0; dy < f.h; dy++) digStrip(f, a, across, s.y + dy);
   const sides = (s.sides ?? 'both').toLowerCase();
-  const branches = new Set<number>();
-  for (let a = sp; a < len; a += sp + 1) {
-    branches.add(a);
-    for (let b = 1; b <= bl; b++)
-      for (let dy = 0; dy < 2; dy++) {
-        if (sides === 'both' || sides === 'left') dig(a, -b, s.y + dy);
-        if (sides === 'both' || sides === 'right') dig(a, w - 1 + b, s.y + dy);
-      }
-  }
-  const every = s.torchEvery ?? 0;
-  if (every > 0)
-    for (let a = every - 1; a < len; a += every) {
-      const at = branches.has(a) ? a + 1 : a;
-      if (at >= len || branches.has(at)) continue;
-      const [x, z] = P(at, 0);
-      cells.push([x, s.y + 1, z, TORCH, alongX ? torchOn(0, -1) : torchOn(-1, 0)]);
-    }
-  const [ex, ez] = P(0, 0);
-  const path: P3[] = Array.from({ length: len }, (_, a) => {
-    const [x, z] = P(a, 0);
+  const branches = digBranches(f, sides);
+  stripTorches(f, branches, s.torchEvery ?? 0);
+  const [ex, ez] = stripAt(f, 0, 0);
+  const path: P3[] = Array.from({ length: f.len }, (_, a) => {
+    const [x, z] = stripAt(f, a, 0);
     return [x, s.y, z];
   });
-  const label = `strip mine at y${s.y} along ${alongX ? 'x' : 'z'}: ${w}×${h} × ${len}, ${branches.size} branch rows ${sp} apart (${bl} long, ${sides})`;
-  return { cells, entry: [ex, s.y, ez], path, label };
+  const label = `strip mine at y${s.y} along ${f.alongX ? 'x' : 'z'}: ${f.w}×${f.h} × ${f.len}, ${branches.size} branch rows ${f.sp} apart (${f.bl} long, ${sides})`;
+  return { cells: f.cells, entry: [ex, s.y, ez], path, label };
+}
+
+/** A strip mine being dug: its spec, clamped sizes, direction and the cells so far. */
+interface StripFrame {
+  s: StripSpec;
+  len: number;
+  w: number;
+  h: number;
+  sp: number;
+  bl: number;
+  alongX: boolean;
+  cells: MineCell[];
+}
+
+function stripFrame(s: StripSpec): StripFrame {
+  return {
+    s,
+    len: clamp(s.length ?? 30, 1, 64),
+    w: clamp(s.width ?? 1, 1, 2),
+    h: clamp(s.height ?? 2, 2, 3),
+    sp: clamp(s.spacing ?? 3, 1, 8),
+    bl: clamp(s.branchLength ?? 12, 0, 64),
+    alongX: (s.axis ?? 'x') !== 'z',
+    cells: [],
+  };
+}
+
+/** The (x, z) of a cell `a` along the corridor and `across` it. */
+function stripAt(f: StripFrame, a: number, across: number): [number, number] {
+  return f.alongX ? [f.s.x + a, f.s.z + across] : [f.s.x + across, f.s.z + a];
+}
+
+function digStrip(f: StripFrame, a: number, across: number, y: number) {
+  const [x, z] = stripAt(f, a, across);
+  f.cells.push([x, y, z, 0, 0]);
+}
+
+/** The 1×2 branches off the chosen sides, `spacing` solid blocks apart; returns the corridor places they leave from. */
+function digBranches(f: StripFrame, sides: string): Set<number> {
+  const left = sides === 'both' || sides === 'left';
+  const right = sides === 'both' || sides === 'right';
+  const branches = new Set<number>();
+  for (let a = f.sp; a < f.len; a += f.sp + 1) {
+    branches.add(a);
+    for (let b = 1; b <= f.bl; b++)
+      for (let dy = 0; dy < 2; dy++) {
+        if (left) digStrip(f, a, -b, f.s.y + dy);
+        if (right) digStrip(f, a, f.w - 1 + b, f.s.y + dy);
+      }
+  }
+  return branches;
+}
+
+/** A torch every `every` blocks on the corridor's first wall, moved one on past a branch (and skipped if that is one too). */
+function stripTorches(f: StripFrame, branches: ReadonlySet<number>, every: number) {
+  if (every <= 0) return;
+  const meta = f.alongX ? torchOn(0, -1) : torchOn(-1, 0);
+  for (let a = every - 1; a < f.len; a += every) {
+    const at = branches.has(a) ? a + 1 : a;
+    if (at >= f.len || branches.has(at)) continue;
+    const [x, z] = stripAt(f, at, 0);
+    f.cells.push([x, f.s.y + 1, z, TORCH, meta]);
+  }
 }
 
 /** A dug room: w × d × h cells from (x, y, z). */
@@ -213,45 +266,54 @@ const str = (o: Step, k: string): string | undefined => {
   return typeof v === 'string' ? v : undefined;
 };
 
+/** A whole-number field (the first of `keys` present), or `def`. */
+const int = (o: Step, def: number, ...keys: string[]): number => num(o, ...keys) ?? def;
+const SPIRAL_TEMPLATES = new Set(['spiral', 'spiral_shaft', 'shaft']);
+const STRIP_TEMPLATES = new Set(['strip', 'strip_mine']);
+
 /** One template step (a preset's): `{template: "spiral"|"strip", …}`; a spiral's `top: "surface"` reads the terrain. */
 export function fromStep(step: Step, terrain: MineTerrain | null): MineCells {
   const t = (str(step, 'template') ?? 'spiral').toLowerCase();
-  if (t === 'spiral' || t === 'spiral_shaft' || t === 'shaft') {
-    const x = num(step, 'x') ?? 30,
-      z = num(step, 'z') ?? 30,
-      size = num(step, 'size') ?? 4;
-    const top = num(step, 'top') ?? terrain?.surfaceOver(x, z, x + size - 1, z + size - 1) ?? 64;
-    const dir = (str(step, 'dir') ?? 'cw').toLowerCase();
-    const landings = Array.isArray(step.landings) ? (step.landings as unknown[]).filter((v): v is number => typeof v === 'number') : undefined;
-    return spiral({
-      x,
-      z,
-      top,
-      bottom: num(step, 'bottom') ?? 11,
-      size,
-      core: num(step, 'core') ?? 2,
-      cw: !(dir === 'ccw' || dir === 'counterclockwise'),
-      torchEvery: num(step, 'torchEvery', 'torch_every') ?? 0,
-      ...(landings ? { landings } : {}),
-    });
-  }
-  if (t === 'strip' || t === 'strip_mine') {
-    const axis = (str(step, 'axis') ?? 'x').trim().toLowerCase();
-    return strip({
-      x: num(step, 'x') ?? 0,
-      y: num(step, 'y') ?? 11,
-      z: num(step, 'z') ?? 0,
-      axis: axis.startsWith('z') ? 'z' : 'x',
-      length: num(step, 'length') ?? 30,
-      width: num(step, 'width') ?? 1,
-      height: num(step, 'height') ?? 2,
-      spacing: num(step, 'spacing') ?? 3,
-      branchLength: num(step, 'branchLength', 'branch_length') ?? 12,
-      sides: (str(step, 'sides') ?? 'both') as StripSpec['sides'],
-      torchEvery: num(step, 'torchEvery', 'torch_every') ?? 0,
-    });
-  }
+  if (SPIRAL_TEMPLATES.has(t)) return spiral(spiralStep(step, terrain));
+  if (STRIP_TEMPLATES.has(t)) return strip(stripStep(step));
   throw new Error(`no mine template '${t}' (spiral, strip)`);
+}
+
+function spiralStep(step: Step, terrain: MineTerrain | null): SpiralSpec {
+  const x = int(step, 30, 'x'),
+    z = int(step, 30, 'z'),
+    size = int(step, 4, 'size');
+  const top = num(step, 'top') ?? terrain?.surfaceOver(x, z, x + size - 1, z + size - 1) ?? 64;
+  const dir = (str(step, 'dir') ?? 'cw').toLowerCase();
+  const landings = Array.isArray(step.landings) ? (step.landings as unknown[]).filter((v): v is number => typeof v === 'number') : undefined;
+  return {
+    x,
+    z,
+    top,
+    bottom: int(step, 11, 'bottom'),
+    size,
+    core: int(step, 2, 'core'),
+    cw: !(dir === 'ccw' || dir === 'counterclockwise'),
+    torchEvery: int(step, 0, 'torchEvery', 'torch_every'),
+    ...(landings ? { landings } : {}),
+  };
+}
+
+function stripStep(step: Step): StripSpec {
+  const axis = (str(step, 'axis') ?? 'x').trim().toLowerCase();
+  return {
+    x: int(step, 0, 'x'),
+    y: int(step, 11, 'y'),
+    z: int(step, 0, 'z'),
+    axis: axis.startsWith('z') ? 'z' : 'x',
+    length: int(step, 30, 'length'),
+    width: int(step, 1, 'width'),
+    height: int(step, 2, 'height'),
+    spacing: int(step, 3, 'spacing'),
+    branchLength: int(step, 12, 'branchLength', 'branch_length'),
+    sides: (str(step, 'sides') ?? 'both') as StripSpec['sides'],
+    torchEvery: int(step, 0, 'torchEvery', 'torch_every'),
+  };
 }
 
 /** FNV-1a over the cells (x, y, z, id, meta in order): the golden value both languages' tests check. */

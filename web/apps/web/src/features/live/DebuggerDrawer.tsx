@@ -22,9 +22,16 @@ function preview(v: unknown): string {
   return s.length > 120 ? `${s.slice(0, 117)}…` : s;
 }
 
+/** How a run's status reads: its icon and colour (running is the default). */
+const STATUS_LOOK: Record<string, { Icon: typeof PlayCircle; tone: string }> = {
+  paused: { Icon: PauseCircle, tone: 'text-warn' },
+  failed: { Icon: AlertTriangle, tone: 'text-danger' },
+  done: { Icon: CheckCircle2, tone: 'text-ok' },
+};
+const RUNNING_LOOK = { Icon: PlayCircle, tone: 'text-info' };
+
 function StatusLine({ s }: { s: ScriptDebugSnapshot }) {
-  const Icon = s.status === 'paused' ? PauseCircle : s.status === 'failed' ? AlertTriangle : s.status === 'done' ? CheckCircle2 : PlayCircle;
-  const tone = s.status === 'failed' ? 'text-danger' : s.status === 'paused' ? 'text-warn' : s.status === 'done' ? 'text-ok' : 'text-info';
+  const { Icon, tone } = STATUS_LOOK[s.status] ?? RUNNING_LOOK;
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
       <span className={cn('inline-flex items-center gap-1.5 font-medium', tone)}>
@@ -44,10 +51,8 @@ function StatusLine({ s }: { s: ScriptDebugSnapshot }) {
   );
 }
 
-export function DebuggerDrawer({ open, onOpenChange, body }: { open: boolean; onOpenChange: (o: boolean) => void; body: string }) {
-  const { devDetails } = usePrefs();
-  const [tab, setTab] = useState('state');
-  // ?code=1 once per run (keyed session:name:version), then without.
+/** The snapshot, polled once a second while open; the source is asked for once per run (keyed session:name:version). */
+function useScriptDebug(open: boolean, body: string) {
   const codeKey = useRef<string | null>(null);
   const [wantCode, setWantCode] = useState(true);
   const q = useApi('bodies.script', { params: { body }, query: wantCode ? { code: true } : {} }, { enabled: open, refetchInterval: open ? 1000 : false, refetchIntervalInBackground: false });
@@ -64,191 +69,242 @@ export function DebuggerDrawer({ open, onOpenChange, body }: { open: boolean; on
       setWantCode(true);
     }
   }, [s]);
+  return { q, s, code };
+}
+
+const drawerTitle = (s: ScriptDebugSnapshot | null | undefined) => (s ? `${s.name}${s.version ? ` v${s.version}` : ''}` : 'Script debugger');
+
+function drawerSubtitle(s: ScriptDebugSnapshot | null | undefined, body: string): string {
+  if (!s) return body;
+  return [body, s.role ? `role ${s.role}` : null, s.crew ? `crew ${s.crew}` : null].filter(Boolean).join(' · ');
+}
+
+export function DebuggerDrawer({ open, onOpenChange, body }: { open: boolean; onOpenChange: (o: boolean) => void; body: string }) {
+  const [tab, setTab] = useState('state');
+  const { q, s, code } = useScriptDebug(open, body);
   const now = useTicker(1000, open);
   const age = s ? (now - (toMs(s.at) ?? now)) / 1000 : 0;
-  const stale = age > 4;
 
   return (
     <Drawer
       open={open}
       onOpenChange={onOpenChange}
-      title={s ? `${s.name}${s.version ? ` v${s.version}` : ''}` : 'Script debugger'}
-      subtitle={s ? [body, s.role ? `role ${s.role}` : null, s.crew ? `crew ${s.crew}` : null].filter(Boolean).join(' · ') : body}
-      actions={stale && s ? <Badge tone="warn">stale {Math.round(age)} s</Badge> : null}
+      title={drawerTitle(s)}
+      subtitle={drawerSubtitle(s, body)}
+      actions={age > 4 && s ? <Badge tone="warn">stale {Math.round(age)} s</Badge> : null}
       width="xl"
     >
-      {q.isPending ? (
-        <SkeletonLines lines={10} className="p-5" />
-      ) : q.error ? (
-        <ErrorState error={q.error} onRetry={() => void q.refetch()} />
-      ) : !s ? (
-        <EmptyState title="No script is running" hint={q.data.note ?? undefined} />
-      ) : (
-        <div className="grid h-full min-h-0 grid-cols-1 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)]">
-          <div className="flex min-h-0 flex-col border-border lg:border-r">
-            <div className="space-y-3 border-b border-border p-5">
-              <StatusLine s={s} />
-              {s.paused && s.pauseReason ? (
-                <p className="text-xs text-warn">
-                  Paused ({s.pauseKind}): {s.pauseReason}
-                  {s.pausedSeconds ? ` · ${duration(Number(s.pausedSeconds))}` : ''}
-                </p>
-              ) : null}
-              {s.progressPct !== null && s.progressPct !== undefined ? (
-                <div>
-                  <div className="mb-1 flex justify-between text-xs">
-                    <span className="text-muted">{s.progressNote ?? 'Progress'}</span>
-                    <span className="tabular text-fg">{fixed(s.progressPct, 0)}%</span>
-                  </div>
-                  <Meter value={Number(s.progressPct)} max={100} label="progress" />
-                </div>
-              ) : null}
-              <div className="flex flex-wrap gap-x-5 gap-y-1 text-xs text-muted">
-                <span>
-                  Elapsed <span className="tabular text-fg">{duration(Number(s.elapsedSeconds))}</span>
-                </span>
-                <span>
-                  Actions <span className="tabular text-fg">{s.actions}</span>
-                </span>
-                {s.checkpoint ? (
-                  <span>
-                    Checkpoint <span className="text-fg">{s.checkpoint}</span> ({s.checkpointsPassed}/{s.checkpointTotal})
-                  </span>
-                ) : null}
-              </div>
-              {s.lastFailure ? <p className="text-xs text-danger">Last failure: {s.lastFailure}</p> : null}
-              {s.controls.length ? (
-                <div className="flex gap-2">
-                  {s.controls.map((c) => (
-                    <Button key={c} size="sm">
-                      {c}
-                    </Button>
-                  ))}
-                </div>
-              ) : null}
-            </div>
-            <div className="min-h-64 flex-1">
-              {code ? <CodeView code={code} lang={s.lang} runningLine={s.line || null} className="h-full" /> : <SkeletonLines lines={10} className="p-5" />}
-            </div>
-          </div>
-          <Tabs
-            value={tab}
-            onValueChange={setTab}
-            listClassName="px-4"
-            tabs={[
-              { value: 'state', label: 'State' },
-              { value: 'activity', label: 'Activity' },
-              { value: 'stack', label: 'Stack' },
-              { value: 'crew', label: 'Crew', hidden: s.lanes.length === 0 },
-            ]}
-          >
-            <TabPanel value="state" className="overflow-auto p-5">
-              {s.machine ? (
-                <section className="mb-5">
-                  <h3 className="mb-2 text-xs font-semibold tracking-wide text-subtle uppercase">State machine</h3>
-                  <p className="mb-2 text-sm">
-                    <span className="font-medium text-fg">{s.machine.state}</span>
-                    <span className="text-subtle"> · {s.machine.transitions} transitions</span>
-                  </p>
-                  <ul className="space-y-1 text-xs">
-                    {[...s.machine.history].reverse().slice(0, 8).map((h, i) => (
-                      <li key={i} className="flex gap-2 text-muted">
-                        <span className="text-fg">
-                          {h.from} → {h.to}
-                        </span>
-                        <span className="text-subtle">({h.why})</span>
-                      </li>
-                    ))}
-                  </ul>
-                </section>
-              ) : null}
-              <section className="mb-5">
-                <h3 className="mb-2 text-xs font-semibold tracking-wide text-subtle uppercase">Blackboard</h3>
-                {s.machine?.blackboard && typeof s.machine.blackboard === 'object' ? (
-                  <KeyValues className="font-mono text-xs" rows={Object.entries(s.machine.blackboard as Record<string, unknown>).map(([k, v]) => [k, preview(v)])} />
-                ) : (
-                  <p className="text-xs text-subtle">Empty</p>
-                )}
-              </section>
-              <section className="mb-5">
-                <h3 className="mb-2 text-xs font-semibold tracking-wide text-subtle uppercase">Params</h3>
-                <KeyValues
-                  className="font-mono text-xs"
-                  rows={[
-                    ...Object.entries((s.params as Record<string, unknown> | null) ?? {}).map(([k, v]): [string, string] => [k, preview(v)]),
-                    ...Object.entries((s.args as Record<string, unknown> | null) ?? {}).map(([k, v]): [string, string] => [`${k} (arg)`, preview(v)]),
-                  ]}
-                />
-              </section>
-              {s.locals?.length ? (
-                <section>
-                  <h3 className="mb-2 text-xs font-semibold tracking-wide text-subtle uppercase">
-                    Locals {s.localsAgeSeconds ? <span className="font-normal normal-case">· sampled {fixed(s.localsAgeSeconds, 1)} s ago</span> : null}
-                  </h3>
-                  <KeyValues className="font-mono text-xs" rows={s.locals.map((l) => [`${l.name}${devDetails ? ` (${l.scope})` : ''}`, l.value])} />
-                </section>
-              ) : null}
-            </TabPanel>
-            <TabPanel value="activity" className="overflow-auto p-5">
-              <h3 className="mb-2 text-xs font-semibold tracking-wide text-subtle uppercase">Time per action</h3>
-              <table className="mb-5 w-full text-xs">
-                <thead className="text-left text-subtle">
-                  <tr>
-                    <th className="py-1 font-medium">Action</th>
-                    <th className="py-1 text-right font-medium">Calls</th>
-                    <th className="py-1 text-right font-medium">Failed</th>
-                    <th className="py-1 text-right font-medium">Total</th>
-                    <th className="py-1 text-right font-medium">Avg</th>
-                  </tr>
-                </thead>
-                <tbody className="tabular">
-                  {s.timings.map((t) => (
-                    <tr key={t.action} className="border-t border-border">
-                      <td className="py-1.5 text-fg">{t.action}</td>
-                      <td className="py-1.5 text-right text-muted">{t.calls}</td>
-                      <td className={cn('py-1.5 text-right', t.fails ? 'text-danger' : 'text-muted')}>{t.fails}</td>
-                      <td className="py-1.5 text-right text-muted">{duration(Number(t.seconds))}</td>
-                      <td className="py-1.5 text-right text-muted">{fixed(t.avgMs, 0)} ms</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-              <h3 className="mb-2 text-xs font-semibold tracking-wide text-subtle uppercase">Log</h3>
-              <ul className="space-y-1 font-mono text-xs text-muted">
-                {[...s.logs].reverse().map((l, i) => (
-                  <li key={i}>{l}</li>
-                ))}
-              </ul>
-            </TabPanel>
-            <TabPanel value="stack" className="overflow-auto p-5">
-              <ul className="space-y-1.5 font-mono text-xs">
-                {s.stack.map((f, i) => (
-                  <li key={i} className={cn('flex gap-2', f.script ? 'text-fg' : 'text-subtle')}>
-                    <span>{f.function}</span>
-                    <span className="text-subtle">
-                      {f.file}:{f.line}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            </TabPanel>
-            <TabPanel value="crew" className="overflow-auto p-5">
-              <p className="mb-3 text-sm text-muted">
-                {s.crew ?? 'Crew'} · coordinated by {s.coordinator ?? '—'}
-              </p>
-              <ul className="space-y-1 text-sm">
-                {s.lanes.map((l) => (
-                  <li key={l.id} className="flex gap-2">
-                    <span className="tabular text-subtle">lane {l.id}</span>
-                    <span className="text-fg">{l.body}</span>
-                    <Badge>{l.status}</Badge>
-                  </li>
-                ))}
-              </ul>
-            </TabPanel>
-          </Tabs>
-        </div>
-      )}
+      <DebugBody q={q} s={s} code={code} tab={tab} setTab={setTab} />
     </Drawer>
+  );
+}
+
+type ScriptQuery = ReturnType<typeof useScriptDebug>['q'];
+
+/** Loading, an error, no script, or the run: its header and source beside the state tabs. */
+function DebugBody({ q, s, code, ...tabs }: { q: ScriptQuery; s: ScriptDebugSnapshot | null | undefined; code: string | null; tab: string; setTab: (t: string) => void }) {
+  if (q.isPending) return <SkeletonLines lines={10} className="p-5" />;
+  if (q.error) return <ErrorState error={q.error} onRetry={() => void q.refetch()} />;
+  if (!s) return <EmptyState title="No script is running" hint={q.data.note ?? undefined} />;
+  return (
+    <div className="grid h-full min-h-0 grid-cols-1 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)]">
+      <div className="flex min-h-0 flex-col border-border lg:border-r">
+        <RunHeader s={s} />
+        <div className="min-h-64 flex-1">
+          {code ? <CodeView code={code} lang={s.lang} runningLine={s.line || null} className="h-full" /> : <SkeletonLines lines={10} className="p-5" />}
+        </div>
+      </div>
+      <DebugTabs s={s} {...tabs} />
+    </div>
+  );
+}
+
+/** The run's status, pause reason, progress, counters, last failure and the bot's controls. */
+function RunHeader({ s }: { s: ScriptDebugSnapshot }) {
+  return (
+    <div className="space-y-3 border-b border-border p-5">
+      <StatusLine s={s} />
+      {s.paused && s.pauseReason ? (
+        <p className="text-xs text-warn">
+          Paused ({s.pauseKind}): {s.pauseReason}
+          {s.pausedSeconds ? ` · ${duration(Number(s.pausedSeconds))}` : ''}
+        </p>
+      ) : null}
+      {s.progressPct !== null && s.progressPct !== undefined ? (
+        <div>
+          <div className="mb-1 flex justify-between text-xs">
+            <span className="text-muted">{s.progressNote ?? 'Progress'}</span>
+            <span className="tabular text-fg">{fixed(s.progressPct, 0)}%</span>
+          </div>
+          <Meter value={Number(s.progressPct)} max={100} label="progress" />
+        </div>
+      ) : null}
+      <div className="flex flex-wrap gap-x-5 gap-y-1 text-xs text-muted">
+        <span>
+          Elapsed <span className="tabular text-fg">{duration(Number(s.elapsedSeconds))}</span>
+        </span>
+        <span>
+          Actions <span className="tabular text-fg">{s.actions}</span>
+        </span>
+        {s.checkpoint ? (
+          <span>
+            Checkpoint <span className="text-fg">{s.checkpoint}</span> ({s.checkpointsPassed}/{s.checkpointTotal})
+          </span>
+        ) : null}
+      </div>
+      {s.lastFailure ? <p className="text-xs text-danger">Last failure: {s.lastFailure}</p> : null}
+      {s.controls.length ? (
+        <div className="flex gap-2">
+          {s.controls.map((c) => (
+            <Button key={c} size="sm">
+              {c}
+            </Button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function DebugTabs({ s, tab, setTab }: { s: ScriptDebugSnapshot; tab: string; setTab: (t: string) => void }) {
+  return (
+    <Tabs
+      value={tab}
+      onValueChange={setTab}
+      listClassName="px-4"
+      tabs={[
+        { value: 'state', label: 'State' },
+        { value: 'activity', label: 'Activity' },
+        { value: 'stack', label: 'Stack' },
+        { value: 'crew', label: 'Crew', hidden: s.lanes.length === 0 },
+      ]}
+    >
+      <TabPanel value="state" className="overflow-auto p-5">
+        <StateTab s={s} />
+      </TabPanel>
+      <TabPanel value="activity" className="overflow-auto p-5">
+        <ActivityTab s={s} />
+      </TabPanel>
+      <TabPanel value="stack" className="overflow-auto p-5">
+        <ul className="space-y-1.5 font-mono text-xs">
+          {s.stack.map((f, i) => (
+            <li key={i} className={cn('flex gap-2', f.script ? 'text-fg' : 'text-subtle')}>
+              <span>{f.function}</span>
+              <span className="text-subtle">
+                {f.file}:{f.line}
+              </span>
+            </li>
+          ))}
+        </ul>
+      </TabPanel>
+      <TabPanel value="crew" className="overflow-auto p-5">
+        <p className="mb-3 text-sm text-muted">
+          {s.crew ?? 'Crew'} · coordinated by {s.coordinator ?? '—'}
+        </p>
+        <ul className="space-y-1 text-sm">
+          {s.lanes.map((l) => (
+            <li key={l.id} className="flex gap-2">
+              <span className="tabular text-subtle">lane {l.id}</span>
+              <span className="text-fg">{l.body}</span>
+              <Badge>{l.status}</Badge>
+            </li>
+          ))}
+        </ul>
+      </TabPanel>
+    </Tabs>
+  );
+}
+
+const entriesOf = (o: unknown): Array<[string, unknown]> => Object.entries((o as Record<string, unknown> | null) ?? {});
+
+/** The state machine and its recent transitions, the blackboard, the params and args, the sampled locals. */
+function StateTab({ s }: { s: ScriptDebugSnapshot }) {
+  const { devDetails } = usePrefs();
+  const board = s.machine?.blackboard;
+  return (
+    <>
+      {s.machine ? (
+        <section className="mb-5">
+          <h3 className="mb-2 text-xs font-semibold tracking-wide text-subtle uppercase">State machine</h3>
+          <p className="mb-2 text-sm">
+            <span className="font-medium text-fg">{s.machine.state}</span>
+            <span className="text-subtle"> · {s.machine.transitions} transitions</span>
+          </p>
+          <ul className="space-y-1 text-xs">
+            {[...s.machine.history].reverse().slice(0, 8).map((h, i) => (
+              <li key={i} className="flex gap-2 text-muted">
+                <span className="text-fg">
+                  {h.from} → {h.to}
+                </span>
+                <span className="text-subtle">({h.why})</span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
+      <section className="mb-5">
+        <h3 className="mb-2 text-xs font-semibold tracking-wide text-subtle uppercase">Blackboard</h3>
+        {board && typeof board === 'object' ? (
+          <KeyValues className="font-mono text-xs" rows={Object.entries(board as Record<string, unknown>).map(([k, v]) => [k, preview(v)])} />
+        ) : (
+          <p className="text-xs text-subtle">Empty</p>
+        )}
+      </section>
+      <section className="mb-5">
+        <h3 className="mb-2 text-xs font-semibold tracking-wide text-subtle uppercase">Params</h3>
+        <KeyValues
+          className="font-mono text-xs"
+          rows={[
+            ...entriesOf(s.params).map(([k, v]): [string, string] => [k, preview(v)]),
+            ...entriesOf(s.args).map(([k, v]): [string, string] => [`${k} (arg)`, preview(v)]),
+          ]}
+        />
+      </section>
+      {s.locals?.length ? (
+        <section>
+          <h3 className="mb-2 text-xs font-semibold tracking-wide text-subtle uppercase">
+            Locals {s.localsAgeSeconds ? <span className="font-normal normal-case">· sampled {fixed(s.localsAgeSeconds, 1)} s ago</span> : null}
+          </h3>
+          <KeyValues className="font-mono text-xs" rows={s.locals.map((l) => [`${l.name}${devDetails ? ` (${l.scope})` : ''}`, l.value])} />
+        </section>
+      ) : null}
+    </>
+  );
+}
+
+/** Time per action, then the log (newest first). */
+function ActivityTab({ s }: { s: ScriptDebugSnapshot }) {
+  return (
+    <>
+      <h3 className="mb-2 text-xs font-semibold tracking-wide text-subtle uppercase">Time per action</h3>
+      <table className="mb-5 w-full text-xs">
+        <thead className="text-left text-subtle">
+          <tr>
+            <th className="py-1 font-medium">Action</th>
+            <th className="py-1 text-right font-medium">Calls</th>
+            <th className="py-1 text-right font-medium">Failed</th>
+            <th className="py-1 text-right font-medium">Total</th>
+            <th className="py-1 text-right font-medium">Avg</th>
+          </tr>
+        </thead>
+        <tbody className="tabular">
+          {s.timings.map((t) => (
+            <tr key={t.action} className="border-t border-border">
+              <td className="py-1.5 text-fg">{t.action}</td>
+              <td className="py-1.5 text-right text-muted">{t.calls}</td>
+              <td className={cn('py-1.5 text-right', t.fails ? 'text-danger' : 'text-muted')}>{t.fails}</td>
+              <td className="py-1.5 text-right text-muted">{duration(Number(t.seconds))}</td>
+              <td className="py-1.5 text-right text-muted">{fixed(t.avgMs, 0)} ms</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <h3 className="mb-2 text-xs font-semibold tracking-wide text-subtle uppercase">Log</h3>
+      <ul className="space-y-1 font-mono text-xs text-muted">
+        {[...s.logs].reverse().map((l, i) => (
+          <li key={i}>{l}</li>
+        ))}
+      </ul>
+    </>
   );
 }

@@ -242,23 +242,30 @@ export function EquipmentView({ pawn, policies }: { pawn: StoryPawn; policies: r
           </span>
         ) : null}
       </div>
-      {!e || (!e.held && !e.armor.length && !e.tools.length && !e.weapons.length) ? (
-        <p className="text-muted">Nothing carried</p>
-      ) : (
-        <ul className="space-y-0.5">
-          {e.held ? (
-            <li className="text-[10.5px] text-muted">
-              Holding <span className="text-fg">{e.held.label ?? e.held.name}</span>
-            </li>
-          ) : null}
-          {[...e.weapons, ...e.tools, ...e.armor].map((it, i) => (
-            <GearRow key={i} it={it} worn={e.armor.includes(it)} />
-          ))}
-        </ul>
-      )}
+      {carriesNothing(e) ? <p className="text-muted">Nothing carried</p> : <EquipmentList e={e!} />}
       {pawn.gearTasks?.length ? (
         <div className="text-[10.5px] text-muted">Gear: {pawn.gearTasks.map((t) => t.label ?? t.op).join(', ')}</div>
       ) : null}
     </div>
+  );
+}
+
+function carriesNothing(e: StoryPawn['equipment']): boolean {
+  return !e || (!e.held && !e.armor.length && !e.tools.length && !e.weapons.length);
+}
+
+/** What it holds, then its weapons, tools and armour. */
+function EquipmentList({ e }: { e: NonNullable<StoryPawn['equipment']> }) {
+  return (
+    <ul className="space-y-0.5">
+      {e.held ? (
+        <li className="text-[10.5px] text-muted">
+          Holding <span className="text-fg">{e.held.label ?? e.held.name}</span>
+        </li>
+      ) : null}
+      {[...e.weapons, ...e.tools, ...e.armor].map((it, i) => (
+        <GearRow key={i} it={it} worn={e.armor.includes(it)} />
+      ))}
+    </ul>
   );
 }

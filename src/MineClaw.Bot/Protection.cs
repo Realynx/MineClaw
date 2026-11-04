@@ -82,19 +82,28 @@ public sealed partial class Protection
     /// house box covered the field). Harvesting a ripe crop, replanting and tilling are always allowed, whatever structure box
     /// or indexed build they fall in; an unripe crop is left alone ("not ripe"). Saplings keep their config protection.
     /// </summary>
-    public static bool IsFarmPlant(int id) => id is Blocks.Crops or Blocks.SugarCane or Blocks.Cactus or Blocks.PumpkinStem or Blocks.MelonStem
-        or Blocks.Pumpkin or Blocks.Melon or Blocks.Sapling or Ids1122.Carrots or Ids1122.Potatoes or Ids1122.Beetroots or Ids1122.NetherWart;
+    private static readonly HashSet<int> FarmPlants =
+    [
+        Blocks.Crops, Blocks.SugarCane, Blocks.Cactus, Blocks.PumpkinStem, Blocks.MelonStem, Blocks.Pumpkin, Blocks.Melon, Blocks.Sapling,
+        Ids1122.Carrots, Ids1122.Potatoes, Ids1122.Beetroots, Ids1122.NetherWart,
+    ];
+
+    public static bool IsFarmPlant(int id) => FarmPlants.Contains(id);
 
     /// <summary>
     /// Ground, fluids and plants: never "part of a build" by volume alone. A remembered/guessed structure box protects only the
     /// blocks it is actually made of (planks, cobble, glass, doors, slabs...), plus what the indexer itself tags per block.
     /// </summary>
-    public static bool IsNaturalFill(int id) => id is Blocks.Air or Blocks.Grass or Blocks.Dirt or Blocks.Sand or Blocks.Gravel
-        or Blocks.FlowingWater or Blocks.Water or Blocks.FlowingLava or Blocks.Lava or Blocks.Leaves or Blocks.TallGrass or Blocks.DeadBush
-        or 37 or 38 or Blocks.BrownMushroom or Blocks.RedMushroom or Blocks.SnowLayer or Blocks.Clay or Blocks.Vine
+    public static bool IsNaturalFill(int id) => NaturalFill.Contains(id) || IsFarmPlant(id) || id == Blocks.Farmland;
+
+    private static readonly HashSet<int> NaturalFill =
+    [
+        Blocks.Air, Blocks.Grass, Blocks.Dirt, Blocks.Sand, Blocks.Gravel, Blocks.FlowingWater, Blocks.Water, Blocks.FlowingLava, Blocks.Lava,
+        Blocks.Leaves, Blocks.TallGrass, Blocks.DeadBush, 37, 38, Blocks.BrownMushroom, Blocks.RedMushroom, Blocks.SnowLayer, Blocks.Clay,
+        Blocks.Vine,
         // 1.12.2: mycelium, lily pad, leaves2, packed ice, tall flowers/double grass (podzol and coarse dirt are dirt variants)
-        or 110 or 111 or Ids1122.Leaves2 or 174 or Ids1122.DoublePlant
-        || IsFarmPlant(id) || id == Blocks.Farmland;
+        110, 111, Ids1122.Leaves2, 174, Ids1122.DoublePlant,
+    ];
 
     /// <summary>"wheat is a farm crop (ripe? no: stage 5/7)" for an unripe crop; null = ripe/harvestable (or no stage known).</summary>
     public string? UnripeReason(BlockPos p, int id)
@@ -236,37 +245,56 @@ public sealed partial class Protection
 
     private ProtectionVerdict SoftReason(BlockPos p, int id, int dim, IClaimBoard? claims)
     {
-        static ProtectionVerdict S(string reason, string why, string? unlock = null) => new(ProtectionLevel.Soft, reason, why, unlock);
         string name = Blocks.Get(id).Name.Replace('_', ' ');
-        const string containerUnlock = "punch it and say 'you can break it'";
+        return BlockReason(p, id, name) ?? PlaceReason(p, id) ?? IndexReason(p, id, name)
+               ?? (claims != null && !claims.IsFree(ClaimKey.Block(p, dim)) ? Soft("claimed", ClaimedWhy) : Soft("unknown", "a protected block"));
+    }
+
+    private static ProtectionVerdict Soft(string reason, string why, string? unlock = null) => new(ProtectionLevel.Soft, reason, why, unlock);
+
+    private const string ContainerUnlock = "punch it and say 'you can break it'";
+
+    /// <summary>A protected block kind (container, sapling, farmland, station) or a farm plant (unripe, else held by a hive lease).</summary>
+    private ProtectionVerdict? BlockReason(BlockPos p, int id, string name)
+    {
         if (_blockIds.Contains(id))
             return IsContainer(id)
-                ? S("container", $"a {name}: it may hold items", containerUnlock)
-                : S(id is Blocks.Sapling ? "sapling" : id is Blocks.Farmland ? "farm" : "station", $"a {name}");
-        if (IsFarmPlant(id) && UnripeReason(p, id) is { } unripe) return S("farm", unripe);
+                ? Soft("container", $"a {name}: it may hold items", ContainerUnlock)
+                : Soft(id is Blocks.Sapling ? "sapling" : id is Blocks.Farmland ? "farm" : "station", $"a {name}");
+        if (!IsFarmPlant(id)) return null;
         // A ripe crop is only ever held back by a hive lease (AnySoft): say that, not the box/index entry it grows in.
-        if (IsFarmPlant(id)) return S("claimed", ClaimedWhy);
+        return UnripeReason(p, id) is { } unripe ? Soft("farm", unripe) : Soft("claimed", ClaimedWhy);
+    }
+
+    /// <summary>Farmland of a farm, a part of a remembered build, or a config region.</summary>
+    private ProtectionVerdict? PlaceReason(BlockPos p, int id)
+    {
         if (id == Blocks.Farmland && (InMemoryRegion(p, id) != null || IndexerKind?.Invoke(p) is IndexKinds.Farm or IndexKinds.UnknownStructure))
-            return S("farm", "farmland: breaking or trampling it undoes the farm (tilling and planting are fine)");
+            return Soft("farm", "farmland: breaking or trampling it undoes the farm (tilling and planting are fine)");
         if (!IsFarmPlant(id) && InMemoryRegion(p, id) is { } mr)
-            return S("structure", StructureWhy(mr));
+            return Soft("structure", StructureWhy(mr));
         foreach (var r in _configRegions)
-            if (Inside(p, r.Min, r.Max)) return S("config_region", "inside a protected region from my config");
-        if (IndexerKind?.Invoke(p) is { } kind)
-            return kind switch
-            {
-                IndexKinds.UnknownStructure => S("unknown_build", "part of a player build I don't know yet"),
-                IndexKinds.Generator => S("generator", "a cobble generator's wall or fluid: breaking it can spill lava/water"),
-                IndexKinds.Farm => S("farm", "farmland or irrigation of a farm"),
-                IndexKinds.Tree => S("tree_soil", "the dirt under a tree or sapling (unrenewable)"),
-                IndexKinds.Portal => S("portal", "a nether portal frame"),
-                IndexKinds.Sign => S("sign", "a sign"),
-                WorldIndexer.FloorKind => S("floor", $"a placed {name} (someone's floor, wall or path)"),
-                _ when IsContainer(id) => S("container", $"a {name}: it may hold items", containerUnlock),
-                _ => S("station", $"a {kind.Replace('_', ' ')}"),
-            };
-        if (claims != null && !claims.IsFree(ClaimKey.Block(p, dim))) return S("claimed", ClaimedWhy);
-        return S("unknown", "a protected block");
+            if (Inside(p, r.Min, r.Max)) return Soft("config_region", "inside a protected region from my config");
+        return null;
+    }
+
+    /// <summary>The fixed reason of each index kind that protects a cell.</summary>
+    private static readonly Dictionary<string, (string Reason, string Why)> IndexReasons = new(StringComparer.Ordinal)
+    {
+        [IndexKinds.UnknownStructure] = ("unknown_build", "part of a player build I don't know yet"),
+        [IndexKinds.Generator] = ("generator", "a cobble generator's wall or fluid: breaking it can spill lava/water"),
+        [IndexKinds.Farm] = ("farm", "farmland or irrigation of a farm"),
+        [IndexKinds.Tree] = ("tree_soil", "the dirt under a tree or sapling (unrenewable)"),
+        [IndexKinds.Portal] = ("portal", "a nether portal frame"),
+        [IndexKinds.Sign] = ("sign", "a sign"),
+    };
+
+    private ProtectionVerdict? IndexReason(BlockPos p, int id, string name)
+    {
+        if (IndexerKind?.Invoke(p) is not { } kind) return null;
+        if (IndexReasons.TryGetValue(kind, out var r)) return Soft(r.Reason, r.Why);
+        if (kind == WorldIndexer.FloorKind) return Soft("floor", $"a placed {name} (someone's floor, wall or path)");
+        return IsContainer(id) ? Soft("container", $"a {name}: it may hold items", ContainerUnlock) : Soft("station", $"a {kind.Replace('_', ' ')}");
     }
 
     /// <summary>A hive lease is coordination, not ownership (players own things, bots don't): its verdict reads as "busy, take

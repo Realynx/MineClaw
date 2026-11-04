@@ -272,13 +272,12 @@ function buildPress({ studio, h, button, placeAt }: PressCtx): void {
 /** Face fill: right paints the face area with the current block, left removes it. */
 function facePress({ studio, h, button, s }: PressCtx): void {
   if (!h.hit) return;
+  if (button === 0) {
+    studio.edit(floodFace(studio.canvas, h.hit, h.face, 0, 0), 'face', 'removed a face area');
+    return;
+  }
   const e = entryOf(s);
-  const remove = button === 0;
-  studio.edit(
-    floodFace(studio.canvas, h.hit, h.face, remove ? 0 : (e?.id ?? 4), remove ? 0 : (e?.meta ?? 0)),
-    'face',
-    remove ? 'removed a face area' : `painted a face area ${e?.name ?? ''}`,
-  );
+  studio.edit(floodFace(studio.canvas, h.hit, h.face, e?.id ?? 4, e?.meta ?? 0), 'face', `painted a face area ${e?.name ?? ''}`);
 }
 
 /** Extrude: right pushes the face out by N, left pulls it in. */

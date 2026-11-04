@@ -9,6 +9,34 @@ import { Badge, Button, Card, CardHeader, ErrorState, Skeleton } from '@/compone
 import { Switch } from '@/components/ui/overlays';
 import { CodeView } from '@/components/code/CodeView';
 
+type Script = NonNullable<BotNow['script']>;
+
+/** Paused, failed, running, or anything else. */
+function statusTone(script: Script): 'warn' | 'danger' | 'info' | 'neutral' {
+  if (script.paused) return 'warn';
+  return script.status === 'failed' ? 'danger' : script.status === 'running' ? 'info' : 'neutral';
+}
+
+/** The source with the running line (skeleton lines while it loads). */
+function ScriptSource(p: {
+  detail: ReturnType<typeof useApi<'scripts.get'>>;
+  line: number | null;
+  follow: boolean;
+  lint: React.ComponentProps<typeof CodeView>['lint'];
+}) {
+  const { detail } = p;
+  if (detail.isPending)
+    return (
+      <div className="space-y-2 p-4">
+        {Array.from({ length: 9 }, (_, i) => (
+          <Skeleton key={i} className="h-3.5" />
+        ))}
+      </div>
+    );
+  if (detail.error) return <ErrorState error={detail.error} onRetry={() => void detail.refetch()} title="Could not load the source" />;
+  return <CodeView code={detail.data.code} lang={detail.data.version.lang} runningLine={p.line} follow={p.follow} lint={p.lint} className="h-full" />;
+}
+
 /** The current script with its running line highlighted (line from the `now` stream; source fetched once per version). */
 export function ScriptCard({ script, onDebug }: { script: NonNullable<BotNow['script']>; onDebug: () => void }) {
   const [follow, setFollow] = useState(true);
@@ -20,7 +48,6 @@ export function ScriptCard({ script, onDebug }: { script: NonNullable<BotNow['sc
     () => (detail.data?.lint.findings ?? []).map((f) => ({ line: f.line, severity: f.severity, message: `${f.rule}: ${f.message}` })),
     [detail.data],
   );
-  const statusTone = script.paused ? 'warn' : script.status === 'failed' ? 'danger' : script.status === 'running' ? 'info' : 'neutral';
   return (
     <Card className="flex min-h-0 flex-col">
       <CardHeader
@@ -29,7 +56,7 @@ export function ScriptCard({ script, onDebug }: { script: NonNullable<BotNow['sc
           <span className="flex items-center gap-2">
             {script.name}
             {script.version ? <span className="font-normal text-subtle">v{script.version}</span> : null}
-            <Badge tone={statusTone}>{script.paused ? 'paused' : script.status}</Badge>
+            <Badge tone={statusTone(script)}>{script.paused ? 'paused' : script.status}</Badge>
           </span>
         }
         subtitle={script.line ? `Running line ${script.line}` : undefined}
@@ -46,17 +73,7 @@ export function ScriptCard({ script, onDebug }: { script: NonNullable<BotNow['sc
         }
       />
       <div className="h-80 min-h-0 overflow-hidden rounded-b-card">
-        {detail.isPending ? (
-          <div className="space-y-2 p-4">
-            {Array.from({ length: 9 }, (_, i) => (
-              <Skeleton key={i} className="h-3.5" />
-            ))}
-          </div>
-        ) : detail.error ? (
-          <ErrorState error={detail.error} onRetry={() => void detail.refetch()} title="Could not load the source" />
-        ) : (
-          <CodeView code={detail.data.code} lang={detail.data.version.lang} runningLine={script.line ?? null} follow={follow} lint={lint} className="h-full" />
-        )}
+        <ScriptSource detail={detail} line={script.line ?? null} follow={follow} lint={lint} />
       </div>
     </Card>
   );

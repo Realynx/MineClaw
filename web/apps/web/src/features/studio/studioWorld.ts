@@ -144,64 +144,82 @@ export class StudioWorld {
     for (const l of this.listeners) l(d);
   }
 
-  /** One column: bedrock, stone, dirt and grass up to y 63, plus the canvas blocks over it. */
+  /** One column: bedrock, stone, dirt and grass up to y 63 (or the mine's terrain chunk), plus the canvas blocks over it. */
   private encode(cx: number, cz: number) {
     const n = 16 * this.height * 16;
     const ids = new Uint8Array(n),
       meta = new Uint8Array(n);
-    const ground = BASE_Y - 1;
-    const base = this.base;
-    if (this.terrain) {
-      // The terrain chunk, (y·16 + lz)·16 + lx, id << 4 | meta.
-      const t = this.terrain.chunk(cx, cz);
-      const h = Math.min(this.height, 128);
-      for (let y = 0; y < h; y++)
-        for (let lz = 0; lz < 16; lz++)
-          for (let lx = 0; lx < 16; lx++) {
-            const v = t[(y * 16 + lz) * 16 + lx]!;
-            if (v === 0) continue;
-            const i = cellIndex(lx, y, lz);
-            ids[i] = v >> 4;
-            meta[i] = v & 15;
-          }
-    } else
-      for (let lx = 0; lx < 16; lx++)
-        for (let lz = 0; lz < 16; lz++) {
-          ids[cellIndex(lx, 0, lz)] = BEDROCK;
-          for (let y = 1; y < ground - 3; y++) ids[cellIndex(lx, y, lz)] = STONE;
-          for (let y = ground - 3; y < ground; y++) ids[cellIndex(lx, y, lz)] = DIRT;
-          ids[cellIndex(lx, ground, lz)] = GRASS;
-        }
-    if (cx >= 0 && cx <= 3 && cz >= 0 && cz <= 3) {
-      for (const k of this.canvas.dug) {
-        const [x, y, z] = posOf(k);
-        if (x >> 4 !== cx || z >> 4 !== cz) continue;
-        const i = cellIndex(x & 15, y + base, z & 15);
-        ids[i] = 0;
-        meta[i] = 0;
-      }
-      for (const [k, v] of this.canvas.blocks) {
-        const [x, y, z] = posOf(k);
-        if (x >> 4 !== cx || z >> 4 !== cz) continue;
-        const i = cellIndex(x & 15, y + base, z & 15);
-        ids[i] = v >> 4;
-        meta[i] = v & 15;
-      }
-    }
-    const tops = new Int16Array(256);
-    for (let lx = 0; lx < 16; lx++)
-      for (let lz = 0; lz < 16; lz++) {
-        let y = this.height - 1;
-        while (y > 0 && CLEAR.has(ids[cellIndex(lx, y, lz)]!)) y--;
-        tops[lx * 16 + lz] = y;
-      }
+    if (this.terrain) this.fillTerrain(ids, meta, this.terrain, cx, cz);
+    else fillGrassland(ids);
+    if (cx >= 0 && cx <= 3 && cz >= 0 && cz <= 3) this.overlayCanvas(ids, meta, cx, cz);
+    const tops = skyTops(ids, this.height);
     const light = lightSections(
       this.height,
       (x, y, z) => (y > tops[x * 16 + z]! ? 15 : 0),
-      (x, y, z) =>
-        ids[cellIndex(x, y, z)] === 89 || ids[cellIndex(x, y, z)] === 91 ? 15 : ids[cellIndex(x, y, z)] === 50 ? 14 : 0,
+      (x, y, z) => blockLight(ids[cellIndex(x, y, z)]!),
     );
     const biomes = this.version === '1.12.2' ? new Uint8Array(256).fill(1) : null;
     return encodeColumn(ids, meta, light, biomes);
   }
+
+  /** The terrain chunk, (y·16 + lz)·16 + lx, id << 4 | meta. */
+  private fillTerrain(ids: Uint8Array, meta: Uint8Array, terrain: MineTerrain, cx: number, cz: number) {
+    const t = terrain.chunk(cx, cz);
+    const h = Math.min(this.height, 128);
+    for (let y = 0; y < h; y++)
+      for (let lz = 0; lz < 16; lz++)
+        for (let lx = 0; lx < 16; lx++) {
+          const v = t[(y * 16 + lz) * 16 + lx]!;
+          if (v === 0) continue;
+          const i = cellIndex(lx, y, lz);
+          ids[i] = v >> 4;
+          meta[i] = v & 15;
+        }
+  }
+
+  /** The canvas's dug cells (air) then its blocks, in a plot column. */
+  private overlayCanvas(ids: Uint8Array, meta: Uint8Array, cx: number, cz: number) {
+    const base = this.base;
+    for (const k of this.canvas.dug) {
+      const [x, y, z] = posOf(k);
+      if (x >> 4 !== cx || z >> 4 !== cz) continue;
+      const i = cellIndex(x & 15, y + base, z & 15);
+      ids[i] = 0;
+      meta[i] = 0;
+    }
+    for (const [k, v] of this.canvas.blocks) {
+      const [x, y, z] = posOf(k);
+      if (x >> 4 !== cx || z >> 4 !== cz) continue;
+      const i = cellIndex(x & 15, y + base, z & 15);
+      ids[i] = v >> 4;
+      meta[i] = v & 15;
+    }
+  }
 }
+
+/** The grassland column: bedrock at 0, stone, three dirt layers, grass at y 63. */
+function fillGrassland(ids: Uint8Array) {
+  const ground = BASE_Y - 1;
+  for (let lx = 0; lx < 16; lx++)
+    for (let lz = 0; lz < 16; lz++) {
+      ids[cellIndex(lx, 0, lz)] = BEDROCK;
+      for (let y = 1; y < ground - 3; y++) ids[cellIndex(lx, y, lz)] = STONE;
+      for (let y = ground - 3; y < ground; y++) ids[cellIndex(lx, y, lz)] = DIRT;
+      ids[cellIndex(lx, ground, lz)] = GRASS;
+    }
+}
+
+/** Per (x, z) (index x·16 + z): the highest block the sky light stops at (0 when none). */
+function skyTops(ids: Uint8Array, height: number): Int16Array {
+  const tops = new Int16Array(256);
+  for (let lx = 0; lx < 16; lx++)
+    for (let lz = 0; lz < 16; lz++) {
+      let y = height - 1;
+      while (y > 0 && CLEAR.has(ids[cellIndex(lx, y, lz)]!)) y--;
+      tops[lx * 16 + lz] = y;
+    }
+  return tops;
+}
+
+/** Block light: glowstone and jack-o'-lanterns 15, torches 14. */
+const blockLight = (id: number): number => (id === 89 || id === 91 ? 15 : id === 50 ? 14 : 0);
