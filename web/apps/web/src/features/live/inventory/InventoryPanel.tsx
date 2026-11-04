@@ -93,50 +93,21 @@ export const Slot = memo(function Slot({
   testid = 'inv-slot',
 }: SlotProps) {
   const it = cell.item;
-  // A damaged tool's meta is its damage, not a variant: its icon is the undamaged one.
-  const url = it && icons ? icons(it.id, it.durability ? 0 : it.meta) : null;
-  const frac = it ? durabilityFraction(it) : null;
   const glint = it ? glints(version, it) : false;
-  const mask: CSSProperties | undefined = url
-    ? { WebkitMaskImage: `url(${url})`, maskImage: `url(${url})` }
-    : undefined;
   return (
     <div
       className={cn(s.slot, held && s.held)}
       data-testid={`${testid}-${cell.index}`}
       data-slot={cell.index}
-      data-item={it ? it.name : undefined}
-      data-count={it ? it.count : undefined}
-      data-held={held ? 'true' : undefined}
-      data-glint={glint ? 'true' : undefined}
+      {...slotData(it, held, glint)}
       tabIndex={it ? 0 : -1}
-      aria-label={
-        it
-          ? `${label}: ${it.display}${it.count > 1 ? ` ×${it.count}` : ''}${held ? ' (held)' : ''}`
-          : `${label}: empty${held ? ' (held)' : ''}`
-      }
+      aria-label={slotLabel(label, it, held)}
       onMouseEnter={(e) => it && onTip(cell, e.currentTarget)}
       onMouseLeave={() => onTip(null, null)}
       onFocus={(e) => it && onTip(cell, e.currentTarget)}
       onBlur={() => onTip(null, null)}
     >
-      {it ? (
-        <>
-          {url ? (
-            // eslint-disable-next-line @next/next/no-img-element -- a data URL drawn here from the bundled atlas
-            <img src={url} alt="" className={s.icon} draggable={false} />
-          ) : (
-            <span className={s.fallback}>{abbrev(it.name)}</span>
-          )}
-          {glint ? <span className={s.glint} style={mask} aria-hidden /> : null}
-          {frac !== null && frac < 1 ? (
-            <span className={s.bar} aria-hidden>
-              <span style={{ width: `${Math.max(1, Math.round(frac * 100))}%`, background: durabilityColour(frac) }} />
-            </span>
-          ) : null}
-          {it.count > 1 ? <span className={s.count}>{it.count}</span> : null}
-        </>
-      ) : ghost ? (
+      {it ? <SlotItem it={it} icons={icons} glint={glint} /> : ghost ? (
         <span className={s.ghost} aria-hidden>
           {ghost}
         </span>
@@ -146,31 +117,68 @@ export const Slot = memo(function Slot({
   );
 }, sameSlot);
 
+/** The slot's test hooks: the item and its count, whether it is held, whether it glints. */
+function slotData(it: InventorySlot | null | undefined, held: boolean | undefined, glint: boolean) {
+  return {
+    'data-item': it ? it.name : undefined,
+    'data-count': it ? it.count : undefined,
+    'data-held': held ? 'true' : undefined,
+    'data-glint': glint ? 'true' : undefined,
+  };
+}
+
+function slotLabel(label: string, it: InventorySlot | null | undefined, held: boolean | undefined): string {
+  const h = held ? ' (held)' : '';
+  if (!it) return `${label}: empty${h}`;
+  return `${label}: ${it.display}${it.count > 1 ? ` ×${it.count}` : ''}${h}`;
+}
+
+/** A slot's item: its icon (or abbreviation), the enchantment glint, the durability bar, the count. */
+function SlotItem({ it, icons, glint }: { it: InventorySlot; icons: SlotProps['icons']; glint: boolean }) {
+  // A damaged tool's meta is its damage, not a variant: its icon is the undamaged one.
+  const url = icons ? icons(it.id, it.durability ? 0 : it.meta) : null;
+  const frac = durabilityFraction(it);
+  const mask: CSSProperties | undefined = url ? { WebkitMaskImage: `url(${url})`, maskImage: `url(${url})` } : undefined;
+  return (
+    <>
+      {url ? (
+        // eslint-disable-next-line @next/next/no-img-element -- a data URL drawn here from the bundled atlas
+        <img src={url} alt="" className={s.icon} draggable={false} />
+      ) : (
+        <span className={s.fallback}>{abbrev(it.name)}</span>
+      )}
+      {glint ? <span className={s.glint} style={mask} aria-hidden /> : null}
+      {frac !== null && frac < 1 ? (
+        <span className={s.bar} aria-hidden>
+          <span style={{ width: `${Math.max(1, Math.round(frac * 100))}%`, background: durabilityColour(frac) }} />
+        </span>
+      ) : null}
+      {it.count > 1 ? <span className={s.count}>{it.count}</span> : null}
+    </>
+  );
+}
+
+/** What a slot shows of its item (a poll rebuilds the objects). */
+function sameItem(x: InventorySlot | null | undefined, y: InventorySlot | null | undefined): boolean {
+  if (x === y) return true;
+  if (!x || !y) return false;
+  return ITEM_KEYS.every((k) => x[k] === y[k]) && sameDurability(x.durability, y.durability);
+}
+
+const ITEM_KEYS = ['id', 'meta', 'count', 'enchanted', 'display'] as const satisfies ReadonlyArray<keyof InventorySlot>;
+
+const sameDurability = (a: InventorySlot['durability'], b: InventorySlot['durability']): boolean =>
+  a?.left === b?.left && a?.max === b?.max;
+
+/** The slot props compared by identity (the ghost only by whether there is one). */
+const SLOT_KEYS = ['version', 'icons', 'held', 'pulse', 'label', 'onTip', 'testid'] as const satisfies ReadonlyArray<keyof SlotProps>;
+
 /** A poll rebuilds every cell object; a slot re-renders only when what it shows changed. */
 function sameSlot(a: SlotProps, b: SlotProps): boolean {
-  const x = a.cell.item,
-    y = b.cell.item;
-  const same =
-    x === y ||
-    (!!x &&
-      !!y &&
-      x.id === y.id &&
-      x.meta === y.meta &&
-      x.count === y.count &&
-      x.enchanted === y.enchanted &&
-      x.display === y.display &&
-      x.durability?.left === y.durability?.left &&
-      x.durability?.max === y.durability?.max);
   return (
-    same &&
+    sameItem(a.cell.item, b.cell.item) &&
     a.cell.index === b.cell.index &&
-    a.version === b.version &&
-    a.icons === b.icons &&
-    a.held === b.held &&
-    a.pulse === b.pulse &&
-    a.label === b.label &&
-    a.onTip === b.onTip &&
-    a.testid === b.testid &&
+    SLOT_KEYS.every((k) => a[k] === b[k]) &&
     !!a.ghost === !!b.ghost
   );
 }
@@ -302,27 +310,39 @@ export function InventorySection({ bot, className, compact }: { bot: string; cla
     <section className={cn('space-y-2', className)} aria-label={`${bot}'s inventory`} data-testid="inventory-section">
       <div className="flex items-center gap-2 text-xs font-medium tracking-wide text-subtle uppercase">
         <Backpack className="size-3.5" /> Inventory
-        {inv && !inv.online ? (
-          <span className="ml-auto text-[11px] font-normal tracking-normal normal-case text-warn">
-            Offline · last known {ago(inv.at)}
-          </span>
-        ) : inv?.version && !compact ? (
-          <span className="ml-auto text-[11px] font-normal tracking-normal normal-case">{inv.version}</span>
-        ) : null}
+        <InventoryNote inv={inv} compact={compact} />
       </div>
       {inv ? (
         <div className={cn(!inv.online && 'opacity-80')}>
           <InventoryGrid inv={inv} changed={delta.changed} stamp={delta.stamp} />
         </div>
-      ) : notFound ? (
-        <p className="py-3 text-sm text-muted" data-testid="inventory-unknown">
-          No inventory known for {bot} yet. It shows once the body is in game here.
-        </p>
-      ) : q.error ? (
-        <p className="py-3 text-sm text-danger">Could not load the inventory.</p>
       ) : (
-        <Skeleton className="h-[16.5rem] w-[21.5rem] max-w-full rounded-lg" />
+        <NoInventory bot={bot} notFound={notFound} failed={!!q.error} />
       )}
     </section>
   );
+}
+
+/** Offline (the last known inventory, and when), else the game version (full view). */
+function InventoryNote({ inv, compact }: { inv: BodyInventory | null; compact?: boolean }) {
+  if (inv && !inv.online)
+    return (
+      <span className="ml-auto text-[11px] font-normal tracking-normal normal-case text-warn">
+        Offline · last known {ago(inv.at)}
+      </span>
+    );
+  if (inv?.version && !compact) return <span className="ml-auto text-[11px] font-normal tracking-normal normal-case">{inv.version}</span>;
+  return null;
+}
+
+/** No inventory yet: unknown to the hive, failed to load, or loading. */
+function NoInventory({ bot, notFound, failed }: { bot: string; notFound: boolean; failed: boolean }) {
+  if (notFound)
+    return (
+      <p className="py-3 text-sm text-muted" data-testid="inventory-unknown">
+        No inventory known for {bot} yet. It shows once the body is in game here.
+      </p>
+    );
+  if (failed) return <p className="py-3 text-sm text-danger">Could not load the inventory.</p>;
+  return <Skeleton className="h-[16.5rem] w-[21.5rem] max-w-full rounded-lg" />;
 }
