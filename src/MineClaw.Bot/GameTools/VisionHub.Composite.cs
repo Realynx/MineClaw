@@ -217,62 +217,84 @@ public sealed partial class VisionHub
         var jobs = new List<PanelJob>();
         var notes = new List<string>();
         var mainBody = (await BodyAsync(null, ct).ConfigureAwait(false))!.Value.Body;
-        PanelContext? home = null;
-        PanelContext Home() => home ??= ContextFor(focus, dim, radius, dim == _c.World.Dimension ? mainBody : null, null, aids);
-        var homeEye = new EyeScene
-        {
-            World = new BlockAccessVoxels(_c.World.PlanningView), EyeX = mainBody.X, EyeY = mainBody.Y + 1.62, EyeZ = mainBody.Z,
-            Yaw = EyeScene.LookAt(mainBody.X, mainBody.Y + 1.62, mainBody.Z, focus.X + 0.5, focus.Y + 0.5, focus.Z + 0.5).Yaw,
-            Pitch = EyeScene.LookAt(mainBody.X, mainBody.Y + 1.62, mainBody.Z, focus.X + 0.5, focus.Y + 0.5, focus.Z + 0.5).Pitch, Viewer = _c.Username,
-        };
+        var home = new HomePanels(this, focus, dim, radius, aids, mainBody);
         foreach (var r in reqs)
         {
-            switch (r.Kind)
+            string? error = r.Kind switch
             {
-                case "eye" when r.At != null:
-                case "follow":
-                {
-                    if (await BodyAsync(r.At, ct).ConfigureAwait(false) is not { } b) return ([], notes, $"no body or player '{r.At}' to look through");
-                    if (b.Note != null) notes.Add(b.Note);
-                    var at = new BlockPos((int)Math.Floor(b.Body.X), (int)Math.Floor(b.Body.Y), (int)Math.Floor(b.Body.Z));
-                    var ctx = ContextFor(at, b.Dim, radius, b.Body, null, aids);
-                    var rig = r.Kind == "eye" ? PerspectivePanel.EyeOf(b.Body, "EYE " + b.Label) : PerspectivePanel.Follow(b.Body, b.Label);
-                    jobs.Add(new PanelJob { Ctx = ctx, Rig = rig });
-                    break;
-                }
-                case "cam":
-                case "orbit" when !string.IsNullOrEmpty(r.At):
-                case var _ when r.At is { Length: > 0 }:
-                {
-                    var t = ResolveTarget(r.At);
-                    if (t.Error != null || t.HiveView) return ([], notes, $"cam: unknown spot '{r.At}' (x,y,z, a landmark/structure, a bot or a player)");
-                    var spot = t.Bot is { } bot ? new BlockPos((int)Math.Floor(bot.X), (int)Math.Floor(bot.Y), (int)Math.Floor(bot.Z)) : t.Focus;
-                    var ctx = ContextFor(spot, t.Bot?.Dim ?? t.Dim, radius, null, t.Landmark, aids);
-                    string label = "@" + Short(t.Landmark ?? t.Bot?.Short ?? r.At!);
-                    if (r.Kind == "cam") jobs.Add(new PanelJob { Ctx = ctx, Rig = PerspectivePanel.Cam(ctx.Focus, ctx.FeetY, r.From, r.Dist, "CAM " + label, radius, r.Cam) });
-                    else if (r.Kind == "orbit" && (r.N > 1 || r.Cam.IsEmpty)) jobs.AddRange(PerspectivePanel.Orbits(ctx.Focus, ctx.FeetY, radius, r.N, "ORBIT " + label).Select(g => new PanelJob { Ctx = ctx, Rig = g }));
-                    else if (PerspectivePanel.Views.Contains(r.Kind) && PerspectivePanel.For(r.Kind, ctx.Focus, ctx.FeetY, radius, null, null, r.Cam) is { } g2) jobs.Add(new PanelJob { Ctx = ctx, Rig = g2 with { Title = g2.Title + " " + label } });
-                    else jobs.Add(new PanelJob { Ctx = ctx, Flat = r.Kind, Params = r.Cam });
-                    break;
-                }
-                case "orbit" when r.N > 1:
-                    jobs.AddRange(PerspectivePanel.Orbits(Home().Focus, Home().FeetY, radius, r.N, "ORBIT").Select(g => new PanelJob { Ctx = Home(), Rig = g }));
-                    break;
-                default:
-                {
-                    var ctx = Home();
-                    if (PerspectivePanel.Views.Contains(r.Kind))
-                    {
-                        var rig = PerspectivePanel.For(r.Kind, ctx.Focus, ctx.FeetY, radius, ctx.Body, r.Kind == "eye" ? homeEye : null, r.Cam)
-                            ?? PerspectivePanel.For("orbit3", ctx.Focus, ctx.FeetY, radius, null, null);
-                        jobs.Add(new PanelJob { Ctx = ctx, Rig = rig });
-                    }
-                    else jobs.Add(new PanelJob { Ctx = ctx, Flat = r.Kind, Axis = AxisFor(focus), Params = r.Cam });
-                    break;
-                }
-            }
+                "eye" when r.At != null => await BodyPanelAsync(r, radius, aids, jobs, notes, ct).ConfigureAwait(false),
+                "follow" => await BodyPanelAsync(r, radius, aids, jobs, notes, ct).ConfigureAwait(false),
+                "cam" => SpotPanels(r, radius, aids, jobs),
+                "orbit" when !string.IsNullOrEmpty(r.At) => SpotPanels(r, radius, aids, jobs),
+                _ when r.At is { Length: > 0 } => SpotPanels(r, radius, aids, jobs),
+                "orbit" when r.N > 1 => home.Orbits(r, jobs),
+                _ => home.View(r, jobs),
+            };
+            if (error != null) return ([], notes, error);
         }
         return (jobs.Take(ContactSheet.MaxPanels).ToList(), notes, null);
+    }
+
+    /// <summary>"eye 67" / "follow Fox": a panel through (or behind) a body or player. Error when there's none by that name.</summary>
+    private async Task<string?> BodyPanelAsync(PanelRequest r, int radius, bool aids, List<PanelJob> jobs, List<string> notes, CancellationToken ct)
+    {
+        if (await BodyAsync(r.At, ct).ConfigureAwait(false) is not { } b) return $"no body or player '{r.At}' to look through";
+        if (b.Note != null) notes.Add(b.Note);
+        var at = new BlockPos((int)Math.Floor(b.Body.X), (int)Math.Floor(b.Body.Y), (int)Math.Floor(b.Body.Z));
+        var ctx = ContextFor(at, b.Dim, radius, b.Body, null, aids);
+        var rig = r.Kind == "eye" ? PerspectivePanel.EyeOf(b.Body, "EYE " + b.Label) : PerspectivePanel.Follow(b.Body, b.Label);
+        jobs.Add(new PanelJob { Ctx = ctx, Rig = rig });
+        return null;
+    }
+
+    /// <summary>A panel at its own spot ("cam 5,65,7 NE", "orbit gen 3", "iso main house"). Error when the spot is unknown.</summary>
+    private string? SpotPanels(PanelRequest r, int radius, bool aids, List<PanelJob> jobs)
+    {
+        var t = ResolveTarget(r.At);
+        if (t.Error != null || t.HiveView) return $"cam: unknown spot '{r.At}' (x,y,z, a landmark/structure, a bot or a player)";
+        var spot = t.Bot is { } bot ? new BlockPos((int)Math.Floor(bot.X), (int)Math.Floor(bot.Y), (int)Math.Floor(bot.Z)) : t.Focus;
+        var ctx = ContextFor(spot, t.Bot?.Dim ?? t.Dim, radius, null, t.Landmark, aids);
+        string label = "@" + Short(t.Landmark ?? t.Bot?.Short ?? r.At!);
+        if (r.Kind == "cam") jobs.Add(new PanelJob { Ctx = ctx, Rig = PerspectivePanel.Cam(ctx.Focus, ctx.FeetY, r.From, r.Dist, "CAM " + label, radius, r.Cam) });
+        else if (r.Kind == "orbit" && (r.N > 1 || r.Cam.IsEmpty)) jobs.AddRange(PerspectivePanel.Orbits(ctx.Focus, ctx.FeetY, radius, r.N, "ORBIT " + label).Select(g => new PanelJob { Ctx = ctx, Rig = g }));
+        else if (PerspectivePanel.Views.Contains(r.Kind) && PerspectivePanel.For(r.Kind, ctx.Focus, ctx.FeetY, radius, null, null, r.Cam) is { } g2) jobs.Add(new PanelJob { Ctx = ctx, Rig = g2 with { Title = g2.Title + " " + label } });
+        else jobs.Add(new PanelJob { Ctx = ctx, Flat = r.Kind, Params = r.Cam });
+        return null;
+    }
+
+    /// <summary>The panels around the default focus: its context (made once, on first use) and main's eye looking at it.</summary>
+    private sealed class HomePanels(VisionHub hub, BlockPos focus, int dim, int radius, bool aids, PerspectivePanel.Body mainBody)
+    {
+        private PanelContext? _ctx;
+        private readonly EyeScene _eye = new()
+        {
+            World = new BlockAccessVoxels(hub._c.World.PlanningView), EyeX = mainBody.X, EyeY = mainBody.Y + 1.62, EyeZ = mainBody.Z,
+            Yaw = EyeScene.LookAt(mainBody.X, mainBody.Y + 1.62, mainBody.Z, focus.X + 0.5, focus.Y + 0.5, focus.Z + 0.5).Yaw,
+            Pitch = EyeScene.LookAt(mainBody.X, mainBody.Y + 1.62, mainBody.Z, focus.X + 0.5, focus.Y + 0.5, focus.Z + 0.5).Pitch, Viewer = hub._c.Username,
+        };
+
+        private PanelContext Ctx => _ctx ??= hub.ContextFor(focus, dim, radius, dim == hub._c.World.Dimension ? mainBody : null, null, aids);
+
+        /// <summary>"orbit 3" around the default focus.</summary>
+        public string? Orbits(PanelRequest r, List<PanelJob> jobs)
+        {
+            jobs.AddRange(PerspectivePanel.Orbits(Ctx.Focus, Ctx.FeetY, radius, r.N, "ORBIT").Select(g => new PanelJob { Ctx = Ctx, Rig = g }));
+            return null;
+        }
+
+        /// <summary>A named view of the default focus: a 3D rig (main's eye for "eye"), else a flat map.</summary>
+        public string? View(PanelRequest r, List<PanelJob> jobs)
+        {
+            var ctx = Ctx;
+            if (PerspectivePanel.Views.Contains(r.Kind))
+            {
+                var rig = PerspectivePanel.For(r.Kind, ctx.Focus, ctx.FeetY, radius, ctx.Body, r.Kind == "eye" ? _eye : null, r.Cam)
+                    ?? PerspectivePanel.For("orbit3", ctx.Focus, ctx.FeetY, radius, null, null);
+                jobs.Add(new PanelJob { Ctx = ctx, Rig = rig });
+            }
+            else jobs.Add(new PanelJob { Ctx = ctx, Flat = r.Kind, Axis = hub.AxisFor(focus), Params = r.Cam });
+            return null;
+        }
     }
 
     private static string Short(string s) => s.Length <= 12 ? s.ToUpperInvariant() : s[..12].ToUpperInvariant();
