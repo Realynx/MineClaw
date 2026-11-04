@@ -34,14 +34,22 @@ public static class StoryEnchanting
     /// <summary>What the tools system's "enchant tools for marked materials" prefers per material: ores with drops (coal, diamond,
     /// emerald, lapis, redstone, quartz) Fortune, blocks that only drop themselves with Silk Touch (glass, ice, glowstone, ender chests,
     /// grass) Silk Touch, anything else Efficiency.</summary>
-    public static string PreferFor(string material) => material.ToLowerInvariant() switch
+    public static string PreferFor(string material)
     {
-        var m when m.Contains("coal") || m.Contains("diamond") || m.Contains("emerald") || m.Contains("lapis") || m.Contains("redstone")
-                   || m.Contains("quartz") => "fortune",
-        var m when m.Contains("glass") || m.Contains("ice") || m.Contains("glowstone") || m.Contains("ender_chest") || m.Contains("grass")
-                   || m.Contains("mycelium") || m.Contains("bookshel") => "silk_touch",
-        _ => "efficiency",
-    };
+        var m = material.ToLowerInvariant();
+        if (ContainsAny(m, FortuneHints)) return "fortune";
+        return ContainsAny(m, SilkTouchHints) ? "silk_touch" : "efficiency";
+    }
+
+    private static readonly string[] FortuneHints = ["coal", "diamond", "emerald", "lapis", "redstone", "quartz"];
+    private static readonly string[] SilkTouchHints = ["glass", "ice", "glowstone", "ender_chest", "grass", "mycelium", "bookshel"];
+
+    private static bool ContainsAny(string m, string[] hints)
+    {
+        foreach (var h in hints)
+            if (m.Contains(h)) return true;
+        return false;
+    }
 }
 
 public sealed partial class StoryColony
@@ -62,26 +70,13 @@ public sealed partial class StoryColony
         var d = World!.Data;
         if (d.ItemByName(spec.Item) is not { } it) return (null, $"no item '{spec.Item}' in {d.VersionId}");
         int option = Math.Clamp(bill.Option ?? 3, 1, 3);
-        if (_noOffer.TryGetValue(bill.Id, out var tried) && tried.Contains(p.Name))
-        {
-            var takers = Takers(bill, work);
-            return takers.All(t => tried.Contains(t.Pawn.Name))
-                ? (null, $"no pawn's table shows {Enchanting.ByName(bill.Prefer)?.DisplayName ?? bill.Prefer} for it (a pawn's offers change after it enchants something)")
-                : (null, null);
-        }
+        if (_noOffer.TryGetValue(bill.Id, out var tried) && tried.Contains(p.Name)) return (null, NoOfferAnywhere(bill, work, tried));
         int need = Math.Max(option, bill.XpNeeded ?? option);
         if (XpShort(bill, work, need, live, out bool skip) is { } shortXp) return (null, shortXp);
         if (skip) return (null, null);
         string label = StoryRecipes.Label(d, it.Id, 0).ToLowerInvariant();
         var g = new StationGathering(this, bill, live, bench.Pos);
-        g.Get(s => s.Id == it.Id, 1, label, storeOnly: true);
-        if (g.Missing != null)
-        {
-            if (live.Inventory.All(s => s.Id != it.Id)) return (null, g.Missing);
-            g.Missing = null; // its own
-        }
-        g.Get(s => s.Id == Enchanting.Lapis && s.Meta == Enchanting.LapisMeta, option, "lapis lazuli");
-        if (g.Missing != null) return (null, g.Missing);
+        if (EnchantGather(g, live, it.Id, label, option) is { } missing) return (null, missing);
         var fetch = new JsonArray();
         var job = Job(work, "enchant", r.Label + (bill.Mode == "count" ? $" ({bill.Done}/{bill.Target})" : ""), bench.Pos, key, "bill", bill.Id, "working", f =>
         {
@@ -94,6 +89,26 @@ public sealed partial class StoryColony
         g.Attach(job, fetch);
         StoreStationOutput(job, bill, r, bench.Pos);
         return (job, null);
+    }
+
+    /// <summary>This pawn's table showed no offer for the prefer-only bill: when every pawn that may take it has tried, the bill waits
+    /// with why; else (null) it is left to the others.</summary>
+    private string? NoOfferAnywhere(BillState bill, string work, HashSet<string> tried) =>
+        Takers(bill, work).All(t => tried.Contains(t.Pawn.Name))
+            ? $"no pawn's table shows {Enchanting.ByName(bill.Prefer)?.DisplayName ?? bill.Prefer} for it (a pawn's offers change after it enchants something)"
+            : null;
+
+    /// <summary>The item (from storage first; the pawn's own when none is stored) and the option's lapis; what is missing, else null.</summary>
+    private static string? EnchantGather(StationGathering g, PawnLive live, int itemId, string label, int option)
+    {
+        g.Get(s => s.Id == itemId, 1, label, storeOnly: true);
+        if (g.Missing != null)
+        {
+            if (live.Inventory.All(s => s.Id != itemId)) return g.Missing;
+            g.Missing = null; // its own
+        }
+        g.Get(s => s.Id == Enchanting.Lapis && s.Meta == Enchanting.LapisMeta, option, "lapis lazuli");
+        return g.Missing;
     }
 
     /// <summary>The product of an enchant or anvil job goes to the bill's chest; with "best", an enchanted book goes to the best chest and a
@@ -121,28 +136,40 @@ public sealed partial class StoryColony
         if (Enchanting.ByName(prefer) is not { } pe) return ([], $"unknown enchantment '{prefer}'");
         lock (_lock)
         {
-            var home = Home() ?? Benches.FirstOrDefault()?.Pos ?? default;
-            if (Benches.Where(b => b.Kind == "enchanting_table").OrderBy(b => b.Pos.Dist(home)).FirstOrDefault() is not { } table)
-                return ([], "no enchanting table: place one and designate it");
-            var list = items is { Count: > 0 } ? items
-                : Enchanting.TableItems.Where(n => n.EndsWith("_pickaxe", StringComparison.Ordinal) && w.Data.ItemByName(n) is { } it && CountItem(it.Id, -1) > 0).ToList();
+            if (EnchantingTableNearHome() is not { } table) return ([], "no enchanting table: place one and designate it");
+            var list = items is { Count: > 0 } ? items : PickaxesHeld(w);
             if (list.Count == 0) return ([], "the colony has no pickaxe to enchant");
             var ids = new List<string>();
             foreach (var name in list)
-            {
-                if (StoryRecipes.Get(w.Data, "enchant:" + name) is not { } r) return (ids, $"the table can't enchant '{name}'");
-                if (!Enchanting.Fits(pe, name)) return (ids, $"{pe.DisplayName} doesn't go on {Pretty(name)}");
-                if (table.Bills.Any(b => b.Recipe == r.Id && b.Prefer == pe.Name && Wanted(b, r))) continue;
-                var bill = new BillState
-                {
-                    Id = NextId("bill"), Recipe = r.Id, Mode = "count", Target = Math.Clamp(count, 1, 64), Option = 3, Prefer = pe.Name, PreferOnly = preferOnly,
-                };
-                table.Bills.Add(bill);
-                ids.Add(bill.Id);
-            }
+                if (AddEnchantBill(w, table, pe, name, Math.Clamp(count, 1, 64), preferOnly, ids) is { } err) return (ids, err);
             table.Rev = Touch();
             WakeIdle();
             return (ids, null);
         }
+    }
+
+    private WorkbenchState? EnchantingTableNearHome()
+    {
+        var home = Home() ?? Benches.FirstOrDefault()?.Pos ?? default;
+        return Benches.Where(b => b.Kind == "enchanting_table").OrderBy(b => b.Pos.Dist(home)).FirstOrDefault();
+    }
+
+    /// <summary>Every pickaxe kind the table takes that the colony has.</summary>
+    private List<string> PickaxesHeld(IStoryWorld w) =>
+        Enchanting.TableItems.Where(n => n.EndsWith("_pickaxe", StringComparison.Ordinal) && w.Data.ItemByName(n) is { } it && CountItem(it.Id, -1) > 0).ToList();
+
+    /// <summary>One item's enchant bill (none when an unfinished one with that preference is there already); why it can't be, else null.</summary>
+    private string? AddEnchantBill(IStoryWorld w, WorkbenchState table, EnchantmentInfo pe, string name, int target, bool preferOnly, List<string> ids)
+    {
+        if (StoryRecipes.Get(w.Data, "enchant:" + name) is not { } r) return $"the table can't enchant '{name}'";
+        if (!Enchanting.Fits(pe, name)) return $"{pe.DisplayName} doesn't go on {Pretty(name)}";
+        if (table.Bills.Any(b => b.Recipe == r.Id && b.Prefer == pe.Name && Wanted(b, r))) return null;
+        var bill = new BillState
+        {
+            Id = NextId("bill"), Recipe = r.Id, Mode = "count", Target = target, Option = 3, Prefer = pe.Name, PreferOnly = preferOnly,
+        };
+        table.Bills.Add(bill);
+        ids.Add(bill.Id);
+        return null;
     }
 }

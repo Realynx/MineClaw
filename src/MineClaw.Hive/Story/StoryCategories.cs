@@ -73,38 +73,46 @@ public sealed class StoryCategories
     {
         Version = d.VersionId;
         var tops = new Dictionary<string, Category>();
-        Category Leaf(string leaf, string parent, string parentLabel, string label)
-        {
-            if (_byId.TryGetValue(leaf, out var c)) return c;
-            if (!tops.TryGetValue(parent, out var top)) _byId[parent] = tops[parent] = top = new Category { Id = parent, Label = parentLabel };
-            c = new Category { Id = leaf, Label = label };
-            if (leaf == parent) return top; // a one-leaf top category is its own leaf
-            top.Children.Add(c);
-            return _byId[leaf] = c;
-        }
         var rx = Rules.Select(r => (r, new Regex(r.Rule, RegexOptions.CultureInvariant))).ToList();
-        var misc = Leaf("misc", "misc", "Misc", "Misc");
-        void Put(Category c, int id, int meta)
-        {
-            c.Items.Add(new ItemKey(id, meta));
-            if (meta < 0) _leafAnyMeta[id] = c.Id; else _leafOf[(id, meta)] = c.Id;
-        }
+        var misc = Leaf(tops, "misc", "misc", "Misc", "Misc");
         for (int id = 1; id < 4096; id++)
         {
             if (!d.ItemExists(id)) continue;
             var name = d.Item(id).Name.ToLowerInvariant();
             if (name is "air" or "") continue;
-            if (name == "dye") // one item, sixteen things: ink sac, cocoa, lapis, bone meal and colours
-            {
-                for (int m = 0; m < 16; m++)
-                    Put(m switch { 0 => Leaf("mob_drops", "mob_drops", "Mob drops", "Mob drops"), 3 => Leaf("food_produce", "food", "Food", "Crops & produce"),
-                        4 => Leaf("gems", "gems_minerals", "Gems & minerals", "Gems & minerals"), _ => misc }, id, m);
-                continue;
-            }
+            if (name == "dye") { PutDye(tops, id, misc); continue; } // one item, sixteen things: ink sac, cocoa, lapis, bone meal and colours
             var hit = rx.FirstOrDefault(x => x.Item2.IsMatch(name));
-            Put(hit.r.Leaf != null ? Leaf(hit.r.Leaf, hit.r.Parent, hit.r.ParentLabel, hit.r.Label) : misc, id, -1);
+            Put(hit.r.Leaf != null ? Leaf(tops, hit.r.Leaf, hit.r.Parent, hit.r.ParentLabel, hit.r.Label) : misc, id, -1);
         }
         Roots = TopOrder.Where(tops.ContainsKey).Select(t => tops[t]).ToList();
+    }
+
+    /// <summary>A leaf category under its top one (both made on first use; a one-leaf top category is its own leaf).</summary>
+    private Category Leaf(Dictionary<string, Category> tops, string leaf, string parent, string parentLabel, string label)
+    {
+        if (_byId.TryGetValue(leaf, out var c)) return c;
+        if (!tops.TryGetValue(parent, out var top)) _byId[parent] = tops[parent] = top = new Category { Id = parent, Label = parentLabel };
+        c = new Category { Id = leaf, Label = label };
+        if (leaf == parent) return top;
+        top.Children.Add(c);
+        return _byId[leaf] = c;
+    }
+
+    private void Put(Category c, int id, int meta)
+    {
+        c.Items.Add(new ItemKey(id, meta));
+        if (meta < 0) _leafAnyMeta[id] = c.Id; else _leafOf[(id, meta)] = c.Id;
+    }
+
+    /// <summary>Dye by meta: the ink sac a mob drop, cocoa produce, lapis a gem, the rest misc.</summary>
+    private void PutDye(Dictionary<string, Category> tops, int id, Category misc)
+    {
+        for (int m = 0; m < 16; m++)
+            Put(m switch
+            {
+                0 => Leaf(tops, "mob_drops", "mob_drops", "Mob drops", "Mob drops"), 3 => Leaf(tops, "food_produce", "food", "Food", "Crops & produce"),
+                4 => Leaf(tops, "gems", "gems_minerals", "Gems & minerals", "Gems & minerals"), _ => misc,
+            }, id, m);
     }
 
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, StoryCategories> Cache = new();

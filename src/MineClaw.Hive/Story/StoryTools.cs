@@ -84,15 +84,24 @@ public static class StoryTools
     public static int ArmorWindowSlot(string slot) => slot switch { "head" => 5, "chest" => 6, "legs" => 7, _ => 8 };
 
     /// <summary>Armour material rank: leather 1, gold 2, chain 3, iron 4, diamond 5.</summary>
-    public static int ArmorRank(int id) => id switch { >= 298 and <= 301 => 1, >= 314 and <= 317 => 2, >= 302 and <= 305 => 3, >= 306 and <= 309 => 4, >= 310 and <= 313 => 5, _ => 0 };
+    public static int ArmorRank(int id) => id is >= 298 and <= 317 ? RankByArmorRow[(id - 298) / 4] : 0;
+
+    /// <summary>Armour ids come in rows of four (helmet, chestplate, leggings, boots): leather, chain, iron, diamond, gold.</summary>
+    private static readonly int[] RankByArmorRow = [1, 3, 4, 5, 2];
 
     /// <summary>The item's tier as gear reports it: wood | stone | iron | gold | diamond | leather | chain | null.</summary>
     public static string? ItemTier(IGameData d, int id)
     {
-        if (ArmorSlot(id) != null) return ArmorRank(id) switch { 1 => "leather", 2 => "gold", 3 => "chain", 4 => "iron", _ => "diamond" };
+        if (ArmorSlot(id) != null) return ArmorTiers[ArmorRank(id)];
         if (ToolOf(d, id) is ToolType.None or ToolType.Shears) return null;
-        return MaterialTier(d, id) switch { 0 => "wood", 1 => "stone", 2 => "iron", 3 => "diamond", 4 => "gold", _ => null };
+        return MaterialTier(d, id) is var t and >= 0 and < 5 ? ToolTiers[t] : null;
     }
+
+    /// <summary>By armour rank (0 never occurs for armour; it reads "diamond" as the old switch's default did).</summary>
+    private static readonly string[] ArmorTiers = ["diamond", "leather", "gold", "chain", "iron", "diamond"];
+
+    /// <summary>By material tier: wood 0, stone 1, iron 2, diamond 3, gold 4.</summary>
+    private static readonly string[] ToolTiers = ["wood", "stone", "iron", "diamond", "gold"];
 
     /// <summary>pickaxe | axe | shovel | hoe | shears | sword | bow | helmet | chestplate | leggings | boots | other.</summary>
     public static string GearKind(IGameData d, int id)
@@ -171,25 +180,29 @@ public static class StoryTools
             if (NeedCache.TryGetValue((d.VersionId, blockId), out var cached)) return cached;
         var b = d.BlockExists(blockId) ? d.Block(blockId) : null;
         var fast = b?.BestTool ?? ToolType.None;
-        var kind = ToolType.None;
-        int floor = -1;
-        if (b != null && !d.CanHarvest(blockId, -1))
-        {
-            int best = int.MaxValue;
-            var order = new[] { fast, ToolType.Pickaxe, ToolType.Shovel, ToolType.Axe, ToolType.Sword, ToolType.Shears }.Where(t => t != ToolType.None).Distinct();
-            foreach (var t in order)
-                for (int lvl = 0; lvl <= (t == ToolType.Shears ? 0 : 3); lvl++)
-                    if (ItemFor(t, lvl) is { } id && d.ItemExists(id) && d.CanHarvest(blockId, id))
-                    {
-                        if (lvl < best) { best = lvl; kind = t; }
-                        break;
-                    }
-            floor = best == int.MaxValue ? 0 : best;
-            if (kind == ToolType.None) kind = fast;
-        }
+        var (kind, floor) = b != null && !d.CanHarvest(blockId, -1) ? HarvestTool(d, blockId, fast) : (ToolType.None, -1);
         var need = new Need(kind, floor, fast, KeptByShears.Contains(blockId) ? ToolType.Shears : ToolType.None);
         lock (NeedCache) NeedCache[(d.VersionId, blockId)] = need;
         return need;
+    }
+
+    /// <summary>The tool that harvests a block the hand can't, at its lowest level (the fastest tool first on a tie; it, at level 0,
+    /// when no tool does).</summary>
+    private static (ToolType Kind, int Floor) HarvestTool(IGameData d, int blockId, ToolType fast)
+    {
+        var kind = ToolType.None;
+        int best = int.MaxValue;
+        var order = new[] { fast, ToolType.Pickaxe, ToolType.Shovel, ToolType.Axe, ToolType.Sword, ToolType.Shears }.Where(t => t != ToolType.None).Distinct();
+        foreach (var t in order)
+            if (LowestHarvestLevel(d, blockId, t) is { } lvl && lvl < best) { best = lvl; kind = t; }
+        return (kind == ToolType.None ? fast : kind, best == int.MaxValue ? 0 : best);
+    }
+
+    private static int? LowestHarvestLevel(IGameData d, int blockId, ToolType t)
+    {
+        for (int lvl = 0; lvl <= (t == ToolType.Shears ? 0 : 3); lvl++)
+            if (ItemFor(t, lvl) is { } id && d.ItemExists(id) && d.CanHarvest(blockId, id)) return lvl;
+        return null;
     }
 
     // ---------------------------------------------------------------- material groups (the rules editor)

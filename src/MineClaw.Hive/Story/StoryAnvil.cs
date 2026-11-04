@@ -68,36 +68,13 @@ public sealed partial class StoryColony
         if (d.ItemByName(spec.Item) is not { } it) return (null, $"no item '{spec.Item}' in {d.VersionId}");
         string label = StoryRecipes.Label(d, it.Id, 0).ToLowerInvariant();
         var g = new StationGathering(this, bill, live, bench.Pos);
-        int least;
-        switch (spec.Kind)
+        var (least, missing) = spec.Kind switch
         {
-            case "repair":
-            {
-                var mat = Anvil.RepairMaterial(spec.Item)!.Value;
-                // The most damaged one the pawn holds, else in storage.
-                var own = live.Inventory.Where(s => s.Id == it.Id && s.Meta > 0).OrderByDescending(s => s.Meta).FirstOrDefault();
-                var stored = own == null ? FindStored(s => s.Id == it.Id && s.Meta > 0 && (Cats?.Accepts(bill.Ingredients, s.Id, s.Meta) ?? true), bench.Pos, bill.Radius) : null;
-                if (own == null && stored == null) return (null, $"no damaged {label} within {bill.Radius} blocks");
-                var target = own ?? stored!.Value.Stack;
-                if (own == null) g.Fetch.Add((stored!.Value.Store.Chest, target with { Count = 1 }, TakeName(target)));
-                int units = Math.Max(1, Anvil.UnitsFor(it.MaxDamage, target.Meta));
-                int got = g.Get(s => s.Id == mat.Id && (mat.Meta < 0 || s.Meta == mat.Meta), units, mat.Name.Replace('_', ' '), partial: true);
-                if (g.Missing != null) return (null, g.Missing);
-                least = Anvil.RepairCost(Math.Min(got, units));
-                break;
-            }
-            case "combine":
-                g.Get(s => s.Id == it.Id, 2, $"two {label}s");
-                if (g.Missing != null) return (null, g.Missing);
-                least = 2;
-                break;
-            default: // book
-                g.Get(s => s.Id == it.Id, 1, label);
-                g.Get(s => s.Id == Enchanting.EnchantedBook, 1, "enchanted book");
-                if (g.Missing != null) return (null, g.Missing);
-                least = 1;
-                break;
-        }
+            "repair" => AnvilRepair(live, bench, bill, spec.Item, it, label, g),
+            "combine" => AnvilCombine(g, it.Id, label),
+            _ => AnvilBook(g, it.Id, label), // book
+        };
+        if (missing != null) return (null, missing);
         int need = Math.Max(least, bill.XpNeeded ?? least);
         if (need >= Anvil.TooExpensive) return (null, $"too expensive ({need} levels; the anvil refuses 40 or more)");
         if (XpShort(bill, work, need, live, out bool skip) is { } shortXp) return (null, shortXp);
@@ -112,5 +89,34 @@ public sealed partial class StoryColony
         g.Attach(job, fetch);
         StoreStationOutput(job, bill, r, bench.Pos);
         return (job, null);
+    }
+
+    /// <summary>Combine: two of them.</summary>
+    private static (int Least, string? Missing) AnvilCombine(StationGathering g, int itemId, string label)
+    {
+        g.Get(s => s.Id == itemId, 2, $"two {label}s");
+        return g.Missing != null ? (0, g.Missing) : (2, null);
+    }
+
+    /// <summary>Book: one of them and an enchanted book.</summary>
+    private static (int Least, string? Missing) AnvilBook(StationGathering g, int itemId, string label)
+    {
+        g.Get(s => s.Id == itemId, 1, label);
+        g.Get(s => s.Id == Enchanting.EnchantedBook, 1, "enchanted book");
+        return g.Missing != null ? (0, g.Missing) : (1, null);
+    }
+
+    /// <summary>Repair: the most damaged one the pawn holds, else in storage, and the material units that mend it (what there is).</summary>
+    private (int Least, string? Missing) AnvilRepair(PawnLive live, WorkbenchState bench, BillState bill, string item, ItemInfo it, string label, StationGathering g)
+    {
+        var mat = Anvil.RepairMaterial(item)!.Value;
+        var own = live.Inventory.Where(s => s.Id == it.Id && s.Meta > 0).OrderByDescending(s => s.Meta).FirstOrDefault();
+        var stored = own == null ? FindStored(s => s.Id == it.Id && s.Meta > 0 && (Cats?.Accepts(bill.Ingredients, s.Id, s.Meta) ?? true), bench.Pos, bill.Radius) : null;
+        if (own == null && stored == null) return (0, $"no damaged {label} within {bill.Radius} blocks");
+        var target = own ?? stored!.Value.Stack;
+        if (own == null) g.Fetch.Add((stored!.Value.Store.Chest, target with { Count = 1 }, TakeName(target)));
+        int units = Math.Max(1, Anvil.UnitsFor(it.MaxDamage, target.Meta));
+        int got = g.Get(s => s.Id == mat.Id && (mat.Meta < 0 || s.Meta == mat.Meta), units, mat.Name.Replace('_', ' '), partial: true);
+        return g.Missing != null ? (0, g.Missing) : (Anvil.RepairCost(Math.Min(got, units)), null);
     }
 }

@@ -23,20 +23,18 @@ public sealed partial class StoryColony
         public int Get(Func<Stack, bool> pick, int need, string label, bool partial = false, bool storeOnly = false)
         {
             if (Missing != null || need <= 0) return 0;
-            int own = storeOnly ? 0 : live.Inventory.Where(pick).Sum(s => s.Count);
+            int own = Own(pick, storeOnly);
             if (own >= need) return need;
             bool Ok(Stack s) => pick(s) && (c.Cats?.Accepts(bill.Ingredients, s.Id, s.Meta) ?? true);
             int want = need - own;
             var src = c.FindStored(s => Ok(s) && s.Count >= want, near, bill.Radius) ?? c.FindStored(Ok, near, bill.Radius);
             int got = src is { } s0 ? Math.Min(want, s0.Stack.Count) : 0;
-            // Only an item something holds is checked against what is free (any count: the pick looks at the item, not the stack).
-            bool Held(int id, int meta) => pick(new Stack(id, meta, int.MaxValue));
-            if (got > 0 && bill.ForBuild == null && c._reserved.Any(kv => kv.Value > 0 && Held(kv.Key.Id, kv.Key.Meta)) && c.Unreserved(Held) < got)
+            if (got > 0 && ReservedAway(pick, got))
             {
                 Missing = $"the {label} in storage is reserved for builds";
                 return 0;
             }
-            if (own + got < need && !(partial && own + got > 0))
+            if (Short(own, got, need, partial))
             {
                 Missing = $"no {label} within {bill.Radius} blocks";
                 return 0;
@@ -44,6 +42,20 @@ public sealed partial class StoryColony
             if (got > 0) Fetch.Add((src!.Value.Store.Chest, src.Value.Stack with { Count = got }, c.TakeName(src.Value.Stack)));
             return own + got;
         }
+
+        /// <summary>What the pawn carries of it (none counted when only storage will do).</summary>
+        private int Own(Func<Stack, bool> pick, bool storeOnly) => storeOnly ? 0 : live.Inventory.Where(pick).Sum(s => s.Count);
+
+        /// <summary>A bill not for a build may not take what the builds reserved. Only an item something holds is checked against what
+        /// is free (any count: the pick looks at the item, not the stack).</summary>
+        private bool ReservedAway(Func<Stack, bool> pick, int got)
+        {
+            bool Held(int id, int meta) => pick(new Stack(id, meta, int.MaxValue));
+            return bill.ForBuild == null && c._reserved.Any(kv => kv.Value > 0 && Held(kv.Key.Id, kv.Key.Meta)) && c.Unreserved(Held) < got;
+        }
+
+        /// <summary>Less than needed, unless a partial take has something.</summary>
+        private static bool Short(int own, int got, int need, bool partial) => own + got < need && !(partial && own + got > 0);
 
         public void Attach(ActiveJob job, JsonArray fetch)
         {

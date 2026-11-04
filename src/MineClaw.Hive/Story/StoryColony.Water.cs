@@ -159,8 +159,7 @@ public sealed partial class StoryColony
         if (!w.Loaded(g.At.X, g.At.Z)) return $"{g.At} isn't in the colony's view yet";
         var (id, meta) = w.Block(g.At.X, g.At.Y, g.At.Z);
         if (LiquidSource(g.Id, id, meta)) return null; // there already: done at once
-        if (c.Lava ? IsWaterId(id) : IsLavaId(id))
-            return $"{g.At} holds {(c.Lava ? "water" : "lava")}: {c.Liquid} there would turn it to {(meta == 0 ? "obsidian" : "cobblestone")}";
+        if (OtherLiquidProblem(c, g.At, id, meta) is { } other) return other;
         if (!TakesLiquid(id) && !c.Dug.Contains(g.At))
             return $"{g.At} holds {BlockLabel(w, id)}: dig it first (a remove item in the same group, or the channel tool's \"Dig the trench\")";
         // Nothing under it: the source would pour down (and a pawn has no floor face to aim at). Live 11-04: "no block face to pour
@@ -168,9 +167,19 @@ public sealed partial class StoryColony
         if (!Held(w, g.At.Add(0, -1, 0), g.Id, c.Own, c.Dug))
             return $"nothing under {g.At} to hold the {c.Liquid}: it would pour down. Dig the channel into the ground, or lay a floor under it first";
         if (PourFaceProblem(w, g.At, g.Id, c.Liquid, c.Own, c.Dug) is { } face) return face;
-        return HouseProblem(c, g.At) ?? (c.Lava && FlammableNear(w, g.At) is { } f
-            ? $"lava at {g.At} would set the {BlockLabel(w, w.Block(f.X, f.Y, f.Z).Id)} at {f} alight" : null);
+        return HouseProblem(c, g.At) ?? FireProblem(c, g.At);
     }
+
+    /// <summary>The other liquid in the cell: the two would make obsidian (a source) or cobblestone.</summary>
+    private static string? OtherLiquidProblem(LiquidCheck c, P3 at, int id, int meta)
+    {
+        if (!(c.Lava ? IsWaterId(id) : IsLavaId(id))) return null;
+        return $"{at} holds {(c.Lava ? "water" : "lava")}: {c.Liquid} there would turn it to {(meta == 0 ? "obsidian" : "cobblestone")}";
+    }
+
+    /// <summary>Lava beside something that burns.</summary>
+    private string? FireProblem(LiquidCheck c, P3 at) =>
+        c.Lava && FlammableNear(c.W, at) is { } f ? $"lava at {at} would set the {BlockLabel(c.W, c.W.Block(f.X, f.Y, f.Z).Id)} at {f} alight" : null;
 
     /// <summary>A cell in a house: never lava; water indoors only with the Water source tool's explicit click.</summary>
     private string? HouseProblem(LiquidCheck c, P3 at)
@@ -281,11 +290,7 @@ public sealed partial class StoryColony
     private JsonObject LiquidAdded(IStoryWorld w, BuildState b, JsonObject? flow)
     {
         string liquid = LiquidOfBuild(b) ?? "water";
-        bool infinite = b.Spec?["infinite"] is JsonValue fv && fv.TryGetValue<bool>(out var fi) && fi;
-        int n = b.Ghosts.Count;
-        b.Label = b.Spec?["name"] is JsonValue nv && nv.TryGetValue<string>(out var name) && name.Trim().Length > 0 ? name.Trim()
-            : infinite ? $"infinite {liquid} source ({n} cells)"
-            : n == 1 ? $"{liquid} source" : $"{liquid} channel ({n} sources)";
+        b.Label = LiquidLabel(b, liquid);
         foreach (var g in b.Ghosts)
         {
             var (id, meta) = w.Block(g.At.X, g.At.Y, g.At.Z);
@@ -297,37 +302,62 @@ public sealed partial class StoryColony
         return FlowJson(all.Distinct().ToList());
     }
 
+    /// <summary>The item's name, else "infinite water source (4 cells)", "water source", "lava channel (3 sources)".</summary>
+    private static string LiquidLabel(BuildState b, string liquid)
+    {
+        bool infinite = b.Spec?["infinite"] is JsonValue fv && fv.TryGetValue<bool>(out var fi) && fi;
+        int n = b.Ghosts.Count;
+        return b.Spec?["name"] is JsonValue nv && nv.TryGetValue<string>(out var name) && name.Trim().Length > 0 ? name.Trim()
+            : infinite ? $"infinite {liquid} source ({n} cells)"
+            : n == 1 ? $"{liquid} source" : $"{liquid} channel ({n} sources)";
+    }
+
     /// <summary><c>POST …/builds {op:"preview", items}</c>: water items checked and their expected flow, nothing queued →
     /// <c>{cells, done, error, warnings, flow:{spread, cells}}</c> (the web's channel tool shows it while drawing).</summary>
     private (JsonNode? Result, string? Error) LiquidPreview(IStoryWorld w, JsonArray? items)
     {
         if (items is not { Count: > 0 }) return (null, "items required");
         if (items.Count > 64) return (null, "at most 64 items per request");
-        var made = new List<BuildState>();
-        var warnings = new List<string>();
-        var spread = new List<P3>();
-        int cells = 0, done = 0;
-        string? error = null;
+        var acc = new LiquidPreviewAcc();
         foreach (var n in items)
         {
             if (n is not JsonObject item) return (null, "each item is an object {kind, area|blocks, material, ...}");
-            var (ghosts, _, err) = StoryConstruction.Expand(w.Data, item, w);
-            if (err != null) { error ??= err; continue; }
-            if (ghosts.Count > 0 && StoryConstruction.IsLiquid(ghosts[0]))
-            {
-                cells += ghosts.Count;
-                foreach (var g in ghosts) { var (id, meta) = w.Block(g.At.X, g.At.Y, g.At.Z); if (LiquidSource(g.Id, id, meta)) done++; }
-                if (CheckLiquid(w, item, ghosts, made, warnings) is { } lerr) error ??= lerr;
-                else spread.AddRange(Flow(w, ghosts.Select(g => g.At).ToHashSet(), LiquidName(ghosts[0]) == "lava", DugFirst(item, made)).Spread);
-            }
-            made.Add(new BuildState { Kind = item["kind"]?.GetValue<string>() ?? "", Spec = item, Ghosts = ghosts });
+            PreviewItem(w, item, acc);
         }
         return (new JsonObject
         {
-            ["cells"] = cells, ["done"] = done, ["error"] = error,
-            ["warnings"] = new JsonArray(warnings.Distinct().Select(x => (JsonNode)x!).ToArray()),
-            ["flow"] = FlowJson(spread.Distinct().ToList()),
+            ["cells"] = acc.Cells, ["done"] = acc.Done, ["error"] = acc.Error,
+            ["warnings"] = new JsonArray(acc.Warnings.Distinct().Select(x => (JsonNode)x!).ToArray()),
+            ["flow"] = FlowJson(acc.Spread.Distinct().ToList()),
         }, null);
+    }
+
+    /// <summary>A preview's running totals: the items so far (a later one's group digs for it), warnings, the flow, cells, done cells,
+    /// the first error.</summary>
+    private sealed class LiquidPreviewAcc
+    {
+        public readonly List<BuildState> Made = new();
+        public readonly List<string> Warnings = new();
+        public readonly List<P3> Spread = new();
+        public int Cells, Done;
+        public string? Error;
+    }
+
+    /// <summary>One preview item: expanded (an error is kept, the item skipped); a liquid one checked, its done cells and flow counted.</summary>
+    private void PreviewItem(IStoryWorld w, JsonObject item, LiquidPreviewAcc acc)
+    {
+        var (ghosts, _, err) = StoryConstruction.Expand(w.Data, item, w);
+        if (err != null) { acc.Error ??= err; return; }
+        if (ghosts.Count > 0 && StoryConstruction.IsLiquid(ghosts[0])) PreviewLiquid(w, item, ghosts, acc);
+        acc.Made.Add(new BuildState { Kind = item["kind"]?.GetValue<string>() ?? "", Spec = item, Ghosts = ghosts });
+    }
+
+    private void PreviewLiquid(IStoryWorld w, JsonObject item, List<GhostState> ghosts, LiquidPreviewAcc acc)
+    {
+        acc.Cells += ghosts.Count;
+        foreach (var g in ghosts) { var (id, meta) = w.Block(g.At.X, g.At.Y, g.At.Z); if (LiquidSource(g.Id, id, meta)) acc.Done++; }
+        if (CheckLiquid(w, item, ghosts, acc.Made, acc.Warnings) is { } lerr) acc.Error ??= lerr;
+        else acc.Spread.AddRange(Flow(w, ghosts.Select(g => g.At).ToHashSet(), LiquidName(ghosts[0]) == "lava", DugFirst(item, acc.Made)).Spread);
     }
 
     /// <summary>The colony's buckets: every pawn's and every chest's, empty or full (live 11-04: a water bucket put in a chest still

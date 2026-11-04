@@ -135,15 +135,7 @@ public sealed partial class StoryColony
     /// <summary>2–3 blocks from another pawn that is idle too (the one that turned to this pawn first), facing it.</summary>
     private Leg? SocialLeg(PawnState p, List<P3> open, List<P3> taken, IStoryWorld w)
     {
-        var others = new List<(PawnState Q, P3 At)>();
-        foreach (var q in Pawns.Values)
-        {
-            if (q == p || !_current.TryGetValue(q.Name, out var cur) || cur.Source != "wander") continue;
-            var l = Host.Live(q.Name);
-            if (!l.Online || l.Dim != w.Dimension) continue;
-            var at = _spots.TryGetValue(q.Name, out var s) && SpotLive(q.Name, s) ? s.At : l.Block;
-            others.Add((q, at));
-        }
+        var others = IdleOthers(p, w);
         if (others.Count == 0) return null;
         others = others.OrderBy(_ => Rng.Next()).ToList();
         // The one that turned to this pawn first gets an answer.
@@ -159,6 +151,21 @@ public sealed partial class StoryColony
             return new Leg("socialise", to, [(at.X + 0.5, at.Y + 1.6, at.Z + 0.5)], $"socialising with {q.Display}", q);
         }
         return null;
+    }
+
+    /// <summary>The other pawns on an idle leg, online in this dimension, where they stand (or are headed).</summary>
+    private List<(PawnState Q, P3 At)> IdleOthers(PawnState p, IStoryWorld w)
+    {
+        var others = new List<(PawnState Q, P3 At)>();
+        foreach (var q in Pawns.Values)
+        {
+            if (q == p || !_current.TryGetValue(q.Name, out var cur) || cur.Source != "wander") continue;
+            var l = Host.Live(q.Name);
+            if (!l.Online || l.Dim != w.Dimension) continue;
+            var at = _spots.TryGetValue(q.Name, out var s) && SpotLive(q.Name, s) ? s.At : l.Block;
+            others.Add((q, at));
+        }
+        return others;
     }
 
     /// <summary>At night: under open sky by home (a home zone, or 8 blocks round the primary home), looking up and slowly round.</summary>
@@ -181,22 +188,26 @@ public sealed partial class StoryColony
     }
 
     /// <summary>Beside a chair (stairs), else two blocks from a workbench or chest (never in front of it), facing it.</summary>
-    private Leg? SitLeg(List<P3> open, List<P3> taken, IStoryWorld w)
+    private Leg? SitLeg(List<P3> open, List<P3> taken, IStoryWorld w) => ChairLeg(open, taken, w) ?? TableLeg(open, taken);
+
+    /// <summary>Beside a chair (stairs), facing it.</summary>
+    private Leg? ChairLeg(List<P3> open, List<P3> taken, IStoryWorld w)
     {
         var chairs = new List<(P3 Cell, P3 Chair)>();
         foreach (var c in open)
             foreach (var (dx, dz) in new[] { (1, 0), (-1, 0), (0, 1), (0, -1) })
                 if (Chairs.Contains(w.Block(c.X + dx, c.Y, c.Z + dz).Id)) { chairs.Add((c, c.Add(dx, 0, dz))); break; }
-        if (chairs.Count > 0)
-        {
-            var ok = WithRoom(chairs.Select(x => x.Cell), taken, out _);
-            if (ok.Count > 0)
-            {
-                var to = ok[Rng.Next(ok.Count)];
-                var chair = chairs.First(x => x.Cell == to).Chair;
-                return new Leg("sit", to, [(chair.X + 0.5, chair.Y + 0.5, chair.Z + 0.5)], "resting by a chair");
-            }
-        }
+        if (chairs.Count == 0) return null;
+        var ok = WithRoom(chairs.Select(x => x.Cell), taken, out _);
+        if (ok.Count == 0) return null;
+        var to = ok[Rng.Next(ok.Count)];
+        var chair = chairs.First(x => x.Cell == to).Chair;
+        return new Leg("sit", to, [(chair.X + 0.5, chair.Y + 0.5, chair.Z + 0.5)], "resting by a chair");
+    }
+
+    /// <summary>Two blocks from a workbench or chest (never in front of it), facing it.</summary>
+    private Leg? TableLeg(List<P3> open, List<P3> taken)
+    {
         var tables = Benches.Select(b => (b.Pos, b.Kind == "furnace" ? "the furnace" : "the crafting table"))
             .Concat(Storages.Select(s => (s.Chest, "the chests"))).ToList();
         if (tables.Count == 0) return null;
@@ -217,20 +228,28 @@ public sealed partial class StoryColony
         var farms = Zones.Where(z => z.Kind == "farm").Select(z => z.Area).ToList();
         var by = new List<(P3 Cell, (double, double, double) Look)>();
         foreach (var c in open)
-        {
-            foreach (var a in farms)
-            {
-                int dx = c.X < a.X1 ? a.X1 - c.X : c.X > a.X2 ? c.X - a.X2 : 0, dz = c.Z < a.Z1 ? a.Z1 - c.Z : c.Z > a.Z2 ? c.Z - a.Z2 : 0;
-                if (Math.Max(dx, dz) is >= 1 and <= 2) { by.Add((c, ((a.X1 + a.X2) / 2.0 + 0.5, a.Y1 + 1, (a.Z1 + a.Z2) / 2.0 + 0.5))); goto next; }
-            }
-            foreach (var (dx, dz) in new[] { (1, 0), (-1, 0), (0, 1), (0, -1) })
-                if (Flowers.Contains(w.Block(c.X + dx, c.Y, c.Z + dz).Id)) { by.Add((c, (c.X + dx + 0.5, c.Y + 0.3, c.Z + dz + 0.5))); break; }
-            next:;
-        }
+            if (GardenLook(w, farms, c) is { } look) by.Add((c, look));
         var ok = WithRoom(by.Select(x => x.Cell), taken, out _);
         if (ok.Count == 0) return null;
         var at = ok[Rng.Next(ok.Count)];
         return new Leg("garden", at, [by.First(x => x.Cell == at).Look], "visiting the garden");
+    }
+
+    /// <summary>Where a cell looks at the garden: the middle of a growing zone 1–2 blocks away, else a flower beside it.</summary>
+    private static (double, double, double)? GardenLook(IStoryWorld w, List<Area> farms, P3 c)
+    {
+        foreach (var a in farms)
+            if (OutsideBy(c, a) is >= 1 and <= 2) return ((a.X1 + a.X2) / 2.0 + 0.5, a.Y1 + 1, (a.Z1 + a.Z2) / 2.0 + 0.5);
+        foreach (var (dx, dz) in new[] { (1, 0), (-1, 0), (0, 1), (0, -1) })
+            if (Flowers.Contains(w.Block(c.X + dx, c.Y, c.Z + dz).Id)) return (c.X + dx + 0.5, c.Y + 0.3, c.Z + dz + 0.5);
+        return null;
+    }
+
+    /// <summary>How far a cell is outside an area's x/z box (0: inside).</summary>
+    private static int OutsideBy(P3 c, Area a)
+    {
+        int dx = c.X < a.X1 ? a.X1 - c.X : c.X > a.X2 ? c.X - a.X2 : 0, dz = c.Z < a.Z1 ? a.Z1 - c.Z : c.Z > a.Z2 ? c.Z - a.Z2 : 0;
+        return Math.Max(dx, dz);
     }
 
     /// <summary>At dusk: the west edge of the home area, facing west.</summary>
