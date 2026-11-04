@@ -29,114 +29,83 @@ public static class BlockTextures
         ? (meta & 3) switch { 0 => Face.South, 1 => Face.West, 2 => Face.North, _ => Face.East }
         : meta switch { 2 => Face.North, 3 => Face.South, 4 => Face.West, 5 => Face.East, _ => Face.South };
 
-    /// <param name="fancy">Fancy graphics: alpha-cutout leaves (tiles 52/132) instead of the opaque fast ones (53/133).</param>
-    public static TileRef For(int id, int meta, Face f, bool fancy = false)
+    /// <summary>One block's face → tile rule (meta, face, fancy leaves).</summary>
+    private delegate TileRef TileRule(int meta, Face f, bool fancy);
+
+    private static bool IsEnd(Face f) => f is Face.Up or Face.Down;
+
+    /// <summary>Blocks with one tile on every face.</summary>
+    private static readonly (int Id, int Tile)[] Plain =
+    [
+        (Blocks.Stone, 1), (Blocks.Dirt, 2), (Blocks.Cobblestone, 16), (Blocks.Planks, 4), (Blocks.Bedrock, 17), (Blocks.Sand, 18), (Blocks.Gravel, 19),
+        (Blocks.GoldOre, 32), (Blocks.IronOre, 33), (Blocks.CoalOre, 34), (Blocks.Sponge, 48), (Blocks.Glass, 49), (Blocks.LapisOre, 160),
+        (Blocks.LapisBlock, 144), (25, 74) /* note block */, (Blocks.DetectorRail, 195), (30, 11) /* cobweb */, (Blocks.DeadBush, 55),
+        (Blocks.Dandelion, 13), (Blocks.Rose, 12), (Blocks.BrownMushroom, 29), (Blocks.RedMushroom, 28), (Blocks.GoldBlock, 23), (Blocks.IronBlock, 22),
+        (Blocks.Bricks, 7), (Blocks.MossyCobblestone, 36), (Blocks.Obsidian, 37), (Blocks.Torch, 80), (Blocks.Fire, 31), (52, 65) /* spawner */,
+        (Blocks.WoodenStairs, 4), (Blocks.RedstoneWire, 164), (Blocks.DiamondOre, 50), (Blocks.DiamondBlock, 24), (Blocks.SignPost, 4),
+        (Blocks.WallSign, 4), (Blocks.Ladder, 83), (Blocks.CobblestoneStairs, 16), (Blocks.Lever, 96), (Blocks.StonePressurePlate, 1),
+        (Blocks.WoodenPressurePlate, 4), (Blocks.RedstoneOre, 51), (Blocks.LitRedstoneOre, 51), (Blocks.RedstoneTorchOff, 115),
+        (Blocks.RedstoneTorch, 99), (77, 1) /* button */, (Blocks.SnowLayer, 66), (Blocks.Ice, 67), (Blocks.SnowBlock, 66), (Blocks.Clay, 72),
+        (Blocks.SugarCane, 73), (Blocks.Fence, 4), (Blocks.Netherrack, 103), (Blocks.SoulSand, 104), (Blocks.Glowstone, 105), (Blocks.Trapdoor, 84),
+        (101, 85) /* iron bars */, (Blocks.GlassPane, 49), (Blocks.FenceGate, 4), (108, 7) /* brick stairs */, (109, 54) /* stone brick stairs */,
+    ];
+
+    /// <summary>Blocks with one tile on the top and bottom and another on the sides.</summary>
+    private static readonly (int Id, int Ends, int Side)[] Pillars = [(Blocks.Bookshelf, 4, 35), (Blocks.Melon, 137, 136)];
+
+    /// <summary>Blocks with their own top, bottom and side tiles.</summary>
+    private static readonly (int Id, int Top, int Bottom, int Side)[] Layered =
+        [(Blocks.Sandstone, 176, 208, 192), (Blocks.Tnt, 9, 10, 8), (Blocks.Cactus, 69, 71, 70)];
+
+    /// <summary>Blocks with a front face (by meta): ends, front and the other sides.</summary>
+    private static readonly (int Id, int Ends, int Front, int Side)[] Fronted =
+    [
+        (Blocks.Furnace, 62, 44, 45), (Blocks.LitFurnace, 62, 61, 45), (Blocks.Pumpkin, 102, 119, 118), (Blocks.JackOLantern, 102, 120, 118),
+    ];
+
+    /// <summary>The rule per block id (null = no tile).</summary>
+    private static readonly TileRule?[] Rules = BuildRules();
+
+    private static TileRule?[] BuildRules()
     {
-        bool top = f == Face.Up, bottom = f == Face.Down, side = !top && !bottom;
-        switch (id)
-        {
-            case Blocks.Stone: return new(1);
-            case Blocks.Grass: return top ? new(0, GrassTint) : bottom ? new(2) : new(3, 0, GrassSideOverlay, GrassTint);
-            case Blocks.Dirt: return new(2);
-            case Blocks.Cobblestone: return new(16);
-            case Blocks.Planks: return new(4);
-            case Blocks.Sapling: return new((meta & 3) switch { 1 => 63, 2 => 79, _ => 15 });
-            case Blocks.Bedrock: return new(17);
-            case Blocks.Sand: return new(18);
-            case Blocks.Gravel: return new(19);
-            case Blocks.GoldOre: return new(32);
-            case Blocks.IronOre: return new(33);
-            case Blocks.CoalOre: return new(34);
-            case Blocks.Log: return top || bottom ? new(21) : new((meta & 3) switch { 1 => 116, 2 => 117, _ => 20 });
-            case Blocks.Leaves: return new(((meta & 3) == 1 ? 132 : 52) + (fancy ? 0 : 1), (meta & 3) switch { 1 => SpruceTint, 2 => BirchTint, _ => FoliageTint });
-            case Blocks.Sponge: return new(48);
-            case Blocks.Glass: return new(49);
-            case Blocks.LapisOre: return new(160);
-            case Blocks.LapisBlock: return new(144);
-            case 23: return top ? new(62) : side && FrontOf(id, meta) == f ? new(46) : new(45); // dispenser
-            case Blocks.Sandstone: return top ? new(176) : bottom ? new(208) : new(192);
-            case 25: return new(74); // note block
-            case Blocks.PoweredRail: return new((meta & 8) != 0 ? 179 : 163);
-            case Blocks.DetectorRail: return new(195);
-            case 30: return new(11); // cobweb
-            case Blocks.TallGrass: return (meta & 3) switch { 0 => new(55), 2 => new(56, GrassTint), _ => new(39, GrassTint) };
-            case Blocks.DeadBush: return new(55);
-            case Blocks.Wool: return new(WoolTiles[meta & 15]);
-            case Blocks.Dandelion: return new(13);
-            case Blocks.Rose: return new(12);
-            case Blocks.BrownMushroom: return new(29);
-            case Blocks.RedMushroom: return new(28);
-            case Blocks.GoldBlock: return new(23);
-            case Blocks.IronBlock: return new(22);
-            case Blocks.DoubleSlab:
-            case Blocks.Slab:
-                return (meta & 7) switch
-                {
-                    1 => top || bottom ? new(176) : new(192),
-                    2 => new(4),
-                    3 => new(16),
-                    _ => top || bottom ? new(6) : new(5),
-                };
-            case Blocks.Bricks: return new(7);
-            case Blocks.Tnt: return top ? new(9) : bottom ? new(10) : new(8);
-            case Blocks.Bookshelf: return top || bottom ? new(4) : new(35);
-            case Blocks.MossyCobblestone: return new(36);
-            case Blocks.Obsidian: return new(37);
-            case Blocks.Torch: return new(80);
-            case Blocks.Fire: return new(31);
-            case 52: return new(65); // spawner
-            case Blocks.WoodenStairs: return new(4);
-            case Blocks.Chest:
-            case Blocks.LockedChest:
-                return top || bottom ? new(25) : f == Face.South ? new(27) : new(26);
-            case Blocks.RedstoneWire: return new(164);
-            case Blocks.DiamondOre: return new(50);
-            case Blocks.DiamondBlock: return new(24);
-            case Blocks.Workbench: return top ? new(43) : bottom ? new(4) : f is Face.North or Face.West ? new(60) : new(59);
-            case Blocks.Crops: return new(88 + Math.Clamp(meta, 0, 7));
-            case Blocks.Farmland: return top ? new(meta > 0 ? 86 : 87) : new(2);
-            case Blocks.Furnace: return top || bottom ? new(62) : FrontOf(id, meta) == f ? new(44) : new(45);
-            case Blocks.LitFurnace: return top || bottom ? new(62) : FrontOf(id, meta) == f ? new(61) : new(45);
-            case Blocks.SignPost:
-            case Blocks.WallSign: return new(4);
-            case Blocks.WoodenDoor: return new((meta & 8) != 0 ? 81 : 97);
-            case Blocks.IronDoor: return new((meta & 8) != 0 ? 82 : 98);
-            case Blocks.Ladder: return new(83);
-            case Blocks.Rail: return new(meta >= 6 ? 112 : 128);
-            case Blocks.CobblestoneStairs: return new(16);
-            case Blocks.Lever: return new(96);
-            case Blocks.StonePressurePlate: return new(1);
-            case Blocks.WoodenPressurePlate: return new(4);
-            case Blocks.RedstoneOre:
-            case Blocks.LitRedstoneOre: return new(51);
-            case Blocks.RedstoneTorchOff: return new(115);
-            case Blocks.RedstoneTorch: return new(99);
-            case 77: return new(1); // button
-            case Blocks.SnowLayer: return new(66);
-            case Blocks.Ice: return new(67);
-            case Blocks.SnowBlock: return new(66);
-            case Blocks.Cactus: return top ? new(69) : bottom ? new(71) : new(70);
-            case Blocks.Clay: return new(72);
-            case Blocks.SugarCane: return new(73);
-            case 84: return top ? new(75) : new(74); // jukebox
-            case Blocks.Fence: return new(4);
-            case Blocks.Pumpkin: return top || bottom ? new(102) : FrontOf(id, meta) == f ? new(119) : new(118);
-            case Blocks.JackOLantern: return top || bottom ? new(102) : FrontOf(id, meta) == f ? new(120) : new(118);
-            case Blocks.Netherrack: return new(103);
-            case Blocks.SoulSand: return new(104);
-            case Blocks.Glowstone: return new(105);
-            case Blocks.Trapdoor: return new(84);
-            case Blocks.StoneBricks: return new((meta & 3) switch { 1 => 100, 2 => 101, _ => 54 });
-            case 101: return new(85); // iron bars
-            case Blocks.GlassPane: return new(49);
-            case Blocks.Melon: return top || bottom ? new(137) : new(136);
-            case Blocks.FenceGate: return new(4);
-            case 108: return new(7);  // brick stairs
-            case 109: return new(54); // stone brick stairs
-            case 106: return new(143, FoliageTint); // vine
-            default: return TileRef.None;
-        }
+        var r = new TileRule?[256];
+        foreach (var (id, tile) in Plain) { var t = new TileRef(tile); r[id] = (_, _, _) => t; }
+        foreach (var (id, ends, side) in Pillars) r[id] = (_, f, _) => IsEnd(f) ? new(ends) : new(side);
+        foreach (var (id, top, bottom, side) in Layered) r[id] = (_, f, _) => f == Face.Up ? new(top) : f == Face.Down ? new(bottom) : new(side);
+        foreach (var (id, ends, front, side) in Fronted) r[id] = (m, f, _) => IsEnd(f) ? new(ends) : FrontOf(id, m) == f ? new(front) : new(side);
+        r[Blocks.Grass] = (_, f, _) => f == Face.Up ? new(0, GrassTint) : f == Face.Down ? new(2) : new(3, 0, GrassSideOverlay, GrassTint);
+        r[Blocks.Sapling] = (m, _, _) => new((m & 3) switch { 1 => 63, 2 => 79, _ => 15 });
+        r[Blocks.Log] = (m, f, _) => IsEnd(f) ? new(21) : new((m & 3) switch { 1 => 116, 2 => 117, _ => 20 });
+        r[Blocks.Leaves] = (m, _, fancy) => new(((m & 3) == 1 ? 132 : 52) + (fancy ? 0 : 1), (m & 3) switch { 1 => SpruceTint, 2 => BirchTint, _ => FoliageTint });
+        r[23] = (m, f, _) => f == Face.Up ? new(62) : f != Face.Down && FrontOf(23, m) == f ? new(46) : new(45); // dispenser
+        r[Blocks.PoweredRail] = (m, _, _) => new((m & 8) != 0 ? 179 : 163);
+        r[Blocks.TallGrass] = (m, _, _) => (m & 3) switch { 0 => new(55), 2 => new(56, GrassTint), _ => new(39, GrassTint) };
+        r[Blocks.Wool] = (m, _, _) => new(WoolTiles[m & 15]);
+        r[Blocks.DoubleSlab] = r[Blocks.Slab] = Slab;
+        r[Blocks.Chest] = r[Blocks.LockedChest] = (_, f, _) => IsEnd(f) ? new(25) : f == Face.South ? new(27) : new(26);
+        r[Blocks.Workbench] = (_, f, _) => f == Face.Up ? new(43) : f == Face.Down ? new(4) : f is Face.North or Face.West ? new(60) : new(59);
+        r[Blocks.Crops] = (m, _, _) => new(88 + Math.Clamp(m, 0, 7));
+        r[Blocks.Farmland] = (m, f, _) => f == Face.Up ? new(m > 0 ? 86 : 87) : new(2);
+        r[Blocks.WoodenDoor] = (m, _, _) => new((m & 8) != 0 ? 81 : 97);
+        r[Blocks.IronDoor] = (m, _, _) => new((m & 8) != 0 ? 82 : 98);
+        r[Blocks.Rail] = (m, _, _) => new(m >= 6 ? 112 : 128);
+        r[84] = (_, f, _) => f == Face.Up ? new(75) : new(74); // jukebox
+        r[Blocks.StoneBricks] = (m, _, _) => new((m & 3) switch { 1 => 100, 2 => 101, _ => 54 });
+        r[106] = (_, _, _) => new(143, FoliageTint); // vine
+        return r;
     }
+
+    private static TileRef Slab(int meta, Face f, bool fancy) => (meta & 7) switch
+    {
+        1 => IsEnd(f) ? new(176) : new(192),
+        2 => new(4),
+        3 => new(16),
+        _ => IsEnd(f) ? new(6) : new(5),
+    };
+
+    /// <param name="fancy">Fancy graphics: alpha-cutout leaves (tiles 52/132) instead of the opaque fast ones (53/133).</param>
+    public static TileRef For(int id, int meta, Face f, bool fancy = false) =>
+        (uint)id < (uint)Rules.Length && Rules[id] is { } rule ? rule(meta, f, fancy) : TileRef.None;
 
     /// <summary>Animated or special blocks drawn from the palette even when an atlas is loaded (their tiles are placeholders).</summary>
     public static bool UsePalette(int id) => id is Blocks.Water or Blocks.FlowingWater or Blocks.Lava or Blocks.FlowingLava or Blocks.Portal;

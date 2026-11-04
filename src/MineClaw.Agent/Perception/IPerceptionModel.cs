@@ -72,24 +72,37 @@ public static partial class PerceptionPrompt
         using (doc)
         {
             var root = doc.RootElement;
-            string? answer = root.TryGetProperty("answer", out var an) && an.ValueKind == JsonValueKind.String ? an.GetString() : null;
+            string? answer = StringProp(root, "answer");
             if (root.TryGetProperty("facts", out var fs) && fs.ValueKind == JsonValueKind.Array)
                 foreach (var f in fs.EnumerateArray())
-                {
-                    if (f.ValueKind != JsonValueKind.Object) continue;
-                    string claim = f.TryGetProperty("claim", out var c) && c.ValueKind == JsonValueKind.String ? c.GetString() ?? "" : "";
-                    var coords = new List<(int, int, int)>();
-                    if (f.TryGetProperty("coords", out var cs)) ReadCoords(cs, coords);
-                    string? role = f.TryGetProperty("role", out var r) && r.ValueKind == JsonValueKind.String ? r.GetString() : null;
-                    if (role is "null" or "none" or "") role = null;
-                    double conf = f.TryGetProperty("confidence", out var cf) && cf.ValueKind == JsonValueKind.Number ? cf.GetDouble()
-                        : f.TryGetProperty("confidence", out var cs2) && cs2.ValueKind == JsonValueKind.String
-                          && double.TryParse(cs2.GetString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var cv) ? cv : 0.5;
-                    if (claim.Length == 0 && coords.Count == 0) continue;
-                    facts.Add(new PerceptionFact(claim.Trim(), coords, role, Math.Clamp(conf, 0, 1)));
-                }
+                    if (FactOf(f) is { } fact) facts.Add(fact);
             return (facts, answer?.Trim(), null);
         }
+    }
+
+    private static string? StringProp(JsonElement e, string name) =>
+        e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+
+    /// <summary>One fact object (claim, coords, role, confidence); null when it is not an object or says nothing.</summary>
+    private static PerceptionFact? FactOf(JsonElement f)
+    {
+        if (f.ValueKind != JsonValueKind.Object) return null;
+        string claim = StringProp(f, "claim") ?? "";
+        var coords = new List<(int, int, int)>();
+        if (f.TryGetProperty("coords", out var cs)) ReadCoords(cs, coords);
+        string? role = StringProp(f, "role");
+        if (role is "null" or "none" or "") role = null;
+        double conf = Confidence(f);
+        if (claim.Length == 0 && coords.Count == 0) return null;
+        return new PerceptionFact(claim.Trim(), coords, role, Math.Clamp(conf, 0, 1));
+    }
+
+    /// <summary>The confidence as a number or a numeric string; 0.5 when absent or unreadable.</summary>
+    private static double Confidence(JsonElement f)
+    {
+        if (!f.TryGetProperty("confidence", out var cf)) return 0.5;
+        if (cf.ValueKind == JsonValueKind.Number) return cf.GetDouble();
+        return cf.ValueKind == JsonValueKind.String && double.TryParse(cf.GetString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var cv) ? cv : 0.5;
     }
 
     private static JsonDocument? TryParse(string s)

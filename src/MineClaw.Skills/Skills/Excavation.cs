@@ -230,12 +230,7 @@ public static class ExcavationOps
     {
         if ((ctx.Game.Supported & Primitive.WriteSign) == 0) return "signs: this client can't write sign text";
         var kinds = ores.OrderByDescending(o => o.Value).Take(6).ToList();
-        if (ctx.Count(Items.Sign) < kinds.Count && ctx.Registry.Obtain is { } obtain)
-        {
-            try { await obtain(ctx, Items.Sign, kinds.Count, ct).ConfigureAwait(false); }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
-            catch (Exception e) { ctx.Log?.Invoke($"strip signs: {e.Message}"); }
-        }
+        await ObtainSignsAsync(ctx, kinds.Count, ct).ConfigureAwait(false);
         var w = ctx.World;
         var spots = room.Where(c => c.Y == floor + 1 && w.GetBlock(c) == 0)
             .Select(c => (Pos: c, Faces: PlaceRules.AttachFaces(w, c, Items.Sign).Where(f => f != BlockFace.Top).ToList()))
@@ -252,9 +247,21 @@ public static class ExcavationOps
             var text = await ctx.Game.WriteSignAsync(pos, [kind, $"x{count}", $"y{floor}", ""], ct).ConfigureAwait(false);
             if (text.Ok) placed++;
         }
-        return placed == kinds.Count ? $"signs: {placed} ({string.Join(", ", kinds.Select(k => k.Key))})"
-            : $"signs: {placed} of {kinds.Count}{(ctx.Has(Items.Sign) ? " (no wall spot left)" : " (out of signs)")}";
+        return SignsText(ctx, kinds, placed);
     }
+
+    /// <summary>Crafts or fetches signs (the Obtainer) when there are fewer than <paramref name="count"/>; a failure is only logged.</summary>
+    private static async Task ObtainSignsAsync(SkillContext ctx, int count, CancellationToken ct)
+    {
+        if (ctx.Count(Items.Sign) >= count || ctx.Registry.Obtain is not { } obtain) return;
+        try { await obtain(ctx, Items.Sign, count, ct).ConfigureAwait(false); }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        catch (Exception e) { ctx.Log?.Invoke($"strip signs: {e.Message}"); }
+    }
+
+    private static string SignsText(SkillContext ctx, List<KeyValuePair<string, int>> kinds, int placed) =>
+        placed == kinds.Count ? $"signs: {placed} ({string.Join(", ", kinds.Select(k => k.Key))})"
+            : $"signs: {placed} of {kinds.Count}{(ctx.Has(Items.Sign) ? " (no wall spot left)" : " (out of signs)")}";
 
     // ------------------------------------------------------------------ seal / light / learn / list
 
@@ -289,24 +296,8 @@ public static class ExcavationOps
         var w = ctx.World;
         var name = a.Str("name") ?? SiteArg(a);
         if (string.IsNullOrWhiteSpace(name)) return SkillResult.Fail("learn needs a name");
-        if (a.Str("rule") is { Length: > 0 } rule)
-        {
-            var at = a.Pos("at") ?? ctx.Me;
-            if (DigPattern.Parse(rule, at, out var err) is not { } p) return SkillResult.Fail($"rule: {err}");
-            int dug = 0;
-            while (dug < 256 && p.Repeat(dug).All(c => Clear(w, c))) dug++;
-            dug = a.Int("repeats") ?? dug;
-            var site = new DigSite { Name = name, Kind = "pattern", Rule = p.Rule, Anchor = p.Anchor, Repeats = dug, Dimension = w.Dimension };
-            Save(ctx, site);
-            return SkillResult.Success($"remembered '{name}': {p.Rule} from {SkillJson.Fmt(at)}, {dug} repeats already dug; extend with to:Y");
-        }
-        (BlockPos Min, BlockPos Max)? box = Box(a);
-        int? design = null;
-        if (box is null && (a.Str("design") ?? SiteArg(a)) is { } dn && ctx.Registry.Design?.Invoke(dn.Trim().TrimStart('#')) is { } d)
-        {
-            box = (d.Min, d.Max);
-            design = DesignId(d.Label);
-        }
+        if (a.Str("rule") is { Length: > 0 } rule) return LearnRule(ctx, a, name, rule);
+        var (box, design) = LearnTarget(ctx, a);
         if (box is not { } b) return SkillResult.Fail("learn needs box (x0,y0,z0,x1,y1,z1), design or rule");
         var learned = LearnBox(w, b.Min, b.Max, out var why);
         if (learned is null) return SkillResult.Fail(why!);
@@ -316,6 +307,29 @@ public static class ExcavationOps
             Dimension = w.Dimension, Design = design, Note = learned.Outliers.Count > 0 ? $"{learned.Outliers.Count} dug cells off the pattern" : null,
         });
         return SkillResult.Success($"learned '{name}': {learned.Summary}; extend with to:Y, or at:x,y,z for a new one");
+    }
+
+    /// <summary>A rule anchored at <c>at</c> (else my feet); its repeats already dug are counted unless given.</summary>
+    private static SkillResult LearnRule(SkillContext ctx, JsonElement a, string name, string rule)
+    {
+        var w = ctx.World;
+        var at = a.Pos("at") ?? ctx.Me;
+        if (DigPattern.Parse(rule, at, out var err) is not { } p) return SkillResult.Fail($"rule: {err}");
+        int dug = 0;
+        while (dug < 256 && p.Repeat(dug).All(c => Clear(w, c))) dug++;
+        dug = a.Int("repeats") ?? dug;
+        var site = new DigSite { Name = name, Kind = "pattern", Rule = p.Rule, Anchor = p.Anchor, Repeats = dug, Dimension = w.Dimension };
+        Save(ctx, site);
+        return SkillResult.Success($"remembered '{name}': {p.Rule} from {SkillJson.Fmt(at)}, {dug} repeats already dug; extend with to:Y");
+    }
+
+    /// <summary>The box to learn from: the given box, else a design's box (with its id).</summary>
+    private static ((BlockPos Min, BlockPos Max)? Box, int? Design) LearnTarget(SkillContext ctx, JsonElement a)
+    {
+        if (Box(a) is { } box) return (box, null);
+        if ((a.Str("design") ?? SiteArg(a)) is { } dn && ctx.Registry.Design?.Invoke(dn.Trim().TrimStart('#')) is { } d)
+            return ((d.Min, d.Max), DesignId(d.Label));
+        return (null, null);
     }
 
     /// <summary>The pattern behind the dug cells (air, nothing liquid) of a box; null + why.</summary>
@@ -355,25 +369,28 @@ public static class ExcavationOps
     {
         // No site and no box: the dig I'm standing in ("seal the holes in the stair walls" said from the stairs).
         var here = SiteArg(a) is { Length: > 0 } || Box(a) is not null ? null : Parent(ctx, a, out _);
-        if (SiteArg(a) is { Length: > 0 } || here != null)
-        {
-            var n = SiteArg(a) ?? here!.Name;
-            string? why0 = null;
-            var site = here ?? Resolve(ctx, n, out why0);
-            if (site is null) return (null, n, null, why0);
-            var vol = new DigVolume(site.Name);
-            foreach (var c in site.Air()) vol.Add(c);
-            foreach (var c in ctx.World.KeepAir.Cells(DigSites.Owner(site))) vol.Add(c);
-            int? entrance = site.Pattern is { } p ? p.Repeat(0).Max(c => c.Y) + 1 : null;
-            return (vol, site.Name, entrance, null);
-        }
-        if (Box(a) is { } b)
-        {
-            var vol = new DigVolume($"box {Span(b.Min, b.Max)}");
-            foreach (var c in BuildOps.Box(b.Min, b.Max).Where(c => Clear(ctx.World, c))) vol.Add(c);
-            return vol.Count == 0 ? (null, "", null, "nothing dug in that box") : (vol, $"box {Span(b.Min, b.Max)}", null, null);
-        }
+        if (SiteArg(a) is { Length: > 0 } || here != null) return ExistingSite(ctx, SiteArg(a) ?? here!.Name, here);
+        if (Box(a) is { } b) return ExistingBox(ctx, b);
         return (null, "", null, "needs site (a remembered dig) or box");
+    }
+
+    private static (DigVolume? Vol, string Label, int? Entrance, string? Why) ExistingSite(SkillContext ctx, string n, DigSite? here)
+    {
+        string? why0 = null;
+        var site = here ?? Resolve(ctx, n, out why0);
+        if (site is null) return (null, n, null, why0);
+        var vol = new DigVolume(site.Name);
+        foreach (var c in site.Air()) vol.Add(c);
+        foreach (var c in ctx.World.KeepAir.Cells(DigSites.Owner(site))) vol.Add(c);
+        int? entrance = site.Pattern is { } p ? p.Repeat(0).Max(c => c.Y) + 1 : null;
+        return (vol, site.Name, entrance, null);
+    }
+
+    private static (DigVolume? Vol, string Label, int? Entrance, string? Why) ExistingBox(SkillContext ctx, (BlockPos Min, BlockPos Max) b)
+    {
+        var vol = new DigVolume($"box {Span(b.Min, b.Max)}");
+        foreach (var c in BuildOps.Box(b.Min, b.Max).Where(c => Clear(ctx.World, c))) vol.Add(c);
+        return vol.Count == 0 ? (null, "", null, "nothing dug in that box") : (vol, $"box {Span(b.Min, b.Max)}", null, null);
     }
 
     /// <summary>A remembered site, or a design's dug cells learned into one on first use ("extend the spiral_staircase").</summary>
@@ -444,6 +461,19 @@ public static class ExcavationOps
 
     public static string Span(BlockPos a, BlockPos b) => $"x{a.X}..{b.X} y{a.Y}..{b.Y} z{a.Z}..{b.Z}";
 
+    /// <summary>Six integers from "x0,y0,z0,x1,y1,z1" (',', ' ' or ';') or a 6-number array; else null.</summary>
+    private static int[]? SixInts(JsonElement b)
+    {
+        int?[]? ints = b.ValueKind switch
+        {
+            JsonValueKind.String => b.GetString()!.Split([',', ' ', ';'], StringSplitOptions.RemoveEmptyEntries)
+                .Select(p => int.TryParse(p, out int n) ? (int?)n : null).ToArray(),
+            JsonValueKind.Array => b.EnumerateArray().Select(n => n.TryGetInt32(out int i) ? (int?)i : null).ToArray(),
+            _ => null,
+        };
+        return ints is { Length: 6 } && ints.All(i => i != null) ? ints.Select(i => i!.Value).ToArray() : null;
+    }
+
     /// <summary>"4x4" / "4x4x3" → (width, depth, height).</summary>
     public static (int W, int D, int H) Size(string? s, int w, int d, int h)
     {
@@ -457,21 +487,7 @@ public static class ExcavationOps
     /// <summary>A box from "x0,y0,z0,x1,y1,z1", [6 numbers] or from/to positions.</summary>
     public static (BlockPos Min, BlockPos Max)? Box(JsonElement a, string key = "box")
     {
-        int[]? v = null;
-        if (a.ValueKind == JsonValueKind.Object && a.TryGetProperty(key, out var b))
-        {
-            if (b.ValueKind == JsonValueKind.String)
-            {
-                var parts = b.GetString()!.Split([',', ' ', ';'], StringSplitOptions.RemoveEmptyEntries);
-                var ints = parts.Select(p => int.TryParse(p, out int n) ? (int?)n : null).ToArray();
-                if (ints.Length == 6 && ints.All(i => i != null)) v = ints.Select(i => i!.Value).ToArray();
-            }
-            else if (b.ValueKind == JsonValueKind.Array)
-            {
-                var ints = b.EnumerateArray().Select(n => n.TryGetInt32(out int i) ? (int?)i : null).ToArray();
-                if (ints.Length == 6 && ints.All(i => i != null)) v = ints.Select(i => i!.Value).ToArray();
-            }
-        }
+        int[]? v = a.ValueKind == JsonValueKind.Object && a.TryGetProperty(key, out var b) ? SixInts(b) : null;
         if (v is null && key == "box" && a.Pos("from") is { } f && a.Pos("to") is { } t) v = [f.X, f.Y, f.Z, t.X, t.Y, t.Z];
         if (v is null) return null;
         return (new BlockPos(Math.Min(v[0], v[3]), Math.Min(v[1], v[4]), Math.Min(v[2], v[5])),

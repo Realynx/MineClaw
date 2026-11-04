@@ -220,15 +220,25 @@ public sealed class StoryDirectives(IViewerData data, ViewerFeed? feed, TimeProv
         lock (_lock) open = _all.Where(d => d.Status is "sent" or "acknowledged").ToList();
         foreach (var d in open)
         {
-            foreach (var l in feed.Since(d.FeedSeq, 500))
-            {
-                if (l.Kind is not ("said" or "internal") || l.Origin != "bot" || !d.Bots.Contains(l.Bot, StringComparer.OrdinalIgnoreCase)) continue;
-                d.Reply = l.Text.Length > 200 ? l.Text[..199] + "…" : l.Text;
-                d.Status = DoneWords.IsMatch(l.Text) ? "done" : FailWords.IsMatch(l.Text) ? "failed" : "acknowledged";
-                d.FeedSeq = l.Seq;
-                if (d.Status is "done" or "failed") break;
-            }
+            ReadReplies(d, feed);
             if (d.Status == "sent" && _time.GetUtcNow() - d.At > TimeSpan.FromMinutes(30)) d.Status = "unknown";
+        }
+    }
+
+    /// <summary>A line one of the directive's bots said (or thought) itself.</summary>
+    private static bool IsBotLine(ViewerLine l, Directive d) =>
+        l.Kind is "said" or "internal" && l.Origin == "bot" && d.Bots.Contains(l.Bot, StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>The directive's bots' own lines since it was last read: the latest is its reply and status, until one says done or failed.</summary>
+    private static void ReadReplies(Directive d, ViewerFeed feed)
+    {
+        foreach (var l in feed.Since(d.FeedSeq, 500))
+        {
+            if (!IsBotLine(l, d)) continue;
+            d.Reply = l.Text.Length > 200 ? l.Text[..199] + "…" : l.Text;
+            d.Status = DoneWords.IsMatch(l.Text) ? "done" : FailWords.IsMatch(l.Text) ? "failed" : "acknowledged";
+            d.FeedSeq = l.Seq;
+            if (d.Status is "done" or "failed") break;
         }
     }
 

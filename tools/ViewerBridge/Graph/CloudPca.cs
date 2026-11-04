@@ -21,14 +21,8 @@ public static class CloudPca
     public static Result Fit(float[][] vecs, long seed, CancellationToken ct = default, int maxIter = 150)
     {
         int n = vecs.Length, dims = vecs[0].Length;
-        var mean = new double[dims];
-        foreach (var v in vecs) for (int k = 0; k < dims; k++) mean[k] += v[k];
-        for (int k = 0; k < dims; k++) mean[k] /= n;
+        var (mean, total) = MeanAndVariance(vecs, dims);
         var meanF = mean.Select(m => (float)m).ToArray();
-        double total = 0;
-        foreach (var v in vecs) for (int k = 0; k < dims; k++) { double e = v[k] - mean[k]; total += e * e; }
-        total /= n;
-
         int b = Math.Min(Block, Math.Max(2, Math.Min(n, dims)));
         var rng = new Rng(seed);
         var q = new double[b][];
@@ -39,61 +33,95 @@ public static class CloudPca
         for (int it = 0; it < maxIter; it++)
         {
             ct.ThrowIfCancellationRequested();
-            var qf = q.Select(col => col.Select(x => (float)x).ToArray()).ToArray();
-            var meanDot = qf.Select(col => (double)VectorMath.Dot(meanF, col)).ToArray();
-            // Z = Xc Q
-            Parallel.For(0, n, new ParallelOptions { CancellationToken = ct, TaskScheduler = TaskScheduler.Current }, i =>
-            {
-                for (int c = 0; c < b; c++) z[i * b + c] = VectorMath.Dot(vecs[i], qf[c]) - meanDot[c];
-            });
-            // W = Xcᵀ Z / n (sequential: a fixed summation order; SIMD axpy in float, then double)
-            var wf = new float[b][];
-            for (int c = 0; c < b; c++) wf[c] = new float[dims];
-            var zsum = new double[b];
-            for (int i = 0; i < n; i++)
-            {
-                var v = vecs[i];
-                for (int c = 0; c < b; c++)
-                {
-                    double zc = z[i * b + c];
-                    if (zc == 0) continue;
-                    zsum[c] += zc;
-                    Axpy((float)zc, v, wf[c]);
-                }
-            }
-            var w = wf.Select(col => col.Select(x => (double)x).ToArray()).ToArray();
-            for (int c = 0; c < b; c++)
-            {
-                double lam = 0;
-                for (int k = 0; k < dims; k++)
-                {
-                    w[c][k] = (w[c][k] - zsum[c] * mean[k]) / n;
-                    lam += w[c][k] * q[c][k];
-                }
-                lambda[c] = lam;
-            }
             var old = q;
-            Orthonormalise(w);
-            q = w;
-            bool converged = true;
-            for (int c = 0; c < 2; c++)
-            {
-                double dot = 0;
-                for (int k = 0; k < dims; k++) dot += q[c][k] * old[c][k];
-                if (1 - Math.Abs(dot) > 1e-9) converged = false;
-            }
-            if (converged) break;
+            q = PowerStep(vecs, q, mean, meanF, z, lambda, ct);
+            if (Converged(q, old, dims)) break;
         }
         var axes = new float[2][];
-        for (int c = 0; c < 2; c++)
-        {
-            int arg = 0;
-            for (int k = 0; k < dims; k++) if (Math.Abs(q[c][k]) > Math.Abs(q[c][arg])) arg = k;
-            double sign = q[c][arg] < 0 ? -1 : 1;
-            axes[c] = q[c].Select(x => (float)(sign * x)).ToArray();
-        }
+        for (int c = 0; c < 2; c++) axes[c] = SignFixed(q[c], dims);
         var ve = lambda.Take(2).Select(l => total > 0 ? Math.Round(Math.Max(0, l) / total, 4) : 0).ToArray();
         return new Result(meanF, axes, ve);
+    }
+
+    /// <summary>The mean vector and the total variance (mean squared distance from it).</summary>
+    private static (double[] Mean, double Total) MeanAndVariance(float[][] vecs, int dims)
+    {
+        int n = vecs.Length;
+        var mean = new double[dims];
+        foreach (var v in vecs) for (int k = 0; k < dims; k++) mean[k] += v[k];
+        for (int k = 0; k < dims; k++) mean[k] /= n;
+        double total = 0;
+        foreach (var v in vecs) for (int k = 0; k < dims; k++) { double e = v[k] - mean[k]; total += e * e; }
+        return (mean, total / n);
+    }
+
+    /// <summary>One block power iteration: Z = Xc Q, W = Xcᵀ Z / n (the Rayleigh quotients into <paramref name="lambda"/>), then W
+    /// orthonormalised as the next Q.</summary>
+    private static double[][] PowerStep(float[][] vecs, double[][] q, double[] mean, float[] meanF, double[] z, double[] lambda, CancellationToken ct)
+    {
+        int n = vecs.Length, b = q.Length, dims = mean.Length;
+        var qf = q.Select(col => col.Select(x => (float)x).ToArray()).ToArray();
+        var meanDot = qf.Select(col => (double)VectorMath.Dot(meanF, col)).ToArray();
+        // Z = Xc Q
+        Parallel.For(0, n, new ParallelOptions { CancellationToken = ct, TaskScheduler = TaskScheduler.Current }, i =>
+        {
+            for (int c = 0; c < b; c++) z[i * b + c] = VectorMath.Dot(vecs[i], qf[c]) - meanDot[c];
+        });
+        var (wf, zsum) = Accumulate(vecs, z, b, dims);
+        var w = wf.Select(col => col.Select(x => (double)x).ToArray()).ToArray();
+        for (int c = 0; c < b; c++)
+        {
+            double lam = 0;
+            for (int k = 0; k < dims; k++)
+            {
+                w[c][k] = (w[c][k] - zsum[c] * mean[k]) / n;
+                lam += w[c][k] * q[c][k];
+            }
+            lambda[c] = lam;
+        }
+        Orthonormalise(w);
+        return w;
+    }
+
+    /// <summary>Xᵀ Z (sequential: a fixed summation order; SIMD axpy in float) and the column sums of Z.</summary>
+    private static (float[][] Wf, double[] ZSum) Accumulate(float[][] vecs, double[] z, int b, int dims)
+    {
+        var wf = new float[b][];
+        for (int c = 0; c < b; c++) wf[c] = new float[dims];
+        var zsum = new double[b];
+        for (int i = 0; i < vecs.Length; i++)
+        {
+            var v = vecs[i];
+            for (int c = 0; c < b; c++)
+            {
+                double zc = z[i * b + c];
+                if (zc == 0) continue;
+                zsum[c] += zc;
+                Axpy((float)zc, v, wf[c]);
+            }
+        }
+        return (wf, zsum);
+    }
+
+    /// <summary>The top two directions moved by under 1e-9 (|cos| to the previous ones).</summary>
+    private static bool Converged(double[][] q, double[][] old, int dims)
+    {
+        for (int c = 0; c < 2; c++)
+        {
+            double dot = 0;
+            for (int k = 0; k < dims; k++) dot += q[c][k] * old[c][k];
+            if (1 - Math.Abs(dot) > 1e-9) return false;
+        }
+        return true;
+    }
+
+    /// <summary>The axis as floats, its sign fixed so the largest |entry| is positive.</summary>
+    private static float[] SignFixed(double[] axis, int dims)
+    {
+        int arg = 0;
+        for (int k = 0; k < dims; k++) if (Math.Abs(axis[k]) > Math.Abs(axis[arg])) arg = k;
+        double sign = axis[arg] < 0 ? -1 : 1;
+        return axis.Select(x => (float)(sign * x)).ToArray();
     }
 
     private static void Axpy(float a, float[] x, float[] y)

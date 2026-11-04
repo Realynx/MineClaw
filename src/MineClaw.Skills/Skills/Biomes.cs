@@ -97,19 +97,24 @@ public sealed class ScoutBiomeSkill : Skill
             walked = Math.Sqrt(Math.Pow(ctx.Feet.X - start.X, 2) + Math.Pow(ctx.Feet.Z - start.Z, 2));
             if (BiomeReport.Nearest(ctx, q, ids, minChunks, double.MaxValue) is { } hit)
                 return Ok($"found after {walked:0} m: {hit.Line}");
-            if (!g.Ok || moved < 8)
-            {
-                if (++stuck >= 2)
-                {
-                    // Water, a cliff or a wall in the way: turn 40 degrees, alternating sides, a few times before giving up.
-                    if (++deflections > 5) return Fail($"no {q} within {walked:0} m: stuck {walked:0} m out ({g.Message})");
-                    heading += deflections % 2 == 0 ? 40 * deflections : -40 * deflections;
-                    stuck = 0;
-                }
-            }
-            else stuck = 0;
+            if (Blocked(g.Ok, moved, ref stuck, ref deflections, ref heading))
+                return Fail($"no {q} within {walked:0} m: stuck {walked:0} m out ({g.Message})");
         }
         return Fail($"no {q} patch of {minChunks}+ chunks within {max} m (walked {walked:0} m, heading {heading % 360:0} deg); try another dir");
+    }
+
+    /// <summary>
+    /// After a leg: water, a cliff or a wall in the way twice running turns 40 degrees, alternating sides, a few times; true when
+    /// it has turned too often (give up). A good leg resets the count.
+    /// </summary>
+    private static bool Blocked(bool ok, double moved, ref int stuck, ref int deflections, ref double heading)
+    {
+        if (ok && moved >= 8) { stuck = 0; return false; }
+        if (++stuck < 2) return false;
+        if (++deflections > 5) return true;
+        heading += deflections % 2 == 0 ? 40 * deflections : -40 * deflections;
+        stuck = 0;
+        return false;
     }
 
     /// <summary>The compass heading (0 north, 90 east) whose rays out to 400 m cross the fewest chunks already seen.</summary>

@@ -334,16 +334,25 @@ internal sealed class LuaRuntime(ScriptSession s) : IScriptRuntime
     {
         var pos = new List<JsonNode?>();
         JsonObject? named = null;
-        if (c.ArgumentCount == skip + 1 && c.GetArgument(skip).TryRead<LuaTable>(out var t) && !(ps.Count > 0 && ScriptSession.PosParams.Contains(ps[0].Name) && IsPosTable(t)))
-        {
-            for (int i = 1; i <= 64 && t[i].Type != LuaValueType.Nil; i++) pos.Add(ToNode(t[i], 1));
-            named = new JsonObject();
-            foreach (var kv in t)
-                if (kv.Key.TryRead<string>(out var key)) named[key] = ToNode(kv.Value, 1);
-        }
+        if (c.ArgumentCount == skip + 1 && c.GetArgument(skip).TryRead<LuaTable>(out var t) && !FirstIsPosTable(ps, t))
+            named = SplitTable(t, pos);
         else
             for (int i = skip; i < c.ArgumentCount; i++) pos.Add(ToNode(c.GetArgument(i), 1));
         return ArgMapper.Map(ps, pos, named);
+    }
+
+    /// <summary>The single table is a position for a leading to/at/pos param (then it is one positional value).</summary>
+    private static bool FirstIsPosTable(IReadOnlyList<(string Name, string? Type)> ps, LuaTable t) =>
+        ps.Count > 0 && ScriptSession.PosParams.Contains(ps[0].Name) && IsPosTable(t);
+
+    /// <summary>A table's array part (≤ 64) as positional values; returns its string keys as the named values.</summary>
+    private static JsonObject SplitTable(LuaTable t, List<JsonNode?> pos)
+    {
+        for (int i = 1; i <= 64 && t[i].Type != LuaValueType.Nil; i++) pos.Add(ToNode(t[i], 1));
+        var named = new JsonObject();
+        foreach (var kv in t)
+            if (kv.Key.TryRead<string>(out var key)) named[key] = ToNode(kv.Value, 1);
+        return named;
     }
 
     private static bool IsPosTable(LuaTable t) =>
@@ -353,37 +362,40 @@ internal sealed class LuaRuntime(ScriptSession s) : IScriptRuntime
     private static JsonNode? ToNode(LuaValue v, int depth, bool args = true)
     {
         if (depth > 6) return null;
-        switch (v.Type)
+        return v.Type switch
         {
-            case LuaValueType.String: return JsonValue.Create(v.Read<string>());
-            case LuaValueType.Boolean: return JsonValue.Create(v.Read<bool>());
-            case LuaValueType.Number:
-            {
-                var d = v.Read<double>();
-                return double.IsFinite(d) && d == Math.Floor(d) && Math.Abs(d) < 1e15 ? JsonValue.Create((long)d) : JsonValue.Create(double.IsFinite(d) ? d : 0);
-            }
-            case LuaValueType.Table:
-            {
-                var t = v.Read<LuaTable>();
-                if (t.ArrayLength > 0 && t.HashMapCount == 0)
-                {
-                    var ja = new JsonArray();
-                    for (int i = 1; i <= t.ArrayLength && i <= 64; i++) ja.Add(ToNode(t[i], depth + 1, args));
-                    return ja;
-                }
-                var jo = new JsonObject();
-                int n = 0;
-                foreach (var kv in t)
-                {
-                    if (n++ >= 32) break;
-                    var key = kv.Key.Type == LuaValueType.String ? kv.Key.Read<string>() : Str(kv.Key);
-                    if (args && key == "n" && depth >= 1) key = "count";
-                    if (ToNode(kv.Value, depth + 1, args) is { } child) jo[key] = child;
-                }
-                return jo;
-            }
-            default: return null;
+            LuaValueType.String => JsonValue.Create(v.Read<string>()),
+            LuaValueType.Boolean => JsonValue.Create(v.Read<bool>()),
+            LuaValueType.Number => LuaNumberNode(v.Read<double>()),
+            LuaValueType.Table => LuaTableNode(v.Read<LuaTable>(), depth, args),
+            _ => null,
+        };
+    }
+
+    private static JsonNode LuaNumberNode(double d) =>
+        double.IsFinite(d) && d == Math.Floor(d) && Math.Abs(d) < 1e15 ? JsonValue.Create((long)d) : JsonValue.Create(double.IsFinite(d) ? d : 0);
+
+    /// <summary>A pure array (first 64 items) as an array, anything else as an object (first 32 keys, nils dropped).</summary>
+    private static JsonNode LuaTableNode(LuaTable t, int depth, bool args)
+    {
+        if (t.ArrayLength > 0 && t.HashMapCount == 0) return LuaArrayNode(t, depth, args);
+        var jo = new JsonObject();
+        int n = 0;
+        foreach (var kv in t)
+        {
+            if (n++ >= 32) break;
+            var key = kv.Key.Type == LuaValueType.String ? kv.Key.Read<string>() : Str(kv.Key);
+            if (args && key == "n" && depth >= 1) key = "count";
+            if (ToNode(kv.Value, depth + 1, args) is { } child) jo[key] = child;
         }
+        return jo;
+    }
+
+    private static JsonArray LuaArrayNode(LuaTable t, int depth, bool args)
+    {
+        var ja = new JsonArray();
+        for (int i = 1; i <= t.ArrayLength && i <= 64; i++) ja.Add(ToNode(t[i], depth + 1, args));
+        return ja;
     }
 
     private static LuaValue FromNode(JsonNode? e, int depth = 0)
@@ -405,17 +417,19 @@ internal sealed class LuaRuntime(ScriptSession s) : IScriptRuntime
                 return t;
             }
             case JsonValue v:
-                return v.GetValueKind() switch
-                {
-                    JsonValueKind.String => v.GetValue<string>(),
-                    JsonValueKind.Number => ScriptSession.AsNumber(v) ?? 0,
-                    JsonValueKind.True => true,
-                    JsonValueKind.False => false,
-                    _ => LuaValue.Nil,
-                };
+                return LuaScalarFrom(v);
             default: return LuaValue.Nil;
         }
     }
+
+    private static LuaValue LuaScalarFrom(JsonValue v) => v.GetValueKind() switch
+    {
+        JsonValueKind.String => v.GetValue<string>(),
+        JsonValueKind.Number => ScriptSession.AsNumber(v) ?? 0,
+        JsonValueKind.True => true,
+        JsonValueKind.False => false,
+        _ => LuaValue.Nil,
+    };
 
     private static LuaTable? FromJson(string? json)
     {

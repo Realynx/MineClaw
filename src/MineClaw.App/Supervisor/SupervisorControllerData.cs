@@ -52,13 +52,7 @@ public sealed class SupervisorControllerData : IControllerSupervisorData
     {
         body = body.Trim();
         var opts = _bot.Runtime.Options.Llm;
-        if (IsMain(body))
-        {
-            var s = ScriptTools.Of(_bot.Runtime)?.Controller?.Current;
-            return Task.FromResult<BodyControllerInfo?>(new BodyControllerInfo("main", "main", null, "main", "opus", opts.MainModel, opts.MainProvider,
-                s != null, s?.Name, s != null ? ["brain", "script"] : ["brain"], null, new ControllerLinks("api/brains/main/context", "api/bodies/main/script", null),
-                _capture == null ? "no context capture in this process (Telemetry:Enabled is off)" : null));
-        }
+        if (IsMain(body)) return Task.FromResult<BodyControllerInfo?>(MainController(opts));
         if (_bot.Bodies?.Find(body) is { } b)
         {
             if (b.IsMain) return ControllerAsync("main", ct);
@@ -68,31 +62,48 @@ public sealed class SupervisorControllerData : IControllerSupervisorData
                 s != null, s?.Name, s != null ? ["brain", "script"] : ["brain"], b.Short,
                 new ControllerLinks("api/brains/main/context", $"api/bodies/{Enc(b.Short)}/script", "main")));
         }
-        if (_hive() is { } sup && sup.Resolve(body) is { } clone)
-        {
-            var slot = sup.Slots.FirstOrDefault(x => x.Name.Equals(clone, StringComparison.OrdinalIgnoreCase));
-            var node = _tree()?.Get(clone);
-            string? script = slot?.Snapshot?.Brain is { } brain && BrainScript.Match(brain) is { Success: true } bm ? bm.Groups["name"].Value : node?.Script;
-            bool running = script != null && slot is { Connected: true };
-            string kind = node?.Kind switch { CloneKind.Script => "script", CloneKind.Subhive => "subhive", _ => "hive" };
-            string? owner = node?.Owner ?? "main";
-            string shortName = Short(clone);
-            string? note = slot is not { Connected: true } ? "clone offline" : null;
-            if (kind == "script")
-                return Task.FromResult<BodyControllerInfo?>(new BodyControllerInfo(shortName, "script", owner, null, null, null, null, true, script, ["script"], null,
-                    new ControllerLinks(null, $"api/bodies/{Enc(shortName)}/script", owner), note));
-            if (kind == "subhive")
-            {
-                // Driven by its owner's brain: main's capture, or the owning hive's over IPC.
-                string brainId = owner is null or "main" ? "main" : owner;
-                return Task.FromResult<BodyControllerInfo?>(new BodyControllerInfo(shortName, "subhive", owner, brainId, null, null, null, running, script,
-                    running ? ["brain", "script"] : ["brain"], shortName, new ControllerLinks($"api/brains/{Enc(brainId)}/context", $"api/bodies/{Enc(shortName)}/script", owner), note));
-            }
-            string? brainKind = node?.Brain is { } bk ? HiveKinds.Name(bk) : slot?.Task?.Profile;
-            return Task.FromResult<BodyControllerInfo?>(new BodyControllerInfo(shortName, "hive", owner, clone, brainKind, null, null, running, script,
-                running ? ["brain", "script"] : ["brain"], null, new ControllerLinks($"api/brains/{Enc(clone)}/context", $"api/bodies/{Enc(shortName)}/script", owner), note));
-        }
+        if (_hive() is { } sup && sup.Resolve(body) is { } clone) return Task.FromResult<BodyControllerInfo?>(CloneController(sup, clone));
         return Task.FromResult<BodyControllerInfo?>(null);
+    }
+
+    private BodyControllerInfo MainController(MineClaw.Agent.Llm.LlmOptions opts)
+    {
+        var s = ScriptTools.Of(_bot.Runtime)?.Controller?.Current;
+        return new BodyControllerInfo("main", "main", null, "main", "opus", opts.MainModel, opts.MainProvider,
+            s != null, s?.Name, s != null ? ["brain", "script"] : ["brain"], null, new ControllerLinks("api/brains/main/context", "api/bodies/main/script", null),
+            _capture == null ? "no context capture in this process (Telemetry:Enabled is off)" : null);
+    }
+
+    /// <summary>The script a clone runs: from its brain state ("asleep (script cobble_loop …)"), else the one its node was given.</summary>
+    private static string? ScriptOf(CloneSlot? slot, HiveNode? node) =>
+        slot?.Snapshot?.Brain is { } brain && BrainScript.Match(brain) is { Success: true } bm ? bm.Groups["name"].Value : node?.Script;
+
+    /// <summary>A clone: a script runner, a subhive body (driven by its owner's brain: main's capture, or the owning hive's over IPC),
+    /// or a hive with its own brain.</summary>
+    private BodyControllerInfo CloneController(HiveSupervisor sup, string clone)
+    {
+        var slot = sup.Slots.FirstOrDefault(x => x.Name.Equals(clone, StringComparison.OrdinalIgnoreCase));
+        var node = _tree()?.Get(clone);
+        string? script = ScriptOf(slot, node);
+        bool running = script != null && slot is { Connected: true };
+        string? owner = node?.Owner ?? "main";
+        string shortName = Short(clone);
+        string? note = slot is not { Connected: true } ? "clone offline" : null;
+        List<string> drivers = running ? ["brain", "script"] : ["brain"];
+        switch (node?.Kind)
+        {
+            case CloneKind.Script:
+                return new BodyControllerInfo(shortName, "script", owner, null, null, null, null, true, script, ["script"], null,
+                    new ControllerLinks(null, $"api/bodies/{Enc(shortName)}/script", owner), note);
+            case CloneKind.Subhive:
+                string brainId = owner is null or "main" ? "main" : owner;
+                return new BodyControllerInfo(shortName, "subhive", owner, brainId, null, null, null, running, script,
+                    drivers, shortName, new ControllerLinks($"api/brains/{Enc(brainId)}/context", $"api/bodies/{Enc(shortName)}/script", owner), note);
+            default:
+                string? brainKind = node?.Brain is { } bk ? HiveKinds.Name(bk) : slot?.Task?.Profile;
+                return new BodyControllerInfo(shortName, "hive", owner, clone, brainKind, null, null, running, script,
+                    drivers, null, new ControllerLinks($"api/brains/{Enc(clone)}/context", $"api/bodies/{Enc(shortName)}/script", owner), note);
+        }
     }
 
     private static readonly Regex BrainScript = new(@"\(script (?<name>[a-z0-9_]+)", RegexOptions.Compiled);

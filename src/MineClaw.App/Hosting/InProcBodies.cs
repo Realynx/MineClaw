@@ -493,6 +493,24 @@ public sealed class InProcBodies : IBodyHost, MineClaw.Hive.Hierarchy.ISubhiveHo
     /// <summary>Main shutting down: the clones deposit and log out in parallel while main is still online to take items.</summary>
     public Task RecallAllAsync(string reason, TimeSpan timeout) => Registry?.DespawnAllAsync(reason, timeout) ?? Task.CompletedTask;
 
+    /// <summary>
+    /// Shutdown, before the db closes: the shared flusher stops pumping main's memory, and every body still built writes its
+    /// remembered world for the last time (each memory's final flush; its later teardown doesn't write again). The body teardown
+    /// (disconnects, 3 s each) may outlast its shutdown step, so it must not be the one that writes.
+    /// </summary>
+    public void FlushWorldMemory()
+    {
+        if (_bot?.WorldMemory is { } mainMemory) Flusher.Remove(mainMemory, flush: false);
+        Body[] built;
+        lock (_built) built = _built.ToArray();
+        foreach (var b in built)
+        {
+            if (b.WorldMemory is not { } wm) continue;
+            Flusher.Remove(wm, flush: false);
+            try { wm.Dispose(); } catch (Exception ex) { _log.LogWarning(ex, "bodies: {Body}: world memory flush failed", b.Name); }
+        }
+    }
+
     private int _disposed;
 
     public async ValueTask DisposeAsync()

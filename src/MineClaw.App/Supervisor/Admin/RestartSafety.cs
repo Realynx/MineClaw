@@ -35,34 +35,42 @@ public static class RestartSafety
         var reasons = new List<string>();
         foreach (var b in bodies)
         {
-            if (!b.Online || !b.HasPos)
-            {
-                checks.Add(new RestartBodyCheck(b.Name, null, null, false, false, null, null));
-                continue;
-            }
-            int fx = (int)Math.Floor(b.X), fy = (int)Math.Floor(b.Y), fz = (int)Math.Floor(b.Z);
-            if (b.Dim != worldDim || !isLoaded(fx, fz))
-            {
-                checks.Add(new RestartBodyCheck(b.Name, b.Dim, b.Y, false, false, null, null));
-                continue;
-            }
-            bool exposed = night == true && b.Dim == 0 && OpenSky(fx, fy, fz, blockAt, worldHeight);
-            int drop = 0;
-            for (int dx = -1; dx <= 1; dx++)
-                for (int dz = -1; dz <= 1; dz++)
-                {
-                    if (!isLoaded(fx + dx, fz + dz)) continue;
-                    drop = Math.Max(drop, AirBelow(fx + dx, fy, fz + dz, blockAt));
-                }
-            bool high = drop >= HighDrop;
-            string? why = exposed && high ? $"{b.Name} is outside at night at a ledge over a {Drop(drop)} drop"
-                : exposed ? $"{b.Name} is outside at night under open sky"
-                : high ? $"{b.Name} is at a ledge over a {Drop(drop)} drop"
-                : null;
-            if (why != null) reasons.Add(why);
-            checks.Add(new RestartBodyCheck(b.Name, b.Dim, Math.Round(b.Y, 1), exposed, high, drop, why));
+            var check = Check(b, night, worldDim, blockAt, isLoaded, worldHeight);
+            if (check.Reason != null) reasons.Add(check.Reason);
+            checks.Add(check);
         }
         return new RestartSafetyResult(reasons.Count == 0, now, night, timeOfDay is { } tod ? (int)tod : null, reasons, checks);
+    }
+
+    /// <summary>One body: unknown (offline, no position, another dimension, an unloaded chunk), else exposed at night and/or at a high ledge.</summary>
+    private static RestartBodyCheck Check(SafetyBody b, bool? night, int worldDim, Func<int, int, int, int> blockAt, Func<int, int, bool> isLoaded, int worldHeight)
+    {
+        if (!b.Online || !b.HasPos) return new RestartBodyCheck(b.Name, null, null, false, false, null, null);
+        int fx = (int)Math.Floor(b.X), fy = (int)Math.Floor(b.Y), fz = (int)Math.Floor(b.Z);
+        if (b.Dim != worldDim || !isLoaded(fx, fz)) return new RestartBodyCheck(b.Name, b.Dim, b.Y, false, false, null, null);
+        bool exposed = night == true && b.Dim == 0 && OpenSky(fx, fy, fz, blockAt, worldHeight);
+        int drop = DeepestDrop(fx, fy, fz, blockAt, isLoaded);
+        bool high = drop >= HighDrop;
+        return new RestartBodyCheck(b.Name, b.Dim, Math.Round(b.Y, 1), exposed, high, drop, Why(b.Name, exposed, high, drop));
+    }
+
+    private static string? Why(string name, bool exposed, bool high, int drop) =>
+        exposed && high ? $"{name} is outside at night at a ledge over a {Drop(drop)} drop"
+        : exposed ? $"{name} is outside at night under open sky"
+        : high ? $"{name} is at a ledge over a {Drop(drop)} drop"
+        : null;
+
+    /// <summary>The most air below the feet level in the loaded 3×3 columns around the body.</summary>
+    private static int DeepestDrop(int fx, int fy, int fz, Func<int, int, int, int> blockAt, Func<int, int, bool> isLoaded)
+    {
+        int drop = 0;
+        for (int dx = -1; dx <= 1; dx++)
+            for (int dz = -1; dz <= 1; dz++)
+            {
+                if (!isLoaded(fx + dx, fz + dz)) continue;
+                drop = Math.Max(drop, AirBelow(fx + dx, fy, fz + dz, blockAt));
+            }
+        return drop;
     }
 
     private static string Drop(int d) => d >= MaxScan ? "long (void)" : $"{d}-block";

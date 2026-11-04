@@ -65,9 +65,24 @@ public static partial class TopicLabeler
         // Display form: the most frequent surface spelling of each lower-cased term (ties: ordinal).
         var forms = new Dictionary<string, Dictionary<string, int>>(StringComparer.Ordinal);
         for (int s = 0; s < n; s++) own[s] = Count(m.Nodes[s].Text, forms);
+        var agg = Aggregate(m, own);
+        var result = new string[n][];
+        foreach (var layerGroup in Enumerable.Range(0, n).GroupBy(s => m.Nodes[s].Layer))
+        {
+            var members = layerGroup.ToArray();
+            var df = DocumentFrequency(members, agg);
+            foreach (var s in members) result[s] = TopTerms(agg[s], df, members.Length, maxTerms, forms);
+        }
+        return result;
+    }
 
-        // Term distribution bottom-up (slot descending = layer ascending): a summary blends its own text (40%) with the mean
-        // distribution of its children (60%), so a curated summary and the leaves under it both shape the label.
+    /// <summary>
+    /// Term distribution bottom-up (slot descending = layer ascending): a summary blends its own text (40%) with the mean distribution
+    /// of its children (60%), so a curated summary and the leaves under it both shape the label.
+    /// </summary>
+    private static Dictionary<string, double>[] Aggregate(GraphModel m, Dictionary<string, int>[] own)
+    {
+        int n = m.Nodes.Length;
         var agg = new Dictionary<string, double>[n];
         for (int s = n - 1; s >= 0; s--)
         {
@@ -81,43 +96,44 @@ public static partial class TopicLabeler
                 foreach (var (k, v) in agg[c]) d[k] = d.GetValueOrDefault(k) + v * kidShare;
             agg[s] = d;
         }
+        return agg;
+    }
 
-        var result = new string[n][];
-        foreach (var layerGroup in Enumerable.Range(0, n).GroupBy(s => m.Nodes[s].Layer))
+    /// <summary>In how many of a layer's nodes each term "occurs": carries at least 0.1% of the node's distribution (one stray mention
+    /// deep in a big subtree doesn't make a word common).</summary>
+    private static Dictionary<string, int> DocumentFrequency(int[] members, Dictionary<string, double>[] agg)
+    {
+        var df = new Dictionary<string, int>(StringComparer.Ordinal);
+        foreach (var s in members)
+            foreach (var (k, w) in agg[s])
+                if (w >= 0.001) df[k] = df.GetValueOrDefault(k) + 1;
+        return df;
+    }
+
+    /// <summary>A node's best terms by tf·idf (ids and handles weaker), one per stem, in their display form.</summary>
+    private static string[] TopTerms(Dictionary<string, double> dist, Dictionary<string, int> df, int docs, int maxTerms,
+        Dictionary<string, Dictionary<string, int>> forms)
+    {
+        var scored = new List<(string Term, double Score)>();
+        foreach (var (k, tf) in dist)
         {
-            var members = layerGroup.ToArray();
-            var df = new Dictionary<string, int>(StringComparer.Ordinal);
-            // A term "occurs" in a node when it carries at least 0.1% of its distribution (one stray mention deep in a big
-            // subtree doesn't make a word common).
-            foreach (var s in members)
-                foreach (var (k, w) in agg[s])
-                    if (w >= 0.001) df[k] = df.GetValueOrDefault(k) + 1;
-            int docs = members.Length;
-            foreach (var s in members)
-            {
-                var scored = new List<(string Term, double Score)>();
-                foreach (var (k, tf) in agg[s])
-                {
-                    // Single-document layers (one root) fall back to plain term frequency.
-                    double idf = docs <= 1 ? 1 : Math.Log((1.0 + docs) / (1.0 + df.GetValueOrDefault(k))) + 0.35;
-                    if (tf < 1e-4) continue;
-                    // Ids and handles (digits, underscores) are weaker topic words than plain words.
-                    double shape = k.Any(ch => char.IsDigit(ch) || ch == '_') ? 0.45 : 1;
-                    scored.Add((k, tf * idf * shape));
-                }
-                scored.Sort((a, b) => b.Score != a.Score ? b.Score.CompareTo(a.Score) : string.CompareOrdinal(a.Term, b.Term));
-                var pick = new List<string>(maxTerms);
-                var stems = new HashSet<string>(StringComparer.Ordinal);
-                foreach (var (k, _) in scored)
-                {
-                    if (!stems.Add(Stem(k))) continue;
-                    pick.Add(Display(k, forms));
-                    if (pick.Count == maxTerms) break;
-                }
-                result[s] = pick.ToArray();
-            }
+            // Single-document layers (one root) fall back to plain term frequency.
+            double idf = docs <= 1 ? 1 : Math.Log((1.0 + docs) / (1.0 + df.GetValueOrDefault(k))) + 0.35;
+            if (tf < 1e-4) continue;
+            // Ids and handles (digits, underscores) are weaker topic words than plain words.
+            double shape = k.Any(ch => char.IsDigit(ch) || ch == '_') ? 0.45 : 1;
+            scored.Add((k, tf * idf * shape));
         }
-        return result;
+        scored.Sort((a, b) => b.Score != a.Score ? b.Score.CompareTo(a.Score) : string.CompareOrdinal(a.Term, b.Term));
+        var pick = new List<string>(maxTerms);
+        var stems = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var (k, _) in scored)
+        {
+            if (!stems.Add(Stem(k))) continue;
+            pick.Add(Display(k, forms));
+            if (pick.Count == maxTerms) break;
+        }
+        return pick.ToArray();
     }
 
     private static Dictionary<string, double> Normalize(Dictionary<string, int> counts)

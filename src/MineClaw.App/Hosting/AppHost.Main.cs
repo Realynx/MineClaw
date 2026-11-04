@@ -308,6 +308,13 @@ public static partial class AppHost
     /// <summary>In-process hives the recall left running are killed here and their teardown (db connections) awaited, bounded.</summary>
     private static async Task DisposeHivesAsync(MainParts p, ShutdownSequence seq)
     {
+        // Every body's last world-memory write, before any teardown that may outlast its step (and so the db closing under it).
+        if (p.Inproc != null || p.Subhives != null)
+            await seq.StepAsync("world memory", TimeSpan.FromSeconds(10), _ => Task.Run(() =>
+            {
+                p.Inproc?.FlushWorldMemory();
+                p.Subhives?.FlushWorldMemory();
+            }));
         if (p.MainHive is { } mainHive) await seq.StepAsync("hive", TimeSpan.FromSeconds(mainHive.InProc != null ? 12 : 3), _ => mainHive.DisposeAsync().AsTask());
         if (p.Inproc is { } inproc) await seq.StepAsync("bodies", TimeSpan.FromSeconds(5), _ => inproc.DisposeAsync().AsTask());
         if (p.Subhives is { } subhives) await seq.StepAsync("subhive bodies", TimeSpan.FromSeconds(5), _ => subhives.DisposeAsync().AsTask());

@@ -48,38 +48,53 @@ public sealed class MemoryActivityStore(SupervisorClient sup, TimeProvider time)
             JsonArray? inCtx = null;
             for (int page = 0; page < 10; page++)
             {
-                var (status, body, _, _) = await sup.GetAsync($"api/viewer/memory-activity?since={_cursor.ToString(CultureInfo.InvariantCulture)}", TimeSpan.FromSeconds(5), ct);
-                if (status != 200) throw new SupervisorUnavailableException($"memory activity answered {status}");
-                if (JsonNode.Parse(body) is not JsonObject o) break;
-                SupervisorProxy.FixMemoryActivity(o);
-                inCtx = o["in_context"] as JsonArray ?? [];
-                var events = o["events"] as JsonArray ?? [];
-                foreach (var e in events.OfType<JsonObject>())
-                {
-                    var ev = e.Deserialize<MemoryEvent>(BridgeJson.Options);
-                    if (ev == null) continue;
-                    fresh.Add(ev);
-                    freshJson.Add(e.DeepClone());
-                    _events.AddLast(ev);
-                }
-                long last = o["last"]?.GetValue<long>() ?? _cursor;
-                // The bot restarted (its ring starts over): take its numbering from here.
-                if (last < _cursor) { _cursor = last; break; }
-                _cursor = last;
-                if (events.Count < 500) break;
+                var (more, pageCtx) = await PageAsync(fresh, freshJson, ct);
+                inCtx = pageCtx ?? inCtx;
+                if (!more) break;
             }
             if (inCtx != null)
             {
                 _inContextJson = inCtx;
                 _inContext = inCtx.OfType<JsonObject>().Select(x => x.Deserialize<InContext>(BridgeJson.Options)).OfType<InContext>().ToList();
             }
-            var cutoff = time.GetUtcNow() - Keep;
-            while (_events.Count > 0 && (_events.Count > MaxEvents || _events.First!.Value.At < cutoff)) _events.RemoveFirst();
+            Trim();
             _primed = true;
             _lastRefresh = time.GetUtcNow();
             return new Refresh(fresh, freshJson, (JsonArray)_inContextJson.DeepClone(), _cursor, initial);
         }
         finally { _gate.Release(); }
+    }
+
+    /// <summary>One page after the cursor (≤ 500 events): its events added, the cursor moved. Whether another page may follow, and the
+    /// page's in-context list (null = the reply wasn't an object: no more pages).</summary>
+    private async Task<(bool More, JsonArray? InContext)> PageAsync(List<MemoryEvent> fresh, JsonArray freshJson, CancellationToken ct)
+    {
+        var (status, body, _, _) = await sup.GetAsync($"api/viewer/memory-activity?since={_cursor.ToString(CultureInfo.InvariantCulture)}", TimeSpan.FromSeconds(5), ct);
+        if (status != 200) throw new SupervisorUnavailableException($"memory activity answered {status}");
+        if (JsonNode.Parse(body) is not JsonObject o) return (false, null);
+        SupervisorProxy.FixMemoryActivity(o);
+        var inCtx = o["in_context"] as JsonArray ?? [];
+        var events = o["events"] as JsonArray ?? [];
+        foreach (var e in events.OfType<JsonObject>())
+        {
+            var ev = e.Deserialize<MemoryEvent>(BridgeJson.Options);
+            if (ev == null) continue;
+            fresh.Add(ev);
+            freshJson.Add(e.DeepClone());
+            _events.AddLast(ev);
+        }
+        long last = o["last"]?.GetValue<long>() ?? _cursor;
+        // The bot restarted (its ring starts over): take its numbering from here.
+        if (last < _cursor) { _cursor = last; return (false, inCtx); }
+        _cursor = last;
+        return (events.Count >= 500, inCtx);
+    }
+
+    /// <summary>Keeps the last 24 h, at most <see cref="MaxEvents"/>.</summary>
+    private void Trim()
+    {
+        var cutoff = time.GetUtcNow() - Keep;
+        while (_events.Count > 0 && (_events.Count > MaxEvents || _events.First!.Value.At < cutoff)) _events.RemoveFirst();
     }
 
     public (IReadOnlyList<MemoryEvent> Events, IReadOnlyList<InContext> InContext) Snapshot()
@@ -103,64 +118,86 @@ public sealed record MemoryHeatResponse(DateTimeOffset At, string? Brain, int Wi
 /// </summary>
 public static class MemoryHeat
 {
+    /// <summary>The aggregate being built: per node the last access and access count, per (node, brain) the context state.</summary>
+    private sealed class HeatTally(RaptorTree? tree, Func<long, int?> nodeOfDoc, string? brain)
+    {
+        public readonly Dictionary<int, DateTimeOffset> LastAccess = new();
+        public readonly Dictionary<int, int> Counts = new();
+        public readonly Dictionary<(int Node, string Brain), (DateTimeOffset? Last, bool In, double? Stale, bool Evicted)> PerBrain = new();
+        public readonly SortedSet<string> Brains = new(StringComparer.OrdinalIgnoreCase);
+
+        public bool BrainOk(string b) => brain == null || b.Equals(brain, StringComparison.OrdinalIgnoreCase);
+
+        public int? NodeOf(string memoryId, int? fallback) =>
+            long.TryParse(memoryId, NumberStyles.Integer, CultureInfo.InvariantCulture, out var docId) && nodeOfDoc(docId) is { } n ? n : fallback;
+
+        public IEnumerable<int> Ancestry(int leaf) => MemoryHeat.Ancestry(tree, leaf);
+
+        /// <summary>One read, propagated to every ancestor.</summary>
+        public void Read(MemoryEvent e, int leaf)
+        {
+            foreach (var n in Ancestry(leaf))
+            {
+                if (!LastAccess.TryGetValue(n, out var la) || e.At > la) LastAccess[n] = e.At;
+                Counts[n] = Counts.GetValueOrDefault(n) + 1;
+                var k = (n, e.Brain);
+                var cur = PerBrain.GetValueOrDefault(k);
+                PerBrain[k] = (cur.Last is { } l && l >= e.At ? l : e.At, cur.In, cur.Stale, cur.Evicted);
+            }
+        }
+
+        /// <summary>One in-context (or evicted) copy, propagated to every ancestor.</summary>
+        public void Carried(InContext c, int leaf, bool evicted, double stale)
+        {
+            foreach (var n in Ancestry(leaf))
+            {
+                var k = (n, c.Brain);
+                var cur = PerBrain.GetValueOrDefault(k);
+                bool inCtx = cur.In || !evicted;
+                double? s = evicted ? cur.Stale : cur.Stale is { } p ? Math.Min(p, stale) : stale;
+                PerBrain[k] = (cur.Last, inCtx, s, !inCtx && (cur.Evicted || evicted));
+                LastAccess.TryAdd(n, default);
+                Counts.TryAdd(n, 0);
+            }
+        }
+    }
+
     public static MemoryHeatResponse Compute(IReadOnlyList<MemoryEvent> events, IReadOnlyList<InContext> inContext, RaptorTree? tree, Func<long, int?> nodeOfDoc,
         string stateKey, DateTimeOffset at, int windowS, double halfLifeS, string? brain)
     {
         var since = at - TimeSpan.FromSeconds(windowS);
-        bool BrainOk(string b) => brain == null || b.Equals(brain, StringComparison.OrdinalIgnoreCase);
-        int? NodeOf(string memoryId, int? fallback) =>
-            long.TryParse(memoryId, NumberStyles.Integer, CultureInfo.InvariantCulture, out var docId) && nodeOfDoc(docId) is { } n ? n : fallback;
+        var tally = new HeatTally(tree, nodeOfDoc, brain);
+        foreach (var e in events) AddRead(tally, e, since, at);
+        foreach (var c in inContext) AddInContext(tally, c, since, at);
+        var nodes = tally.LastAccess.Keys.Order().Select(n => NodeHeatOf(tally, n, at, halfLifeS)).ToList();
+        return new MemoryHeatResponse(at, brain, windowS, halfLifeS, stateKey, tally.Brains.ToList(), nodes);
+    }
 
-        var lastAccess = new Dictionary<int, DateTimeOffset>();
-        var counts = new Dictionary<int, int>();
-        // (node, brain) → state
-        var perBrain = new Dictionary<(int Node, string Brain), (DateTimeOffset? Last, bool In, double? Stale, bool Evicted)>();
-        var brains = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
+    private static void AddRead(HeatTally tally, MemoryEvent e, DateTimeOffset since, DateTimeOffset at)
+    {
+        if (e.At < since || e.At > at.AddSeconds(5) || !tally.BrainOk(e.Brain)) return;
+        tally.Brains.Add(e.Brain);
+        if (tally.NodeOf(e.MemoryId, e.RaptorNodeId) is { } leaf) tally.Read(e, leaf);
+    }
 
-        foreach (var e in events)
-        {
-            if (e.At < since || e.At > at.AddSeconds(5) || !BrainOk(e.Brain)) continue;
-            brains.Add(e.Brain);
-            if (NodeOf(e.MemoryId, e.RaptorNodeId) is not { } leaf) continue;
-            foreach (var n in Ancestry(tree, leaf))
-            {
-                if (!lastAccess.TryGetValue(n, out var la) || e.At > la) lastAccess[n] = e.At;
-                counts[n] = counts.GetValueOrDefault(n) + 1;
-                var k = (n, e.Brain);
-                var cur = perBrain.GetValueOrDefault(k);
-                perBrain[k] = (cur.Last is { } l && l >= e.At ? l : e.At, cur.In, cur.Stale, cur.Evicted);
-            }
-        }
-        foreach (var c in inContext)
-        {
-            if (!BrainOk(c.Brain)) continue;
-            bool evicted = c.PositionFromEnd == null;
-            if (evicted && c.LastSeenAt < since) continue;
-            brains.Add(c.Brain);
-            if (NodeOf(c.MemoryId, c.RaptorNodeId) is not { } leaf) continue;
-            double stale = Math.Max(0, (at - c.LastSeenAt).TotalSeconds);
-            foreach (var n in Ancestry(tree, leaf))
-            {
-                var k = (n, c.Brain);
-                var cur = perBrain.GetValueOrDefault(k);
-                bool inCtx = cur.In || !evicted;
-                double? s = evicted ? cur.Stale : cur.Stale is { } p ? Math.Min(p, stale) : stale;
-                perBrain[k] = (cur.Last, inCtx, s, !inCtx && (cur.Evicted || evicted));
-                lastAccess.TryAdd(n, default);
-                counts.TryAdd(n, 0);
-            }
-        }
+    private static void AddInContext(HeatTally tally, InContext c, DateTimeOffset since, DateTimeOffset at)
+    {
+        if (!tally.BrainOk(c.Brain)) return;
+        bool evicted = c.PositionFromEnd == null;
+        if (evicted && c.LastSeenAt < since) return;
+        tally.Brains.Add(c.Brain);
+        if (tally.NodeOf(c.MemoryId, c.RaptorNodeId) is not { } leaf) return;
+        tally.Carried(c, leaf, evicted, Math.Max(0, (at - c.LastSeenAt).TotalSeconds));
+    }
 
-        var nodes = lastAccess.Keys.Order().Select(n =>
-        {
-            var la = lastAccess[n];
-            DateTimeOffset? last = la == default ? null : la;
-            double heat = last is { } t && halfLifeS > 0 ? Math.Round(Math.Pow(0.5, Math.Max(0, (at - t).TotalSeconds) / halfLifeS), 5) : 0;
-            var bs = perBrain.Where(kv => kv.Key.Node == n).OrderBy(kv => kv.Key.Brain, StringComparer.OrdinalIgnoreCase)
-                .Select(kv => new NodeBrainHeat(kv.Key.Brain, kv.Value.Last, kv.Value.In, kv.Value.In ? Math.Round(kv.Value.Stale ?? 0, 1) : null, kv.Value.Evicted)).ToList();
-            return new NodeHeat(n, last, counts.GetValueOrDefault(n), heat, bs);
-        }).ToList();
-        return new MemoryHeatResponse(at, brain, windowS, halfLifeS, stateKey, brains.ToList(), nodes);
+    private static NodeHeat NodeHeatOf(HeatTally tally, int n, DateTimeOffset at, double halfLifeS)
+    {
+        var la = tally.LastAccess[n];
+        DateTimeOffset? last = la == default ? null : la;
+        double heat = last is { } t && halfLifeS > 0 ? Math.Round(Math.Pow(0.5, Math.Max(0, (at - t).TotalSeconds) / halfLifeS), 5) : 0;
+        var bs = tally.PerBrain.Where(kv => kv.Key.Node == n).OrderBy(kv => kv.Key.Brain, StringComparer.OrdinalIgnoreCase)
+            .Select(kv => new NodeBrainHeat(kv.Key.Brain, kv.Value.Last, kv.Value.In, kv.Value.In ? Math.Round(kv.Value.Stale ?? 0, 1) : null, kv.Value.Evicted)).ToList();
+        return new NodeHeat(n, last, tally.Counts.GetValueOrDefault(n), heat, bs);
     }
 
     /// <summary>The node and every ancestor through all parents (soft clusters included), each once.</summary>

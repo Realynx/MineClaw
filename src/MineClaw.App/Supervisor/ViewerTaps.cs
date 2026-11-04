@@ -61,23 +61,30 @@ public static class ViewerTaps
             if (msg.Kind == ChatKind.Whisper && !self) { feed.Add(brain, "whisper", msg.Player, msg.Text, "game"); return; }
             if (!mainHears || self) return; // our own echo is already "said"; a hive hears only its whispers
             bool hive = msg.Player != null && chat.IsHiveBot?.Invoke(msg.Player) == true;
-            switch (msg.Kind)
-            {
-                case ChatKind.Public or ChatKind.Emote when hive:
-                    feed.Add(msg.Player!, "said", msg.Player, msg.Text, "game"); // a hive bot in another process (deduped against its Said)
-                    break;
-                case ChatKind.Public:
-                    feed.Add(brain, "chat", msg.Player, msg.Text, "game");
-                    break;
-                case ChatKind.Emote:
-                    feed.Add(brain, "chat", msg.Player, "* " + msg.Player + " " + msg.Text, "game");
-                    break;
-                case ChatKind.Join or ChatKind.Leave or ChatKind.System when !hive:
-                    feed.Add(brain, "system", null, msg.Text, "game");
-                    break;
-            }
+            AddHeard(feed, brain, msg, hive);
         }
         catch (Exception) { /* the feed never breaks chat */ }
+    }
+
+    /// <summary>A line main heard: a hive bot's own line in another process (deduped against its Said), public chat, an emote, or a
+    /// join/leave/system line (not a hive bot's).</summary>
+    private static void AddHeard(ViewerFeed feed, string brain, ChatMessage msg, bool hive)
+    {
+        switch (msg.Kind)
+        {
+            case ChatKind.Public or ChatKind.Emote when hive:
+                feed.Add(msg.Player!, "said", msg.Player, msg.Text, "game");
+                break;
+            case ChatKind.Public:
+                feed.Add(brain, "chat", msg.Player, msg.Text, "game");
+                break;
+            case ChatKind.Emote:
+                feed.Add(brain, "chat", msg.Player, "* " + msg.Player + " " + msg.Text, "game");
+                break;
+            case ChatKind.Join or ChatKind.Leave or ChatKind.System when !hive:
+                feed.Add(brain, "system", null, msg.Text, "game");
+                break;
+        }
     }
 
     private static void OnMemory(object owner, string source, IReadOnlyList<MemoryAccessHit> hits)

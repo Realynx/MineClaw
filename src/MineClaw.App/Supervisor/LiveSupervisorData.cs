@@ -192,9 +192,26 @@ public sealed class LiveSupervisorData : ISupervisorData
 
     public object Status(string? selected)
     {
+        var bots = StatusBots(selected);
+        object? hive = _hive() is { } sup ? HiveStatus(sup) : null;
+        IReadOnlyList<HiveLease> leases = [];
+        try { leases = _hub.Hive?.Leases() ?? []; } catch (Exception) { }
+        return new
+        {
+            at = _time.GetUtcNow(),
+            main = _main,
+            bots,
+            hive,
+            claims = leases.Select(l => new { owner = l.Owner, what = HiveVision.Lease(l.Key).Text }).ToList(),
+        };
+    }
+
+    /// <summary>Every body in the body list's order (main first), from its telemetry source when it has one (main, hive clones), then
+    /// configured clones that aren't in game (the fixed roster); the selected one with its full snapshot.</summary>
+    private List<object> StatusBots(string? selected)
+    {
         var bots = new List<object>();
-        IReadOnlyList<BodyRow> rows = [];
-        try { rows = Bodies?.Rows() ?? []; } catch (Exception ex) { _log?.LogDebug(ex, "supervisor: body list unavailable"); }
+        var rows = BodyRows();
         var sources = Bodies?.Sources(_sources) ?? _sources;
         var byName = new Dictionary<string, IBotTelemetrySource>(StringComparer.OrdinalIgnoreCase);
         foreach (var s in sources) byName.TryAdd(s.Name, s);
@@ -208,7 +225,6 @@ public sealed class LiveSupervisorData : ISupervisorData
             try { snap = s.Snapshot(full); } catch (Exception) { snap = BotSnapshot.Offline(s.Name); }
             return BotStatusView(snap, full, row);
         }
-        // every body in the body list's order (main first), from its telemetry source when it has one (main, hive clones)
         var done = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var r in rows)
         {
@@ -216,34 +232,31 @@ public sealed class LiveSupervisorData : ISupervisorData
             if (!done.Add(name)) continue;
             bots.Add(byName.TryGetValue(name, out var s) ? FromSource(s, r) : RowStatusView(r));
         }
-        foreach (var s in sources) // configured clones that aren't in game (the fixed roster)
+        foreach (var s in sources)
             if (done.Add(s.Name)) bots.Add(FromSource(s, null));
-        object? hive = null;
-        if (_hive() is { } sup)
-        {
-            var (cd, cm) = sup.Ledger.ClonesSpend();
-            hive = new
-            {
-                list = sup.List(),
-                clones_today_usd = cd,
-                clones_month_usd = cm,
-                slots = sup.Slots.Select(sl => new
-                {
-                    name = sl.Name, number = sl.Number, state = sl.State.ToString().ToLowerInvariant(), connected = sl.Connected, task = sl.Task?.Text,
-                    pending = sl.Pending, progress = sl.Progress, last_progress = sl.LastProgress, result = sl.ResultIn ? sl.ResultText : null,
-                    deaths = sl.Deaths, last_exit = sl.LastExit,
-                }).ToList(),
-            };
-        }
-        IReadOnlyList<HiveLease> leases = [];
-        try { leases = _hub.Hive?.Leases() ?? []; } catch (Exception) { }
+        return bots;
+    }
+
+    private IReadOnlyList<BodyRow> BodyRows()
+    {
+        try { return Bodies?.Rows() ?? []; }
+        catch (Exception ex) { _log?.LogDebug(ex, "supervisor: body list unavailable"); return []; }
+    }
+
+    private static object HiveStatus(HiveSupervisor sup)
+    {
+        var (cd, cm) = sup.Ledger.ClonesSpend();
         return new
         {
-            at = _time.GetUtcNow(),
-            main = _main,
-            bots,
-            hive,
-            claims = leases.Select(l => new { owner = l.Owner, what = HiveVision.Lease(l.Key).Text }).ToList(),
+            list = sup.List(),
+            clones_today_usd = cd,
+            clones_month_usd = cm,
+            slots = sup.Slots.Select(sl => new
+            {
+                name = sl.Name, number = sl.Number, state = sl.State.ToString().ToLowerInvariant(), connected = sl.Connected, task = sl.Task?.Text,
+                pending = sl.Pending, progress = sl.Progress, last_progress = sl.LastProgress, result = sl.ResultIn ? sl.ResultText : null,
+                deaths = sl.Deaths, last_exit = sl.LastExit,
+            }).ToList(),
         };
     }
 

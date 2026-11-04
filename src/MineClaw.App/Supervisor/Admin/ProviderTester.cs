@@ -58,38 +58,43 @@ public sealed class LiveProviderTester : IProviderTester
             var catalog = new OllamaCatalog(o, http);
             var tags = await catalog.TagsAsync(cts.Token).ConfigureAwait(false);
             var models = tags.Select(t => new OllamaModelInfoView(t, null)).ToList();
-            if (details && models.Count > 0)
-            {
-                using var showCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                showCts.CancelAfter(TimeSpan.FromSeconds(8));
-                using var gate = new SemaphoreSlim(4);
-                var shown = await Task.WhenAll(models.Take(MaxShow).Select(async m =>
-                {
-                    await gate.WaitAsync(showCts.Token).ConfigureAwait(false);
-                    try { return m with { Capabilities = (await catalog.ShowAsync(m.Name, showCts.Token).ConfigureAwait(false))?.Capabilities }; }
-                    catch (Exception) { return m; }
-                    finally { gate.Release(); }
-                })).ConfigureAwait(false);
-                models = [.. shown, .. models.Skip(MaxShow)];
-            }
+            if (details && models.Count > 0) models = await WithCapabilitiesAsync(catalog, models, ct).ConfigureAwait(false);
             return new OllamaListResult(true, null, models, sw.Elapsed.TotalMilliseconds);
         }
         catch (Exception ex) when (ex is HttpRequestException or OperationCanceledException or System.Text.Json.JsonException or InvalidOperationException or OllamaException)
         {
             if (ct.IsCancellationRequested) throw;
-            var why = ex switch
-            {
-                OperationCanceledException => "no answer within 12 s",
-                OllamaException oe => $"the server answered {(int?)oe.StatusCode ?? 0}",
-                HttpRequestException { HttpRequestError: HttpRequestError.ConnectionError } => "connection refused or host unreachable",
-                HttpRequestException { HttpRequestError: HttpRequestError.NameResolutionError } => "the host name does not resolve",
-                HttpRequestException { StatusCode: { } s } => $"the server answered {(int)s}",
-                System.Text.Json.JsonException => "the answer is not Ollama's (not JSON)",
-                _ => "the server could not be reached",
-            };
-            return new OllamaListResult(false, why, [], sw.Elapsed.TotalMilliseconds);
+            return new OllamaListResult(false, WhyUnreachable(ex), [], sw.Elapsed.TotalMilliseconds);
         }
     }
+
+    /// <summary>The first <see cref="MaxShow"/> models with their capabilities (four <c>show</c> calls at a time, 8 s in all; one that
+    /// fails stays as it was).</summary>
+    private static async Task<List<OllamaModelInfoView>> WithCapabilitiesAsync(OllamaCatalog catalog, List<OllamaModelInfoView> models, CancellationToken ct)
+    {
+        using var showCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        showCts.CancelAfter(TimeSpan.FromSeconds(8));
+        using var gate = new SemaphoreSlim(4);
+        var shown = await Task.WhenAll(models.Take(MaxShow).Select(async m =>
+        {
+            await gate.WaitAsync(showCts.Token).ConfigureAwait(false);
+            try { return m with { Capabilities = (await catalog.ShowAsync(m.Name, showCts.Token).ConfigureAwait(false))?.Capabilities }; }
+            catch (Exception) { return m; }
+            finally { gate.Release(); }
+        })).ConfigureAwait(false);
+        return [.. shown, .. models.Skip(MaxShow)];
+    }
+
+    private static string WhyUnreachable(Exception ex) => ex switch
+    {
+        OperationCanceledException => "no answer within 12 s",
+        OllamaException oe => $"the server answered {(int?)oe.StatusCode ?? 0}",
+        HttpRequestException { HttpRequestError: HttpRequestError.ConnectionError } => "connection refused or host unreachable",
+        HttpRequestException { HttpRequestError: HttpRequestError.NameResolutionError } => "the host name does not resolve",
+        HttpRequestException { StatusCode: { } s } => $"the server answered {(int)s}",
+        System.Text.Json.JsonException => "the answer is not Ollama's (not JSON)",
+        _ => "the server could not be reached",
+    };
 
     /// <summary>
     /// An endpoint the bot may be pointed at from the web: absolute http(s), no credentials in the URL, not a link-local or cloud

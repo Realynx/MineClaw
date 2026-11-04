@@ -52,7 +52,17 @@ public static class CloudMds
     /// <summary>Landmark MDS: classical MDS on max-min landmarks, every point triangulated from its squared dissimilarities to them.</summary>
     internal static (float[] X, float[] Y) LandmarkStart(float[] d, int n, int l)
     {
-        // Max-min landmarks: start at the point farthest from point 0 (ties → lowest index), then repeatedly the point farthest from the set.
+        var lm = MaxMinLandmarks(d, n, l);
+        l = lm.Length;
+        var (bm, colMean) = Torgerson(d, n, lm);
+        var pinv = TopTwoPseudoInverse(new SymmetricEigen(bm, l), l);
+        return Triangulate(d, n, lm, colMean, pinv);
+    }
+
+    /// <summary>Max-min landmarks: start at the point farthest from point 0 (ties → lowest index), then repeatedly the point farthest
+    /// from the set; fewer when every point is chosen.</summary>
+    private static int[] MaxMinLandmarks(float[] d, int n, int l)
+    {
         var chosen = new bool[n];
         var minD = new float[n];
         Array.Fill(minD, float.PositiveInfinity);
@@ -63,18 +73,30 @@ public static class CloudMds
         {
             lm[k] = cur;
             chosen[cur] = true;
-            long row = (long)cur * n;
-            int next = -1;
-            for (int j = 0; j < n; j++)
-            {
-                if (d[row + j] < minD[j]) minD[j] = d[row + j];
-                if (!chosen[j] && (next < 0 || minD[j] > minD[next])) next = j;
-            }
-            if (next < 0) { Array.Resize(ref lm, k + 1); l = k + 1; break; }
+            int next = FarthestFromSet(d, n, cur, chosen, minD);
+            if (next < 0) { Array.Resize(ref lm, k + 1); break; }
             cur = next;
         }
+        return lm;
+    }
 
-        // Torgerson on the landmarks: B = −½ J Δ² J.
+    /// <summary>Folds landmark <paramref name="cur"/> into each point's distance to the set; the unchosen point farthest from it (-1 = none).</summary>
+    private static int FarthestFromSet(float[] d, int n, int cur, bool[] chosen, float[] minD)
+    {
+        long row = (long)cur * n;
+        int next = -1;
+        for (int j = 0; j < n; j++)
+        {
+            if (d[row + j] < minD[j]) minD[j] = d[row + j];
+            if (!chosen[j] && (next < 0 || minD[j] > minD[next])) next = j;
+        }
+        return next;
+    }
+
+    /// <summary>Torgerson on the landmarks: B = −½ J Δ² J, and the column means of Δ².</summary>
+    private static (double[] B, double[] ColMean) Torgerson(float[] d, int n, int[] lm)
+    {
+        int l = lm.Length;
         var d2 = new double[l * l];
         for (int a = 0; a < l; a++)
             for (int b = 0; b < l; b++)
@@ -91,8 +113,12 @@ public static class CloudMds
         for (int a = 0; a < l; a++)
             for (int b = 0; b < l; b++)
                 bm[a * l + b] = -0.5 * (d2[a * l + b] - colMean[a] - colMean[b] + all);
-        var eig = new SymmetricEigen(bm, l);
-        // Top two (values ascending); pseudo-inverse rows v_k / sqrt(λ_k), sign fixed so the largest |entry| is positive.
+        return (bm, colMean);
+    }
+
+    /// <summary>Top two eigenpairs (values ascending): pseudo-inverse rows v_k / sqrt(λ_k), sign fixed so the largest |entry| is positive.</summary>
+    private static double[][] TopTwoPseudoInverse(SymmetricEigen eig, int l)
+    {
         var pinv = new double[2][];
         for (int k = 0; k < 2; k++)
         {
@@ -105,13 +131,19 @@ public static class CloudMds
             double sign = eig.Vector(arg, col) < 0 ? -1 : 1;
             for (int a = 0; a < l; a++) pinv[k][a] = sign * eig.Vector(a, col) / Math.Sqrt(lambda);
         }
+        return pinv;
+    }
+
+    /// <summary>Every point from its squared dissimilarities to the landmarks.</summary>
+    private static (float[] X, float[] Y) Triangulate(float[] d, int n, int[] lm, double[] colMean, double[][] pinv)
+    {
         var x = new float[n];
         var y = new float[n];
         for (int i = 0; i < n; i++)
         {
             long row = (long)i * n;
             double px = 0, py = 0;
-            for (int a = 0; a < l; a++)
+            for (int a = 0; a < lm.Length; a++)
             {
                 double v = d[row + lm[a]];
                 double delta = v * v - colMean[a];

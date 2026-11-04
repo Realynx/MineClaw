@@ -77,26 +77,31 @@ public sealed class HiveBus
         var routed = e with { Seq = Interlocked.Increment(ref _seq), Token = null }; // tokens never travel onward
         Interlocked.Increment(ref _routed);
         try { MessageRouted?.Invoke(routed); } catch (Exception) { }
-        try
-        {
-            if (IsMain(e.To))
-                return MainHandler is { } h ? await h(routed, ct).ConfigureAwait(false) : BusReply.Fail("main has no bus handler");
-            if (e.To == "*")
-            {
-                var tasks = _endpoints.Values.Where(x => !x.Id.Equals(e.From, StringComparison.OrdinalIgnoreCase))
-                    .Select(x => SafeDeliver(x, routed, ct)).ToList();
-                if (!IsMain(e.From) && MainHandler is { } mh) tasks.Add(mh(routed, ct));
-                var replies = await Task.WhenAll(tasks).ConfigureAwait(false);
-                return new BusReply(true, Ipc.HiveJson.ToElement(new { delivered = replies.Count(r => r.Ok) }));
-            }
-            if (_endpoints.TryGetValue(e.To, out var to)) return await SafeDeliver(to, routed, ct).ConfigureAwait(false);
-            return BusReply.Fail($"no hive '{e.To}' on the bus");
-        }
+        try { return await DeliverAsync(e, routed, ct).ConfigureAwait(false); }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _log.LogWarning(ex, "hive bus: {Type} {From}→{To} failed", e.Type, e.From, e.To);
             return BusReply.Fail(ex.Message);
         }
+    }
+
+    /// <summary>To main's handler, to every endpoint but the sender (and main, unless main sent it), or to the one hive named.</summary>
+    private async Task<BusReply> DeliverAsync(BusEnvelope e, BusEnvelope routed, CancellationToken ct)
+    {
+        if (IsMain(e.To))
+            return MainHandler is { } h ? await h(routed, ct).ConfigureAwait(false) : BusReply.Fail("main has no bus handler");
+        if (e.To == "*") return await BroadcastAsync(e, routed, ct).ConfigureAwait(false);
+        if (_endpoints.TryGetValue(e.To, out var to)) return await SafeDeliver(to, routed, ct).ConfigureAwait(false);
+        return BusReply.Fail($"no hive '{e.To}' on the bus");
+    }
+
+    private async Task<BusReply> BroadcastAsync(BusEnvelope e, BusEnvelope routed, CancellationToken ct)
+    {
+        var tasks = _endpoints.Values.Where(x => !x.Id.Equals(e.From, StringComparison.OrdinalIgnoreCase))
+            .Select(x => SafeDeliver(x, routed, ct)).ToList();
+        if (!IsMain(e.From) && MainHandler is { } mh) tasks.Add(mh(routed, ct));
+        var replies = await Task.WhenAll(tasks).ConfigureAwait(false);
+        return new BusReply(true, Ipc.HiveJson.ToElement(new { delivered = replies.Count(r => r.Ok) }));
     }
 
     private async Task<BusReply> SafeDeliver(Endpoint ep, BusEnvelope e, CancellationToken ct)

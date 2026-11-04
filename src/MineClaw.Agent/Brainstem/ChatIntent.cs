@@ -45,29 +45,56 @@ public static class ChatIntent
         var nameList = (names ?? []).ToList();
         if (AddressingText.IsHelpCall(raw) || HelpExtra.IsMatch(raw)) return new("help", Help);
         var reflex = IntentMatcher.Reflex(raw, nameList, _ => true);
-        if (reflex.IsReflex)
-            return new(reflex.Kind switch
-            {
-                IntentKind.Stop => "stop", IntentKind.Come => "come", IntentKind.Follow => "follow", IntentKind.Give => "give",
-                IntentKind.LookAtMe => "look", _ => "gesture",
-            }, Command);
+        if (reflex.IsReflex) return new(ReflexIntent(reflex.Kind), Command);
+        var norm = Normalized(raw, nameList);
+        if (emote) return EmoteClass(norm);
+        return SocialClass(raw, norm, nameList) ?? RequestClass(raw, norm, nameList);
+    }
+
+    private static ChatClass EmoteClass(string norm) => new(Insult.IsMatch(norm) ? "insult" : Praise.IsMatch(norm) ? "praise" : "banter", Banter);
+
+    private static string ReflexIntent(IntentKind kind) => kind switch
+    {
+        IntentKind.Stop => "stop", IntentKind.Come => "come", IntentKind.Follow => "follow", IntentKind.Give => "give",
+        IntentKind.LookAtMe => "look", _ => "gesture",
+    };
+
+    /// <summary>The line without the bot's names, filler and a trailing "everyone" ("gn everyone").</summary>
+    private static string Normalized(string raw, List<string> nameList)
+    {
         var norm = IntentMatcher.Normalize(raw, nameList);
         foreach (var n in nameList.Where(n => !string.IsNullOrWhiteSpace(n)))
             norm = Regex.Replace(norm, $@"\b{Regex.Escape(n.Trim().ToLowerInvariant())}\b", " ", O);
         norm = Regex.Replace(norm, @"\s+", " ").Trim(' ', ',', '!', '.', '~', '@');
-        norm = Regex.Replace(norm, @"[\s,]+(?:everyone|everybody|all|guys|y'?all|chat|folks|peeps)$", "", O).Trim(); // "gn everyone"
-        if (emote) return new(Insult.IsMatch(norm) ? "insult" : Praise.IsMatch(norm) ? "praise" : "banter", Banter);
+        return Regex.Replace(norm, @"[\s,]+(?:everyone|everybody|all|guys|y'?all|chat|folks|peeps)$", "", O).Trim(); // "gn everyone"
+    }
+
+    /// <summary>A status question, a clear job, a greeting, a farewell or an insult; else null.</summary>
+    private static ChatClass? SocialClass(string raw, string norm, List<string> nameList)
+    {
         if (Status.IsMatch(norm)) return new("status", Question);
         var spec = IntentMatcher.Speculative(raw, nameList);
         if (spec.IsSpeculative) return new(spec.Kind == IntentKind.SpecToSpeaker ? "come" : "command", Command);
         if (Hello.IsMatch(norm)) return new("greeting", Greeting);
         if (Bye.IsMatch(norm)) return new("farewell", Greeting);
         if (Insult.IsMatch(norm)) return new("insult", Banter);
+        return null;
+    }
+
+    /// <summary>A command, a question, thanks/praise, small talk or (anything else) a command.</summary>
+    private static ChatClass RequestClass(string raw, string norm, List<string> nameList)
+    {
         bool asks = raw.TrimEnd().EndsWith('?') || QuestionStart.IsMatch(norm);
         bool imperative = Imperative.IsMatch(norm);
         // "can you grab cobble?" is a command phrased as a question.
         if (imperative && (!asks || Regex.IsMatch(norm, @"^(?:can|could|would|will) (?:you|u)\b", O))) return new("command", Command);
         if (asks) return new("question", Question);
+        return TalkClass(raw, norm, nameList);
+    }
+
+    /// <summary>Thanks, praise, small talk, or a simple line without "you should..." is banter; anything else a command.</summary>
+    private static ChatClass TalkClass(string raw, string norm, List<string> nameList)
+    {
         if (Thanks.IsMatch(norm)) return new("thanks", Banter);
         if (Praise.IsMatch(norm)) return new("praise", Banter);
         var quick = QuickReply.Classify([raw], nameList);

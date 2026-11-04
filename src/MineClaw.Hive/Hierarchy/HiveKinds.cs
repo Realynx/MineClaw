@@ -22,14 +22,16 @@ public static class HiveKinds
     public static (CloneKind? Kind, string? Error) ParseKind(string? s)
     {
         if (string.IsNullOrWhiteSpace(s)) return (null, null);
-        return s.Trim().ToLowerInvariant().Replace("_", "-") switch
-        {
-            "hive" or "brain" => (CloneKind.Hive, null),
-            "subhive" or "sub-hive" or "sub" or "body" => (CloneKind.Subhive, null),
-            "script" or "script-only" or "scriptonly" => (CloneKind.Script, null),
-            var x => (null, $"kind '{x}' is hive|subhive|script"),
-        };
+        var x = s.Trim().ToLowerInvariant().Replace("_", "-");
+        return KindWords.TryGetValue(x, out var k) ? (k, null) : (null, $"kind '{x}' is hive|subhive|script");
     }
+
+    private static readonly Dictionary<string, CloneKind> KindWords = new(StringComparer.Ordinal)
+    {
+        ["hive"] = CloneKind.Hive, ["brain"] = CloneKind.Hive,
+        ["subhive"] = CloneKind.Subhive, ["sub-hive"] = CloneKind.Subhive, ["sub"] = CloneKind.Subhive, ["body"] = CloneKind.Subhive,
+        ["script"] = CloneKind.Script, ["script-only"] = CloneKind.Script, ["scriptonly"] = CloneKind.Script,
+    };
 
     /// <summary>"opus" | "deepseek" → the brain; anything else is treated as a model profile name (legacy <c>profile</c>).</summary>
     public static (BrainKind? Brain, string? Profile) ParseBrain(string? s)

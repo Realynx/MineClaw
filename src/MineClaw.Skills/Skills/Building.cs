@@ -66,13 +66,19 @@ public sealed class PlaceLineSkill : Skill
     public override async Task<SkillResult> ExecuteAsync(SkillContext ctx, JsonElement args, CancellationToken ct)
     {
         if (args.Pos("from") is not { } a || args.Pos("to") is not { } b) return Fail("from and to required");
-        int axes = (a.X != b.X ? 1 : 0) + (a.Y != b.Y ? 1 : 0) + (a.Z != b.Z ? 1 : 0);
-        if (axes > 1) return Fail("from/to must differ along one axis (use fill_floor for areas)");
-        if (a.ManhattanTo(b) > 64) return Fail("line longer than 64");
+        if (LineProblem(a, b) is { } problem) return Fail(problem);
         if (SkillWorld.BuildingBlock(ctx, args.Str("block")) is not { } block) return Fail("no building blocks");
         if (BuildOps.HostileVeto(ctx) is { } h) return Fail(h);
         var r = await BuildOps.PlaceAllAsync(ctx, BuildOps.Box(a, b).ToList(), block, ct);
         return new SkillResult(r.Placed > 0 || r.Skipped == a.ManhattanTo(b) + 1, BuildOps.Report("line", r, ctx, block));
+    }
+
+    private static string? LineProblem(BlockPos a, BlockPos b)
+    {
+        int axes = (a.X != b.X ? 1 : 0) + (a.Y != b.Y ? 1 : 0) + (a.Z != b.Z ? 1 : 0);
+        if (axes > 1) return "from/to must differ along one axis (use fill_floor for areas)";
+        if (a.ManhattanTo(b) > 64) return "line longer than 64";
+        return null;
     }
 }
 

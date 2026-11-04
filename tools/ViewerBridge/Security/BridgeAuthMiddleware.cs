@@ -33,48 +33,21 @@ public sealed class BridgeAuthMiddleware(RequestDelegate next, BridgeConfig conf
     public async Task InvokeAsync(HttpContext ctx)
     {
         var started = time.GetTimestamp();
-        if (!IsLoopback(ctx.Connection.RemoteIpAddress))
-        {
-            log.LogWarning("refused a non-loopback request");
-            await ApiErrors.Write(ctx, 403, "forbidden", "forbidden");
-            return;
-        }
         var key = config.Bridge.Key;
-        if (string.IsNullOrEmpty(key))
+        if (Gate(ctx, key) is { } refused)
         {
-            await ApiErrors.Write(ctx, 503, "upstream_unavailable", "bridge key not configured");
+            await ApiErrors.Write(ctx, refused.Status, refused.Code, refused.Message);
             return;
         }
-
-        long limit = BodyLimitFor(ctx.Request.Path.Value ?? "");
-        if (ctx.Request.ContentLength is { } cl && cl > limit)
-        {
-            await ApiErrors.Write(ctx, 413, "payload_too_large", "body too large");
-            return;
-        }
-        byte[] body;
-        try { body = await ReadBodyAsync(ctx.Request.Body, limit, ctx.RequestAborted); }
-        catch (InvalidDataException)
+        var body = await ReadLimitedBodyAsync(ctx);
+        if (body == null)
         {
             await ApiErrors.Write(ctx, 413, "payload_too_large", "body too large");
             return;
         }
-
         var h = ctx.Request.Headers;
-        string ts = h[BridgeSigning.TsHeader].ToString(), nonce = h[BridgeSigning.NonceHeader].ToString(), sig = h[BridgeSigning.SigHeader].ToString();
         string user = h[BridgeSigning.UserHeader].ToString(), player = h[BridgeSigning.PlayerHeader].ToString(), roles = h[BridgeSigning.RolesHeader].ToString();
-        string? why = null;
-        if (!long.TryParse(ts, NumberStyles.None, CultureInfo.InvariantCulture, out var tsv)) why = "bad timestamp";
-        else if (Math.Abs(time.GetUtcNow().ToUnixTimeSeconds() - tsv) > BridgeSigning.MaxSkewSeconds) why = "clock skew";
-        else if (!BridgeSigning.NonceShape().IsMatch(nonce)) why = "bad nonce";
-        else if (user.Contains('\r') || user.Contains('\n') || player.Contains('\r') || player.Contains('\n') || roles.Contains('\r') || roles.Contains('\n')) why = "bad identity";
-        else
-        {
-            var signing = BridgeSigning.SigningString(ctx.Request.Method, RawTarget(ctx), ts, nonce, BridgeSigning.Sha256Hex(body), user, player, roles);
-            if (!BridgeSigning.SignatureMatches(key, signing, sig)) why = "bad signature";
-            else if (!nonces.TryAdd(nonce)) why = "replayed nonce";
-        }
-        if (why != null)
+        if (Unauthorized(ctx, body, key!, user, player, roles) is { } why)
         {
             log.LogWarning("unauthorized request ({Why})", why);
             await ApiErrors.Write(ctx, 401, "unauthorized", "unauthorized");
@@ -92,6 +65,42 @@ public sealed class BridgeAuthMiddleware(RequestDelegate next, BridgeConfig conf
                 audit.Write(id, ctx.Request.Method, ctx.Request.Path.Value ?? "", ctx.Response.StatusCode, time.GetElapsedTime(started), body.Length);
         }
     }
+
+    /// <summary>The checks before the body is read: loopback only, a configured key. Null = go on.</summary>
+    private (int Status, string Code, string Message)? Gate(HttpContext ctx, string? key)
+    {
+        if (!IsLoopback(ctx.Connection.RemoteIpAddress))
+        {
+            log.LogWarning("refused a non-loopback request");
+            return (403, "forbidden", "forbidden");
+        }
+        return string.IsNullOrEmpty(key) ? (503, "upstream_unavailable", "bridge key not configured") : null;
+    }
+
+    /// <summary>The body, up to the route's cap; null = too large (by its declared length or as read).</summary>
+    private async Task<byte[]?> ReadLimitedBodyAsync(HttpContext ctx)
+    {
+        long limit = BodyLimitFor(ctx.Request.Path.Value ?? "");
+        if (ctx.Request.ContentLength is { } cl && cl > limit) return null;
+        try { return await ReadBodyAsync(ctx.Request.Body, limit, ctx.RequestAborted); }
+        catch (InvalidDataException) { return null; }
+    }
+
+    /// <summary>Why the signed request is refused (timestamp, skew, nonce shape, identity headers, signature, replay); null = verified.</summary>
+    private string? Unauthorized(HttpContext ctx, byte[] body, string key, string user, string player, string roles)
+    {
+        var h = ctx.Request.Headers;
+        string ts = h[BridgeSigning.TsHeader].ToString(), nonce = h[BridgeSigning.NonceHeader].ToString(), sig = h[BridgeSigning.SigHeader].ToString();
+        if (!long.TryParse(ts, NumberStyles.None, CultureInfo.InvariantCulture, out var tsv)) return "bad timestamp";
+        if (Math.Abs(time.GetUtcNow().ToUnixTimeSeconds() - tsv) > BridgeSigning.MaxSkewSeconds) return "clock skew";
+        if (!BridgeSigning.NonceShape().IsMatch(nonce)) return "bad nonce";
+        if (HasLineBreak(user) || HasLineBreak(player) || HasLineBreak(roles)) return "bad identity";
+        var signing = BridgeSigning.SigningString(ctx.Request.Method, RawTarget(ctx), ts, nonce, BridgeSigning.Sha256Hex(body), user, player, roles);
+        if (!BridgeSigning.SignatureMatches(key, signing, sig)) return "bad signature";
+        return nonces.TryAdd(nonce) ? null : "replayed nonce";
+    }
+
+    private static bool HasLineBreak(string s) => s.Contains('\r') || s.Contains('\n');
 
     /// <summary>The request target exactly as received (path + "?" + raw query), never re-encoded.</summary>
     public static string RawTarget(HttpContext ctx)

@@ -157,51 +157,8 @@ public static class TextureLocator
     public static TextureAtlas? Load(TextureOptions o, Action<string>? log = null, HttpClient? http = null)
     {
         if (o.Version == Models.Release1122Assets.Version) return LoadModern(o, log, http);
-        try
-        {
-            if (o.AssetsDir is { Length: > 0 } dir && File.Exists(Path.Combine(dir, TerrainFile)))
-            {
-                var items = Path.Combine(dir, ItemsFile);
-                var skin = Path.Combine(dir, SkinFile);
-                var mobDir = Path.Combine(dir, "mob");
-                var mobs = Directory.Exists(mobDir) ? TextureAtlas.DecodeMobs(n => File.Exists(Path.Combine(mobDir, n + ".png")) ? File.ReadAllBytes(Path.Combine(mobDir, n + ".png")) : null) : null;
-                var loaded = TextureAtlas.FromPng(File.ReadAllBytes(Path.Combine(dir, TerrainFile)), File.Exists(items) ? File.ReadAllBytes(items) : null,
-                    File.Exists(skin) ? File.ReadAllBytes(skin) : null, dir);
-                if (mobs == null && CandidateJars(o).FirstOrDefault(File.Exists) is { } cachedJar)
-                {
-                    // The PNGs were extracted earlier without the mob textures: read just those from the jar (a zip; nothing runs).
-                    try
-                    {
-                        using var zip = ZipFile.OpenRead(cachedJar);
-                        var raw = new Dictionary<string, byte[]>();
-                        mobs = TextureAtlas.DecodeMobs(n => zip.GetEntry($"mob/{n}.png") is { Length: < 1 << 20 } e ? raw[n] = ReadEntry(e) : null);
-                        // Keep them next to terrain.png, so a host given only the assets dir (no jar) has them too.
-                        try
-                        {
-                            if (raw.Count > 0) Directory.CreateDirectory(mobDir);
-                            foreach (var (n, b) in raw) File.WriteAllBytes(Path.Combine(mobDir, n + ".png"), b);
-                        }
-                        catch (IOException) { }
-                        catch (UnauthorizedAccessException) { }
-                    }
-                    catch (Exception ex) { log?.Invoke($"mob textures: {cachedJar} unreadable ({ex.Message})"); }
-                }
-                return mobs == null ? loaded : new TextureAtlas(loaded.Size, loaded.TerrainPixels, loaded.Items, loaded.Skin) { Source = dir, Mobs = mobs };
-            }
-        }
-        catch (Exception ex) { log?.Invoke($"extracted textures unreadable: {ex.Message}"); }
-
-        foreach (var jar in CandidateJars(o))
-        {
-            if (!File.Exists(jar)) continue;
-            try
-            {
-                var atlas = FromJar(jar, o.AssetsDir);
-                if (atlas != null) { log?.Invoke($"textures from {jar}"); return atlas; }
-            }
-            catch (Exception ex) { log?.Invoke($"textures: {jar} unreadable ({ex.Message})"); }
-        }
-
+        if (LoadExtracted(o, log) is { } extracted) return extracted;
+        if (FromCandidateJars(o, log) is { } fromJar) return fromJar;
         if (!o.AllowDownload || string.IsNullOrWhiteSpace(o.AssetsDir))
         {
             log?.Invoke("no b1.8.1 textures found; using flat colours (set Bot:Vision:ClientJar, put terrain.png/items.png in the " +
@@ -218,6 +175,68 @@ public static class TextureLocator
             log?.Invoke($"textures: download failed ({ex.Message}); using flat colours");
             return null;
         }
+    }
+
+    /// <summary>The PNGs extracted into the assets dir earlier (mob textures read from the cached jar when missing), or null.</summary>
+    private static TextureAtlas? LoadExtracted(TextureOptions o, Action<string>? log)
+    {
+        try
+        {
+            if (o.AssetsDir is not { Length: > 0 } dir || !File.Exists(Path.Combine(dir, TerrainFile))) return null;
+            var items = Path.Combine(dir, ItemsFile);
+            var skin = Path.Combine(dir, SkinFile);
+            var mobDir = Path.Combine(dir, "mob");
+            var mobs = Directory.Exists(mobDir) ? TextureAtlas.DecodeMobs(n => File.Exists(Path.Combine(mobDir, n + ".png")) ? File.ReadAllBytes(Path.Combine(mobDir, n + ".png")) : null) : null;
+            var loaded = TextureAtlas.FromPng(File.ReadAllBytes(Path.Combine(dir, TerrainFile)), File.Exists(items) ? File.ReadAllBytes(items) : null,
+                File.Exists(skin) ? File.ReadAllBytes(skin) : null, dir);
+            if (mobs == null && CandidateJars(o).FirstOrDefault(File.Exists) is { } cachedJar) mobs = MobsFromJar(cachedJar, mobDir, log);
+            return mobs == null ? loaded : new TextureAtlas(loaded.Size, loaded.TerrainPixels, loaded.Items, loaded.Skin) { Source = dir, Mobs = mobs };
+        }
+        catch (Exception ex) { log?.Invoke($"extracted textures unreadable: {ex.Message}"); }
+        return null;
+    }
+
+    /// <summary>The PNGs were extracted earlier without the mob textures: read just those from the jar (a zip; nothing runs).</summary>
+    private static IReadOnlyDictionary<string, (int, int, uint[])>? MobsFromJar(string cachedJar, string mobDir, Action<string>? log)
+    {
+        IReadOnlyDictionary<string, (int, int, uint[])>? mobs = null;
+        try
+        {
+            using var zip = ZipFile.OpenRead(cachedJar);
+            var raw = new Dictionary<string, byte[]>();
+            mobs = TextureAtlas.DecodeMobs(n => zip.GetEntry($"mob/{n}.png") is { Length: < 1 << 20 } e ? raw[n] = ReadEntry(e) : null);
+            KeepMobPngs(raw, mobDir);
+        }
+        catch (Exception ex) { log?.Invoke($"mob textures: {cachedJar} unreadable ({ex.Message})"); }
+        return mobs;
+    }
+
+    /// <summary>Keep them next to terrain.png, so a host given only the assets dir (no jar) has them too.</summary>
+    private static void KeepMobPngs(Dictionary<string, byte[]> raw, string mobDir)
+    {
+        try
+        {
+            if (raw.Count > 0) Directory.CreateDirectory(mobDir);
+            foreach (var (n, b) in raw) File.WriteAllBytes(Path.Combine(mobDir, n + ".png"), b);
+        }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
+    }
+
+    /// <summary>The first readable b1.8.1 jar among the candidates, or null.</summary>
+    private static TextureAtlas? FromCandidateJars(TextureOptions o, Action<string>? log)
+    {
+        foreach (var jar in CandidateJars(o))
+        {
+            if (!File.Exists(jar)) continue;
+            try
+            {
+                var atlas = FromJar(jar, o.AssetsDir);
+                if (atlas != null) { log?.Invoke($"textures from {jar}"); return atlas; }
+            }
+            catch (Exception ex) { log?.Invoke($"textures: {jar} unreadable ({ex.Message})"); }
+        }
+        return null;
     }
 
     /// <summary>The cached download of the 1.12.2 client jar in the assets dir.</summary>

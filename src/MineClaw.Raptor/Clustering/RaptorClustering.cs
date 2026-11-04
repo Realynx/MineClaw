@@ -58,39 +58,48 @@ public sealed class RaptorClustering
     public (List<int>[] Labels, int NClusters) GmmCluster(double[] x, int n, int d, double threshold, int minK = 1)
     {
         int k = GetOptimalClusters(x, n, d, minK);
-        double[]? probs = null;
-        var gopt = _o.Gmm;
-        for (int attempt = 0; attempt < 4 && probs == null; attempt++)
-        {
-            try
-            {
-                probs = GaussianMixture.Fit(x, n, d, k, _o.ClusterFitSeed, gopt).PredictProba(x, n);
-            }
-            catch (GmmFitException)
-            {
-                gopt = gopt with { RegCovar = gopt.RegCovar * 10 };
-            }
-        }
+        var probs = FitProbabilities(x, n, d, k);
         var labels = new List<int>[n];
         if (probs == null)
         {
             for (int i = 0; i < n; i++) labels[i] = [0];
             return (labels, 1);
         }
-        for (int i = 0; i < n; i++)
-        {
-            var l = new List<int>();
-            int arg = 0;
-            for (int c = 0; c < k; c++)
-            {
-                double p = probs[i * k + c];
-                if (p > threshold) l.Add(c);
-                if (p > probs[i * k + arg]) arg = c;
-            }
-            if (l.Count == 0) l.Add(arg); // README D3: never drop a node from the next layer
-            labels[i] = l;
-        }
+        for (int i = 0; i < n; i++) labels[i] = SoftLabels(probs, i, k, threshold);
         return (labels, k);
+    }
+
+    /// <summary>GMM membership probabilities; up to 4 fits, raising reg_covar tenfold after each failure (null if all fail).</summary>
+    private double[]? FitProbabilities(double[] x, int n, int d, int k)
+    {
+        var gopt = _o.Gmm;
+        for (int attempt = 0; attempt < 4; attempt++)
+        {
+            try
+            {
+                return GaussianMixture.Fit(x, n, d, k, _o.ClusterFitSeed, gopt).PredictProba(x, n);
+            }
+            catch (GmmFitException)
+            {
+                gopt = gopt with { RegCovar = gopt.RegCovar * 10 };
+            }
+        }
+        return null;
+    }
+
+    /// <summary>Components over the threshold, or the most likely one (README D3: never drop a node from the next layer).</summary>
+    private static List<int> SoftLabels(double[] probs, int i, int k, double threshold)
+    {
+        var l = new List<int>();
+        int arg = 0;
+        for (int c = 0; c < k; c++)
+        {
+            double p = probs[i * k + c];
+            if (p > threshold) l.Add(c);
+            if (p > probs[i * k + arg]) arg = c;
+        }
+        if (l.Count == 0) l.Add(arg);
+        return l;
     }
 
     // ---------------- perform_clustering ----------------

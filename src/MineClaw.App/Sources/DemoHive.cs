@@ -118,46 +118,73 @@ public sealed class DemoHive : IDisposable
         for (int cx = -3; cx <= 2; cx++)
             for (int cz = -3; cz <= 2; cz++)
                 w.ApplyChunkRegion(cx * 16, 0, cz * 16, 16, 128, 16, air, null, null, null);
+        BuildIsland(w);
+        BuildTree(w);
+        // Starter kit on the west arm.
+        Set(w, -3, 64, 1, Blocks.Chest);
+        Set(w, -3, 64, -1, Blocks.Furnace); Set(w, -3, 64, -2, Blocks.Workbench);
+        Set(w, 0, 64, -3, Blocks.Torch);
+        Set(w, -1, 64, 1, Blocks.Sapling);
+        BuildGenerator(w);
+        BuildSandIsland(w);
+    }
 
-        void Set(int x, int y, int z, int id) => w.SetBlock(x, y, z, id, 0);
+    private static void Set(WorldState w, int x, int y, int z, int id) => w.SetBlock(x, y, z, id, 0);
+
+    /// <summary>The L of grass on two layers of dirt (6×6 minus the south-east 3×3 cut-out).</summary>
+    private static void BuildIsland(WorldState w)
+    {
         for (int x = -3; x <= 2; x++)
             for (int z = -3; z <= 2; z++)
             {
                 if (x >= 0 && z >= 0) continue; // the L cut-out
-                Set(x, 61, z, Blocks.Dirt); Set(x, 62, z, Blocks.Dirt); Set(x, 63, z, Blocks.Grass);
+                Set(w, x, 61, z, Blocks.Dirt); Set(w, x, 62, z, Blocks.Dirt); Set(w, x, 63, z, Blocks.Grass);
             }
-        // Oak tree on the north arm.
-        for (int y = 64; y <= 68; y++) Set(1, y, -2, Blocks.Log);
+    }
+
+    /// <summary>Oak tree on the north arm.</summary>
+    private static void BuildTree(WorldState w)
+    {
+        for (int y = 64; y <= 68; y++) Set(w, 1, y, -2, Blocks.Log);
         for (int x = -1; x <= 3; x++)
             for (int z = -4; z <= 0; z++)
                 for (int y = 67; y <= 69; y++)
-                {
-                    int d = Math.Abs(x - 1) + Math.Abs(z + 2);
-                    if ((x == 1 && z == -2 && y < 69) || d + (y - 67) > 3 || (d == 3 && y == 67 && (x + z) % 2 == 0)) continue;
-                    Set(x, y, z, Blocks.Leaves);
-                }
-        Set(1, 70, -2, Blocks.Leaves);
-        // Starter kit on the west arm.
-        Set(-3, 64, 1, Blocks.Chest);
-        Set(-3, 64, -1, Blocks.Furnace); Set(-3, 64, -2, Blocks.Workbench);
-        Set(0, 64, -3, Blocks.Torch);
-        Set(-1, 64, 1, Blocks.Sapling);
-        // Cobble generator off the south end: trough floor + rim, water | cobble | lava.
-        for (int x = -4; x <= 0; x++) for (int z = 3; z <= 4; z++) Set(x, 63, z, Blocks.Cobblestone);
-        for (int x = -4; x <= 0; x++) Set(x, 64, 4, Blocks.Cobblestone);
-        Set(-4, 64, 3, Blocks.Cobblestone); Set(0, 64, 3, Blocks.Cobblestone);
-        Set(-3, 64, 3, Blocks.Water); Set(-2, 64, 3, Blocks.Cobblestone); Set(-1, 64, 3, Blocks.Lava);
-        // Plank landing in the cut-out and a plank bridge north to the sand island.
-        for (int x = 0; x <= 2; x++) Set(x, 63, 2, Blocks.Planks);
-        for (int z = -10; z <= -4; z++) Set(1, 63, z, Blocks.Planks);
+                    if (IsLeaf(x, y, z)) Set(w, x, y, z, Blocks.Leaves);
+        Set(w, 1, 70, -2, Blocks.Leaves);
+    }
+
+    /// <summary>The canopy around the trunk at (1, -2): a diamond narrowing upwards, its outer ring at the bottom layer checkered.</summary>
+    private static bool IsLeaf(int x, int y, int z)
+    {
+        int d = Math.Abs(x - 1) + Math.Abs(z + 2);
+        bool trunk = x == 1 && z == -2 && y < 69;
+        bool outside = d + (y - 67) > 3;
+        bool gap = d == 3 && y == 67 && (x + z) % 2 == 0;
+        return !(trunk || outside || gap);
+    }
+
+    /// <summary>Cobble generator off the south end: trough floor + rim, water | cobble | lava.</summary>
+    private static void BuildGenerator(WorldState w)
+    {
+        for (int x = -4; x <= 0; x++) for (int z = 3; z <= 4; z++) Set(w, x, 63, z, Blocks.Cobblestone);
+        for (int x = -4; x <= 0; x++) Set(w, x, 64, 4, Blocks.Cobblestone);
+        Set(w, -4, 64, 3, Blocks.Cobblestone); Set(w, 0, 64, 3, Blocks.Cobblestone);
+        Set(w, -3, 64, 3, Blocks.Water); Set(w, -2, 64, 3, Blocks.Cobblestone); Set(w, -1, 64, 3, Blocks.Lava);
+    }
+
+    /// <summary>Plank landing in the cut-out, a plank bridge north, and the sand island with a glass-walled cactus.</summary>
+    private static void BuildSandIsland(WorldState w)
+    {
+        for (int x = 0; x <= 2; x++) Set(w, x, 63, 2, Blocks.Planks);
+        for (int z = -10; z <= -4; z++) Set(w, 1, 63, z, Blocks.Planks);
         for (int x = 0; x <= 3; x++)
-            for (int z = -14; z <= -11; z++) { Set(x, 61, z, Blocks.Sand); Set(x, 62, z, Blocks.Sand); }
-        Set(2, 63, -12, Blocks.Sand); Set(2, 64, -12, Blocks.Cactus); Set(2, 65, -12, Blocks.Cactus);
-        Set(1, 63, -12, Blocks.Glass); Set(3, 63, -12, Blocks.Glass); Set(2, 63, -13, Blocks.Glass); Set(2, 63, -11, Blocks.Glass);
+            for (int z = -14; z <= -11; z++) { Set(w, x, 61, z, Blocks.Sand); Set(w, x, 62, z, Blocks.Sand); }
+        Set(w, 2, 63, -12, Blocks.Sand); Set(w, 2, 64, -12, Blocks.Cactus); Set(w, 2, 65, -12, Blocks.Cactus);
+        Set(w, 1, 63, -12, Blocks.Glass); Set(w, 3, 63, -12, Blocks.Glass); Set(w, 2, 63, -13, Blocks.Glass); Set(w, 2, 63, -11, Blocks.Glass);
     }
 }
 
-/// <summary>A fake hive member for the demo.</summary>
+// <summary>A fake hive member for the demo.</summary>
 public sealed class DemoBotSource : IBotTelemetrySource, IDisposable
 {
     private static readonly string[] Tasks = ["idle", "delegate #4 31s", "goto #7 6s", "follow poofimafox", "delegate #9 102s"];

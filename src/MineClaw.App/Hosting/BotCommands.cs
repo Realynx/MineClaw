@@ -277,61 +277,82 @@ public sealed class ConsoleCommands(IGameClient c, AgentRuntime rt, PausableAgen
                 return;
             }
             var parts = line.Split(' ', 3, StringSplitOptions.RemoveEmptyEntries);
-            switch (parts[0].ToLowerInvariant())
-            {
-                case "/as" when parts.Length == 3:
-                    // Pretend a player said this (vanilla "<name> msg" line) — test the agent without a second account.
-                    // Tagged as test chat: memory stores it as source=test and the self-profile ignores it.
-                    var raw = $"<{parts[1]}> {parts[2]}";
-                    var msg = rt.Chat.OnServerChat(raw, test: true);
-                    Injected?.Invoke(raw);
-                    log.LogInformation("injected chat from {Player} ({Kind})", msg.Player, msg.Kind);
-                    break;
-                case "/status":
-                    log.LogInformation("status: {Status} | header: {Header} | agent {State}", c.DescribeStatus(), GameBridge.StateHeader(c), agent.Paused ? "paused" : "running");
-                    break;
-                case "/usage":
-                    {
-                        var today = rt.Usage.SnapshotTotals().Today;
-                        var purposes = today.Purposes is { Count: > 0 } p
-                            ? string.Join(", ", p.OrderByDescending(kv => kv.Value.Usd).Select(kv => $"{kv.Key} {kv.Value.Calls}c ${kv.Value.Usd:0.000}"))
-                            : "none yet";
-                        log.LogInformation("usage: {Usage} | last cache hit {Hit:P0} | by purpose: {Purposes}", rt.Usage.Summary(), rt.Usage.LastCacheHitRatio, purposes);
-                        break;
-                    }
-                case "/pause":
-                    await agent.PauseAsync();
-                    await c.StopAsync(ct);
-                    log.LogInformation("agent paused (events keep queueing; /resume to continue)");
-                    break;
-                case "/resume":
-                    agent.Resume();
-                    log.LogInformation("agent resumed");
-                    break;
-                case "/wait" when parts.Length >= 2:
-                    await Task.Delay(TimeSpan.FromSeconds(double.Parse(parts[1], System.Globalization.CultureInfo.InvariantCulture)), ct);
-                    break;
-                case "/tool" when parts.Length >= 2:
-                    {
-                        var input = parts.Length == 3 ? JsonDocument.Parse(parts[2]).RootElement.Clone() : JsonDocument.Parse("{}").RootElement.Clone();
-                        var r = await rt.Tools.ExecuteAsync(parts[1], input, ct);
-                        log.LogInformation("tool {Tool}: {Result}", parts[1], r);
-                        break;
-                    }
-                case "/walktest":
-                    await WalkTestAsync(ct);
-                    break;
-                case "/quit":
-                case "/exit":
-                    shutdown.Cancel();
-                    break;
-                default:
-                    log.LogInformation("{Help}", Help);
-                    break;
-            }
+            if (await AgentCommandAsync(parts, ct) || await ClientCommandAsync(parts, ct)) return;
+            log.LogInformation("{Help}", Help);
         }
         catch (OperationCanceledException) { }
         catch (Exception ex) { log.LogWarning("command '{Line}' failed: {Error}", line, ex.Message); }
+    }
+
+    /// <summary>/as, /status, /usage, /pause, /resume; false = not one of them.</summary>
+    private async Task<bool> AgentCommandAsync(string[] parts, CancellationToken ct)
+    {
+        switch (parts[0].ToLowerInvariant())
+        {
+            case "/as" when parts.Length == 3:
+                InjectAs(parts[1], parts[2]);
+                return true;
+            case "/status":
+                log.LogInformation("status: {Status} | header: {Header} | agent {State}", c.DescribeStatus(), GameBridge.StateHeader(c), agent.Paused ? "paused" : "running");
+                return true;
+            case "/usage":
+                LogUsage();
+                return true;
+            case "/pause":
+                await agent.PauseAsync();
+                await c.StopAsync(ct);
+                log.LogInformation("agent paused (events keep queueing; /resume to continue)");
+                return true;
+            case "/resume":
+                agent.Resume();
+                log.LogInformation("agent resumed");
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    /// <summary>/wait, /tool, /walktest, /quit, /exit; false = not one of them.</summary>
+    private async Task<bool> ClientCommandAsync(string[] parts, CancellationToken ct)
+    {
+        switch (parts[0].ToLowerInvariant())
+        {
+            case "/wait" when parts.Length >= 2:
+                await Task.Delay(TimeSpan.FromSeconds(double.Parse(parts[1], System.Globalization.CultureInfo.InvariantCulture)), ct);
+                return true;
+            case "/tool" when parts.Length >= 2:
+                var input = parts.Length == 3 ? JsonDocument.Parse(parts[2]).RootElement.Clone() : JsonDocument.Parse("{}").RootElement.Clone();
+                var r = await rt.Tools.ExecuteAsync(parts[1], input, ct);
+                log.LogInformation("tool {Tool}: {Result}", parts[1], r);
+                return true;
+            case "/walktest":
+                await WalkTestAsync(ct);
+                return true;
+            case "/quit" or "/exit":
+                shutdown.Cancel();
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    /// <summary>Pretend a player said this (vanilla "&lt;name&gt; msg" line): test the agent without a second account. Tagged as
+    /// test chat: memory stores it as source=test and the self-profile ignores it.</summary>
+    private void InjectAs(string player, string text)
+    {
+        var raw = $"<{player}> {text}";
+        var msg = rt.Chat.OnServerChat(raw, test: true);
+        Injected?.Invoke(raw);
+        log.LogInformation("injected chat from {Player} ({Kind})", msg.Player, msg.Kind);
+    }
+
+    private void LogUsage()
+    {
+        var today = rt.Usage.SnapshotTotals().Today;
+        var purposes = today.Purposes is { Count: > 0 } p
+            ? string.Join(", ", p.OrderByDescending(kv => kv.Value.Usd).Select(kv => $"{kv.Key} {kv.Value.Calls}c ${kv.Value.Usd:0.000}"))
+            : "none yet";
+        log.LogInformation("usage: {Usage} | last cache hit {Hit:P0} | by purpose: {Purposes}", rt.Usage.Summary(), rt.Usage.LastCacheHitRatio, purposes);
     }
 
     /// <summary>Walks 3 blocks to a spot with solid ground all around (never next to the void) and back, via the goto tool.</summary>

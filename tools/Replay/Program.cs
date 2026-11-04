@@ -4,22 +4,7 @@
 //   dotnet run --project tools/Replay -- --synthetic tests/fixtures/recordings/synthetic_calibration.mcrec   (regenerates the fixture)
 using MineClaw.Replay;
 
-string? input = null, json = null, self = null, synth = null;
-bool index = false;
-double speed = 0;
-for (int i = 0; i < args.Length; i++)
-{
-    switch (args[i])
-    {
-        case "--json": json = args[++i]; break;
-        case "--index": index = true; break;
-        case "--speed": speed = double.Parse(args[++i], System.Globalization.CultureInfo.InvariantCulture); break;
-        case "--self": self = args[++i]; break;
-        case "--synthetic": synth = args[++i]; break;
-        case "-h" or "--help": input = null; i = args.Length; break;
-        default: input = args[i]; break;
-    }
-}
+var (input, json, self, synth, index, speed) = ParseArgs(args);
 if (synth != null)
 {
     Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(synth))!);
@@ -41,3 +26,24 @@ if (json != null)
     Console.WriteLine($"summary → {json}");
 }
 return 0;
+
+static (string? Input, string? Json, string? Self, string? Synth, bool Index, double Speed) ParseArgs(string[] args)
+{
+    string? input = null, json = null, self = null, synth = null;
+    bool index = false;
+    double speed = 0;
+    for (int i = 0; i < args.Length; i++)
+    {
+        switch (args[i])
+        {
+            case "--json": json = args[++i]; break;
+            case "--index": index = true; break;
+            case "--speed": speed = double.Parse(args[++i], System.Globalization.CultureInfo.InvariantCulture); break;
+            case "--self": self = args[++i]; break;
+            case "--synthetic": synth = args[++i]; break;
+            case "-h" or "--help": input = null; i = args.Length; break;
+            default: input = args[i]; break;
+        }
+    }
+    return (input, json, self, synth, index, speed);
+}

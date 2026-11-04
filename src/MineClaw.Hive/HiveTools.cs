@@ -58,52 +58,60 @@ public static class HiveTools
             // cobble gen" never reached 69). Budget pinned in ToolBudgets.HiveTool.
             "Spawn or reassign.",
             schema.Build(),
-            async (input, _) =>
-            {
-                var op = input.ReqStr("op").Trim().ToLowerInvariant();
-                if (op == "chorus")
-                {
-                    // The line rides in "task" (no extra fields: the tool's text is budget-pinned); main always joins in.
-                    var result = await hive.ChorusAsync(input.Str("task"), input.Str("name")).ConfigureAwait(false);
-                    return result.StartsWith("error") ? ToolResult.Error(result) : ToolResult.Success(result);
-                }
-                string? args = input.ValueKind == System.Text.Json.JsonValueKind.Object && input.TryGetProperty("args", out var a)
-                    && a.ValueKind == System.Text.Json.JsonValueKind.Object ? a.GetRawText() : null;
-                var brain = input.Str("brain") ?? input.Str("profile");
-                string r;
-                if (hierarchy != null)
-                {
-                    var req = new Hierarchy.SpawnRequest(input.Str("kind"), brain, input.Str("task"), input.Str("script"), input.Str("code"), args,
-                        input.Str("after"), input.Str("name"), Handover: op == "handover", Bodies: input.Int("bodies"));
-                    r = op switch
-                    {
-                        "spawn" or "handover" => hierarchy.Spawn(req),
-                        "release" or "recall" => hierarchy.Release(input.Str("name") ?? "all"),
-                        "list" => hierarchy.List(),
-                        _ => "error: op is spawn|release|list|handover",
-                    };
-                }
-                else
-                {
-                    // No hierarchy: brain=opus|deepseek|<profile> maps onto a model profile for the clone's brain.
-                    var (bk, profile) = Hierarchy.HiveKinds.ParseBrain(brain);
-                    if (bk == Hierarchy.BrainKind.DeepSeek) profile = "deepseek";
-                    var opts = new HiveSpawnOptions(profile, input.Str("script"), input.Str("code"), args, input.Str("after")) { Kind = input.Str("kind") };
-                    r = op switch
-                    {
-                        "spawn" => hive.Spawn(input.Str("task") ?? "", input.Str("name"), options: opts),
-                        // Explicitly move a job another clone owns to this one (the old owner is told).
-                        "handover" => hive.Spawn(input.Str("task") ?? "", input.Str("name"), handover: true, options: opts),
-                        "release" or "recall" => hive.Recall(input.Str("name") ?? "all"),
-                        "list" => hive.List(),
-                        _ => "error: op is spawn|release|list|handover",
-                    };
-                }
-                return r.StartsWith("error") ? ToolResult.Error(r) : ToolResult.Success(r);
-            }, tiers: ToolTiers.Main);
+            (input, _) => MainOpAsync(hive, hierarchy, input), tiers: ToolTiers.Main);
         // Inline Lua for a clone is script authorship: only main's Opus brain (same rule as the script tool), on every path.
         tools.AddPolicy(MainTool, (input, caller) =>
             !string.IsNullOrWhiteSpace(input.Str("code")) && (llm == null || caller?.IsBrainModel(llm) != true) ? Scripting.ScriptPrompts.BrainOnly : null);
+    }
+
+    /// <summary>One <c>hive</c> call of main's brain.</summary>
+    private static async Task<ToolResult> MainOpAsync(HiveSupervisor hive, Hierarchy.HiveHierarchy? hierarchy, JsonElement input)
+    {
+        var op = input.ReqStr("op").Trim().ToLowerInvariant();
+        if (op == "chorus")
+        {
+            // The line rides in "task" (no extra fields: the tool's text is budget-pinned); main always joins in.
+            var result = await hive.ChorusAsync(input.Str("task"), input.Str("name")).ConfigureAwait(false);
+            return result.StartsWith("error") ? ToolResult.Error(result) : ToolResult.Success(result);
+        }
+        string? args = ArgsOf(input);
+        var brain = input.Str("brain") ?? input.Str("profile");
+        string r = hierarchy != null ? HierarchyOp(hierarchy, op, input, brain, args) : SupervisorOp(hive, op, input, brain, args);
+        return r.StartsWith("error") ? ToolResult.Error(r) : ToolResult.Success(r);
+    }
+
+    /// <summary>The raw <c>args</c> object of a script spawn, when given.</summary>
+    internal static string? ArgsOf(JsonElement input) =>
+        input.ValueKind == JsonValueKind.Object && input.TryGetProperty("args", out var a) && a.ValueKind == JsonValueKind.Object ? a.GetRawText() : null;
+
+    private static string HierarchyOp(Hierarchy.HiveHierarchy hierarchy, string op, JsonElement input, string? brain, string? args)
+    {
+        var req = new Hierarchy.SpawnRequest(input.Str("kind"), brain, input.Str("task"), input.Str("script"), input.Str("code"), args,
+            input.Str("after"), input.Str("name"), Handover: op == "handover", Bodies: input.Int("bodies"));
+        return op switch
+        {
+            "spawn" or "handover" => hierarchy.Spawn(req),
+            "release" or "recall" => hierarchy.Release(input.Str("name") ?? "all"),
+            "list" => hierarchy.List(),
+            _ => "error: op is spawn|release|list|handover",
+        };
+    }
+
+    /// <summary>No hierarchy: brain=opus|deepseek|&lt;profile&gt; maps onto a model profile for the clone's brain.</summary>
+    private static string SupervisorOp(HiveSupervisor hive, string op, JsonElement input, string? brain, string? args)
+    {
+        var (bk, profile) = Hierarchy.HiveKinds.ParseBrain(brain);
+        if (bk == Hierarchy.BrainKind.DeepSeek) profile = "deepseek";
+        var opts = new HiveSpawnOptions(profile, input.Str("script"), input.Str("code"), args, input.Str("after")) { Kind = input.Str("kind") };
+        return op switch
+        {
+            "spawn" => hive.Spawn(input.Str("task") ?? "", input.Str("name"), options: opts),
+            // Explicitly move a job another clone owns to this one (the old owner is told).
+            "handover" => hive.Spawn(input.Str("task") ?? "", input.Str("name"), handover: true, options: opts),
+            "release" or "recall" => hive.Recall(input.Str("name") ?? "all"),
+            "list" => hive.List(),
+            _ => "error: op is spawn|release|list|handover",
+        };
     }
 
     // recall is the legacy spelling of release; profile/brain and body metadata remain extra allowed properties.

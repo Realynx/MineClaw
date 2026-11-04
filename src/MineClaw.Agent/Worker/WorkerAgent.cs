@@ -241,180 +241,242 @@ public sealed class WorkerAgent
     public async Task<WorkerOutcome> RunAsync(string task, string? doneWhen, int? maxMinutes, CancellationToken ct, string? profile = null)
     {
         if (profile != null && _llmOptions.CheckProfile(profile) is { } bad) return Done(new(false, "failed: " + bad, 0, 0, 0, "profile"));
-        // Workers run on WorkerModel unless the profile explicitly says otherwise (an Opus profile alone never makes an Opus worker).
-        var effective = _llmOptions.WorkerProfileFor(profile);
-        if (profile != null && !string.Equals(effective, profile, StringComparison.OrdinalIgnoreCase))
-            _log.LogInformation("delegate profile {Asked} → worker runs on {Effective}", profile, effective ?? _llmOptions.WorkerModel);
-        profile = effective;
+        profile = EffectiveProfile(profile);
         var prof = profile != null ? _llmOptions.Profile(profile) : null;
         int minutes = Math.Clamp(maxMinutes ?? _o.DefaultMinutes, 1, Math.Max(1, _o.MaxMinutes));
-        var mode = _usage.CheckMode();
-        if (mode is BudgetMode.Paused or BudgetMode.CheapOnly)
-            return Done(new(false, "failed: budget low, no worker tasks right now", 0, 0, 0, "budget"));
+        if (BudgetTooLow()) return Done(new(false, "failed: budget low, no worker tasks right now", 0, 0, 0, "budget"));
 
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(minutes), _time);
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, timeout.Token);
-        var token = linked.Token;
-
-        var tools = ToolDefinitions;
-        var messages = new List<LlmMessage> { LlmMessage.User(FirstMessage(task, doneWhen, minutes)) };
-        while (_amendments.TryDequeue(out _)) { } // notes for an earlier task never leak into this one
-        LastLiveAmendment = null;
-        Interlocked.Increment(ref _running);
-        int calls = 0, toolCalls = 0, continued = 0;
-        decimal cost = 0;
-        string? summary = null, stop = "done";
-        var log = new List<string>();
-        var failures = new Dictionary<string, int>(StringComparer.Ordinal);
-        _trail = null;
-        Func<string?>? gains = null;
-        try { gains = GainsTracker?.Invoke(); } catch (Exception) { /* telemetry only */ }
-
+        var run = BeginTask(task, doneWhen, minutes, profile, prof, linked.Token);
         try
         {
-            for (int round = 0; ; round++)
-            {
-                if (round >= _o.MaxRounds) { stop = "max rounds"; break; }
-                if (cost >= _o.MaxCostUsd) { stop = "cost cap"; break; }
-                var m = _usage.CheckMode();
-                if (m is BudgetMode.Paused or BudgetMode.CheapOnly) { stop = "budget low"; break; }
-                ApplyAmendments(messages);
-                if (round > 0) await ApplyRoundNoteAsync(messages, token).ConfigureAwait(false);
-                if (!FitContext(messages, tools)) { stop = "context full"; break; }
-
-                var response = await CallAsync(messages, tools, token, profile, prof).ConfigureAwait(false);
-                calls++;
-                cost += _usage.Record(response.Model, response.Usage, ModelTier.Worker);
-                _log.LogInformation("worker call {Round}: {Model} {Usage} cache {Hit:P0}", round, response.Model, response.Usage, UsageTracker.CacheHit(response.Usage));
-                try { CallCompleted?.Invoke(); } catch (Exception) { /* telemetry only */ }
-
-                var content = response.Content.Where(b => b is not LlmText t || !string.IsNullOrWhiteSpace(t.Text)).ToList();
-                if (content.Count == 0) content.Add(new LlmText("(silent)"));
-                messages.Add(new LlmMessage(LlmRole.Assistant, content));
-
-                var uses = response.ToolUses.ToList();
-                if (response.StopReason == StopReasons.MaxTokens)
-                {
-                    if (uses.Count > 0)
-                        messages.Add(new LlmMessage(LlmRole.User, uses.Select(u => (LlmBlock)new LlmToolResult(u.Id,
-                            "not executed: response truncated (max_tokens)", true)).ToList()));
-                    stop = StopReasons.MaxTokens;
-                    summary = "failed: response truncated (max_tokens); remaining tools not executed";
-                    break;
-                }
-                if (uses.Count == 0 || response.StopReason == StopReasons.Refusal)
-                {
-                    summary = response.Text.Trim();
-                    // needs_input with a recommended answer: don't park the bot. Carry on with the default; the brain asks.
-                    if (Questions is { } qo && continued < MaxDefaultContinues && response.StopReason != StopReasons.Refusal &&
-                        NeedsDefault.Match(ResultLine(summary)) is { Success: true } nd)
-                    {
-                        var question = nd.Groups["q"].Value.Trim();
-                        var dflt = nd.Groups["d"].Value.Trim().TrimEnd('.');
-                        bool risky = qo.IsRisky(question + " " + dflt);
-                        if (risky) dflt = qo.SafeDefault;
-                        continued++;
-                        try { Asked?.Invoke(question, dflt); } catch (Exception) { }
-                        AppendText(messages, $"[planner] go ahead with \"{dflt}\" for now" + (risky ? " (do the rest, not the risky part)" : "") +
-                            "; an amend comes if the player wants otherwise.");
-                        summary = null;
-                        continue;
-                    }
-                    break;
-                }
-
-                var results = new List<LlmBlock>();
-                foreach (var u in uses)
-                {
-                    ToolResult r;
-                    if (!_tools.TryGet(u.Name, out var tool) || !_tools.Allows(tool, ModelTier.Worker))
-                        r = ToolResult.Error($"no tool '{u.Name}' here");
-                    else
-                    {
-                        // Sequential: the bot has one body. Each game tool honours the task token.
-                        _trail = TrailOf(log, $"{u.Name} {TextUtil.Truncate(TextUtil.OneLine(u.Input.GetRawText()), 50)} (running)");
-                        using (ToolCaller.Push(ModelTier.Worker, response.Model))
-                        using (StepScope?.Invoke()) // the body this worker drives (explicit, never just inherited)
-                            r = await _tools.ExecuteAsync(tool, u.Input, token).ConfigureAwait(false);
-                        toolCalls++;
-                    }
-                    log.Add($"{u.Name}{(r.Ok ? "" : "!")} {TextUtil.Truncate(TextUtil.OneLine(r.Text), 160)}");
-                    token.ThrowIfCancellationRequested();
-                    _trail = TrailOf(log, null);
-                    results.Add(new LlmToolResult(u.Id, r.Text.Length == 0 ? (r.Ok ? "ok" : "error") : r.Text, !r.Ok) { Image = r.Image });
-                    // Protection rule 5: the first protected refusal ends the task and goes back as-is (why + unlock phrase),
-                    // never retried a second way (live 10-27: two workers and a script hit the same protected log).
-                    if (!r.Ok && summary == null && IsProtectionRefusal(r.Text))
-                    {
-                        stop = "repeated failure";
-                        summary = $"failed: {u.Name}: {TextUtil.Truncate(TextUtil.OneLine(r.Text), 260)}";
-                    }
-                    if (!r.Ok && _o.MaxIdenticalFailures > 0 && !ToolCallGuard.IsTransientCombat(r.Text))
-                    {
-                        var key = FailureKey(u.Name, r.Text);
-                        int n = failures[key] = failures.GetValueOrDefault(key) + 1;
-                        if (n >= _o.MaxIdenticalFailures && summary == null)
-                        {
-                            stop = "repeated failure";
-                            summary = $"failed: {u.Name} failed {n}x the same way: {TextUtil.Truncate(TextUtil.OneLine(r.Text), 160)}";
-                        }
-                    }
-                }
-                messages.Add(new LlmMessage(LlmRole.User, results));
-                if (stop == "repeated failure") break;
-            }
-
-            // Out of rounds/cost/context: one wrap-up call (same prefix, so it's mostly cache) for an honest summary.
-            if (summary == null && stop is "max rounds" or "cost cap" or "context full" && cost < _o.MaxCostUsd * 1.5m)
-            {
-                AppendText(messages, $"[{stop}] Stop now. Reply with the one-line summary (ok:/failed:/needs_input:), no tools.");
-                if (FitContext(messages, tools))
-                {
-                    var response = await CallAsync(messages, tools, token, profile, prof).ConfigureAwait(false);
-                    calls++;
-                    cost += _usage.Record(response.Model, response.Usage, ModelTier.Worker);
-                    if (response.StopReason == StopReasons.MaxTokens)
-                    {
-                        messages.Add(new LlmMessage(LlmRole.Assistant, response.Content));
-                        var uses = response.ToolUses.ToList();
-                        if (uses.Count > 0)
-                            messages.Add(new LlmMessage(LlmRole.User, uses.Select(u => (LlmBlock)new LlmToolResult(u.Id,
-                                "not executed: response truncated (max_tokens)", true)).ToList()));
-                        stop = StopReasons.MaxTokens;
-                        summary = "failed: response truncated (max_tokens); remaining tools not executed";
-                    }
-                    else if (!response.ToolUses.Any() && response.Text.Trim() is { Length: > 0 } t) summary = t;
-                }
-            }
+            await RoundsAsync(run).ConfigureAwait(false);
+            await WrapUpAsync(run).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
-            stop = ct.IsCancellationRequested ? "cancelled" : "time";
+            run.Stop = ct.IsCancellationRequested ? "cancelled" : "time";
         }
         catch (Exception ex)
         {
-            stop = "error";
-            log.Add("error: " + TextUtil.OneLine(ex.Message));
+            run.Stop = "error";
+            run.Log.Add("error: " + TextUtil.OneLine(ex.Message));
         }
         finally
         {
             Interlocked.Decrement(ref _running);
         }
-
-        if (summary == null && stop == "time" && SafeGains(gains) is { } got)
-            summary = $"ok: time slice done ({minutes} min): {got}";
-        summary ??= stop switch
-        {
-            "time" => $"failed: out of time ({minutes} min)",
-            "budget low" => "failed: budget low, stopped",
-            "cancelled" => "failed: cancelled; partial work only",
-            _ => $"failed: stopped ({stop})",
-        } + (log.Count > 0 ? "; last: " + log[^1] : "") + $"; {toolCalls} actions";
-        var outcome = Classify(summary, calls, toolCalls, cost, stop);
-        _log.LogInformation("worker task \"{Task}\": {Summary} ({Calls} calls, {Tools} tools, ${Cost:0.0000}, {Stop})",
-            TextUtil.Truncate(task, 60), outcome.Summary, calls, toolCalls, cost, stop);
-        return Done(outcome);
+        return Done(FinishTask(run, task));
     }
+
+    /// <summary>One delegated task's loop state (its context, counters, result so far).</summary>
+    private sealed class TaskRun
+    {
+        public required int Minutes;
+        public required string? Profile;
+        public required LlmProfile? Prof;
+        public required CancellationToken Token;
+        public required IReadOnlyList<LlmToolDefinition> Tools;
+        public required List<LlmMessage> Messages;
+        public required Func<string?>? Gains;
+        public int Calls, ToolCalls, Continued;
+        public decimal Cost;
+        public string? Summary;
+        public string Stop = "done";
+        public readonly List<string> Log = [];
+        public readonly Dictionary<string, int> Failures = new(StringComparer.Ordinal);
+    }
+
+    /// <summary>Workers run on WorkerModel unless the profile explicitly says otherwise (an Opus profile alone never makes an Opus worker).</summary>
+    private string? EffectiveProfile(string? profile)
+    {
+        var effective = _llmOptions.WorkerProfileFor(profile);
+        if (profile != null && !string.Equals(effective, profile, StringComparison.OrdinalIgnoreCase))
+            _log.LogInformation("delegate profile {Asked} → worker runs on {Effective}", profile, effective ?? _llmOptions.WorkerModel);
+        return effective;
+    }
+
+    private bool BudgetTooLow() => _usage.CheckMode() is BudgetMode.Paused or BudgetMode.CheapOnly;
+
+    /// <summary>Starts the task's state: its first message, no leftover amendments, running, a fresh trail and gains tracker.</summary>
+    private TaskRun BeginTask(string task, string? doneWhen, int minutes, string? profile, LlmProfile? prof, CancellationToken token)
+    {
+        var tools = ToolDefinitions;
+        var messages = new List<LlmMessage> { LlmMessage.User(FirstMessage(task, doneWhen, minutes)) };
+        while (_amendments.TryDequeue(out _)) { } // notes for an earlier task never leak into this one
+        LastLiveAmendment = null;
+        Interlocked.Increment(ref _running);
+        _trail = null;
+        Func<string?>? gains = null;
+        try { gains = GainsTracker?.Invoke(); } catch (Exception) { /* telemetry only */ }
+        return new TaskRun { Minutes = minutes, Profile = profile, Prof = prof, Token = token, Tools = tools, Messages = messages, Gains = gains };
+    }
+
+    /// <summary>The tool loop: model call, then its tools, until a summary, a limit or a dead end.</summary>
+    private async Task RoundsAsync(TaskRun run)
+    {
+        for (int round = 0; ; round++)
+        {
+            if (RoundLimit(run, round) is { } limit) { run.Stop = limit; return; }
+            ApplyAmendments(run.Messages);
+            if (round > 0) await ApplyRoundNoteAsync(run.Messages, run.Token).ConfigureAwait(false);
+            if (!FitContext(run.Messages, run.Tools)) { run.Stop = "context full"; return; }
+            if (!await RoundAsync(run, round).ConfigureAwait(false)) return;
+        }
+    }
+
+    private string? RoundLimit(TaskRun run, int round)
+    {
+        if (round >= _o.MaxRounds) return "max rounds";
+        if (run.Cost >= _o.MaxCostUsd) return "cost cap";
+        return BudgetTooLow() ? "budget low" : null;
+    }
+
+    /// <summary>One model call and its tools. False = the loop ends (a summary, truncation, a dead end).</summary>
+    private async Task<bool> RoundAsync(TaskRun run, int round)
+    {
+        var response = await CallAsync(run.Messages, run.Tools, run.Token, run.Profile, run.Prof).ConfigureAwait(false);
+        RecordCall(run, response);
+        _log.LogInformation("worker call {Round}: {Model} {Usage} cache {Hit:P0}", round, response.Model, response.Usage, UsageTracker.CacheHit(response.Usage));
+        try { CallCompleted?.Invoke(); } catch (Exception) { /* telemetry only */ }
+
+        var content = response.Content.Where(b => b is not LlmText t || !string.IsNullOrWhiteSpace(t.Text)).ToList();
+        if (content.Count == 0) content.Add(new LlmText("(silent)"));
+        run.Messages.Add(new LlmMessage(LlmRole.Assistant, content));
+
+        var uses = response.ToolUses.ToList();
+        if (response.StopReason == StopReasons.MaxTokens)
+        {
+            MarkTruncated(run, uses);
+            return false;
+        }
+        if (uses.Count == 0 || response.StopReason == StopReasons.Refusal) return ContinueOnDefault(run, response);
+
+        await RunToolsAsync(run, uses, response.Model).ConfigureAwait(false);
+        return run.Stop != "repeated failure";
+    }
+
+    private void RecordCall(TaskRun run, LlmResponse response)
+    {
+        run.Calls++;
+        run.Cost += _usage.Record(response.Model, response.Usage, ModelTier.Worker);
+    }
+
+    /// <summary>A truncated reply: its tools are answered "not executed" and the task fails.</summary>
+    private static void MarkTruncated(TaskRun run, List<LlmToolUse> uses)
+    {
+        if (uses.Count > 0)
+            run.Messages.Add(new LlmMessage(LlmRole.User, uses.Select(u => (LlmBlock)new LlmToolResult(u.Id,
+                "not executed: response truncated (max_tokens)", true)).ToList()));
+        run.Stop = StopReasons.MaxTokens;
+        run.Summary = "failed: response truncated (max_tokens); remaining tools not executed";
+    }
+
+    /// <summary>
+    /// A reply without tools is the summary — except needs_input with a recommended answer: don't park the bot. Carry on with
+    /// the default (true = keep looping); the brain asks.
+    /// </summary>
+    private bool ContinueOnDefault(TaskRun run, LlmResponse response)
+    {
+        run.Summary = response.Text.Trim();
+        if (Questions is not { } qo || run.Continued >= MaxDefaultContinues || response.StopReason == StopReasons.Refusal) return false;
+        if (NeedsDefault.Match(ResultLine(run.Summary)) is not { Success: true } nd) return false;
+        var question = nd.Groups["q"].Value.Trim();
+        var dflt = nd.Groups["d"].Value.Trim().TrimEnd('.');
+        bool risky = qo.IsRisky(question + " " + dflt);
+        if (risky) dflt = qo.SafeDefault;
+        run.Continued++;
+        try { Asked?.Invoke(question, dflt); } catch (Exception) { }
+        AppendText(run.Messages, $"[planner] go ahead with \"{dflt}\" for now" + (risky ? " (do the rest, not the risky part)" : "") +
+            "; an amend comes if the player wants otherwise.");
+        run.Summary = null;
+        return true;
+    }
+
+    /// <summary>Runs the reply's tools in order (the bot has one body) and adds their results as the next user message.</summary>
+    private async Task RunToolsAsync(TaskRun run, List<LlmToolUse> uses, string model)
+    {
+        var results = new List<LlmBlock>();
+        foreach (var u in uses)
+        {
+            var r = await RunToolAsync(run, u, model).ConfigureAwait(false);
+            run.Log.Add($"{u.Name}{(r.Ok ? "" : "!")} {TextUtil.Truncate(TextUtil.OneLine(r.Text), 160)}");
+            run.Token.ThrowIfCancellationRequested();
+            _trail = TrailOf(run.Log, null);
+            results.Add(new LlmToolResult(u.Id, r.Text.Length == 0 ? (r.Ok ? "ok" : "error") : r.Text, !r.Ok) { Image = r.Image });
+            if (!r.Ok) NoteFailure(run, u.Name, r.Text);
+        }
+        run.Messages.Add(new LlmMessage(LlmRole.User, results));
+    }
+
+    private async Task<ToolResult> RunToolAsync(TaskRun run, LlmToolUse u, string model)
+    {
+        if (!_tools.TryGet(u.Name, out var tool) || !_tools.Allows(tool, ModelTier.Worker))
+            return ToolResult.Error($"no tool '{u.Name}' here");
+        // Sequential: the bot has one body. Each game tool honours the task token.
+        _trail = TrailOf(run.Log, $"{u.Name} {TextUtil.Truncate(TextUtil.OneLine(u.Input.GetRawText()), 50)} (running)");
+        ToolResult r;
+        using (ToolCaller.Push(ModelTier.Worker, model))
+        using (StepScope?.Invoke()) // the body this worker drives (explicit, never just inherited)
+            r = await _tools.ExecuteAsync(tool, u.Input, run.Token).ConfigureAwait(false);
+        run.ToolCalls++;
+        return r;
+    }
+
+    /// <summary>A failed tool: a protection refusal or the same failure again ends the task (first reason wins).</summary>
+    private void NoteFailure(TaskRun run, string name, string text)
+    {
+        // Protection rule 5: the first protected refusal ends the task and goes back as-is (why + unlock phrase),
+        // never retried a second way (live 10-27: two workers and a script hit the same protected log).
+        if (run.Summary == null && IsProtectionRefusal(text))
+        {
+            run.Stop = "repeated failure";
+            run.Summary = $"failed: {name}: {TextUtil.Truncate(TextUtil.OneLine(text), 260)}";
+        }
+        if (_o.MaxIdenticalFailures <= 0 || ToolCallGuard.IsTransientCombat(text)) return;
+        var key = FailureKey(name, text);
+        int n = run.Failures[key] = run.Failures.GetValueOrDefault(key) + 1;
+        if (n < _o.MaxIdenticalFailures || run.Summary != null) return;
+        run.Stop = "repeated failure";
+        run.Summary = $"failed: {name} failed {n}x the same way: {TextUtil.Truncate(TextUtil.OneLine(text), 160)}";
+    }
+
+    /// <summary>Out of rounds/cost/context: one wrap-up call (same prefix, so it's mostly cache) for an honest summary.</summary>
+    private async Task WrapUpAsync(TaskRun run)
+    {
+        if (run.Summary != null || run.Stop is not ("max rounds" or "cost cap" or "context full") || run.Cost >= _o.MaxCostUsd * 1.5m) return;
+        AppendText(run.Messages, $"[{run.Stop}] Stop now. Reply with the one-line summary (ok:/failed:/needs_input:), no tools.");
+        if (!FitContext(run.Messages, run.Tools)) return;
+        var response = await CallAsync(run.Messages, run.Tools, run.Token, run.Profile, run.Prof).ConfigureAwait(false);
+        RecordCall(run, response);
+        if (response.StopReason == StopReasons.MaxTokens)
+        {
+            run.Messages.Add(new LlmMessage(LlmRole.Assistant, response.Content));
+            MarkTruncated(run, response.ToolUses.ToList());
+        }
+        else if (!response.ToolUses.Any() && response.Text.Trim() is { Length: > 0 } t) run.Summary = t;
+    }
+
+    /// <summary>The task's one summary (a time slice with gains is done; otherwise the stop reason) and its outcome.</summary>
+    private WorkerOutcome FinishTask(TaskRun run, string task)
+    {
+        if (run.Summary == null && run.Stop == "time" && SafeGains(run.Gains) is { } got)
+            run.Summary = $"ok: time slice done ({run.Minutes} min): {got}";
+        var summary = run.Summary ?? StopSummary(run);
+        var outcome = Classify(summary, run.Calls, run.ToolCalls, run.Cost, run.Stop);
+        _log.LogInformation("worker task \"{Task}\": {Summary} ({Calls} calls, {Tools} tools, ${Cost:0.0000}, {Stop})",
+            TextUtil.Truncate(task, 60), outcome.Summary, run.Calls, run.ToolCalls, run.Cost, run.Stop);
+        return outcome;
+    }
+
+    private static string StopSummary(TaskRun run) => run.Stop switch
+    {
+        "time" => $"failed: out of time ({run.Minutes} min)",
+        "budget low" => "failed: budget low, stopped",
+        "cancelled" => "failed: cancelled; partial work only",
+        _ => $"failed: stopped ({run.Stop})",
+    } + (run.Log.Count > 0 ? "; last: " + run.Log[^1] : "") + $"; {run.ToolCalls} actions";
 
     private static string? SafeGains(Func<string?>? gains)
     {

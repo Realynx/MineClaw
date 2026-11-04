@@ -23,6 +23,21 @@ public sealed class ViewerFeed(int capacity = 1000, TimeProvider? time = null)
 
     public int Capacity => capacity;
 
+    /// <summary>The bot's own feed has this line as said within 20 s (caller holds the lock).</summary>
+    private bool SaidAlready(string bot, string line, DateTimeOffset at) =>
+        _lines.Reverse().TakeWhile(l => at - l.At < TimeSpan.FromSeconds(20))
+            .Any(l => l.Kind == "said" && l.Origin == "bot" && l.Bot.Equals(bot, StringComparison.OrdinalIgnoreCase) && l.Text.Contains(line, StringComparison.Ordinal));
+
+    /// <summary>Quiet-turn text raises Muted then InternalSpeech with the same words: one "internal" line, not two. The muted line
+    /// (made internal) when it is the last one, the bot's, the same words, within 5 s; null otherwise. Caller holds the lock.</summary>
+    private long? MutedJustNow(string bot, string line, DateTimeOffset at)
+    {
+        if (_lines.Last is not { } last || last.Value is not { Kind: "muted" } m || m.Text != line
+            || !m.Bot.Equals(bot, StringComparison.OrdinalIgnoreCase) || at - m.At >= TimeSpan.FromSeconds(5)) return null;
+        last.Value = m with { Kind = "internal" };
+        return m.Seq;
+    }
+
     /// <summary>Adds a line; returns its seq (0 = empty text, nothing added).</summary>
     public long Add(string bot, string kind, string? from, string text, string origin, string? requestId = null)
     {
@@ -33,16 +48,8 @@ public sealed class ViewerFeed(int capacity = 1000, TimeProvider? time = null)
             var at = _time.GetUtcNow();
             // A hive bot's public line comes back from the server after its Said (whole text, split into ≤100-char lines): the
             // server copy adds nothing when that bot's own feed already has it.
-            if (kind == "said" && origin == "game" && _lines.Reverse().TakeWhile(l => at - l.At < TimeSpan.FromSeconds(20))
-                    .Any(l => l.Kind == "said" && l.Origin == "bot" && l.Bot.Equals(bot, StringComparison.OrdinalIgnoreCase) && l.Text.Contains(line, StringComparison.Ordinal)))
-                return 0;
-            // Quiet-turn text raises Muted then InternalSpeech with the same words: one "internal" line, not two.
-            if (kind == "internal" && _lines.Last is { } last && last.Value is { Kind: "muted" } m && m.Text == line
-                && m.Bot.Equals(bot, StringComparison.OrdinalIgnoreCase) && at - m.At < TimeSpan.FromSeconds(5))
-            {
-                last.Value = m with { Kind = "internal" };
-                return m.Seq;
-            }
+            if (kind == "said" && origin == "game" && SaidAlready(bot, line, at)) return 0;
+            if (kind == "internal" && MutedJustNow(bot, line, at) is { } muted) return muted;
             var seq = ++_next;
             _lines.AddLast(new ViewerLine(seq, at, bot, kind, from, line, origin, requestId));
             while (_lines.Count > capacity) _lines.RemoveFirst();

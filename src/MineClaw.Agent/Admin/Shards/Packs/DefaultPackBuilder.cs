@@ -66,73 +66,20 @@ public static class DefaultPackBuilder
     public static PackBuildResult Build(PackBuildOptions o)
     {
         var version = o.Source.Version;
-        if (!KnowledgePack.ValidVersion(version)) throw new ArgumentException($"'{version}' is not a version tag");
-        foreach (var g in o.Generated)
-            if (g.Docs.Any(d => d.Kind != KnowledgeIndexer.Kind || !d.Ref.StartsWith($"kb:{g.FileName}:", StringComparison.Ordinal)))
-                throw new ArgumentException($"generated pack {g.Name}: every doc must be a knowledge chunk kb:{g.FileName}:n");
+        Validate(o, version);
         var notes = new List<string>();
         var outDir = Path.GetFullPath(o.OutputDirectory);
         Directory.CreateDirectory(outDir);
 
         // 1) Knowledge docs of this version, by pack.
-        var files = new List<DocFile>();
-        if (o.KnowledgeDirectory is { } kd && Directory.Exists(kd))
-            foreach (var f in Directory.GetFiles(kd, "*.md").OrderBy(f => Path.GetFileName(f), StringComparer.Ordinal))
-            {
-                var text = File.ReadAllText(f).Replace("\r\n", "\n");
-                var name = Path.GetFileName(f);
-                var pack = KnowledgeDocPack.Parse(text);
-                if (pack == null) { notes.Add($"{name}: no pack marker, left out (a bot reads it from disk in every world)"); continue; }
-                if (!(pack.Version ?? version).Equals(version, StringComparison.OrdinalIgnoreCase)) continue;
-                files.Add(new DocFile(name, text, pack));
-            }
-        var plans = new List<PackPlan> { new($"{version}-gamedata", ShardPackInfo.VersionKind, null, files.Where(f => !f.Pack.IsMode).ToList(), true) };
-        foreach (var g in files.Where(f => f.Pack.IsMode).GroupBy(f => f.Pack.PackName(version), StringComparer.OrdinalIgnoreCase).OrderBy(g => g.Key, StringComparer.Ordinal))
-            plans.Add(new PackPlan(g.Key, ShardPackInfo.ModeKind, g.First().Pack.Mode, g.ToList(), false));
-        if (!o.IncludeVersionPacks) plans.Clear();
-        foreach (var g in o.Generated)
-            plans.Add(new PackPlan(g.Name, ShardPackInfo.ModeKind, g.Mode, [], false) { Generated = g });
-        if (o.Only is { Count: > 0 } only) plans = plans.Where(p => only.Contains(p.Name, StringComparer.OrdinalIgnoreCase)).ToList();
-
+        var plans = Plans(o, version, VersionKnowledgeFiles(o, version, notes));
         // 2) Vectors from the pristine seed (material hash → vector, one model + dims).
-        var vectors = new Dictionary<string, byte[]>(StringComparer.Ordinal);
-        string? model = null;
-        int dims = 0;
-        if (o.IncludeVectors && o.SeedPath is { } sp && File.Exists(sp))
-        {
-            using var seed = AgentDb.OpenReadOnly(sp);
-            (model, dims) = o.EmbeddingModel != null && o.Dims is { } d0 ? (o.EmbeddingModel, d0)
-                : seed.Query("SELECT model, dims, count(*) FROM vectors GROUP BY model, dims ORDER BY 3 DESC, 1, 2", r => (r.GetString(0), (int)r.GetInt64(1))).FirstOrDefault();
-            if (model != null)
-            {
-                foreach (var (h, v) in seed.Query("SELECT hash, vec FROM embed_cache WHERE model = $m AND dims = $d ORDER BY hash",
-                             r => (r.GetString(0), (byte[])r.GetValue(1)), ("$m", model), ("$d", dims)))
-                    vectors.TryAdd(h, v);
-                foreach (var (h, v) in seed.Query("SELECT hash, vec FROM vectors WHERE model = $m AND dims = $d ORDER BY doc_id",
-                             r => (r.GetString(0), (byte[])r.GetValue(1)), ("$m", model), ("$d", dims)))
-                    vectors[h] = v; // a stored doc vector wins over a cache entry
-            }
-            if (vectors.Count == 0) notes.Add($"the seed has no {o.EmbeddingModel ?? "stored"} vectors: packs are marked as needing embedding");
-        }
-        else if (o.IncludeVectors) notes.Add("no seed db given: packs carry no vectors (the target embeds them on import)");
+        var (vectors, model, dims) = SeedVectors(o, notes);
 
         var gameDocs = plans.Any(p => p.GameData) ? o.Source.Docs() : [];
         var entries = new List<PackIndexEntry>();
         foreach (var plan in plans)
-        {
-            var (shard, entry) = BuildOne(o, plan, plan.Generated?.Version ?? version, gameDocs, vectors, model, dims, notes);
-            var path = Path.Combine(outDir, entry.File);
-            var bytes = ShardFile.ToBytes(shard);
-            if (bytes.LongLength > o.MaxPackBytes && shard.Embeddings.Count > 0)
-            {
-                notes.Add($"{entry.File}: {bytes.LongLength / 1024.0 / 1024.0:F1} MB with vectors is over {o.MaxPackBytes / 1024 / 1024} MB: stored without vectors");
-                (shard, entry) = BuildOne(o, plan, plan.Generated?.Version ?? version, gameDocs, new Dictionary<string, byte[]>(), null, 0, notes);
-                bytes = ShardFile.ToBytes(shard);
-            }
-            WriteIfChanged(path, bytes);
-            ShardFile.Read(path); // what's on disk verifies
-            entries.Add(entry with { Bytes = bytes.LongLength });
-        }
+            entries.Add(WritePack(o, plan, version, gameDocs, vectors, model, dims, notes, outDir));
 
         var index = PackIndex.Load(outDir).Upsert(entries, outDir) with
         {
@@ -140,6 +87,90 @@ public static class DefaultPackBuilder
         };
         index.Save(outDir);
         return new PackBuildResult(entries, notes, Path.Combine(outDir, PackIndex.FileName));
+    }
+
+    private static void Validate(PackBuildOptions o, string version)
+    {
+        if (!KnowledgePack.ValidVersion(version)) throw new ArgumentException($"'{version}' is not a version tag");
+        foreach (var g in o.Generated)
+            if (g.Docs.Any(d => d.Kind != KnowledgeIndexer.Kind || !d.Ref.StartsWith($"kb:{g.FileName}:", StringComparison.Ordinal)))
+                throw new ArgumentException($"generated pack {g.Name}: every doc must be a knowledge chunk kb:{g.FileName}:n");
+    }
+
+    /// <summary>The knowledge .md files of this version with a pack marker (a file without one is noted and left out).</summary>
+    private static List<DocFile> VersionKnowledgeFiles(PackBuildOptions o, string version, List<string> notes)
+    {
+        var files = new List<DocFile>();
+        if (o.KnowledgeDirectory is not { } kd || !Directory.Exists(kd)) return files;
+        foreach (var f in Directory.GetFiles(kd, "*.md").OrderBy(f => Path.GetFileName(f), StringComparer.Ordinal))
+        {
+            var text = File.ReadAllText(f).Replace("\r\n", "\n");
+            var name = Path.GetFileName(f);
+            var pack = KnowledgeDocPack.Parse(text);
+            if (pack == null) { notes.Add($"{name}: no pack marker, left out (a bot reads it from disk in every world)"); continue; }
+            if (!(pack.Version ?? version).Equals(version, StringComparison.OrdinalIgnoreCase)) continue;
+            files.Add(new DocFile(name, text, pack));
+        }
+        return files;
+    }
+
+    /// <summary>The version's game-data pack, one pack per mode, the generated packs; filtered by <see cref="PackBuildOptions.Only"/>.</summary>
+    private static List<PackPlan> Plans(PackBuildOptions o, string version, List<DocFile> files)
+    {
+        var plans = new List<PackPlan> { new($"{version}-gamedata", ShardPackInfo.VersionKind, null, files.Where(f => !f.Pack.IsMode).ToList(), true) };
+        foreach (var g in files.Where(f => f.Pack.IsMode).GroupBy(f => f.Pack.PackName(version), StringComparer.OrdinalIgnoreCase).OrderBy(g => g.Key, StringComparer.Ordinal))
+            plans.Add(new PackPlan(g.Key, ShardPackInfo.ModeKind, g.First().Pack.Mode, g.ToList(), false));
+        if (!o.IncludeVersionPacks) plans.Clear();
+        foreach (var g in o.Generated)
+            plans.Add(new PackPlan(g.Name, ShardPackInfo.ModeKind, g.Mode, [], false) { Generated = g });
+        if (o.Only is { Count: > 0 } only) plans = plans.Where(p => only.Contains(p.Name, StringComparer.OrdinalIgnoreCase)).ToList();
+        return plans;
+    }
+
+    /// <summary>Vectors by material hash from the pristine seed (one model + dims; a stored doc vector wins over a cache entry).</summary>
+    private static (Dictionary<string, byte[]> Vectors, string? Model, int Dims) SeedVectors(PackBuildOptions o, List<string> notes)
+    {
+        var vectors = new Dictionary<string, byte[]>(StringComparer.Ordinal);
+        if (!o.IncludeVectors) return (vectors, null, 0);
+        if (o.SeedPath is not { } sp || !File.Exists(sp))
+        {
+            notes.Add("no seed db given: packs carry no vectors (the target embeds them on import)");
+            return (vectors, null, 0);
+        }
+        using var seed = AgentDb.OpenReadOnly(sp);
+        var (model, dims) = o.EmbeddingModel != null && o.Dims is { } d0 ? (o.EmbeddingModel, d0)
+            : seed.Query("SELECT model, dims, count(*) FROM vectors GROUP BY model, dims ORDER BY 3 DESC, 1, 2", r => (r.GetString(0), (int)r.GetInt64(1))).FirstOrDefault();
+        if (model != null) LoadSeedVectors(seed, model, dims, vectors);
+        if (vectors.Count == 0) notes.Add($"the seed has no {o.EmbeddingModel ?? "stored"} vectors: packs are marked as needing embedding");
+        return (vectors, model, dims);
+    }
+
+    private static void LoadSeedVectors(AgentDb seed, string model, int dims, Dictionary<string, byte[]> vectors)
+    {
+        foreach (var (h, v) in seed.Query("SELECT hash, vec FROM embed_cache WHERE model = $m AND dims = $d ORDER BY hash",
+                     r => (r.GetString(0), (byte[])r.GetValue(1)), ("$m", model), ("$d", dims)))
+            vectors.TryAdd(h, v);
+        foreach (var (h, v) in seed.Query("SELECT hash, vec FROM vectors WHERE model = $m AND dims = $d ORDER BY doc_id",
+                     r => (r.GetString(0), (byte[])r.GetValue(1)), ("$m", model), ("$d", dims)))
+            vectors[h] = v; // a stored doc vector wins over a cache entry
+    }
+
+    /// <summary>Builds one pack and writes it if changed; over the size cap with vectors, it is stored without them.</summary>
+    private static PackIndexEntry WritePack(PackBuildOptions o, PackPlan plan, string version, IReadOnlyList<RagDoc> gameDocs,
+        Dictionary<string, byte[]> vectors, string? model, int dims, List<string> notes, string outDir)
+    {
+        var (shard, entry) = BuildOne(o, plan, plan.Generated?.Version ?? version, gameDocs, vectors, model, dims, notes);
+        var path = Path.Combine(outDir, entry.File);
+        var bytes = ShardFile.ToBytes(shard);
+        if (bytes.LongLength > o.MaxPackBytes && shard.Embeddings.Count > 0)
+        {
+            notes.Add($"{entry.File}: {bytes.LongLength / 1024.0 / 1024.0:F1} MB with vectors is over {o.MaxPackBytes / 1024 / 1024} MB: stored without vectors");
+            (shard, entry) = BuildOne(o, plan, plan.Generated?.Version ?? version, gameDocs, new Dictionary<string, byte[]>(), null, 0, notes);
+            bytes = ShardFile.ToBytes(shard);
+        }
+        WriteIfChanged(path, bytes);
+        ShardFile.Read(path); // what's on disk verifies
+        return entry with { Bytes = bytes.LongLength };
     }
 
     private static void WriteIfChanged(string path, byte[] bytes)

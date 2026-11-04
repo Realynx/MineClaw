@@ -56,13 +56,19 @@ public static class SupervisorProxy
         var segs = new List<string>();
         foreach (var s in rawPath.Split('/'))
         {
-            string d;
-            try { d = Uri.UnescapeDataString(s); }
-            catch (UriFormatException) { return null; }
-            if (d.Length == 0 || d is "." or ".." || d.Any(c => c is '/' or '\\' or '?' or '#' || char.IsControl(c))) return null;
+            if (Segment(s) is not { } d) return null;
             segs.Add(d);
         }
         return (string.Join('/', segs), query);
+    }
+
+    /// <summary>One path segment decoded; null when it doesn't decode, is empty, "." or "..", or holds a separator or control char.</summary>
+    private static string? Segment(string s)
+    {
+        string d;
+        try { d = Uri.UnescapeDataString(s); }
+        catch (UriFormatException) { return null; }
+        return d.Length == 0 || d is "." or ".." || d.Any(c => c is '/' or '\\' or '?' or '#' || char.IsControl(c)) ? null : d;
     }
 
     /// <summary>The upstream relative URL (each segment re-escaped).</summary>
@@ -90,30 +96,47 @@ public static class SupervisorProxy
         var split = Split(BridgeAuthMiddleware.RawTarget(ctx));
         if (split is not { } s) { await ApiErrors.Write(ctx, 404, "not_found", "not found"); return; }
         var method = ctx.Request.Method;
-        if (!Allowed(method, s.Path)) { await ApiErrors.Write(ctx, 404, "not_found", "not found"); return; }
-        if (NeedsAdmin(s.Path) && !id.IsAdmin) { await ApiErrors.Write(ctx, 403, "forbidden", "admin role required"); return; }
-        if (NeedsStory(method, s.Path) && !MayWriteStory(id)) { await ApiErrors.Write(ctx, 403, "forbidden", "story role required"); return; }
-
+        if (Refusal(id, method, s.Path) is { } refused) { await ApiErrors.Write(ctx, refused.Status, refused.Code, refused.Message); return; }
         HttpContent? content = null;
         if (HttpMethods.IsPost(method))
         {
-            // Admin and story writes: `who` is always the signed user, never the body's.
-            var obj = ParseObject(ctx.BodyBytes());
-            if (obj == null) { await ApiErrors.Write(ctx, 400, "bad_request", "body must be a JSON object"); return; }
-            if (obj.ContainsKey("who")) { await ApiErrors.Write(ctx, 400, "bad_request", "who is set by the bridge"); return; }
-            if (s.Path == StoryDirectives)
-            {
-                // Like viewer chat: the sender is the signed player, and commands only with the `commands` role.
-                if (obj.ContainsKey("player") || obj.ContainsKey("allow_commands")) { await ApiErrors.Write(ctx, 400, "bad_request", "player and allow_commands are set by the bridge"); return; }
-                if (id.Player.Length == 0) { await ApiErrors.Write(ctx, 403, "forbidden", "no Minecraft player is linked to this account"); return; }
-                obj["player"] = id.Player;
-                obj["allow_commands"] = id.Has("commands");
-            }
-            else obj["who"] = id.Who;
-            content = new StringContent(obj.ToJsonString(), Encoding.UTF8, "application/json");
+            var (body, bad) = PostBody(ctx, id, s.Path);
+            if (bad is { } b) { await ApiErrors.Write(ctx, b.Status, b.Code, b.Message); return; }
+            content = body;
         }
-        await ForwardAsync(ctx, sup, HttpMethods.IsHead(method) ? HttpMethod.Head : HttpMethods.IsPost(method) ? HttpMethod.Post : HttpMethod.Get, s.Path,
+        await ForwardAsync(ctx, sup, MethodOf(method), s.Path,
             Upstream(s.Path, s.Query), content, observe: s.Path == "world/index" && cache != null ? body => cache.ObserveIndex(s.Query, body) : null);
+    }
+
+    internal static HttpMethod MethodOf(string method) => HttpMethods.IsHead(method) ? HttpMethod.Head : HttpMethods.IsPost(method) ? HttpMethod.Post : HttpMethod.Get;
+
+    /// <summary>A route this method may not reach (404), or a role it lacks (admin, story: 403); null = allowed.</summary>
+    private static (int Status, string Code, string Message)? Refusal(BridgeIdentity id, string method, string path)
+    {
+        if (!Allowed(method, path)) return (404, "not_found", "not found");
+        if (NeedsAdmin(path) && !id.IsAdmin) return (403, "forbidden", "admin role required");
+        if (NeedsStory(method, path) && !MayWriteStory(id)) return (403, "forbidden", "story role required");
+        return null;
+    }
+
+    /// <summary>
+    /// Admin and story writes: <c>who</c> is always the signed user, never the body's. Story directives are like viewer chat: the sender is
+    /// the signed player, and commands only with the <c>commands</c> role. The body to send, or the refusal.
+    /// </summary>
+    private static (HttpContent? Body, (int Status, string Code, string Message)? Error) PostBody(HttpContext ctx, BridgeIdentity id, string path)
+    {
+        var obj = ParseObject(ctx.BodyBytes());
+        if (obj == null) return (null, (400, "bad_request", "body must be a JSON object"));
+        if (obj.ContainsKey("who")) return (null, (400, "bad_request", "who is set by the bridge"));
+        if (path == StoryDirectives)
+        {
+            if (obj.ContainsKey("player") || obj.ContainsKey("allow_commands")) return (null, (400, "bad_request", "player and allow_commands are set by the bridge"));
+            if (id.Player.Length == 0) return (null, (403, "forbidden", "no Minecraft player is linked to this account"));
+            obj["player"] = id.Player;
+            obj["allow_commands"] = id.Has("commands");
+        }
+        else obj["who"] = id.Who;
+        return (new StringContent(obj.ToJsonString(), Encoding.UTF8, "application/json"), null);
     }
 
     /// <param name="path">The decoded path after /api/ (timeouts, reply adapters).</param>
@@ -137,19 +160,27 @@ public static class SupervisorProxy
             }
             ctx.Response.StatusCode = status;
             CopyHeaders(res, ctx.Response);
-            if (transform != null)
-            {
-                var body = await res.Content.ReadAsByteArrayAsync(ctx.RequestAborted);
-                var outBody = transform(body) ?? body;
-                ctx.Response.ContentType = "application/json; charset=utf-8";
-                ctx.Response.ContentLength = outBody.Length;
-                await ctx.Response.Body.WriteAsync(outBody, ctx.RequestAborted);
-                return;
-            }
-            if (res.Content.Headers.ContentLength is { } len) ctx.Response.ContentLength = len;
-            try { await res.Content.CopyToAsync(ctx.Response.Body, ctx.RequestAborted); }
-            catch (Exception ex) when (ex is IOException or OperationCanceledException or HttpRequestException) { ctx.Abort(); }
+            if (transform != null) await WriteTransformedAsync(ctx, res, transform);
+            else await StreamAsync(ctx, res);
         }
+    }
+
+    /// <summary>The buffered JSON reply through <paramref name="transform"/> (null = the bytes unchanged).</summary>
+    private static async Task WriteTransformedAsync(HttpContext ctx, HttpResponseMessage res, Func<byte[], byte[]?> transform)
+    {
+        var body = await res.Content.ReadAsByteArrayAsync(ctx.RequestAborted);
+        var outBody = transform(body) ?? body;
+        ctx.Response.ContentType = "application/json; charset=utf-8";
+        ctx.Response.ContentLength = outBody.Length;
+        await ctx.Response.Body.WriteAsync(outBody, ctx.RequestAborted);
+    }
+
+    /// <summary>The reply streamed through; a broken stream aborts the response.</summary>
+    private static async Task StreamAsync(HttpContext ctx, HttpResponseMessage res)
+    {
+        if (res.Content.Headers.ContentLength is { } len) ctx.Response.ContentLength = len;
+        try { await res.Content.CopyToAsync(ctx.Response.Body, ctx.RequestAborted); }
+        catch (Exception ex) when (ex is IOException or OperationCanceledException or HttpRequestException) { ctx.Abort(); }
     }
 
     public static void CopyHeaders(HttpResponseMessage res, HttpResponse to)

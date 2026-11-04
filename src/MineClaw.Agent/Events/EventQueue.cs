@@ -227,96 +227,118 @@ public sealed class EventQueue
     {
         var now = _time.GetUtcNow();
         e = e with { At = now };
-        var window = TimeSpan.FromSeconds(_options.DedupeWindowSeconds);
-        string key = Key(e);
-        bool chatLike = e.Kind is EventKind.Chat or EventKind.Whisper;
-        bool typed = IsTyped(e);
-        var d = _debounce is { Enabled: true } dd ? dd : null;
-        var repeatWindow = TimeSpan.FromSeconds(Math.Max(0, d?.RepeatWindowSeconds ?? 0));
+        // Debounced chat: a typed line while the chat debounce is on.
+        var d = IsTyped(e) ? ActiveDebounce : null;
+        var repeatWindow = RepeatWindow;
 
-        if (!_pending.Any(p => p.Wakes))
-        {
-            _firstWake = null;
-            _firstLine.Clear();
-            _lastLine.Clear(); _lastComplete.Clear();
-            _fireNow = false;
-        }
+        if (!_pending.Any(p => p.Wakes)) ResetChatWindow();
 
         // A repeat of a line the running turn already has adds nothing: never wake/restart/inject for it.
-        if (typed && d != null && _turnActive && _takenChat.TryGetValue(ChatKey(e), out var taken) && now - taken <= repeatWindow)
+        if (d != null && IsTakenRepeat(e, now, repeatWindow))
         {
             Stats.Repeat();
             return false;
         }
+        if (BumpDuplicate(e, d != null, now, repeatWindow)) return true;
+        if (SeenRecently(e, now) || !KeepNewestOnly(e)) return false;
+        Admit(e, d, now);
+        return true;
+    }
 
-        // Identical event already pending: bump its count (chat only within the repeat window when debouncing).
-        int dup = _pending.FindIndex(p => Key(p) == key && (!typed || d == null || now - p.At <= repeatWindow));
-        if (dup >= 0)
+    private ChatDebounceOptions? ActiveDebounce => _debounce is { Enabled: true } dd ? dd : null;
+
+    private TimeSpan RepeatWindow => TimeSpan.FromSeconds(Math.Max(0, ActiveDebounce?.RepeatWindowSeconds ?? 0));
+
+    private bool IsTakenRepeat(GameEvent e, DateTimeOffset now, TimeSpan repeatWindow) =>
+        _turnActive && _takenChat.TryGetValue(ChatKey(e), out var taken) && now - taken <= repeatWindow;
+
+    /// <summary>Adds an accepted event: a waking one clears idle check-ins, debounced chat marks its player, then the caps apply.</summary>
+    private void Admit(GameEvent e, ChatDebounceOptions? debounce, DateTimeOffset now)
+    {
+        if (e.Wakes && e.Kind != EventKind.IdleTick) _pending.RemoveAll(p => p.Kind == EventKind.IdleTick);
+        if (debounce != null) NoteTypedLine(e, debounce, now);
+        if (e.Wakes) _firstWake ??= now;
+        _pending.Add(e);
+        TrimPending(e);
+    }
+
+    /// <summary>Nothing waking is pending: the chat debounce windows start over.</summary>
+    private void ResetChatWindow()
+    {
+        _firstWake = null;
+        _firstLine.Clear();
+        _lastLine.Clear(); _lastComplete.Clear();
+        _fireNow = false;
+    }
+
+    /// <summary>Identical event already pending: bump its count (chat only within the repeat window when debouncing).</summary>
+    private bool BumpDuplicate(GameEvent e, bool debouncedChat, DateTimeOffset now, TimeSpan repeatWindow)
+    {
+        string key = Key(e);
+        int dup = _pending.FindIndex(p => Key(p) == key && (!debouncedChat || now - p.At <= repeatWindow));
+        if (dup < 0) return false;
+        var p = _pending[dup];
+        _pending[dup] = p with { Count = p.Count + 1, At = now, Wakes = p.Wakes || e.Wakes, Priority = Max(p.Priority, e.Priority) };
+        if (debouncedChat)
         {
-            var p = _pending[dup];
-            _pending[dup] = p with { Count = p.Count + 1, At = now, Wakes = p.Wakes || e.Wakes, Priority = Max(p.Priority, e.Priority) };
-            if (typed && d != null)
-            {
-                Stats.Repeat();
-                _lastLine[e.Player!] = now;
-            }
-            return true;
+            Stats.Repeat();
+            _lastLine[e.Player!] = now;
         }
+        return true;
+    }
 
-        // Low-value repeat of something the model has already seen recently: drop.
-        if (!chatLike && e.Priority < EventPriority.Critical && e.Kind != EventKind.TaskCompleted && e.Kind != EventKind.TaskFailed &&
-            _recentlyTaken.TryGetValue(RepeatKey(e), out var seen) && now - seen < window)
-            return false;
+    /// <summary>Low-value repeat of something the model has already seen recently (not chat, danger or a task result).</summary>
+    private bool SeenRecently(GameEvent e, DateTimeOffset now)
+    {
+        if (e.Kind is EventKind.Chat or EventKind.Whisper or EventKind.TaskCompleted or EventKind.TaskFailed || e.Priority >= EventPriority.Critical) return false;
+        return _recentlyTaken.TryGetValue(RepeatKey(e), out var seen) && now - seen < TimeSpan.FromSeconds(_options.DedupeWindowSeconds);
+    }
 
+    /// <summary>Kinds where only the newest pending one counts ("keep only the newest" is per body: 67's hp warning never
+    /// replaces 69's). False = drop <paramref name="e"/> (an idle check-in while something waking is pending).</summary>
+    private bool KeepNewestOnly(GameEvent e)
+    {
         switch (e.Kind)
         {
-            // "Keep only the newest" is per body: 67's hp warning never replaces 69's.
-            case EventKind.TaskProgress:
-                _pending.RemoveAll(p => p.Kind == EventKind.TaskProgress && SameBody(p, e));
-                break;
-            case EventKind.LowHealth:
+            case EventKind.TaskProgress or EventKind.LowHealth or EventKind.VoidFall:
                 // Keep only the newest health warning; inherit wake status.
-                _pending.RemoveAll(p => p.Kind == EventKind.LowHealth && SameBody(p, e));
-                break;
-            case EventKind.VoidFall:
-                _pending.RemoveAll(p => p.Kind == EventKind.VoidFall && SameBody(p, e));
+                _pending.RemoveAll(p => p.Kind == e.Kind && SameBody(p, e));
                 break;
             case EventKind.IdleTick:
                 if (_pending.Any(p => p.Wakes)) return false;
                 _pending.RemoveAll(p => p.Kind == EventKind.IdleTick);
                 break;
         }
+        return true;
+    }
 
-        if (e.Wakes && e.Kind != EventKind.IdleTick) _pending.RemoveAll(p => p.Kind == EventKind.IdleTick);
-
-        if (typed && d != null)
+    /// <summary>A typed line from a player: fire-now triggers and the per-player first/last/complete marks of the debounce.</summary>
+    private void NoteTypedLine(GameEvent e, ChatDebounceOptions d, DateTimeOffset now)
+    {
+        bool hadFromPlayer = _pending.Any(p => IsTyped(p) && string.Equals(p.Player, e.Player, StringComparison.OrdinalIgnoreCase));
+        if (d.IsImmediate(e.Text) || (d.ImmediateOnQuestion && !hadFromPlayer && e.Text.TrimEnd().EndsWith('?')))
         {
-            bool hadFromPlayer = _pending.Any(p => IsTyped(p) && string.Equals(p.Player, e.Player, StringComparison.OrdinalIgnoreCase));
-            if (d.IsImmediate(e.Text) || (d.ImmediateOnQuestion && !hadFromPlayer && e.Text.TrimEnd().EndsWith('?')))
-            {
-                if (!_fireNow) Stats.Immediate();
-                _fireNow = true;
-            }
-            _firstLine.TryAdd(e.Player!, now);
-            _lastLine[e.Player!] = now;
-            _lastComplete[e.Player!] = d.CompleteQuietMs > 0 && d.LooksComplete(e.Text);
+            if (!_fireNow) Stats.Immediate();
+            _fireNow = true;
         }
-        if (e.Wakes) _firstWake ??= now;
+        _firstLine.TryAdd(e.Player!, now);
+        _lastLine[e.Player!] = now;
+        _lastComplete[e.Player!] = d.CompleteQuietMs > 0 && d.LooksComplete(e.Text);
+    }
 
-        _pending.Add(e);
-
+    /// <summary>Caps background chat and the whole queue (lowest priority, oldest first).</summary>
+    private void TrimPending(GameEvent e)
+    {
         if (e.Kind == EventKind.Chat && !e.Wakes)
         {
             var bg = _pending.Where(p => p.Kind == EventKind.Chat && !p.Wakes).ToList();
             foreach (var old in bg.Take(Math.Max(0, bg.Count - _options.MaxBackgroundChat))) _pending.Remove(old);
         }
-
         while (_pending.Count > _options.MaxPending)
         {
             var victim = _pending.OrderBy(p => p.Priority).ThenBy(p => p.At).First();
             _pending.Remove(victim);
         }
-        return true;
     }
 
     /// <summary>Takes everything pending if at least one event wakes the model; otherwise null.</summary>

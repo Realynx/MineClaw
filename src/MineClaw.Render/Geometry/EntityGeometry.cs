@@ -58,33 +58,24 @@ public static class EntityGeometry
     {
         "player" or "hive" or "self" => "player",
         "item" => "item",
-        _ => (e.Mob ?? e.Name ?? "zombie").ToLowerInvariant() switch
-        {
-            // 1.12.2's newer mobs draw as their nearest b1.8.1 model (multi-version P4) until they get their own.
-            "zombie" or "giant" or "husk" or "zombie_villager" or "vindication_illager" or "evocation_illager" or "illusion_illager" or "witch"
-                or "villager" => "zombie",
-            "zombie_pigman" or "pigzombie" or "pig_zombie" => "pigzombie",
-            "skeleton" or "stray" or "wither_skeleton" => "skeleton",
-            "magma_cube" => "slime",
-            "endermite" => "silverfish",
-            "mooshroom" => "cow",
-            "ocelot" or "polar_bear" => "wolf",
-            "guardian" or "elder_guardian" => "squid",
-            "creeper" => "creeper",
-            "spider" => "spider",
-            "cave_spider" or "cavespider" => "cavespider",
-            "pig" => "pig",
-            "cow" => "cow",
-            "sheep" => "sheep",
-            "chicken" => "chicken",
-            "enderman" => "enderman",
-            "slime" => "slime",
-            "wolf" => "wolf",
-            "squid" => "squid",
-            "ghast" => "ghast",
-            "silverfish" => "silverfish",
-            var other => other.StartsWith("mob_") ? "zombie" : other,
-        },
+        _ => MobModel((e.Mob ?? e.Name ?? "zombie").ToLowerInvariant()),
+    };
+
+    /// <summary>The b1.8.1 model a mob draws with; 1.12.2's newer mobs draw as their nearest b1.8.1 model (multi-version P4)
+    /// until they get their own. Unknown names keep their own name ("mob_42" style ids: a zombie).</summary>
+    private static string MobModel(string mob) => MobModels.TryGetValue(mob, out var model) ? model : mob.StartsWith("mob_") ? "zombie" : mob;
+
+    private static readonly Dictionary<string, string> MobModels = new(StringComparer.Ordinal)
+    {
+        ["zombie"] = "zombie", ["giant"] = "zombie", ["husk"] = "zombie", ["zombie_villager"] = "zombie", ["vindication_illager"] = "zombie",
+        ["evocation_illager"] = "zombie", ["illusion_illager"] = "zombie", ["witch"] = "zombie", ["villager"] = "zombie",
+        ["zombie_pigman"] = "pigzombie", ["pigzombie"] = "pigzombie", ["pig_zombie"] = "pigzombie",
+        ["skeleton"] = "skeleton", ["stray"] = "skeleton", ["wither_skeleton"] = "skeleton",
+        ["magma_cube"] = "slime", ["endermite"] = "silverfish", ["mooshroom"] = "cow", ["ocelot"] = "wolf", ["polar_bear"] = "wolf",
+        ["guardian"] = "squid", ["elder_guardian"] = "squid",
+        ["creeper"] = "creeper", ["spider"] = "spider", ["cave_spider"] = "cavespider", ["cavespider"] = "cavespider", ["pig"] = "pig",
+        ["cow"] = "cow", ["sheep"] = "sheep", ["chicken"] = "chicken", ["enderman"] = "enderman", ["slime"] = "slime", ["wolf"] = "wolf",
+        ["squid"] = "squid", ["ghast"] = "ghast", ["silverfish"] = "silverfish",
     };
 
     // ------------------------------------------------------------------ model layouts (client Model* constructors)
@@ -92,149 +83,193 @@ public static class EntityGeometry
     private static ModelPart P(string n, float x, float y, float z, params ModelBox[] b) => new(n, x, y, z, b);
 
     /// <summary>A model in its rest pose (texture offsets and boxes as in the b1.8.1 client).</summary>
-    public static EntityModel Create(string kind)
+    public static EntityModel Create(string kind) =>
+        kind != null && Builders.TryGetValue(kind, out var build) ? build(kind) : BipedOf(kind!, "zombie", 1.8f, 4);
+
+    /// <summary>The model builder per kind (unknown kinds: a zombie biped).</summary>
+    private static readonly Dictionary<string, Func<string, EntityModel>> Builders = new(StringComparer.Ordinal)
     {
-        EntityModel m;
-        switch (kind)
+        ["player"] = k => BipedOf(k, "char", 1.8f, 4),
+        ["zombie"] = k => BipedOf(k, k, 1.8f, 4),
+        ["pigzombie"] = k => BipedOf(k, k, 1.8f, 4),
+        ["skeleton"] = k => BipedOf(k, "skeleton", 1.8f, 2),
+        ["enderman"] = EndermanModel,
+        ["creeper"] = CreeperModel,
+        ["spider"] = SpiderModel,
+        ["cavespider"] = SpiderModel,
+        ["pig"] = PigModel,
+        ["cow"] = CowModel,
+        ["sheep"] = SheepModel,
+        ["chicken"] = ChickenModel,
+        ["wolf"] = WolfModel,
+        ["slime"] = SlimeModel,
+        ["squid"] = SquidModel,
+        ["ghast"] = GhastModel,
+        ["silverfish"] = SilverfishModel,
+    };
+
+    private static EntityModel BipedOf(string kind, string texture, float height, int limb)
+    {
+        var m = new EntityModel { Kind = kind, Texture = EntityTextures.Id(texture), Height = height };
+        Biped(m, limb);
+        return m;
+    }
+
+    private static EntityModel EndermanModel(string kind)
+    {
+        var m = new EntityModel { Kind = kind, Texture = EntityTextures.Id("enderman"), Height = 2.9f };
+        m.Parts.Add(P("head", 0, -13, 0, new ModelBox(-4, -8, -4, 8, 8, 8, 0, 0)));
+        m.Parts.Add(P("hat", 0, -13, 0, new ModelBox(-4, -8, -4, 8, 8, 8, 0, 16, -0.5f)));
+        m.Parts.Add(P("body", 0, -14, 0, new ModelBox(-4, 0, -2, 8, 12, 4, 32, 16)));
+        m.Parts.Add(P("rarm", -3, -12, 0, new ModelBox(-1, -2, -1, 2, 30, 2, 56, 0)));
+        m.Parts.Add(P("larm", 5, -12, 0, new ModelBox(-1, -2, -1, 2, 30, 2, 56, 0, 0, true)));
+        m.Parts.Add(P("rleg", -2, -5, 0, new ModelBox(-1, 0, -1, 2, 30, 2, 56, 0)));
+        m.Parts.Add(P("lleg", 2, -5, 0, new ModelBox(-1, 0, -1, 2, 30, 2, 56, 0, 0, true)));
+        return m;
+    }
+
+    private static EntityModel CreeperModel(string kind)
+    {
+        var m = new EntityModel { Kind = kind, Texture = EntityTextures.Id("creeper"), Height = 1.7f };
+        m.Parts.Add(P("head", 0, 4, 0, new ModelBox(-4, -8, -4, 8, 8, 8, 0, 0)));
+        m.Parts.Add(P("body", 0, 4, 0, new ModelBox(-4, 0, -2, 8, 12, 4, 16, 16)));
+        m.Parts.Add(P("leg1", -2, 16, 4, new ModelBox(-2, 0, -2, 4, 6, 4, 0, 16)));
+        m.Parts.Add(P("leg2", 2, 16, 4, new ModelBox(-2, 0, -2, 4, 6, 4, 0, 16)));
+        m.Parts.Add(P("leg3", -2, 16, -4, new ModelBox(-2, 0, -2, 4, 6, 4, 0, 16)));
+        m.Parts.Add(P("leg4", 2, 16, -4, new ModelBox(-2, 0, -2, 4, 6, 4, 0, 16)));
+        return m;
+    }
+
+    private static EntityModel SpiderModel(string kind)
+    {
+        var m = new EntityModel { Kind = kind, Texture = EntityTextures.Id("spider"), Height = 0.9f, Shadow = 1f, Scale = new Vector3(kind == "cavespider" ? 0.7f : 1f) };
+        m.Parts.Add(P("head", 0, 15, -3, new ModelBox(-4, -4, -8, 8, 8, 8, 32, 4)));
+        m.Parts.Add(P("neck", 0, 15, 0, new ModelBox(-3, -3, -3, 6, 6, 6, 0, 0)));
+        m.Parts.Add(P("body", 0, 15, 9, new ModelBox(-5, -4, -6, 10, 8, 12, 0, 12)));
+        for (int i = 0; i < 8; i++)
         {
-            case "player":
-            case "zombie":
-            case "pigzombie":
-                m = new EntityModel { Kind = kind, Texture = EntityTextures.Id(kind == "player" ? "char" : kind), Height = 1.8f };
-                Biped(m, 4);
-                break;
-            case "skeleton":
-                m = new EntityModel { Kind = kind, Texture = EntityTextures.Id("skeleton"), Height = 1.8f };
-                Biped(m, 2);
-                break;
-            case "enderman":
-                m = new EntityModel { Kind = kind, Texture = EntityTextures.Id("enderman"), Height = 2.9f };
-                m.Parts.Add(P("head", 0, -13, 0, new ModelBox(-4, -8, -4, 8, 8, 8, 0, 0)));
-                m.Parts.Add(P("hat", 0, -13, 0, new ModelBox(-4, -8, -4, 8, 8, 8, 0, 16, -0.5f)));
-                m.Parts.Add(P("body", 0, -14, 0, new ModelBox(-4, 0, -2, 8, 12, 4, 32, 16)));
-                m.Parts.Add(P("rarm", -3, -12, 0, new ModelBox(-1, -2, -1, 2, 30, 2, 56, 0)));
-                m.Parts.Add(P("larm", 5, -12, 0, new ModelBox(-1, -2, -1, 2, 30, 2, 56, 0, 0, true)));
-                m.Parts.Add(P("rleg", -2, -5, 0, new ModelBox(-1, 0, -1, 2, 30, 2, 56, 0)));
-                m.Parts.Add(P("lleg", 2, -5, 0, new ModelBox(-1, 0, -1, 2, 30, 2, 56, 0, 0, true)));
-                break;
-            case "creeper":
-                m = new EntityModel { Kind = kind, Texture = EntityTextures.Id("creeper"), Height = 1.7f };
-                m.Parts.Add(P("head", 0, 4, 0, new ModelBox(-4, -8, -4, 8, 8, 8, 0, 0)));
-                m.Parts.Add(P("body", 0, 4, 0, new ModelBox(-4, 0, -2, 8, 12, 4, 16, 16)));
-                m.Parts.Add(P("leg1", -2, 16, 4, new ModelBox(-2, 0, -2, 4, 6, 4, 0, 16)));
-                m.Parts.Add(P("leg2", 2, 16, 4, new ModelBox(-2, 0, -2, 4, 6, 4, 0, 16)));
-                m.Parts.Add(P("leg3", -2, 16, -4, new ModelBox(-2, 0, -2, 4, 6, 4, 0, 16)));
-                m.Parts.Add(P("leg4", 2, 16, -4, new ModelBox(-2, 0, -2, 4, 6, 4, 0, 16)));
-                break;
-            case "spider":
-            case "cavespider":
-                m = new EntityModel { Kind = kind, Texture = EntityTextures.Id("spider"), Height = 0.9f, Shadow = 1f, Scale = new Vector3(kind == "cavespider" ? 0.7f : 1f) };
-                m.Parts.Add(P("head", 0, 15, -3, new ModelBox(-4, -4, -8, 8, 8, 8, 32, 4)));
-                m.Parts.Add(P("neck", 0, 15, 0, new ModelBox(-3, -3, -3, 6, 6, 6, 0, 0)));
-                m.Parts.Add(P("body", 0, 15, 9, new ModelBox(-5, -4, -6, 10, 8, 12, 0, 12)));
-                for (int i = 0; i < 8; i++)
-                {
-                    bool right = i % 2 == 0;
-                    float z = 2 - i / 2;
-                    m.Parts.Add(P("leg" + (i + 1), right ? -4 : 4, 15, z, new ModelBox(right ? -15 : -1, -1, -1, 16, 2, 2, 18, 0)));
-                }
-                break;
-            case "pig":
-                m = new EntityModel { Kind = kind, Texture = EntityTextures.Id("pig"), Height = 0.9f, Shadow = 0.5f };
-                Quadruped(m, 6);
-                m["head"].Boxes.Add(new ModelBox(-2, 0, -9, 4, 3, 1, 16, 16));
-                break;
-            case "cow":
-                m = new EntityModel { Kind = kind, Texture = EntityTextures.Id("cow"), Height = 1.3f, Shadow = 0.7f };
-                m.Parts.Add(P("head", 0, 4, -8, new ModelBox(-4, -4, -6, 8, 8, 6, 0, 0), new ModelBox(-5, -5, -4, 1, 3, 1, 22, 0), new ModelBox(4, -5, -4, 1, 3, 1, 22, 0)));
-                var cb = P("body", 0, 5, 2, new ModelBox(-6, -10, -7, 12, 18, 10, 18, 4), new ModelBox(-2, 2, -8, 4, 6, 1, 52, 0));
-                cb.Rx = MathF.PI / 2;
-                m.Parts.Add(cb);
-                m.Parts.Add(P("leg1", -4, 12, 7, new ModelBox(-2, 0, -2, 4, 12, 4, 0, 16)));
-                m.Parts.Add(P("leg2", 4, 12, 7, new ModelBox(-2, 0, -2, 4, 12, 4, 0, 16)));
-                m.Parts.Add(P("leg3", -4, 12, -6, new ModelBox(-2, 0, -2, 4, 12, 4, 0, 16)));
-                m.Parts.Add(P("leg4", 4, 12, -6, new ModelBox(-2, 0, -2, 4, 12, 4, 0, 16)));
-                break;
-            case "sheep":
-                m = new EntityModel { Kind = kind, Texture = EntityTextures.Id("sheep"), Height = 1.3f, Shadow = 0.7f };
-                m.Parts.Add(P("head", 0, 6, -8, new ModelBox(-3, -4, -6, 6, 6, 8, 0, 0)));
-                var sb = P("body", 0, 5, 2, new ModelBox(-4, -10, -7, 8, 16, 6, 28, 8));
-                sb.Rx = MathF.PI / 2;
-                m.Parts.Add(sb);
-                for (int i = 0; i < 4; i++)
-                    m.Parts.Add(P("leg" + (i + 1), i % 2 == 0 ? -3 : 3, 12, i < 2 ? 7 : -5, new ModelBox(-2, 0, -2, 4, 12, 4, 0, 16)));
-                // ModelSheep1: the wool layer (sheep_fur.png), drawn unless sheared.
-                var wh = P("woolhead", 0, 6, -8, new ModelBox(-3, -4, -4, 6, 6, 6, 0, 0, 0.6f));
-                var wb = P("woolbody", 0, 5, 2, new ModelBox(-4, -10, -7, 8, 16, 6, 28, 8, 1.75f));
-                wb.Rx = MathF.PI / 2;
-                m.Parts.Add(wh);
-                m.Parts.Add(wb);
-                for (int i = 0; i < 4; i++)
-                    m.Parts.Add(P("woolleg" + (i + 1), i % 2 == 0 ? -3 : 3, 12, i < 2 ? 7 : -5, new ModelBox(-2, 0, -2, 4, 6, 4, 0, 16, 0.5f)));
-                foreach (var p in m.Parts.Where(p => p.Name.StartsWith("wool"))) p.Texture = EntityTextures.Id("sheep_fur");
-                break;
-            case "chicken":
-                m = new EntityModel { Kind = kind, Texture = EntityTextures.Id("chicken"), Height = 0.7f, Shadow = 0.3f };
-                m.Parts.Add(P("head", 0, 15, -4, new ModelBox(-2, -6, -2, 4, 6, 3, 0, 0), new ModelBox(-2, -4, -4, 4, 2, 2, 14, 0), new ModelBox(-1, -2, -3, 2, 2, 2, 14, 4)));
-                var chb = P("body", 0, 16, 0, new ModelBox(-3, -4, -3, 6, 8, 6, 0, 9));
-                chb.Rx = MathF.PI / 2;
-                m.Parts.Add(chb);
-                m.Parts.Add(P("leg1", -2, 19, 1, new ModelBox(-1, 0, -3, 3, 5, 3, 26, 0)));
-                m.Parts.Add(P("leg2", 1, 19, 1, new ModelBox(-1, 0, -3, 3, 5, 3, 26, 0)));
-                m.Parts.Add(P("wing1", -4, 13, 0, new ModelBox(0, 0, -3, 1, 4, 6, 24, 13)));
-                m.Parts.Add(P("wing2", 4, 13, 0, new ModelBox(-1, 0, -3, 1, 4, 6, 24, 13)));
-                break;
-            case "wolf":
-                m = new EntityModel { Kind = kind, Texture = EntityTextures.Id("wolf"), Height = 0.8f, Shadow = 0.5f };
-                m.Parts.Add(P("head", -1, 13.5f, -7, new ModelBox(-3, -3, -2, 6, 6, 4, 0, 0), new ModelBox(-3, -5, 0, 2, 2, 1, 16, 14), new ModelBox(1, -5, 0, 2, 2, 1, 16, 14), new ModelBox(-1.5f, 0, -5, 3, 3, 4, 0, 10)));
-                var wbod = P("body", 0, 14, 2, new ModelBox(-4, -2, -3, 6, 9, 6, 18, 14));
-                wbod.Rx = MathF.PI / 2;
-                m.Parts.Add(wbod);
-                var mane = P("mane", -1, 14, 2, new ModelBox(-4, -3, -3, 8, 6, 7, 21, 0));
-                mane.Rx = MathF.PI / 2;
-                m.Parts.Add(mane);
-                m.Parts.Add(P("leg1", -2.5f, 16, 7, new ModelBox(-1, 0, -1, 2, 8, 2, 0, 18)));
-                m.Parts.Add(P("leg2", 0.5f, 16, 7, new ModelBox(-1, 0, -1, 2, 8, 2, 0, 18)));
-                m.Parts.Add(P("leg3", -2.5f, 16, -4, new ModelBox(-1, 0, -1, 2, 8, 2, 0, 18)));
-                m.Parts.Add(P("leg4", 0.5f, 16, -4, new ModelBox(-1, 0, -1, 2, 8, 2, 0, 18)));
-                var tail = P("tail", -1, 12, 8, new ModelBox(-1, 0, -1, 2, 8, 2, 9, 18));
-                tail.Rx = 0.6f;
-                m.Parts.Add(tail);
-                break;
-            case "slime":
-                m = new EntityModel { Kind = kind, Texture = EntityTextures.Id("slime"), Height = 0.5f, Shadow = 0.25f, Translucent = true };
-                m.Parts.Add(P("inner", 0, 0, 0, new ModelBox(-3, 17, -3, 6, 6, 6, 0, 16), new ModelBox(-3.25f, 18, -3.5f, 2, 2, 2, 32, 0), new ModelBox(1.25f, 18, -3.5f, 2, 2, 2, 32, 4), new ModelBox(0, 21, -3.5f, 1, 1, 1, 32, 8)));
-                m.Parts.Add(P("outer", 0, 0, 0, new ModelBox(-4, 16, -4, 8, 8, 8, 0, 0)));
-                break;
-            case "squid":
-                m = new EntityModel { Kind = kind, Texture = EntityTextures.Id("squid"), Height = 0.95f, Shadow = 0.5f };
-                m.Parts.Add(P("body", 0, 8, 0, new ModelBox(-6, -8, -6, 12, 16, 12, 0, 0)));
-                for (int i = 0; i < 8; i++)
-                {
-                    double a = i * Math.PI * 2 / 8;
-                    var t = P("t" + i, (float)Math.Cos(a) * 5, 15, (float)Math.Sin(a) * 5, new ModelBox(-1, 0, -1, 2, 18, 2, 48, 0));
-                    t.Ry = (float)(i * Math.PI * -2 / 8 + Math.PI / 2);
-                    m.Parts.Add(t);
-                }
-                break;
-            case "ghast":
-                m = new EntityModel { Kind = kind, Texture = EntityTextures.Id("ghast"), Height = 4f, Shadow = 3f, Scale = new Vector3(4.5f) };
-                m.Parts.Add(P("body", 0, 8, 0, new ModelBox(-8, -8, -8, 16, 16, 16, 0, 0)));
-                for (int i = 0; i < 9; i++)
-                    m.Parts.Add(P("t" + i, ((i % 3 - (i / 3 % 2) * 0.5f + 0.25f) / 2f * 2f - 1f) * 5f, 15, (i / 3 / 2f * 2f - 1f) * 5f, new ModelBox(-1, 0, -1, 2, 9, 2, 0, 0)));
-                break;
-            case "silverfish":
-                m = new EntityModel { Kind = kind, Texture = EntityTextures.Id("silverfish"), Height = 0.3f, Shadow = 0.3f };
-                m.Parts.Add(P("b0", 0, 22, -3.5f, new ModelBox(-1.5f, 0, -1, 3, 2, 2, 0, 0)));
-                m.Parts.Add(P("b1", 0, 21, -1.5f, new ModelBox(-2, 0, -1, 4, 3, 2, 0, 4)));
-                m.Parts.Add(P("b2", 0, 20, 1, new ModelBox(-3, 0, -1.5f, 6, 4, 3, 0, 9)));
-                m.Parts.Add(P("b3", 0, 21, 4, new ModelBox(-1.5f, 0, -1.5f, 3, 3, 3, 0, 16)));
-                break;
-            default:
-                m = new EntityModel { Kind = kind, Texture = EntityTextures.Id("zombie"), Height = 1.8f };
-                Biped(m, 4);
-                break;
+            bool right = i % 2 == 0;
+            float z = 2 - i / 2;
+            m.Parts.Add(P("leg" + (i + 1), right ? -4 : 4, 15, z, new ModelBox(right ? -15 : -1, -1, -1, 16, 2, 2, 18, 0)));
         }
+        return m;
+    }
+
+    private static EntityModel PigModel(string kind)
+    {
+        var m = new EntityModel { Kind = kind, Texture = EntityTextures.Id("pig"), Height = 0.9f, Shadow = 0.5f };
+        Quadruped(m, 6);
+        m["head"].Boxes.Add(new ModelBox(-2, 0, -9, 4, 3, 1, 16, 16));
+        return m;
+    }
+
+    private static EntityModel CowModel(string kind)
+    {
+        var m = new EntityModel { Kind = kind, Texture = EntityTextures.Id("cow"), Height = 1.3f, Shadow = 0.7f };
+        m.Parts.Add(P("head", 0, 4, -8, new ModelBox(-4, -4, -6, 8, 8, 6, 0, 0), new ModelBox(-5, -5, -4, 1, 3, 1, 22, 0), new ModelBox(4, -5, -4, 1, 3, 1, 22, 0)));
+        var cb = P("body", 0, 5, 2, new ModelBox(-6, -10, -7, 12, 18, 10, 18, 4), new ModelBox(-2, 2, -8, 4, 6, 1, 52, 0));
+        cb.Rx = MathF.PI / 2;
+        m.Parts.Add(cb);
+        m.Parts.Add(P("leg1", -4, 12, 7, new ModelBox(-2, 0, -2, 4, 12, 4, 0, 16)));
+        m.Parts.Add(P("leg2", 4, 12, 7, new ModelBox(-2, 0, -2, 4, 12, 4, 0, 16)));
+        m.Parts.Add(P("leg3", -4, 12, -6, new ModelBox(-2, 0, -2, 4, 12, 4, 0, 16)));
+        m.Parts.Add(P("leg4", 4, 12, -6, new ModelBox(-2, 0, -2, 4, 12, 4, 0, 16)));
+        return m;
+    }
+
+    private static EntityModel SheepModel(string kind)
+    {
+        var m = new EntityModel { Kind = kind, Texture = EntityTextures.Id("sheep"), Height = 1.3f, Shadow = 0.7f };
+        m.Parts.Add(P("head", 0, 6, -8, new ModelBox(-3, -4, -6, 6, 6, 8, 0, 0)));
+        var sb = P("body", 0, 5, 2, new ModelBox(-4, -10, -7, 8, 16, 6, 28, 8));
+        sb.Rx = MathF.PI / 2;
+        m.Parts.Add(sb);
+        for (int i = 0; i < 4; i++)
+            m.Parts.Add(P("leg" + (i + 1), i % 2 == 0 ? -3 : 3, 12, i < 2 ? 7 : -5, new ModelBox(-2, 0, -2, 4, 12, 4, 0, 16)));
+        // ModelSheep1: the wool layer (sheep_fur.png), drawn unless sheared.
+        var wh = P("woolhead", 0, 6, -8, new ModelBox(-3, -4, -4, 6, 6, 6, 0, 0, 0.6f));
+        var wb = P("woolbody", 0, 5, 2, new ModelBox(-4, -10, -7, 8, 16, 6, 28, 8, 1.75f));
+        wb.Rx = MathF.PI / 2;
+        m.Parts.Add(wh);
+        m.Parts.Add(wb);
+        for (int i = 0; i < 4; i++)
+            m.Parts.Add(P("woolleg" + (i + 1), i % 2 == 0 ? -3 : 3, 12, i < 2 ? 7 : -5, new ModelBox(-2, 0, -2, 4, 6, 4, 0, 16, 0.5f)));
+        foreach (var p in m.Parts.Where(p => p.Name.StartsWith("wool"))) p.Texture = EntityTextures.Id("sheep_fur");
+        return m;
+    }
+
+    private static EntityModel ChickenModel(string kind)
+    {
+        var m = new EntityModel { Kind = kind, Texture = EntityTextures.Id("chicken"), Height = 0.7f, Shadow = 0.3f };
+        m.Parts.Add(P("head", 0, 15, -4, new ModelBox(-2, -6, -2, 4, 6, 3, 0, 0), new ModelBox(-2, -4, -4, 4, 2, 2, 14, 0), new ModelBox(-1, -2, -3, 2, 2, 2, 14, 4)));
+        var chb = P("body", 0, 16, 0, new ModelBox(-3, -4, -3, 6, 8, 6, 0, 9));
+        chb.Rx = MathF.PI / 2;
+        m.Parts.Add(chb);
+        m.Parts.Add(P("leg1", -2, 19, 1, new ModelBox(-1, 0, -3, 3, 5, 3, 26, 0)));
+        m.Parts.Add(P("leg2", 1, 19, 1, new ModelBox(-1, 0, -3, 3, 5, 3, 26, 0)));
+        m.Parts.Add(P("wing1", -4, 13, 0, new ModelBox(0, 0, -3, 1, 4, 6, 24, 13)));
+        m.Parts.Add(P("wing2", 4, 13, 0, new ModelBox(-1, 0, -3, 1, 4, 6, 24, 13)));
+        return m;
+    }
+
+    private static EntityModel WolfModel(string kind)
+    {
+        var m = new EntityModel { Kind = kind, Texture = EntityTextures.Id("wolf"), Height = 0.8f, Shadow = 0.5f };
+        m.Parts.Add(P("head", -1, 13.5f, -7, new ModelBox(-3, -3, -2, 6, 6, 4, 0, 0), new ModelBox(-3, -5, 0, 2, 2, 1, 16, 14), new ModelBox(1, -5, 0, 2, 2, 1, 16, 14), new ModelBox(-1.5f, 0, -5, 3, 3, 4, 0, 10)));
+        var wbod = P("body", 0, 14, 2, new ModelBox(-4, -2, -3, 6, 9, 6, 18, 14));
+        wbod.Rx = MathF.PI / 2;
+        m.Parts.Add(wbod);
+        var mane = P("mane", -1, 14, 2, new ModelBox(-4, -3, -3, 8, 6, 7, 21, 0));
+        mane.Rx = MathF.PI / 2;
+        m.Parts.Add(mane);
+        m.Parts.Add(P("leg1", -2.5f, 16, 7, new ModelBox(-1, 0, -1, 2, 8, 2, 0, 18)));
+        m.Parts.Add(P("leg2", 0.5f, 16, 7, new ModelBox(-1, 0, -1, 2, 8, 2, 0, 18)));
+        m.Parts.Add(P("leg3", -2.5f, 16, -4, new ModelBox(-1, 0, -1, 2, 8, 2, 0, 18)));
+        m.Parts.Add(P("leg4", 0.5f, 16, -4, new ModelBox(-1, 0, -1, 2, 8, 2, 0, 18)));
+        var tail = P("tail", -1, 12, 8, new ModelBox(-1, 0, -1, 2, 8, 2, 9, 18));
+        tail.Rx = 0.6f;
+        m.Parts.Add(tail);
+        return m;
+    }
+
+    private static EntityModel SlimeModel(string kind)
+    {
+        var m = new EntityModel { Kind = kind, Texture = EntityTextures.Id("slime"), Height = 0.5f, Shadow = 0.25f, Translucent = true };
+        m.Parts.Add(P("inner", 0, 0, 0, new ModelBox(-3, 17, -3, 6, 6, 6, 0, 16), new ModelBox(-3.25f, 18, -3.5f, 2, 2, 2, 32, 0), new ModelBox(1.25f, 18, -3.5f, 2, 2, 2, 32, 4), new ModelBox(0, 21, -3.5f, 1, 1, 1, 32, 8)));
+        m.Parts.Add(P("outer", 0, 0, 0, new ModelBox(-4, 16, -4, 8, 8, 8, 0, 0)));
+        return m;
+    }
+
+    private static EntityModel SquidModel(string kind)
+    {
+        var m = new EntityModel { Kind = kind, Texture = EntityTextures.Id("squid"), Height = 0.95f, Shadow = 0.5f };
+        m.Parts.Add(P("body", 0, 8, 0, new ModelBox(-6, -8, -6, 12, 16, 12, 0, 0)));
+        for (int i = 0; i < 8; i++)
+        {
+            double a = i * Math.PI * 2 / 8;
+            var t = P("t" + i, (float)Math.Cos(a) * 5, 15, (float)Math.Sin(a) * 5, new ModelBox(-1, 0, -1, 2, 18, 2, 48, 0));
+            t.Ry = (float)(i * Math.PI * -2 / 8 + Math.PI / 2);
+            m.Parts.Add(t);
+        }
+        return m;
+    }
+
+    private static EntityModel GhastModel(string kind)
+    {
+        var m = new EntityModel { Kind = kind, Texture = EntityTextures.Id("ghast"), Height = 4f, Shadow = 3f, Scale = new Vector3(4.5f) };
+        m.Parts.Add(P("body", 0, 8, 0, new ModelBox(-8, -8, -8, 16, 16, 16, 0, 0)));
+        for (int i = 0; i < 9; i++)
+            m.Parts.Add(P("t" + i, ((i % 3 - (i / 3 % 2) * 0.5f + 0.25f) / 2f * 2f - 1f) * 5f, 15, (i / 3 / 2f * 2f - 1f) * 5f, new ModelBox(-1, 0, -1, 2, 9, 2, 0, 0)));
+        return m;
+    }
+
+    private static EntityModel SilverfishModel(string kind)
+    {
+        var m = new EntityModel { Kind = kind, Texture = EntityTextures.Id("silverfish"), Height = 0.3f, Shadow = 0.3f };
+        m.Parts.Add(P("b0", 0, 22, -3.5f, new ModelBox(-1.5f, 0, -1, 3, 2, 2, 0, 0)));
+        m.Parts.Add(P("b1", 0, 21, -1.5f, new ModelBox(-2, 0, -1, 4, 3, 2, 0, 4)));
+        m.Parts.Add(P("b2", 0, 20, 1, new ModelBox(-3, 0, -1.5f, 6, 4, 3, 0, 9)));
+        m.Parts.Add(P("b3", 0, 21, 4, new ModelBox(-1.5f, 0, -1.5f, 3, 3, 3, 0, 16)));
         return m;
     }
 
@@ -281,6 +316,22 @@ public static class EntityGeometry
 
     private static float Wrap(float a) { a %= 360; if (a >= 180) a -= 360; if (a < -180) a += 360; return a; }
 
+    /// <summary>setRotationAngles inputs: limb swing f, swing amount f1, age f2, head yaw f3 and pitch f4 (degrees).</summary>
+    private readonly record struct Limbs(float F, float F1, float F2, float F3, float F4);
+
+    private const float D2R = MathF.PI / 180f;
+
+    /// <summary>The pose per model kind (kinds not listed keep their rest pose).</summary>
+    private static readonly Dictionary<string, Action<EntityModel, VisionEntity, Limbs>> Posers = new(StringComparer.Ordinal)
+    {
+        ["player"] = PoseBiped, ["zombie"] = PoseBiped, ["pigzombie"] = PoseBiped, ["skeleton"] = PoseBiped, ["enderman"] = PoseBiped,
+        ["creeper"] = PoseCreeper,
+        ["spider"] = PoseSpider, ["cavespider"] = PoseSpider,
+        ["pig"] = PoseQuadruped, ["cow"] = PoseQuadruped, ["sheep"] = PoseQuadruped,
+        ["chicken"] = PoseChicken,
+        ["wolf"] = PoseWolf,
+    };
+
     /// <summary>Applies the b1.8.1 setRotationAngles of the model kind (limb swing f, amount f1, age f2, head yaw f3, pitch f4).</summary>
     public static void Pose(EntityModel m, VisionEntity e)
     {
@@ -289,95 +340,119 @@ public static class EntityGeometry
         float f1 = (float)Math.Min(1, e.Speed * 4 * 4); // limbYaw ≈ speed·4, settled
         float f = (float)((Math.Abs(e.X) + Math.Abs(e.Z)) * 1.6); // limbSwing phase ≈ distance walked
         float f2 = (float)(e.Seed % 1000);
-        const float d2r = MathF.PI / 180f;
-        switch (m.Kind)
-        {
-            case "player" or "zombie" or "pigzombie" or "skeleton" or "enderman":
-            {
-                var head = m["head"]; var hat = m["hat"]; var bodyP = m["body"];
-                var ra = m["rarm"]; var la = m["larm"]; var rl = m["rleg"]; var ll = m["lleg"];
-                head.Ry = hat.Ry = f3 * d2r;
-                head.Rx = hat.Rx = f4 * d2r;
-                ra.Rx = MathF.Cos(f * 0.6662f + MathF.PI) * 2f * f1 * 0.5f;
-                la.Rx = MathF.Cos(f * 0.6662f) * 2f * f1 * 0.5f;
-                rl.Rx = MathF.Cos(f * 0.6662f) * 1.4f * f1;
-                ll.Rx = MathF.Cos(f * 0.6662f + MathF.PI) * 1.4f * f1;
-                if (m.Kind == "player" && e.HeldItem > 0) ra.Rx = ra.Rx * 0.5f - MathF.PI / 10f;
-                if (m.Kind == "enderman") { ra.Rx *= 0.5f; la.Rx *= 0.5f; rl.Rx = Math.Clamp(rl.Rx * 0.5f, -0.4f, 0.4f); ll.Rx = Math.Clamp(ll.Rx * 0.5f, -0.4f, 0.4f); }
-                if (m.Kind is "zombie" or "pigzombie" or "skeleton")
-                {
-                    // ModelZombie: arms held straight forward.
-                    ra.Ry = -0.1f; la.Ry = 0.1f;
-                    ra.Rx = la.Rx = -MathF.PI / 2f;
-                }
-                if (e.Sneaking && m.Kind == "player")
-                {
-                    bodyP.Rx = 0.5f;
-                    ra.Rx += 0.4f; la.Rx += 0.4f;
-                    rl.Pz = ll.Pz = 4f;
-                    rl.Py = ll.Py = 9f;
-                    head.Py = hat.Py = 1f;
-                }
-                ra.Rz = MathF.Cos(f2 * 0.09f) * 0.05f + 0.05f;
-                la.Rz = -(MathF.Cos(f2 * 0.09f) * 0.05f + 0.05f);
-                ra.Rx += MathF.Sin(f2 * 0.067f) * 0.05f;
-                la.Rx -= MathF.Sin(f2 * 0.067f) * 0.05f;
-                break;
-            }
-            case "creeper":
-                m["head"].Ry = f3 * d2r; m["head"].Rx = f4 * d2r;
-                m["leg1"].Rx = MathF.Cos(f * 0.6662f) * 1.4f * f1;
-                m["leg2"].Rx = MathF.Cos(f * 0.6662f + MathF.PI) * 1.4f * f1;
-                m["leg3"].Rx = MathF.Cos(f * 0.6662f + MathF.PI) * 1.4f * f1;
-                m["leg4"].Rx = MathF.Cos(f * 0.6662f) * 1.4f * f1;
-                break;
-            case "spider" or "cavespider":
-            {
-                m["head"].Ry = f3 * d2r; m["head"].Rx = f4 * d2r;
-                const float q = MathF.PI / 4f, s8 = 0.3926991f;
-                float[] rz = [-q, q, -q * 0.74f, q * 0.74f, -q * 0.74f, q * 0.74f, -q, q];
-                float[] ry = [s8 * 2, -s8 * 2, s8, -s8, -s8, s8, -s8 * 2, s8 * 2];
-                float[] sw =
-                [
-                    -(MathF.Cos(f * 0.6662f * 2f) * 0.4f) * f1, -(MathF.Cos(f * 0.6662f * 2f + MathF.PI) * 0.4f) * f1,
-                    -(MathF.Cos(f * 0.6662f * 2f + MathF.PI / 2) * 0.4f) * f1, -(MathF.Cos(f * 0.6662f * 2f + MathF.PI * 1.5f) * 0.4f) * f1,
-                ];
-                for (int i = 0; i < 8; i++)
-                {
-                    var leg = m["leg" + (i + 1)];
-                    leg.Rz = rz[i];
-                    leg.Ry = ry[i] + (i % 2 == 0 ? sw[i / 2] : -sw[i / 2]);
-                }
-                break;
-            }
-            case "pig" or "cow" or "sheep":
-                m["head"].Ry = f3 * d2r; m["head"].Rx = f4 * d2r;
-                for (int i = 1; i <= 4; i++)
-                {
-                    float a = MathF.Cos(f * 0.6662f + (i is 2 or 3 ? MathF.PI : 0)) * 1.4f * f1;
-                    m["leg" + i].Rx = a;
-                    if (m.Kind == "sheep") m["woolleg" + i].Rx = a;
-                }
-                if (m.Kind == "sheep") { m["woolhead"].Ry = m["head"].Ry; m["woolhead"].Rx = m["head"].Rx; }
-                break;
-            case "chicken":
-                m["head"].Ry = f3 * d2r; m["head"].Rx = -f4 * d2r;
-                m["leg1"].Rx = MathF.Cos(f * 0.6662f) * 1.4f * f1;
-                m["leg2"].Rx = MathF.Cos(f * 0.6662f + MathF.PI) * 1.4f * f1;
-                break;
-            case "wolf":
-                m["head"].Ry = f3 * d2r; m["head"].Rx = f4 * d2r;
-                for (int i = 1; i <= 4; i++) m["leg" + i].Rx = MathF.Cos(f * 0.6662f + (i is 2 or 3 ? MathF.PI : 0)) * 1.4f * f1;
-                break;
-        }
-        if (m.Kind == "sheep" && (e.Variant & 16) != 0)
-            foreach (var p in m.Parts.Where(p => p.Name.StartsWith("wool"))) p.Hidden = true;
-        if (m.Kind == "sheep")
-        {
-            uint fleece = EntityTextures.Fleece(e.Variant & 15);
-            foreach (var p in m.Parts.Where(p => p.Name.StartsWith("wool"))) p.Tint = fleece;
-        }
+        if (Posers.TryGetValue(m.Kind, out var pose)) pose(m, e, new Limbs(f, f1, f2, f3, f4));
+        if (m.Kind == "sheep") SheepWool(m, e);
         if (m.Kind == "slime") m.Scale = new Vector3(Math.Max(1, e.Variant));
+    }
+
+    /// <summary>Sheared sheep hide the wool layer; the wool takes the fleece colour.</summary>
+    private static void SheepWool(EntityModel m, VisionEntity e)
+    {
+        if ((e.Variant & 16) != 0)
+            foreach (var p in m.Parts.Where(p => p.Name.StartsWith("wool"))) p.Hidden = true;
+        uint fleece = EntityTextures.Fleece(e.Variant & 15);
+        foreach (var p in m.Parts.Where(p => p.Name.StartsWith("wool"))) p.Tint = fleece;
+    }
+
+    private static void LookHead(EntityModel m, Limbs l)
+    {
+        m["head"].Ry = l.F3 * D2R; m["head"].Rx = l.F4 * D2R;
+    }
+
+    private static void PoseBiped(EntityModel m, VisionEntity e, Limbs l)
+    {
+        float f = l.F, f1 = l.F1, f2 = l.F2;
+        var head = m["head"]; var hat = m["hat"];
+        var ra = m["rarm"]; var la = m["larm"]; var rl = m["rleg"]; var ll = m["lleg"];
+        head.Ry = hat.Ry = l.F3 * D2R;
+        head.Rx = hat.Rx = l.F4 * D2R;
+        ra.Rx = MathF.Cos(f * 0.6662f + MathF.PI) * 2f * f1 * 0.5f;
+        la.Rx = MathF.Cos(f * 0.6662f) * 2f * f1 * 0.5f;
+        rl.Rx = MathF.Cos(f * 0.6662f) * 1.4f * f1;
+        ll.Rx = MathF.Cos(f * 0.6662f + MathF.PI) * 1.4f * f1;
+        if (m.Kind == "player" && e.HeldItem > 0) ra.Rx = ra.Rx * 0.5f - MathF.PI / 10f;
+        if (m.Kind == "enderman") { ra.Rx *= 0.5f; la.Rx *= 0.5f; rl.Rx = Math.Clamp(rl.Rx * 0.5f, -0.4f, 0.4f); ll.Rx = Math.Clamp(ll.Rx * 0.5f, -0.4f, 0.4f); }
+        if (m.Kind is "zombie" or "pigzombie" or "skeleton")
+        {
+            // ModelZombie: arms held straight forward.
+            ra.Ry = -0.1f; la.Ry = 0.1f;
+            ra.Rx = la.Rx = -MathF.PI / 2f;
+        }
+        if (e.Sneaking && m.Kind == "player") Sneak(m);
+        ra.Rz = MathF.Cos(f2 * 0.09f) * 0.05f + 0.05f;
+        la.Rz = -(MathF.Cos(f2 * 0.09f) * 0.05f + 0.05f);
+        ra.Rx += MathF.Sin(f2 * 0.067f) * 0.05f;
+        la.Rx -= MathF.Sin(f2 * 0.067f) * 0.05f;
+    }
+
+    private static void Sneak(EntityModel m)
+    {
+        var head = m["head"]; var hat = m["hat"];
+        var ra = m["rarm"]; var la = m["larm"]; var rl = m["rleg"]; var ll = m["lleg"];
+        m["body"].Rx = 0.5f;
+        ra.Rx += 0.4f; la.Rx += 0.4f;
+        rl.Pz = ll.Pz = 4f;
+        rl.Py = ll.Py = 9f;
+        head.Py = hat.Py = 1f;
+    }
+
+    private static void PoseCreeper(EntityModel m, VisionEntity e, Limbs l)
+    {
+        float f = l.F, f1 = l.F1;
+        LookHead(m, l);
+        m["leg1"].Rx = MathF.Cos(f * 0.6662f) * 1.4f * f1;
+        m["leg2"].Rx = MathF.Cos(f * 0.6662f + MathF.PI) * 1.4f * f1;
+        m["leg3"].Rx = MathF.Cos(f * 0.6662f + MathF.PI) * 1.4f * f1;
+        m["leg4"].Rx = MathF.Cos(f * 0.6662f) * 1.4f * f1;
+    }
+
+    private static void PoseSpider(EntityModel m, VisionEntity e, Limbs l)
+    {
+        float f = l.F, f1 = l.F1;
+        LookHead(m, l);
+        const float q = MathF.PI / 4f, s8 = 0.3926991f;
+        float[] rz = [-q, q, -q * 0.74f, q * 0.74f, -q * 0.74f, q * 0.74f, -q, q];
+        float[] ry = [s8 * 2, -s8 * 2, s8, -s8, -s8, s8, -s8 * 2, s8 * 2];
+        float[] sw =
+        [
+            -(MathF.Cos(f * 0.6662f * 2f) * 0.4f) * f1, -(MathF.Cos(f * 0.6662f * 2f + MathF.PI) * 0.4f) * f1,
+            -(MathF.Cos(f * 0.6662f * 2f + MathF.PI / 2) * 0.4f) * f1, -(MathF.Cos(f * 0.6662f * 2f + MathF.PI * 1.5f) * 0.4f) * f1,
+        ];
+        for (int i = 0; i < 8; i++)
+        {
+            var leg = m["leg" + (i + 1)];
+            leg.Rz = rz[i];
+            leg.Ry = ry[i] + (i % 2 == 0 ? sw[i / 2] : -sw[i / 2]);
+        }
+    }
+
+    private static void PoseQuadruped(EntityModel m, VisionEntity e, Limbs l)
+    {
+        float f = l.F, f1 = l.F1;
+        LookHead(m, l);
+        bool sheep = m.Kind == "sheep";
+        for (int i = 1; i <= 4; i++)
+        {
+            float a = MathF.Cos(f * 0.6662f + (i is 2 or 3 ? MathF.PI : 0)) * 1.4f * f1;
+            m["leg" + i].Rx = a;
+            if (sheep) m["woolleg" + i].Rx = a;
+        }
+        if (sheep) { m["woolhead"].Ry = m["head"].Ry; m["woolhead"].Rx = m["head"].Rx; }
+    }
+
+    private static void PoseChicken(EntityModel m, VisionEntity e, Limbs l)
+    {
+        float f = l.F, f1 = l.F1;
+        m["head"].Ry = l.F3 * D2R; m["head"].Rx = -l.F4 * D2R;
+        m["leg1"].Rx = MathF.Cos(f * 0.6662f) * 1.4f * f1;
+        m["leg2"].Rx = MathF.Cos(f * 0.6662f + MathF.PI) * 1.4f * f1;
+    }
+
+    private static void PoseWolf(EntityModel m, VisionEntity e, Limbs l)
+    {
+        float f = l.F, f1 = l.F1;
+        LookHead(m, l);
+        for (int i = 1; i <= 4; i++) m["leg" + i].Rx = MathF.Cos(f * 0.6662f + (i is 2 or 3 ? MathF.PI : 0)) * 1.4f * f1;
     }
 
     // ------------------------------------------------------------------ quads
@@ -457,10 +532,14 @@ public static class EntityGeometry
     }
 
     /// <summary>Entity width (EntityLiving.setSize) for the fire layers.</summary>
-    public static float Width(string kind, int variant) => kind switch
+    public static float Width(string kind, int variant) =>
+        kind == "slime" ? 0.6f * Math.Max(1, variant) : kind != null && Widths.TryGetValue(kind, out var w) ? w : 0.6f;
+
+    /// <summary>Entity widths (b1.8.1 setSize) of the models not 0.6 wide; slimes scale with their size.</summary>
+    private static readonly Dictionary<string, float> Widths = new(StringComparer.Ordinal)
     {
-        "spider" => 1.4f, "cavespider" => 0.7f, "pig" or "cow" or "sheep" => 0.9f, "chicken" => 0.3f, "slime" => 0.6f * Math.Max(1, variant),
-        "ghast" => 4f, "wolf" => 0.8f, "squid" => 0.95f, "silverfish" => 0.3f, _ => 0.6f,
+        ["spider"] = 1.4f, ["cavespider"] = 0.7f, ["pig"] = 0.9f, ["cow"] = 0.9f, ["sheep"] = 0.9f, ["chicken"] = 0.3f, ["ghast"] = 4f, ["wolf"] = 0.8f,
+        ["squid"] = 0.95f, ["silverfish"] = 0.3f,
     };
 
     /// <summary>

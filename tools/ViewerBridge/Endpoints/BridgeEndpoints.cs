@@ -293,34 +293,7 @@ public static class BridgeEndpoints
         SettingsProxy.Map(v1);
 
         // ---------------- supervisor writes with identity ----------------
-        v1.MapPost("/sup/viewer/chat", async (HttpContext ctx, SupervisorClient sup) =>
-        {
-            var id = ctx.Identity();
-            if (!id.Has("chat")) return RequireRole(ctx, "chat");
-            if (id.Player.Length == 0) return ApiErrors.Forbidden("no linked player");
-            var obj = SupervisorProxy.ParseObject(ctx.BodyBytes()) ?? throw new ArgumentException("body must be a JSON object");
-            if (obj.ContainsKey("player") || obj.ContainsKey("allow_commands") || obj.ContainsKey("who")) return ApiErrors.BadRequest("player and allow_commands are set by the bridge");
-            if (obj.Any(kv => kv.Key is not ("bot" or "text" or "request_id"))) return ApiErrors.BadRequest("unknown body keys");
-            string? bot = (string?)obj["bot"], text = (string?)obj["text"], requestId = (string?)obj["request_id"];
-            if (string.IsNullOrWhiteSpace(bot) || bot.Length > 64) return ApiErrors.BadRequest("bot required");
-            if (string.IsNullOrWhiteSpace(text) || text.Trim().Length > 256) return ApiErrors.BadRequest("text: 1-256 characters");
-            if (requestId is not { Length: >= 8 and <= 64 } || !requestId.All(c => char.IsAsciiLetterOrDigit(c) || c is '_' or '-')) return ApiErrors.BadRequest("request_id: 8-64 of A-Z a-z 0-9 _ -");
-            var up = new JsonObject
-            {
-                ["bot"] = bot.Trim(), ["text"] = text.Trim(), ["player"] = id.Player, ["allow_commands"] = id.Has("commands"), ["request_id"] = requestId,
-            };
-            HttpResponseMessage res;
-            try { res = await sup.SendAsync(HttpMethod.Post, "api/viewer/chat", new StringContent(up.ToJsonString(), Encoding.UTF8, "application/json"), TimeSpan.FromSeconds(8), false, ctx.RequestAborted); }
-            catch (SupervisorUnavailableException ex) { return ApiErrors.Result(503, "upstream_unavailable", ex.Message); }
-            using (res)
-            {
-                if (!res.IsSuccessStatusCode) { await SupervisorProxy.MapErrorAsync(ctx, res, "viewer/chat", true); return Results.Empty; }
-                var reply = JsonNode.Parse(await res.Content.ReadAsByteArrayAsync(ctx.RequestAborted)) as JsonObject;
-                bool accepted = reply?["accepted"]?.GetValue<bool>() == true;
-                long? seq = reply?["id"] is JsonValue sv && sv.TryGetValue<long>(out var s) ? s : null;
-                return Json(new ChatAccepted(accepted, requestId, seq is > 0 ? seq : null, accepted ? null : "the bot did not take the line"), 202);
-            }
-        });
+        v1.MapPost("/sup/viewer/chat", (HttpContext ctx, SupervisorClient sup) => ViewerChatAsync(ctx, sup));
 
         v1.MapPost("/sup/admin/shard/import", async (HttpContext ctx, SupervisorClient sup) =>
         {
@@ -383,6 +356,54 @@ public static class BridgeEndpoints
         if (b.Selection.Mode is not ("subtree" or "filter" or "person" or "pack")) throw new ArgumentException("selection.mode");
     }
 
+    /// <summary>POST /v1/sup/viewer/chat: a viewer line as the linked player (the bridge sets player and allow_commands).</summary>
+    private static async Task<IResult> ViewerChatAsync(HttpContext ctx, SupervisorClient sup)
+    {
+        var id = ctx.Identity();
+        if (!id.Has("chat")) return RequireRole(ctx, "chat");
+        if (id.Player.Length == 0) return ApiErrors.Forbidden("no linked player");
+        var obj = SupervisorProxy.ParseObject(ctx.BodyBytes()) ?? throw new ArgumentException("body must be a JSON object");
+        if (ChatBodyError(obj) is { } bad) return ApiErrors.BadRequest(bad);
+        string bot = (string)obj["bot"]!, text = (string)obj["text"]!, requestId = (string)obj["request_id"]!;
+        var up = new JsonObject
+        {
+            ["bot"] = bot.Trim(), ["text"] = text.Trim(), ["player"] = id.Player, ["allow_commands"] = id.Has("commands"), ["request_id"] = requestId,
+        };
+        HttpResponseMessage res;
+        try { res = await sup.SendAsync(HttpMethod.Post, "api/viewer/chat", new StringContent(up.ToJsonString(), Encoding.UTF8, "application/json"), TimeSpan.FromSeconds(8), false, ctx.RequestAborted); }
+        catch (SupervisorUnavailableException ex) { return ApiErrors.Result(503, "upstream_unavailable", ex.Message); }
+        using (res)
+        {
+            if (!res.IsSuccessStatusCode) { await SupervisorProxy.MapErrorAsync(ctx, res, "viewer/chat", true); return Results.Empty; }
+            var reply = JsonNode.Parse(await res.Content.ReadAsByteArrayAsync(ctx.RequestAborted)) as JsonObject;
+            return Json(Accepted(reply, requestId), 202);
+        }
+    }
+
+    /// <summary>The supervisor's answer: whether the bot took the line, and the feed id of it.</summary>
+    private static ChatAccepted Accepted(JsonObject? reply, string requestId)
+    {
+        bool accepted = reply?["accepted"]?.GetValue<bool>() == true;
+        long? seq = reply?["id"] is JsonValue sv && sv.TryGetValue<long>(out var s) ? s : null;
+        return new ChatAccepted(accepted, requestId, seq is > 0 ? seq : null, accepted ? null : "the bot did not take the line");
+    }
+
+    /// <summary>Why the viewer's chat body is refused (keys the bridge sets, unknown keys, bot, text, request id); null = fine.</summary>
+    private static string? ChatBodyError(JsonObject obj)
+    {
+        if (obj.ContainsKey("player") || obj.ContainsKey("allow_commands") || obj.ContainsKey("who")) return "player and allow_commands are set by the bridge";
+        if (obj.Any(kv => kv.Key is not ("bot" or "text" or "request_id"))) return "unknown body keys";
+        return ChatFieldError((string?)obj["bot"], (string?)obj["text"], (string?)obj["request_id"]);
+    }
+
+    private static string? ChatFieldError(string? bot, string? text, string? requestId)
+    {
+        if (string.IsNullOrWhiteSpace(bot) || bot.Length > 64) return "bot required";
+        if (string.IsNullOrWhiteSpace(text) || text.Trim().Length > 256) return "text: 1-256 characters";
+        if (requestId is not { Length: >= 8 and <= 64 } || !requestId.All(c => char.IsAsciiLetterOrDigit(c) || c is '_' or '-')) return "request_id: 8-64 of A-Z a-z 0-9 _ -";
+        return null;
+    }
+
     /// <summary>multipart/form-data: a <c>shard</c> file part (≤ 48 MB) and an <c>options</c> part (ShardImportOptions JSON, strict).</summary>
     private static async Task<(byte[] Shard, ShardImportOptionsBody Options)> ReadUploadAsync(HttpContext ctx)
     {
@@ -392,15 +413,24 @@ public static class BridgeEndpoints
         if (file.Length > 48L * 1024 * 1024) throw new InvalidDataException("shard too large");
         using var ms = new MemoryStream();
         await file.CopyToAsync(ms, ctx.RequestAborted);
-        var optionsText = form["options"].ToString();
+        var options = ImportOptions(form["options"].ToString());
+        return (ms.ToArray(), options);
+    }
+
+    /// <summary>The options part (strict ShardImportOptions JSON; empty = defaults), each field checked.</summary>
+    private static ShardImportOptionsBody ImportOptions(string optionsText)
+    {
         ShardImportOptionsBody options;
         try { options = optionsText.Length == 0 ? new ShardImportOptionsBody() : JsonSerializer.Deserialize<ShardImportOptionsBody>(optionsText, Strict) ?? new ShardImportOptionsBody(); }
         catch (JsonException) { throw new ArgumentException("options: invalid ShardImportOptions JSON"); }
-        if (options.Mode is not ("merge" or "replace-section" or "swap-pack" or "add-mode" or "remove-mode")) throw new ArgumentException("options.mode");
-        if (options.Conflict is not ("keep-newer" or "prefer-shard" or "keep-mine")) throw new ArgumentException("options.conflict");
+        if (options.Mode is not { } mode || !ImportModes.Contains(mode)) throw new ArgumentException("options.mode");
+        if (options.Conflict is not { } conflict || !ImportConflicts.Contains(conflict)) throw new ArgumentException("options.conflict");
         if (options.MaxUsd is < 0 or > 5) throw new ArgumentException("options.max_usd: 0..5");
-        return (ms.ToArray(), options);
+        return options;
     }
+
+    private static readonly HashSet<string> ImportModes = new(StringComparer.Ordinal) { "merge", "replace-section", "swap-pack", "add-mode", "remove-mode" };
+    private static readonly HashSet<string> ImportConflicts = new(StringComparer.Ordinal) { "keep-newer", "prefer-shard", "keep-mine" };
 
     private static async Task<ScriptVersionDetail?> ScriptVersionAsync(HttpContext ctx, BankHost banks, SupervisorClient sup, string source, string name, int? v)
     {

@@ -153,8 +153,13 @@ public sealed class WorldMemory : IDisposable
         _cts = null;
     }
 
+    private int _disposed;
+
+    /// <summary>Stops the loop, writes every live column (the next join compares against exactly this) and detaches. Once: the
+    /// shutdown flushes a body's memory before the db closes, and its later teardown must not write again.</summary>
     public void Dispose()
     {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
         _cts?.Cancel();
         try { _loop?.Wait(TimeSpan.FromSeconds(3)); } catch { /* cancelled */ }
         _loop = null;
