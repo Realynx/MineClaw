@@ -432,6 +432,10 @@ public sealed class WorkbenchState
     public string? LoadedBill { get; set; }
     public int LoadedCount { get; set; }
     public DateTimeOffset? ReadyAt { get; set; }
+    /// <summary>The recipe a furnace was loaded with (its bill may be gone by the time it is collected: it still is).</summary>
+    public string? LoadedRecipe { get; set; }
+    /// <summary>When the furnace was loaded (its expected progress: an item every 10 s).</summary>
+    public DateTimeOffset? LoadedAt { get; set; }
     /// <summary>A brewing stand's fuel (brews left) as the colony last left it; null = unknown.</summary>
     public int? Fuel { get; set; }
     /// <summary>A furnace's fuel choice (StoryFuels.Choices); null = auto.</summary>

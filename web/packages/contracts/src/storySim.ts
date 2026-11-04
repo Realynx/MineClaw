@@ -1817,6 +1817,10 @@ export class StorySim {
       table.rev = this.bump(c);
       return { ok: true, ids, rev: c.rev };
     }
+    if (body.op === 'release_claim') {
+      // The sim reserves nothing for builds' chains: a release is a no-op that says so.
+      return { ok: true, rev: c.rev, note: `build ${body.build} holds nothing for ${body.item}` };
+    }
     if (body.op !== 'add' && body.op !== 'reorder') {
       const auto = [...c.benches.values()]
         .flatMap((x) => x.v.bills)

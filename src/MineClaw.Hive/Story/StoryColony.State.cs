@@ -72,11 +72,12 @@ public sealed partial class StoryColony
                     ["contents"] = new JsonArray(st.Contents.Select(c => (JsonNode)c.Json()).ToArray()), ["free_slots"] = st.FreeSlots, ["known_at"] = st.KnownAt,
                     ["enchanted"] = EnchantedJson(st),
                 }).ToArray()),
+                ["reservations"] = ClaimsJson(), // who holds what (StoryColony.Claims.cs), every time: it moves with the stock
                 ["workbenches"] = new JsonArray(Benches.Where(b => New(b.Rev)).Select(b => (JsonNode)new JsonObject
                 {
                     ["pos"] = b.Pos.Json(), ["kind"] = b.Kind, ["label"] = b.Label,
                     ["supported"] = w != null ? StoryRecipes.SupportedIn(w.Data, b.Kind) : StoryRecipes.Supported.Contains(b.Kind),
-                    ["loaded"] = b.LoadedBill, ["ready_at"] = b.ReadyAt, ["station"] = StationInfo(b),
+                    ["loaded"] = b.LoadedBill, ["ready_at"] = b.ReadyAt, ["station"] = StationInfo(b), ["smelting"] = SmeltingJson(b),
                     ["fuel"] = b.Kind == "furnace" ? b.FuelSetting ?? StoryFuels.Auto : null,
                     ["fuel_choices"] = b.Kind == "furnace" && w != null ? new JsonArray(StoryFuels.ValidFor(w.Data).Select(f => (JsonNode)f!).ToArray()) : null,
                     ["fuel_credit"] = b.Kind == "furnace" ? Math.Round(b.FuelCredit, 2) : (double?)null,

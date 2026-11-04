@@ -20,6 +20,7 @@ import {
   type StoryFilter,
   type StoryPawn,
   type StoryRecipe,
+  type StoryReservation,
   type StoryStorage,
   type StoryWorkbench,
 } from '@mineclaw/contracts';
@@ -65,6 +66,9 @@ import {
   fuelLabel,
   fuelLine,
   fuelTable,
+  reservationLine,
+  reservationRows,
+  smeltingLine,
   enchantLabel,
   recipeModes,
   requiresLine,
@@ -872,6 +876,12 @@ export function StorageInspector({
         {chests.length === 1 ? (
           <ContainerContents target={{ dim: 0, x: keys[0]![0], y: keys[0]![1], z: keys[0]![2] }} heading />
         ) : null}
+        <ReservationList
+          reservations={state?.reservations}
+          items={new Set(list.flatMap((st) => (st?.contents ?? []).map(([i, m]) => `${i}:${m}`)))}
+          canWrite={canWrite}
+          write={write}
+        />
         {!registered ? (
           <Button
             size="sm"
@@ -1055,6 +1065,46 @@ export function UndesignatedBench({
 }
 
 /** A furnace's fuel choice: one icon button per fuel the version burns (the pressed one is the setting). */
+/** What builds hold of these items (the colony's reservations), each with a Release that frees that build's claim. */
+export function ReservationList({
+  reservations,
+  items,
+  canWrite,
+  write,
+}: {
+  reservations: readonly StoryReservation[] | null | undefined;
+  items: ReadonlySet<string>;
+  canWrite: boolean;
+  write: StoryWrite;
+}) {
+  const rows = reservationRows(reservations, items);
+  if (rows.length === 0) return null;
+  return (
+    <div className="space-y-0.5" data-testid="reservations">
+      <div className="text-[11px] font-semibold text-muted">Reserved for builds</div>
+      <ul className="space-y-0.5">
+        {rows.map((r) => (
+          <li key={`${r.build}|${r.forItem}|${r.label}`} className="flex items-center gap-1.5 rounded bg-surface-2 px-1.5 py-0.5 text-[11px]">
+            <ItemIcon id={r.item[0]} meta={Math.max(0, r.item[1])} size={14} />
+            <span className="min-w-0 flex-1 truncate" title={r.chain ? 'an input of the chain that crafts it' : undefined}>
+              {reservationLine(r)}
+            </span>
+            <button
+              type="button"
+              disabled={!canWrite}
+              onClick={() => void write('story.bills', { op: 'release_claim', build: r.build, item: r.forItem } as never)}
+              className="rounded px-1 text-[10.5px] text-accent hover:bg-surface-3"
+              title={r.chain ? 'Stop crafting it for the build (the build waits for it)' : 'Pause the build: it lets go of what it holds'}
+            >
+              Release
+            </button>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 export function FuelPicker({
   value,
   choices,
@@ -1150,6 +1200,11 @@ export function BillsInspector({
             onPick={(f) => void write('story.workbenches', fuelBody(pos, f) as never)}
           />
         ) : null}
+        {smeltingLine(bench) ? (
+          <p className="rounded-md bg-surface-2 px-2 py-1 text-[11px] text-muted" data-testid="furnace-smelting">
+            {smeltingLine(bench)}
+          </p>
+        ) : null}
         {stationLines(bench).length ? (
           <ul className="space-y-0.5 rounded-md bg-surface-2 px-2 py-1.5 text-[11px] text-muted" data-testid="station-facts">
             {stationLines(bench).map((l) => (
@@ -1182,6 +1237,12 @@ export function BillsInspector({
             Release
           </Button>
         </div>
+        <ReservationList
+          reservations={state?.reservations}
+          items={new Set((recipes.data ?? []).filter((r) => bench.bills.some((b) => b.recipe === r.id)).flatMap((r) => r.inputs.flatMap((i) => (i.options ?? []).map(([a, m]) => `${a}:${m}`))))}
+          canWrite={canWrite}
+          write={write}
+        />
         <ol className="space-y-1" data-testid="bills">
           {bench.bills.map((b, i) => {
             const r = recipeOf(b.recipe);

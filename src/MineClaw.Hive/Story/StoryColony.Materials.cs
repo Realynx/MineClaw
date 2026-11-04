@@ -76,8 +76,9 @@ public sealed partial class StoryColony
                 }
         }
         foreach (var bench in Benches)
-            if (bench.LoadedBill is { } lb && bench.Bills.FirstOrDefault(x => x.Id == lb) is { } bill && StoryRecipes.Get(w.Data, bill.Recipe) is { } r)
-                Add(r.Output.Id, r.Output.Meta, bench.LoadedCount);
+            if (bench.LoadedBill is { } lb && (bench.LoadedRecipe ?? bench.Bills.FirstOrDefault(x => x.Id == lb)?.Recipe) is { } rid
+                && StoryRecipes.Get(w.Data, rid) is { } r)
+                Add(r.Output.Id, r.Output.Meta, bench.LoadedCount); // even when its bill is gone: it is collected all the same
         foreach (var k in pool.Where(kv => kv.Value <= 0).Select(kv => kv.Key).ToList()) pool.Remove(k);
         return pool;
     }
@@ -200,6 +201,7 @@ public sealed partial class StoryColony
         using var scope = ReferenceEquals(GameData.Current, w.Data) ? null : GameData.Override(w.Data);
         var pool = Pool(w);
         var reserved = new Dictionary<(int, int), int>();
+        var claims = new List<StockClaim>();
         var wants = new List<Want>();
         var hand = new List<HandCraft>();
         StationWant? station = null;
@@ -226,8 +228,10 @@ public sealed partial class StoryColony
                 var item = liquid ? "bucket" : grp.Key;
                 var key = liquid ? (Id: Items.Bucket, Meta: 0) : KeyOfItem(w, item, grp.First().Id);
                 int need = liquid ? 1 : grp.Count();
-                int have = liquid && bucketCovered ? 1 : Take(pool, key, need);
+                bool carried = liquid && bucketCovered;
+                int have = carried ? 1 : Take(pool, key, need);
                 Reserve(reserved, key, have);
+                if (have > 0 && !carried) claims.Add(new StockClaim(key, have, b.Id, item, null)); // who holds what (StoryColony.Claims.cs)
                 int shortN = need - have, crafting = 0;
                 string via = "none";
                 var chain = new List<string>();
@@ -257,13 +261,21 @@ public sealed partial class StoryColony
                         var (can, plan, after, fuel) = MostCraftable(key, shortN, pool);
                         if (can > 0 && plan != null && after != null)
                         {
-                            foreach (var u in plan.Used) Reserve(reserved, (u.Id, u.Damage), u.Count);
-                            if (fuel.Count > 0) Reserve(reserved, (fuel.Id, 0), fuel.Count);
+                            // The chain's inputs are claimed for it; a bill that makes one of its steps may still use them.
+                            var chainOut = plan.Steps.Select(s => s.OutputId).ToHashSet();
+                            foreach (var u in plan.Used)
+                            {
+                                Reserve(reserved, (u.Id, u.Damage), u.Count);
+                                claims.Add(new StockClaim((u.Id, u.Damage), u.Count, b.Id, item, chainOut));
+                            }
+                            if (fuel.Count > 0) { Reserve(reserved, (fuel.Id, 0), fuel.Count); claims.Add(new StockClaim((fuel.Id, 0), fuel.Count, b.Id, item, chainOut)); }
                             pool = after;
                             crafting = can;
                             foreach (var s in plan.Steps)
                             {
                                 if (RecipeOf(w.Data, s, intermediate: (s.Recipe?.OutputId ?? -1) != key.Id) is not { } r) continue;
+                                // An owner's bill already makes this step (smelting the iron ore into ingots): no second, automatic one.
+                                if (OwnerMakes(w, s.OutputId)) { step++; continue; }
                                 int outputs = s.OutputCount;
                                 // A step whose bench the colony hasn't got yet waits (the bench is on its way, or asked for).
                                 if (s.IsSmelt) { if (hasFurnace) wants.Add(new Want(b.Id, b.Order, item, r, outputs, step++, "furnace")); }
@@ -301,6 +313,7 @@ public sealed partial class StoryColony
             if (!mats.Select(m => m.Key).SequenceEqual(b.Materials.Select(m => m.Key))) { b.Materials = mats; b.Rev = Bump(); }
         }
         _reserved = reserved;
+        _claims = claims;
         _freePool = pool;
         _handCrafts = hand;
         if (station?.Kind != _station?.Kind || station?.Spot != _station?.Spot || station?.Build != _station?.Build)
@@ -330,6 +343,9 @@ public sealed partial class StoryColony
                     continue;
                 }
                 if (bench.LoadedBill == bill.Id) continue; // smelting: collected first
+                // A pawn is on it (it fetched the ore, so the shortfall seems gone): it stays until that job ends, or its furnace load
+                // would have no bill to land on (live 11-04: three ingots smelted, never collected).
+                if (_current.Values.Any(c => c.SourceId == bill.Id)) continue;
                 bench.Bills.Remove(bill);
                 changed = true;
             }

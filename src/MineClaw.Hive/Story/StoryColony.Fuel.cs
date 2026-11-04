@@ -86,6 +86,25 @@ public sealed partial class StoryColony
         };
     }
 
+    /// <summary>
+    /// A loaded furnace as the colony expects it (nobody watches it smelt): <c>{recipe, input:[id,meta,n], output:[id,meta,n], loaded_at,
+    /// ready_at, estimated: true}</c>, an item every 10 s since it was loaded; null when it isn't loaded.
+    /// </summary>
+    private JsonObject? SmeltingJson(WorkbenchState bench)
+    {
+        if (bench.Kind != "furnace" || bench.LoadedBill == null || World is not { } w) return null;
+        var r = (bench.LoadedRecipe ?? bench.Bills.FirstOrDefault(b => b.Id == bench.LoadedBill)?.Recipe) is { } rid ? StoryRecipes.Get(w.Data, rid) : null;
+        int done = bench.LoadedAt is { } at ? Math.Clamp((int)((Now - at).TotalSeconds / StoryRecipes.SmeltSeconds), 0, bench.LoadedCount) : 0;
+        var input = r?.Inputs.FirstOrDefault()?.Options.FirstOrDefault();
+        return new JsonObject
+        {
+            ["recipe"] = r?.Id,
+            ["input"] = input is { } i ? new JsonArray(i.Id, Math.Max(0, i.Meta), bench.LoadedCount - done) : null,
+            ["output"] = r != null ? new JsonArray(r.Output.Id, r.Output.Meta, done) : null,
+            ["loaded_at"] = bench.LoadedAt, ["ready_at"] = bench.ReadyAt, ["estimated"] = true,
+        };
+    }
+
     /// <summary><c>POST …/workbenches {op:"fuel", pos, fuel}</c>: a furnace's fuel choice (auto, coal, charcoal, coal_or_charcoal, planks,
     /// logs, lava_bucket, blaze_rod, any — what the version has).</summary>
     private (JsonNode? Result, string? Error) SetBenchFuel(WorkbenchState bench, string? fuel)

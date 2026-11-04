@@ -1,7 +1,7 @@
 import { STORY_DEFAULT_RECIPES, StoryBillsRequest, StoryWorkbenchesRequest, type StoryBill } from '@mineclaw/contracts';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { BillDialog, FuelPicker } from '@/features/story/StoryInspector';
+import { BillDialog, FuelPicker, ReservationList } from '@/features/story/StoryInspector';
 import {
   addBillBody,
   draftOf,
@@ -10,6 +10,8 @@ import {
   fuelTable,
   newDraft,
   recipeLine,
+  reservationLine,
+  reservationRows,
   updateBillBody,
 } from '@/features/story/storage';
 
@@ -49,6 +51,24 @@ describe('station bills in the bill dialog', () => {
     ]);
     expect([...screen.getByLabelText<HTMLSelectElement>('Repeat mode').options].map((o) => o.value)).toEqual(['count', 'until', 'forever']);
     expect(screen.queryByLabelText('Enchant option')).toBeNull();
+  });
+});
+
+describe('reservations', () => {
+  it('lists what builds hold of the items shown and releases a claim', () => {
+    const list = [
+      { item: [15, 0] as [number, number], count: 3, build: 'b9306', forItem: 'bucket', chain: true },
+      { item: [5, -1] as [number, number], count: 8, build: 'b12', forItem: 'oak_fence', chain: true },
+      { item: [4, 0] as [number, number], count: 20, build: 'b3', forItem: 'cobblestone', chain: false },
+    ];
+    const rows = reservationRows(list, new Set(['15:0', '5:2']));
+    expect(rows.map((r) => r.build)).toEqual(['b12', 'b9306']); // planks of any kind match birch planks; cobblestone isn't shown here
+    expect(reservationLine(rows[1]!)).toBe('3 iron ore → build #b9306 (bucket, crafting it)');
+    const write = vi.fn(() => Promise.resolve(undefined));
+    render(<ReservationList reservations={list} items={new Set(['15:0'])} canWrite write={write as never} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Release' }));
+    expect(write).toHaveBeenCalledWith('story.bills', { op: 'release_claim', build: 'b9306', item: 'bucket' });
+    expect(StoryBillsRequest.safeParse({ op: 'release_claim', build: 'b9306', item: 'bucket' }).success).toBe(true);
   });
 });
 

@@ -1142,6 +1142,33 @@ Execution:
 - An owner's bill leaves what the builds reserved: when the stored ingredient is only there for a build, the bill is suspended
   with "the … in storage is reserved for builds".
 
+### Reservations (added 2026-11-04)
+
+The materials pass records who holds what (`StoryColony.Claims.cs`): a build's own item in storage (planks it will place), or an input
+of the chain that crafts it (the 3 iron ore a water build's bucket is smelted from, with the chain's step outputs). The state carries
+`reservations: [{item, count, build, for_item, chain}]`.
+- **A step of the chain is the chain's.** An owner's bill that makes one of a chain's step outputs may use that chain's reserved input
+  (smelting the bucket's iron ore into ingots is what the build needs): its product lands in storage or the furnace and the build's
+  next pass counts it (the furnace's load too), reserving the ingots instead. While an owner's live bill makes a step, the build adds
+  no automatic bill for it (no double smelting).
+- **Partial batches.** Only what is free (plus what the pawn holds) is used: a bill runs a smaller batch when some is free and waits
+  only when none is, naming the builds and the amounts: "3 iron ore reserved for build b12 (iron ore) — 0 free".
+- **Release.** `POST …/bills {op:"release_claim", build, item}` → `{build, item, done}`: a chain claim cancels the build's crafting of
+  that item (it waits for it, as cancelling its auto bill does); the build's own item pauses the build. The storage and bench inspectors
+  list what builds hold of their items, each with a Release.
+
+### Furnaces are collected (added 2026-11-04)
+
+- A furnace load lands on the furnace whatever became of its bill (an auto bill the build stopped wanting while the pawn walked: live
+  11-04, three ingots smelted and never collected). An auto bill with a job in flight stays until that job ends.
+- `done` counts on collection, never on loading: the collect job's "collected N" is what the bill gets; "still smelting K" keeps the
+  rest loaded and collects it later. The pawn stores what it took out by the storage rules (a build fetches it from there).
+- The furnace's expected progress (an item every 10 s since it was loaded) is in the workbench state, `smelting: {recipe, input,
+  output, loaded_at, ready_at, estimated}`; the materials pass counts the load's output for the builds.
+- The container panel estimates a furnace's slots between looks the same way (`estimated: true`, "estimated (smelting since)"): the
+  input goes down and the output up while it was fuelled (its fuel slot, plus a coal's worth that may have been burning; a lit furnace
+  burns on). A fresh look by any body replaces the estimate.
+
 ### Fuel (added 2026-11-04)
 
 A furnace's fuel is a bench setting with a per-bill override (`StoryFuels`, `StoryColony.Fuel.cs`):

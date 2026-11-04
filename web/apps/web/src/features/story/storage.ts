@@ -10,6 +10,7 @@ import {
   type StoryCategory,
   type StoryFilter,
   type StoryRecipe,
+  type StoryReservation,
   type StoryStoragePriority,
   type StoryFuelChoice,
   type StoryWorkbench,
@@ -358,6 +359,55 @@ export function stationLines(bench: Pick<StoryWorkbench, 'kind' | 'station'>): s
     if (s.fuel !== null && s.fuel !== undefined) out.push(`Fuel: ${s.fuel} brew${s.fuel === 1 ? '' : 's'} left`);
   }
   return out;
+}
+
+/** A loaded furnace as expected: "smelting: 2 iron ore left · 1 iron ingot out (estimated)"; empty when not loaded. */
+export function smeltingLine(bench: Pick<StoryWorkbench, 'smelting'>): string {
+  const sm = bench.smelting;
+  if (!sm) return '';
+  const left = sm.input ? `${sm.input[2]} ${storyItemLabel(sm.input[0], sm.input[1]).toLowerCase()} left` : '';
+  const out = sm.output ? `${sm.output[2]} ${storyItemLabel(sm.output[0], sm.output[1]).toLowerCase()} out` : '';
+  return `smelting: ${[left, out].filter(Boolean).join(' · ')}${sm.estimated ? ' (estimated)' : ''}`;
+}
+
+// ------------------------------------------------------------------ reservations
+
+export interface ReservationRow {
+  item: [number, number];
+  count: number;
+  build: string;
+  forItem: string;
+  chain: boolean;
+  label: string;
+}
+
+/** The builds' claims on these items ("id:meta"; a family claim with meta -1 matches every meta), merged per build and item. */
+export function reservationRows(list: readonly StoryReservation[] | null | undefined, items: ReadonlySet<string>): ReservationRow[] {
+  const rows = new Map<string, ReservationRow>();
+  for (const r of list ?? []) {
+    const [id, meta] = r.item;
+    const hit = items.has(`${id}:${meta}`) || items.has(`${id}:-1`) || (meta < 0 && [...items].some((k) => k.startsWith(`${id}:`)));
+    if (!hit) continue;
+    const key = `${r.build}|${r.forItem}|${id}:${meta}`;
+    const have = rows.get(key);
+    if (have) have.count += r.count;
+    else
+      rows.set(key, {
+        item: [id, meta],
+        count: r.count,
+        build: r.build,
+        forItem: r.forItem,
+        chain: r.chain,
+        label: storyItemLabel(id, Math.max(0, meta)),
+      });
+  }
+  return [...rows.values()].sort((a, b) => b.count - a.count);
+}
+
+/** "3 iron ore → build #b12 (bucket, crafting it)". */
+export function reservationLine(r: ReservationRow): string {
+  const who = r.build === 'tools' ? "the colony's tools" : `build #${r.build}`;
+  return `${r.count} ${r.label.toLowerCase()} → ${who} (${r.forItem.replace(/_/g, ' ')}${r.chain ? ', crafting it' : ''})`;
 }
 
 // ------------------------------------------------------------------ fuel

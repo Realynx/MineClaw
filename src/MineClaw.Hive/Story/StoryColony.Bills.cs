@@ -117,6 +117,7 @@ public sealed partial class StoryColony
                     bill.Id = NextId("bill");
                     bench.Bills.Add(bill);
                     bench.Rev = Touch();
+                    MaterialsChanged(); // an owner bill making a build chain's step takes that step over (StoryColony.Claims.cs)
                     WakeIdle();
                     return (new JsonObject { ["id"] = bill.Id }, null);
                 }
@@ -148,7 +149,7 @@ public sealed partial class StoryColony
                         else if (bill.ForBuild == ToolsTag && bill.ForItem is { } ti) ToolCraftCancelled(ti); // that tool isn't made by itself again
                         MaterialsChanged();
                     }
-                    else { bill.Paused = op == "pause"; if (op == "resume") { bill.SuspendedReason = null; _billFails.Remove(bill.Id); _noOffer.Remove(bill.Id); } }
+                    else { bill.Paused = op == "pause"; MaterialsChanged(); if (op == "resume") { bill.SuspendedReason = null; _billFails.Remove(bill.Id); _noOffer.Remove(bill.Id); } }
                     bench!.Rev = Touch();
                     return (new JsonObject { ["id"] = bill.Id }, null);
                 }
@@ -163,6 +164,9 @@ public sealed partial class StoryColony
                     bench.Rev = Touch();
                     return (new JsonObject { ["ids"] = new JsonArray(bench.Bills.Select(b => (JsonNode)b.Id!).ToArray()) }, null);
                 }
+                case "release_claim":
+                    // The owner frees what a build holds for one of its items (StoryColony.Claims.cs).
+                    return ReleaseClaim(body["build"]?.GetValue<string>(), body["item"]?.GetValue<string>());
                 case "enchant_tools":
                 {
                     // The tools system's hook (StoryEnchanting.cs EnchantTools): {prefer, items?, count?, prefer_only?}.
@@ -174,7 +178,7 @@ public sealed partial class StoryColony
                     return (new JsonObject { ["ids"] = new JsonArray(ids.Select(i => (JsonNode)i!).ToArray()), ["note"] = err }, null);
                 }
                 default:
-                    return (null, "op must be add|update|remove|pause|resume|reorder|enchant_tools");
+                    return (null, "op must be add|update|remove|pause|resume|reorder|enchant_tools|release_claim");
             }
         }
     }
@@ -323,10 +327,12 @@ public sealed partial class StoryColony
             // A loaded furnace that is done: collect (the bill's work type).
             if (bench.LoadedBill is { } lb && bench.ReadyAt <= Now)
             {
+                // Its bill may be gone (removed, finished, an auto bill the build no longer wants): the output is collected all the same.
                 var loaded = bench.Bills.FirstOrDefault(b => b.Id == lb);
-                var lr = loaded != null ? StoryRecipes.Get(w.Data, loaded.Recipe) : null;
+                var lr = (bench.LoadedRecipe ?? loaded?.Recipe) is { } lrid ? StoryRecipes.Get(w.Data, lrid) : null;
                 if ((lr?.WorkType ?? WorkTypes.Craft) != work) continue;
-                return Job(work, "collect_furnace", "collecting the furnace", bench.Pos, key, "furnace", lb, xp: 10, count: bench.LoadedCount);
+                return Job(work, "collect_furnace", $"collecting {bench.LoadedCount} {(lr != null ? w.Data.DisplayName(lr.Output.Id, lr.Output.Meta).ToLowerInvariant() : "items")} from the furnace",
+                    bench.Pos, key, "furnace", lb, xp: 10, count: bench.LoadedCount);
             }
             if (bench.LoadedBill != null) continue; // still smelting
             if (StoryRecipes.Stations.Contains(bench.Kind) && (!StoryRecipes.SupportedIn(w.Data, bench.Kind) || StationGone(bench))) continue;
@@ -352,11 +358,28 @@ public sealed partial class StoryColony
                 bool auto = bill.ForBuild != null;
                 // An auto bill whose ingredient isn't there yet waits quietly (an earlier step makes it; a raw shortfall is the build's alert).
                 if (missing != null && auto) continue;
-                // The owner's bill leaves what the builds reserved (their items, their auto crafts' ingredients).
-                if (missing == null && !auto && _reserved.Count > 0 && r.Inputs.FirstOrDefault(i =>
-                        Unreserved((id, meta) => i.Options.Any(o => o.Matches(id, meta)))
-                        < i.Count * crafts - live.Inventory.Where(s => i.Options.Any(o => o.Matches(s.Id, s.Meta))).Sum(s => s.Count)) is { } held)
-                    missing = $"the {World!.Data.DisplayName(held.Options[0].Id, Math.Max(0, held.Options[0].Meta)).ToLowerInvariant()} in storage is reserved for builds";
+                // The owner's bill leaves what the builds reserved (their items, their chains' inputs), except an input of a chain that
+                // makes what this bill makes (it does that step for the build: StoryColony.Claims.cs). What is free runs as a partial
+                // batch; the bill waits only when nothing is, and says who holds it.
+                if (missing == null && !auto && _reserved.Count > 0)
+                {
+                    int fit = crafts, fitFree = 0;
+                    RecipeInput? held = null;
+                    foreach (var i in r.Inputs)
+                    {
+                        bool M(int id, int meta) => i.Options.Any(o => o.Matches(id, meta));
+                        int own = live.Inventory.Where(s => M(s.Id, s.Meta)).Sum(s => s.Count);
+                        int free = UnreservedFor(M, r.Output.Id);
+                        int can = (own + Math.Max(0, free)) / Math.Max(1, i.Count);
+                        if (can < fit) { fit = can; held = i; fitFree = free; }
+                    }
+                    if (fit <= 0) missing = ReservedText(held!, r, fitFree);
+                    else if (fit < crafts)
+                    {
+                        crafts = fit;
+                        (got, missing) = Ingredients(bill, r, crafts, bench, live);
+                    }
+                }
                 if (missing != null)
                 {
                     bill.SuspendedReason = missing;
@@ -372,6 +395,7 @@ public sealed partial class StoryColony
                         f["item"] = bench.Kind == "furnace" && r.Any && got.FirstOrDefault().Chest != null ? ItemName(got[0].Stack.Id, got[0].Stack.Meta) : r.ToolItem;
                         f["n"] = bench.Kind == "furnace" ? crafts : crafts * r.Output.Count;
                         f["fetch"] = fetch;
+                        f["recipe"] = r.Id;
                     }, xp: 25, count: crafts * r.Output.Count);
                 foreach (var (chest, st) in got.Where(g => g.Chest != null))
                 {
@@ -418,13 +442,38 @@ public sealed partial class StoryColony
 
     private void BillDone(PawnState p, ActiveJob j, string? note = null)
     {
+        // A furnace loaded: it smelts on whether or not its bill is still there (an auto bill can go while the pawn walks).
+        if (j.Source == "bill" && j.Kind == "smelt" && Benches.FirstOrDefault(b => b.Pos == j.At && b.Kind == "furnace") is { } fur)
+        {
+            if (fur.Bills.FirstOrDefault(b => b.Id == j.SourceId) is { } lb) _billFails.Remove(lb.Id);
+            MaterialsChanged();
+            int items = Math.Max(1, j.Json["n"]?.GetValue<int>() ?? 1);
+            fur.LoadedBill = j.SourceId;
+            fur.LoadedCount = j.Count;
+            fur.LoadedRecipe = j.Json["recipe"]?.GetValue<string>();
+            fur.LoadedAt = Now;
+            fur.ReadyAt = Now + TimeSpan.FromSeconds(StoryRecipes.SmeltSeconds * items);
+            FuelLoaded(fur, j);
+            fur.Rev = Touch();
+            return;
+        }
         foreach (var bench in Benches)
         {
             if (j.Source == "furnace" && bench.LoadedBill == j.SourceId && j.At == bench.Pos)
             {
+                // Collected: the bill counts what came out (done on collection, never on loading); what still smelts stays loaded.
                 MaterialsChanged();
-                if (bench.Bills.FirstOrDefault(b => b.Id == j.SourceId) is { } fb) fb.Done += bench.LoadedCount;
-                bench.LoadedBill = null; bench.LoadedCount = 0; bench.ReadyAt = null;
+                var m = note == null ? null : System.Text.RegularExpressions.Regex.Match(note, @"collected (\d+)");
+                int got = m is { Success: true } ? int.Parse(m.Groups[1].Value) : bench.LoadedCount;
+                var still = note == null ? null : System.Text.RegularExpressions.Regex.Match(note, @"still smelting (\d+)");
+                if (bench.Bills.FirstOrDefault(b => b.Id == j.SourceId) is { } fb) fb.Done += Math.Min(got, bench.LoadedCount);
+                int left = bench.LoadedCount - got;
+                if (left > 0 && still is { Success: true } && int.Parse(still.Groups[1].Value) > 0)
+                {
+                    bench.LoadedCount = left;
+                    bench.ReadyAt = Now + TimeSpan.FromSeconds(StoryRecipes.SmeltSeconds * int.Parse(still.Groups[1].Value));
+                }
+                else { bench.LoadedBill = null; bench.LoadedCount = 0; bench.ReadyAt = null; bench.LoadedRecipe = null; bench.LoadedAt = null; }
                 bench.Rev = Touch();
                 _lastSource[p.Name] = "furnace"; // what it took out is stored next (deliveries)
                 return;

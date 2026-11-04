@@ -660,6 +660,16 @@ export const StoryFuelNeed = z.object({
 });
 export type StoryFuelNeed = z.infer<typeof StoryFuelNeed>;
 
+/** A build's claim on the colony's stock (docs/web/story-mode.md "Reservations"). */
+export const StoryReservation = z.object({
+  item: StoryItemKey,
+  count: z.number().int(),
+  build: z.string(),
+  forItem: z.string(),
+  chain: z.boolean().describe('an input of the chain that crafts the build item (else the build item itself)'),
+});
+export type StoryReservation = z.infer<typeof StoryReservation>;
+
 export const StoryBill = z.object({
   id: z.union([z.string(), z.number()]),
   recipe: z.string(),
@@ -719,6 +729,17 @@ export const StoryWorkbench = z.object({
   fuel: z.string().nullish().describe("a furnace's fuel choice (STORY_FUELS; default auto)"),
   fuelChoices: z.array(z.string()).nullish().describe('the fuel choices this version burns'),
   fuelCredit: z.number().nullish().describe('items the furnace can still smelt on the fuel the colony loaded'),
+  smelting: z
+    .object({
+      recipe: z.string().nullish(),
+      input: StoryStack.nullish(),
+      output: StoryStack.nullish(),
+      loadedAt: When.nullish(),
+      readyAt: When.nullish(),
+      estimated: z.boolean().nullish(),
+    })
+    .nullish()
+    .describe('a loaded furnace as expected (an item every 10 s since loading): what is left to smelt and what is out'),
   bills: z.array(StoryBill).default([]),
 });
 export type StoryWorkbench = z.infer<typeof StoryWorkbench>;
@@ -884,6 +905,10 @@ export const StoryColonyState = z.object({
   categories: z.array(StoryCategory).nullish(),
   storages: z.array(StoryStorage).nullish(),
   workbenches: z.array(StoryWorkbench).nullish(),
+  reservations: z
+    .array(StoryReservation)
+    .nullish()
+    .describe("who holds what: a build's own item, or an input of the chain that crafts it (a bill making that chain's step may use it)"),
   beds: z
     .array(z.lazy(() => StoryBed))
     .nullish()
@@ -1315,6 +1340,8 @@ export const StoryBillsRequest = z.discriminatedUnion('op', [
   z.object({ op: z.literal('pause'), id: BillId }).strict(),
   z.object({ op: z.literal('resume'), id: BillId }).strict(),
   z.object({ op: z.literal('reorder'), bench: Vec3i, ids: z.array(BillId).min(1).max(64) }).strict(),
+  // Frees what a build holds for one of its items: a chain claim cancels its crafting, its own item pauses the build.
+  z.object({ op: z.literal('release_claim'), build: z.string().max(80), item: z.string().max(64) }).strict(),
   // The tools system's hook: enchant bills (count) at the colony's table for pickaxes (or `items`) preferring an enchantment,
   // or the one a mined material wants (`material`: fortune for ores, silk touch for glass and ice, else efficiency).
   z
