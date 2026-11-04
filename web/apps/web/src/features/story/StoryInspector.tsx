@@ -119,6 +119,7 @@ function Shell({
   children,
   avatar,
   testid,
+  wide,
 }: {
   title: string;
   sub?: string;
@@ -126,10 +127,17 @@ function Shell({
   children: React.ReactNode;
   avatar?: React.ReactNode;
   testid?: string;
+  /** Chests and stations: wide and tall enough for a whole 9-column container grid (a double chest's 54 slots) without
+   * scroll bars; the grid's slots shrink to fit a narrow window instead. */
+  wide?: boolean;
 }) {
   return (
     <section
-      className={cn(panel, 'pointer-events-auto flex max-h-[52vh] w-[21rem] flex-col')}
+      className={cn(
+        panel,
+        'pointer-events-auto flex flex-col',
+        wide ? 'max-h-[calc(100vh-9rem)] w-[24rem] max-w-[calc(100vw-1rem)]' : 'max-h-[52vh] w-[21rem]',
+      )}
       aria-label={`Inspect ${title}`}
       data-testid={testid ?? 'inspector'}
     >
@@ -148,7 +156,16 @@ function Shell({
           <X className="size-4" />
         </button>
       </header>
-      <div className="min-h-0 flex-1 overflow-auto p-2.5">{children}</div>
+      <div
+        className="min-h-0 flex-1 overflow-auto p-2.5"
+        style={
+          wide
+            ? ({ containerType: 'inline-size', '--slot': 'min(36px, calc((100cqi - 16px) / 9))' } as React.CSSProperties)
+            : undefined
+        }
+      >
+        {children}
+      </div>
     </section>
   );
 }
@@ -836,6 +853,7 @@ export function StorageInspector({
       }
       onClose={onClose}
       testid="storage-inspector"
+      wide
     >
       <div className="space-y-2 text-xs">
         {chests.length === 1 ? (
@@ -1060,6 +1078,7 @@ export function BillsInspector({
       sub={`${bench.bills.length} bill${bench.bills.length === 1 ? '' : 's'} · top to bottom`}
       onClose={onClose}
       testid="bills-inspector"
+      wide
     >
       <div className="space-y-2 text-xs">
         {bench.supported === false ? (
