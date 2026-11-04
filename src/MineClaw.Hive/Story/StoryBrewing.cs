@@ -94,7 +94,7 @@ public sealed partial class StoryColony
         for (int i = chain.Count - 1; i > 0; i--)
             if (Held(chain[i].FromForm, chain[i].FromType) > 0) { start = i; break; }
         var steps = chain.Skip(start).ToList();
-        var g = new Gathering(this, bill, live, bench.Pos);
+        var g = new StationGathering(this, bill, live, bench.Pos);
         JsonObject? fill = null;
         if (start > 0) batch = Math.Min(batch, Held(steps[0].FromForm, steps[0].FromType));
         else

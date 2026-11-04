@@ -32,7 +32,7 @@
       default: return { ok: true };
     }
   };
-  /** story.next(s)|report(job, done|failed|progress, note?)|during(job, fn)|idle(job)|work(job) - the job loop */
+  /** story.next(s)|report(job, done|failed|progress, note?)|during(job, fn)|idle(job)|work(job) */
   def('story', Object.freeze({
     next: s => H.storyNext(s == null ? 0 : s),
     report: (j, status, note, pct) => H.storyReport(String(id(j)), status, note == null ? null : String(note), pct),

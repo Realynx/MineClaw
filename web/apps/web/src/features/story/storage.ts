@@ -306,7 +306,8 @@ export function searchRecipes(recipes: readonly StoryRecipe[], q: string, tree?:
 /** The bill modes a recipe takes (an enchanted or repaired item can't be told apart in storage: no "until"). */
 export function recipeModes(r: Pick<StoryRecipe, 'modes'> | undefined): Array<BillDraft['mode']> {
   const all: Array<BillDraft['mode']> = ['count', 'until', 'forever'];
-  return r?.modes?.length ? all.filter((m) => r.modes!.includes(m)) : all;
+  const modes = r?.modes;
+  return modes?.length ? all.filter((m) => modes.includes(m)) : all;
 }
 
 /** "silk_touch" → "Silk Touch". */

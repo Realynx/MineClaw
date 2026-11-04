@@ -410,7 +410,7 @@ public sealed partial class Release1122Connection : IGameConnection
         HandshakePacket or KeepAlivePacket or KickPacket or ChatPacket or PlayerOnGroundPacket or PlayerPositionPacket
             or PlayerPositionLookPacket or PlayerLookPacket or EntityActionPacket or RespawnPacket or HoldingChangePacket
             or WindowClickPacket or TransactionPacket or CloseWindowPacket or PlayerDiggingPacket or PlayerBlockPlacementPacket
-            or UseEntityPacket or UpdateSignPacket => true,
+            or UseEntityPacket or UpdateSignPacket or EnchantItemPacket => true,
         AnimationPacket a => a.Animation == 1,
         _ => false,
     };

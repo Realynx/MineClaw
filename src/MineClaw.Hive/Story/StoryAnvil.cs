@@ -67,7 +67,7 @@ public sealed partial class StoryColony
         var d = World!.Data;
         if (d.ItemByName(spec.Item) is not { } it) return (null, $"no item '{spec.Item}' in {d.VersionId}");
         string label = StoryRecipes.Label(d, it.Id, 0).ToLowerInvariant();
-        var g = new Gathering(this, bill, live, bench.Pos);
+        var g = new StationGathering(this, bill, live, bench.Pos);
         int least;
         switch (spec.Kind)
         {

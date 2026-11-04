@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using MineClaw.Data;
+using MineClaw.Protocol;
 using MineClaw.Protocol.Packets;
 using MineClaw.Protocol.Release1122;
 using MineClaw.World;

@@ -20,7 +20,7 @@ describe('station bills in the bill dialog', () => {
     expect(screen.getByTestId('bill-requires').textContent).toContain('XP level 3+ · 3 lapis');
     fireEvent.change(screen.getByLabelText('Enchant option'), { target: { value: '2' } });
     expect(screen.getByTestId('bill-requires').textContent).toContain('XP level 2+ · 2 lapis');
-    const only = screen.getByRole('checkbox', { name: /Only that one/ }) as HTMLInputElement;
+    const only = screen.getByRole<HTMLInputElement>('checkbox', { name: /Only that one/ });
     expect(only.disabled).toBe(true); // nothing preferred yet
     fireEvent.change(screen.getByLabelText('Preferred enchantment'), { target: { value: 'fortune' } });
     fireEvent.click(screen.getByRole('checkbox', { name: /Only that one/ }));

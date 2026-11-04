@@ -73,7 +73,7 @@ public sealed partial class StoryColony
         if (XpShort(bill, work, need, live, out bool skip) is { } shortXp) return (null, shortXp);
         if (skip) return (null, null);
         string label = StoryRecipes.Label(d, it.Id, 0).ToLowerInvariant();
-        var g = new Gathering(this, bill, live, bench.Pos);
+        var g = new StationGathering(this, bill, live, bench.Pos);
         g.Get(s => s.Id == it.Id, 1, label, storeOnly: true);
         if (g.Missing != null)
         {

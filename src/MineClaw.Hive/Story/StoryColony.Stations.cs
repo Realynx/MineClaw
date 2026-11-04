@@ -13,7 +13,7 @@ namespace MineClaw.Hive.Story;
 public sealed partial class StoryColony
 {
     /// <summary>What a station job takes: the pawn's own stock first, then one chest within the bill's radius.</summary>
-    private sealed class Gathering(StoryColony c, BillState bill, PawnLive live, P3 near)
+    private sealed class StationGathering(StoryColony c, BillState bill, PawnLive live, P3 near)
     {
         public readonly List<(P3 Chest, Stack Stack, string Name)> Fetch = new();
         public string? Missing;
@@ -129,20 +129,20 @@ public sealed partial class StoryColony
             bill.XpNeeded = int.Parse(m.Groups[1].Value);
             return true;
         }
-        if (why.StartsWith("too expensive", StringComparison.OrdinalIgnoreCase))
+        if (why.Contains("too expensive", StringComparison.OrdinalIgnoreCase))
         {
             bill.SuspendedReason = why;
             Alert("warn", $"Bill {bill.Recipe} suspended: {why}", p.Name);
             return true;
         }
-        if (why.StartsWith("no offer shows", StringComparison.OrdinalIgnoreCase))
+        if (why.Contains("no offer shows", StringComparison.OrdinalIgnoreCase))
         {
             if (!_noOffer.TryGetValue(bill.Id, out var set)) _noOffer[bill.Id] = set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             set.Add(p.Name);
             return true;
         }
-        if (why.Contains("anvil broke", StringComparison.OrdinalIgnoreCase) || why.StartsWith("no anvil", StringComparison.Ordinal)
-            || why.StartsWith("no brewing stand", StringComparison.Ordinal) || why.StartsWith("no enchanting table", StringComparison.Ordinal))
+        if (why.Contains("anvil broke", StringComparison.OrdinalIgnoreCase) || why.Contains("no anvil at", StringComparison.Ordinal)
+            || why.Contains("no brewing stand at", StringComparison.Ordinal) || why.Contains("no enchanting table at", StringComparison.Ordinal))
             return StationGone(bench);
         return false;
     }
