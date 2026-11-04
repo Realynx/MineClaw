@@ -260,6 +260,8 @@ public sealed class ClaimAwareGameClient(IGameClient inner, IClaimBoard claims) 
     public Task<ActionResult> ActivateBlockAsync(int x, int y, int z, CancellationToken ct = default) => inner.ActivateBlockAsync(x, y, z, ct);
     public Task<ActionResult> UseItemOnBlockAsync(BlockPos pos, BlockFace face, int itemId, int? damage = null, CancellationToken ct = default) =>
         inner.UseItemOnBlockAsync(pos, face, itemId, damage, ct);
+    public Task<ActionResult> FishAsync(Vec3d target, TimeSpan session, int maxCatches = 64, CancellationToken ct = default) =>
+        inner.FishAsync(target, session, maxCatches, ct);
     public Task<ActionResult> EatAsync(CancellationToken ct = default) => inner.EatAsync(ct);
     public bool FaceIdle(Vec3d point) => inner.FaceIdle(point);
     public bool SwingIdle() => inner.SwingIdle();

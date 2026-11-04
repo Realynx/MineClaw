@@ -84,6 +84,9 @@ public interface IGameClient
     /// plant farmland, bone meal grows a crop (<see cref="MinecraftClient.UseItemOnBlockAsync"/>). Default: unsupported.</summary>
     Task<ActionResult> UseItemOnBlockAsync(BlockPos pos, BlockFace face, int itemId, int? damage = null, CancellationToken ct = default) =>
         Task.FromResult(ActionResult.Fail("using an item on a block isn't available on this client"));
+    /// <summary>Fishes at a water cell for a session (<see cref="MinecraftClient.FishAsync"/>). Default: unsupported.</summary>
+    Task<ActionResult> FishAsync(Vec3d target, TimeSpan session, int maxCatches = 64, CancellationToken ct = default) =>
+        Task.FromResult(ActionResult.Fail("fishing isn't available on this client"));
     Task<ActionResult> EatAsync(CancellationToken ct = default);
 
     /// <summary>Fell one tree (nearest / near <paramref name="at"/> / of a wood type), gather saplings, replant
@@ -207,6 +210,8 @@ public sealed class MinecraftGameClient(MinecraftClient client) : IGameClient
     public Task<ActionResult> ActivateBlockAsync(int x, int y, int z, CancellationToken ct = default) => Inner.ActivateBlockAsync(x, y, z, ct);
     public Task<ActionResult> UseItemOnBlockAsync(BlockPos pos, BlockFace face, int itemId, int? damage = null, CancellationToken ct = default) =>
         Inner.UseItemOnBlockAsync(pos, face, itemId, damage, ct);
+    public Task<ActionResult> FishAsync(Vec3d target, TimeSpan session, int maxCatches = 64, CancellationToken ct = default) =>
+        Inner.FishAsync(target, session, maxCatches, ct);
     public Task<ActionResult> EatAsync(CancellationToken ct = default) => Inner.EatAsync(ct);
     public Task<ActionResult> ChopTreeAsync(BlockPos? at = null, int? wood = null, CancellationToken ct = default) => Inner.ChopTreeAsync(at, wood, null, ct);
     public Task<ActionResult> ChopThisTreeAsync(BlockPos at, CancellationToken ct = default) =>

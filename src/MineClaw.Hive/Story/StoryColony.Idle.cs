@@ -95,7 +95,7 @@ public sealed partial class StoryColony
         if (World is not { } w) return [];
         var homes = Zones.Where(z => z.Kind == "home").ToList();
         var anchor = Home();
-        var key = $"{night}|{anchor}|{string.Join(";", homes.Select(z => z.Id + z.Area))}";
+        var key = $"{night}|{anchor}|{string.Join(";", homes.Select(z => z.Id + ":" + z.Rev))}";
         if (_idleCells is { } c && c.Key == key && Now - c.At < TimeSpan.FromSeconds(5)) return c.Cells;
         var cells = new List<P3>();
         var seen = new HashSet<(int, int)>();
@@ -107,12 +107,11 @@ public sealed partial class StoryColony
         }
         if (homes.Count > 0)
         {
-            long columns = homes.Sum(z => (long)(z.Area.X2 - z.Area.X1 + 1) * (z.Area.Z2 - z.Area.Z1 + 1));
+            long columns = homes.Sum(z => (long)z.Cells.Count);
             int step = columns > 2000 ? (int)Math.Ceiling(Math.Sqrt(columns / 2000.0)) : 1; // a huge zone is sampled, not scanned whole
             foreach (var z in homes)
-                for (int x = z.Area.X1; x <= z.Area.X2; x += step)
-                    for (int zz = z.Area.Z1; zz <= z.Area.Z2; zz += step)
-                        Column(x, zz, z.Area.Y1, true);
+                foreach (var (x, zz) in z.Cells.Sorted())
+                    if ((x - z.Area.X1) % step == 0 && (zz - z.Area.Z1) % step == 0) Column(x, zz, z.Area.Y1, true);
         }
         else if (anchor is { } h)
             for (int dx = -WanderRadius; dx <= WanderRadius; dx++)

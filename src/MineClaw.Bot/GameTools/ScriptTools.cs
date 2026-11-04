@@ -32,6 +32,7 @@ public sealed partial class ScriptBridge
         "goto", "follow", "mine", "harvest_generator", "collect_drops", "craft", "smelt", "collect_furnace", "deposit", "withdraw",
         "organize_chest", "place", "dig", "use_block", "eat", "chop_tree", "act", "attack",
         AcquireTool.ToolName, // hidden tool: ensure{} / acquire{"pickaxe"} through the acquisition planner
+        FishingTool.ToolName, // hidden tool: fish(at, seconds) with a rod
         Blueprints.BlueprintWiring.BuildTool, Blueprints.BlueprintWiring.InfoTool, // hidden: build{bp, part, of, layer} / blueprint(id)
     ];
 

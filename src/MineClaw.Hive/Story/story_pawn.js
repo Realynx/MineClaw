@@ -83,6 +83,12 @@ function work(j) {
     case 'collect_furnace': return collect_furnace(a)
     case 'give': return handTo(j.to, j.item, j.n, { gather: false })
     case 'blueprint': return build(j.design)
+    case 'fish': {
+      // A fishing zone: stand on the shore cell, cast at the water, fish for the session (the fish primitive reels in on bites).
+      const there = go(a, 0)
+      if (!ok(there)) return there
+      return fish(j.water, j.s || 150, j.max || 64)
+    }
     case 'sleep': return sleepAt(j)
     case 'idle': return story.idle(j)
     case 'hold':

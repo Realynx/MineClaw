@@ -67,11 +67,14 @@ import {
   type Target,
 } from './tools';
 import { COLORS, glyph, pawnColor } from './visuals';
+import { growPlantNow } from './GrowingZones';
+import { drawZonePreview, drawZones, zoneLabel } from './zones/zoneDraw';
+import { previewLabel, waterColumns, zoneInto, zonePreview } from './zones/zonePaint';
 
 export type MapTool =
   | { kind: 'select' }
   | { kind: 'designate'; id: DesignateId }
-  | { kind: 'zone'; id: string; op: 'add' | 'remove' }
+  | { kind: 'zone'; id: string; op: 'add' | 'remove'; into?: string | number }
   | { kind: 'build'; id: BuildToolId }
   | { kind: 'design'; id: number; name: string; blocks: DesignBlock[] }
   | { kind: 'storage' }
@@ -343,7 +346,11 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
   /** Where each failed designation's ring was drawn this frame, for clicks (id, the ids its cluster label stands for). */
   const failedAt = useRef<Array<{ id: string | number; cluster: Array<string | number>; x: number; y: number }>>([]);
   /** What the viewer was last given for the holograms: the state's ghosts and builds (by identity) and the placement key. */
-  const holo = useRef<{ ghosts: unknown; builds: unknown; preview: string }>({ ghosts: null, builds: null, preview: '' });
+  const holo = useRef<{ ghosts: unknown; builds: unknown; preview: string }>({
+    ghosts: null,
+    builds: null,
+    preview: '',
+  });
 
   const engine = (): WorldViewerEngine | null => viewer.current?.engine() ?? null;
 
@@ -563,7 +570,9 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
    * when it has one, else its reported position eased toward. `look`: model (overlay marks only), token, or cut (a storey
    * above the level cut); `r`: its hit radius in pixels.
    */
-  const bodies = (dt: number): Array<{ key: string; at: Pt | null; kind: 'pawn' | 'ai'; pos: V3; look: BodyLook; r: number }> => {
+  const bodies = (
+    dt: number,
+  ): Array<{ key: string; at: Pt | null; kind: 'pawn' | 'ai'; pos: V3; look: BodyLook; r: number }> => {
     const m = mats.current;
     const st = p.current.state;
     const e = engine();
@@ -687,36 +696,15 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
       }
       ctx.restore();
     };
-    // Zones: tinted areas. Home zones (the houses) are the genre's home-area tint: a stronger fill, a solid edge, the name.
-    let houseNo = 0;
-    for (const z of st?.zones ?? []) {
-      const [x1, y1, z1, x2, , z2] = z.area;
-      const home = z.kind === 'home';
-      if (home) houseNo++;
-      const q = quad(Math.min(x1, x2), Math.min(z1, z2), Math.max(x1, x2) + 1, Math.max(z1, z2) + 1, y1 + 1.02);
-      if (!q) continue;
-      const col = zoneColor(z.kind);
-      poly(q);
-      ctx.fillStyle = home ? `${col}40` : `${col}2e`;
-      ctx.fill();
-      ctx.strokeStyle = home ? col : `${col}cc`;
-      ctx.lineWidth = home ? 2 : 1.5;
-      if (!home) ctx.setLineDash([6, 4]);
-      ctx.stroke();
-      ctx.setLineDash([]);
-      if (home && cell > 3) {
-        const name = z.name || z.label || `House ${houseNo}`;
-        ctx.font = '600 11px system-ui, sans-serif';
-        ctx.textAlign = 'left';
-        ctx.textBaseline = 'top';
-        const tl = q.reduce((a, b) => (a.x + a.y <= b.x + b.y ? a : b));
-        const w = ctx.measureText(name).width;
-        ctx.fillStyle = 'rgba(10,12,16,0.7)';
-        ctx.fillRect(tl.x + 3, tl.y + 3, w + 8, 15);
-        ctx.fillStyle = '#cfe3ff';
-        ctx.fillText(name, tl.x + 7, tl.y + 4.5);
-      }
-    }
+    // Zones by their cells (zones/zoneDraw.ts): work zones tinted with a dashed edge (growing zones say what they sow), the
+    // overlay layers apart (houses: the home-area tint, a solid edge, the name; keep-out: red stripes).
+    drawZones(
+      ctx,
+      st?.zones ?? [],
+      (x, y, z) => project(m, x, y, z),
+      cell,
+      (z, houseNo) => zoneLabel(z, houseNo, st?.plants),
+    );
     // The colony's home: a house mark.
     const homeAt = props.home;
     if (homeAt) {
@@ -862,7 +850,8 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
         ctx.beginPath();
         ctx.arc(at.x, at.y, 11, 0, Math.PI * 2);
         ctx.stroke();
-        if (mk.failed) failedOn.push({ id: mk.d.id, cluster: model.clusterOf.get(String(mk.d.id)) ?? [mk.d.id], x: at.x, y: at.y });
+        if (mk.failed)
+          failedOn.push({ id: mk.d.id, cluster: model.clusterOf.get(String(mk.d.id)) ?? [mk.d.id], x: at.x, y: at.y });
       }
       if (mk.d.pawn) {
         ctx.strokeStyle = pawnColor(mk.d.pawn);
@@ -1015,7 +1004,15 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
           ctx.strokeStyle = color;
           ctx.lineWidth = 2.5;
           ctx.beginPath();
-          ctx.ellipse(f.x, f.y, Math.max(4, Math.hypot(fx.x - f.x, fx.y - f.y)), Math.max(2, Math.hypot(fz.x - f.x, fz.y - f.y)), 0, 0, Math.PI * 2);
+          ctx.ellipse(
+            f.x,
+            f.y,
+            Math.max(4, Math.hypot(fx.x - f.x, fx.y - f.y)),
+            Math.max(2, Math.hypot(fz.x - f.x, fz.y - f.y)),
+            0,
+            0,
+            Math.PI * 2,
+          );
           ctx.stroke();
         }
       } else {
@@ -1275,7 +1272,9 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
       tool.kind === 'designate'
         ? (COLORS.designation[tool.id] ?? '#ffffff')
         : tool.kind === 'zone'
-          ? zoneColor(tool.id)
+          ? tool.op === 'remove'
+            ? '#ff6b6b'
+            : zoneColor(tool.id)
           : COLORS.chest;
     if (q) {
       poly(q);
@@ -1308,6 +1307,27 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
         }
         ctx.stroke();
       }
+    }
+    if (tool.kind === 'zone') {
+      // The resulting cells, as the director will paint or erase them (merges and overwrites shown; zones/zonePaint.ts).
+      const zs = props.state?.zones ?? [];
+      const into = zoneInto(tool, zs, a, d.shift);
+      const wk = `${rect.join(',')}@${props.level}`;
+      const out = zonePreview(
+        zs,
+        tool,
+        rect,
+        props.level,
+        growPlantNow(),
+        into,
+        water.current.key === wk ? water.current.cells : null,
+      );
+      if (out)
+        drawZonePreview(ctx, out.zones, out.result.id, out.removedCells, col, props.level + 1.03, (x, y, z) =>
+          project(m, x, y, z),
+        );
+      label(ctx, d.now, previewLabel(tool, out, (rect[2] - rect[0] + 1) * (rect[3] - rect[1] + 1)), out !== null);
+      return;
     }
     if (tool.kind === 'designate') {
       const res = scan.current.result;
@@ -1471,6 +1491,39 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
     p.current.onCancelled?.();
   };
 
+  /** A fishing-zone drag: the still water under the rectangle (one scan in flight; the latest rectangle wins). */
+  const water = useRef<{ key: string; cells: Set<number> | null; busy: boolean }>({
+    key: '',
+    cells: null,
+    busy: false,
+  });
+  const rescanWater = () => {
+    const d = drag.current,
+      e = engine();
+    if (!d || !e || !d.startCell || !d.endCell || water.current.busy) return;
+    const rect = cellRect(d.startCell, d.endCell);
+    const lv = p.current.level;
+    const key = `${rect.join(',')}@${lv}`;
+    if (water.current.key === key) return;
+    water.current.busy = true;
+    void e.runtime.host
+      .scan(0, [rect[0], lv - 4, rect[1]], [rect[2], lv + 3, rect[3]], [8, 9], 20000)
+      .then((s) => {
+        if (drag.current === d) water.current = { key, cells: waterColumns(s), busy: true };
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        water.current.busy = false;
+        const dd = drag.current;
+        if (
+          dd?.startCell &&
+          dd.endCell &&
+          `${cellRect(dd.startCell, dd.endCell).join(',')}@${p.current.level}` !== water.current.key
+        )
+          rescanWater();
+      });
+  };
+
   /** Rescans a designate drag's targets (one scan in flight; the latest rectangle wins). */
   const rescan = () => {
     const d = drag.current,
@@ -1511,12 +1564,10 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
     scan.current.busy = true;
     const job = hasHeight(tool.id)
       ? heightScan(e, tool.id, rect).then((ht) => finish(ht.cells, ht.cells.length, [], ht))
-      : e.runtime.host
-          .scan(0, [rect[0], y[0], rect[1]], [rect[2], y[1], rect[3]], scanIds(tool.id), 6000)
-          .then((s) => {
-            const pv = previewTargets(tool.id, s, p.current.mineFilter);
-            finish(pv.cells, pv.count, []);
-          });
+      : e.runtime.host.scan(0, [rect[0], y[0], rect[1]], [rect[2], y[1], rect[3]], scanIds(tool.id), 6000).then((s) => {
+          const pv = previewTargets(tool.id, s, p.current.mineFilter);
+          finish(pv.cells, pv.count, []);
+        });
     void job
       .catch(() => undefined)
       .finally(() => {
@@ -1608,6 +1659,7 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
     }
     d.now = pt;
     d.alt = ev.altKey;
+    d.shift = ev.shiftKey; // a zone paint: Shift extends the zone the drag started in
     if (!d.moved && isDrag(d.start, pt)) d.moved = true;
     const tool = p.current.tool;
     if (tool.kind === 'build') {
@@ -1621,6 +1673,7 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
             : c;
     } else d.endCell = groundCell(pt) ?? d.endCell;
     if (d.moved && tool.kind === 'designate') rescan();
+    else if (d.moved && tool.kind === 'zone' && tool.id === 'fish' && tool.op === 'add') rescanWater();
   };
 
   /** The body under a point: the nearest within its own hit radius (a model's covers its height). */
@@ -1964,7 +2017,11 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
       fps: () => engine()?.stats().fps,
       /** Each body: how it is shown (model, token, cut) and whether the viewer drew its model last frame. */
       models: () =>
-        bodies(0).map((b) => ({ name: b.key, look: b.look, model: engine()?.runtime.entities.detailOf(b.key) ?? null })),
+        bodies(0).map((b) => ({
+          name: b.key,
+          look: b.look,
+          model: engine()?.runtime.entities.detailOf(b.key) ?? null,
+        })),
       /** The viewer's player models drawn last frame. */
       botModels: () => engine()?.runtime.entities.botModels ?? 0,
       holograms: () => engine()?.hologramStats() ?? null,

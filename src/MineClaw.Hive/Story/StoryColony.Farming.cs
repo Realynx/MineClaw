@@ -12,36 +12,51 @@ namespace MineClaw.Hive.Story;
 public sealed partial class StoryColony
 {
     /// <summary>One cell of a growing zone: its soil, what it needs now and where (till: the soil; the rest: the plant cell).</summary>
-    internal sealed record GrowCell(P3 Soil, string State, P3 At, bool Clear = false);
+    internal sealed record GrowCell(P3 Soil, string State, P3 At, bool Clear = false, string? Plant = null);
 
     // State: till | sow | dry (dirt with no water near: not tilled) | growing | ripe (harvest at At) | blocked
-    private readonly Dictionary<string, (DateTimeOffset At, List<GrowCell> Cells)> _growScan = new();
+    private readonly Dictionary<string, (DateTimeOffset At, string Plant, List<GrowCell> Cells)> _growScan = new();
     private readonly Dictionary<string, DateTimeOffset> _growAlert = new();
 
     private static readonly HashSet<int> PlantBlocks = [59, 141, 142, 207, 104, 105, 83, 81, 115, 6, 86, 103, 17, 162, 18, 161];
     public static readonly int[] Hoes = [290, 291, 292, 293, 294];
 
-    /// <summary>A growing zone's cells (cached 5 s; a finished job clears it).</summary>
+    /// <summary>
+    /// A growing zone's cells (cached 5 s, and while the active bill's plant stays; a finished job clears it): classified for the
+    /// active bill's plant; a crop of another bill's plant already in the ground is harvested as that plant, never ripped out. With
+    /// no active bill (all met) only the crops are listed: the zone keeps harvesting and sows nothing.
+    /// </summary>
     internal List<GrowCell> GrowCells(ZoneState z)
     {
-        if (_growScan.TryGetValue(z.Id, out var c) && Now - c.At < TimeSpan.FromSeconds(5)) return c.Cells;
-        var cells = new List<GrowCell>();
-        if (World is { } w && StoryPlants.Get(w.Data, z.Plant) is { } plant)
-        {
-            var a = z.Area;
-            int n = 0;
-            for (int x = a.X1; x <= a.X2; x++)
-                for (int zz = a.Z1; zz <= a.Z2; zz++)
-                {
-                    if (++n > 4096) goto done;
-                    if (!w.Loaded(x, zz) || SoilIn(w, x, zz, a.Y1) is not { } soil) continue;
-                    cells.Add(Classify(w, plant, z, soil));
-                }
-            done:;
-        }
-        _growScan[z.Id] = (Now, cells);
+        var w = World;
+        var active = w == null ? null : ActivePlant(w, z);
+        if (_growScan.TryGetValue(z.Id, out var c) && c.Plant == (active?.Id ?? "") && Now - c.At < TimeSpan.FromSeconds(5)) return c.Cells;
+        var cells = w == null ? new List<GrowCell>() : ScanGrow(w, z, active, BillPlants(w, z));
+        _growScan[z.Id] = (Now, active?.Id ?? "", cells);
         return cells;
     }
+
+    private List<GrowCell> ScanGrow(IStoryWorld w, ZoneState z, StoryPlant? active, IReadOnlyList<StoryPlant> grown)
+    {
+        var cells = new List<GrowCell>();
+        int n = 0;
+        foreach (var (x, zz) in z.Cells.Sorted())
+        {
+            if (++n > 4096) break;
+            if (!w.Loaded(x, zz) || SoilIn(w, x, zz, z.Area.Y1) is not { } soil) continue;
+            int above = w.Block(soil.X, soil.Y + 1, soil.Z).Id;
+            var other = grown.FirstOrDefault(p => p.Id != active?.Id && GrowsHere(p, above));
+            if ((other ?? active) is not { } plant) continue;
+            var cell = Classify(w, plant, z, soil);
+            if ((active == null || other != null) && cell.State is not ("ripe" or "growing")) continue;
+            cells.Add(cell);
+        }
+        return cells;
+    }
+
+    /// <summary>Is <paramref name="above"/> (the block on the soil) this plant's crop, stem or grown tree?</summary>
+    private static bool GrowsHere(StoryPlant p, int above) =>
+        above == p.Block || p.Fruit != 0 && above == p.Fruit || p.Harvest == "tree" && StoryBlocks.Logs.Contains(above);
 
     /// <summary>The ground block of a column near the zone's level: the first block down that isn't air, a small plant or the crop.</summary>
     private static P3? SoilIn(IStoryWorld w, int x, int z, int level)
@@ -61,7 +76,7 @@ public sealed partial class StoryColony
         int s = w.Block(soil.X, soil.Y, soil.Z).Id;
         var (above, meta) = w.Block(at.X, at.Y, at.Z);
         bool open = StoryWander.Passable(above) && !StoryBlocks.Liquids.Contains(above);
-        GrowCell Cell(string state, P3? where = null) => new(soil, state, where ?? at, open && above != 0);
+        GrowCell Cell(string state, P3? where = null) => new(soil, state, where ?? at, open && above != 0, plant.Id);
         switch (plant.Harvest)
         {
             case "crop" or "fruit" when plant.Soil == "farmland":
@@ -108,27 +123,31 @@ public sealed partial class StoryColony
     {
         int have = CountItem(plant.SeedId, plant.SeedId == 6 ? plant.SeedMeta : -1);
         int reserved = _current.Where(kv => !kv.Key.Equals(except, StringComparison.OrdinalIgnoreCase) && kv.Value.Source == "sow" && kv.Value.Kind == "place"
-            && kv.Value.SourceId is { } zid && Zones.FirstOrDefault(z => z.Id == zid)?.Plant == plant.Id).Count();
+            && kv.Value.SourceId is { } zid && Zones.FirstOrDefault(z => z.Id == zid) is { } sz && World is { } w && ActivePlant(w, sz)?.Id == plant.Id).Count();
         return have - reserved;
     }
 
     /// <summary>The next growing-zone job for this pawn in zone <paramref name="z"/>: harvest first, then sow, then till.</summary>
     private ActiveJob? GrowJob(PawnState p, PawnLive live, ZoneState z)
     {
-        if (World is not { } w || StoryPlants.Get(w.Data, z.Plant) is not { } plant) return null;
+        if (World is not { } w) return null;
+        var plant = ActivePlant(w, z);
         var from = live.Block;
         var cells = GrowCells(z).Where(c => Open("b:" + c.At, p.Name, c.At)).OrderBy(c => c.At.Dist(from)).ToList();
-        string seed = StoryPlants.SeedName(w.Data, plant);
-        if (z.Harvest && cells.FirstOrDefault(c => c.State == "ripe") is { } r)
+        if (z.Harvest && cells.FirstOrDefault(c => c.State == "ripe") is { } r && StoryPlants.Get(w.Data, r.Plant) is { } crop)
         {
-            if (plant.Harvest == "tree")
-                return Job(WorkTypes.Farm, "chop", $"chopping a grown {plant.Label.ToLowerInvariant()}", r.At, "b:" + r.At, "crop", z.Id,
+            _cropHarvest["b:" + r.At] = (z.Id, crop.Id); // counts toward the zone's bills when done
+            if (crop.Harvest == "tree")
+                return Job(WorkTypes.Farm, "chop", $"chopping a grown {crop.Label.ToLowerInvariant()}", r.At, "b:" + r.At, "crop", z.Id,
                     fill: j => ChopFill(j, StoryBlocks.TreeFrom(w, r.At)), xp: 30);
-            bool replant = plant.Harvest == "crop";
-            return Job(WorkTypes.Farm, replant ? "harvest" : "dig", $"harvesting {plant.Label.ToLowerInvariant()}", r.At, "b:" + r.At, "crop", z.Id, "working",
-                j => { if (replant) j["replant"] = seed; }, xp: 15);
+            // Sown again in the same go only when it is still what the zone sows (a met bill's crop is harvested, not replanted).
+            bool replant = crop.Harvest == "crop" && crop.Id == plant?.Id;
+            string again = StoryPlants.SeedName(w.Data, crop);
+            return Job(WorkTypes.Farm, crop.Harvest == "crop" ? "harvest" : "dig", $"harvesting {crop.Label.ToLowerInvariant()}", r.At, "b:" + r.At, "crop", z.Id, "working",
+                j => { if (replant) j["replant"] = again; }, xp: 15);
         }
-        if (!z.Sow) return null;
+        if (!z.Sow || plant == null) return null;
+        string seed = StoryPlants.SeedName(w.Data, plant);
         if (cells.FirstOrDefault(c => c.State == "sow") is { } sow)
         {
             var mine = live.Inventory.FirstOrDefault(s => StoryPlants.IsSeed(plant, s));
@@ -236,12 +255,12 @@ public sealed partial class StoryColony
     }
 
     /// <summary>What a growing zone's soil allows: an error when nothing in it can grow the plant, warnings for what slows it.</summary>
-    private (string? Error, List<string> Warnings) ValidateGrow(ZoneState z)
+    private (string? Error, List<string> Warnings) ValidateGrow(ZoneState z, string? plantId = null)
     {
         var warn = new List<string>();
-        if (z.Plant == null || World is not { } w || StoryPlants.Get(w.Data, z.Plant) is not { } plant) return (null, warn);
+        if ((plantId ?? z.Plant) is not { } pid || World is not { } w || StoryPlants.Get(w.Data, pid) is not { } plant) return (null, warn);
         _growScan.Remove(z.Id);
-        var cells = GrowCells(z);
+        var cells = ScanGrow(w, z, plant, []); // the zone's soil for this plant (whatever its bills sow now)
         if (cells.Count == 0) return (null, warn); // not loaded yet: nothing to judge
         if (cells.All(c => c.State == "blocked"))
             return (plant.Soil switch
@@ -270,13 +289,15 @@ public sealed partial class StoryColony
                 if (ApplyGrow(zone, body) is { } err) return (null, err);
                 var (bad, warn) = ValidateGrow(zone);
                 if (bad != null) { (zone.Plant, zone.Sow, zone.Harvest) = old; return (null, bad); }
+                if (zone.Plant != old.Plant) SyncPlantBill(zone); // plant = the first bill's plant (StoryColony.GrowBills.cs)
                 zone.Rev = Touch();
+                _growScan.Remove(zone.Id);
                 WakeIdle();
                 return (new JsonObject { ["id"] = zone.Id, ["warnings"] = new JsonArray(warn.Select(x => (JsonNode)x!).ToArray()) }, null);
             }
             // seek_seeds: explicit, never automatic.
             if (World is not { } w) return (null, "no world view yet");
-            if (StoryPlants.Get(w.Data, zone.Plant) is not { } plant) return (null, "the zone grows nothing: set its plant first");
+            if ((ActivePlant(w, zone) ?? StoryPlants.Get(w.Data, zone.Plant)) is not { } plant) return (null, "the zone grows nothing: set its plant first");
             if (plant.Id == "wheat")
             {
                 var grass = TallGrassNear(w, zone, 24, 64);
@@ -313,18 +334,36 @@ public sealed partial class StoryColony
         return found.OrderBy(p => p.Dist(c)).Take(max).ToList();
     }
 
-    /// <summary>The state's zone object: a growing zone adds plant, sow, harvest, seeds and status.</summary>
+    /// <summary>
+    /// The state's zone object: its cells as row runs <c>[z, x1, x2]</c> and their count (docs/web/story-mode.md "Zones"; area is their
+    /// bounding box and level range). A growing zone adds plant (its type: the first bill's), active_plant, bills, sow, harvest, seeds
+    /// (for what it sows now) and status.
+    /// </summary>
     internal JsonObject ZoneJson(ZoneState z)
     {
-        var o = new JsonObject { ["id"] = z.Id, ["kind"] = z.Kind, ["area"] = z.Area.Json(), ["name"] = z.Name };
-        if (z.Kind != "farm" || z.Plant == null || World is not { } w || StoryPlants.Get(w.Data, z.Plant) is not { } plant) return o;
+        var o = new JsonObject
+        {
+            ["id"] = z.Id, ["kind"] = z.Kind, ["area"] = z.Area.Json(), ["name"] = z.Name, ["cells"] = z.Cells.Count,
+            ["rows"] = new JsonArray((z.Rows ?? z.Cells.Rows()).Select(r => (JsonNode)new JsonArray(r[0], r[1], r[2])).ToArray()),
+        };
+        if (z.Kind == "fish") { FishJson(z, o); return o; } // StoryColony.Fishing.cs
+        if (z.Kind != "farm" || World is not { } w) return o;
+        if (z.Bills == null && StoryPlants.Get(w.Data, z.Plant) == null) return o; // a plain farm zone
+        var plant = ActivePlant(w, z);
         var cells = GrowCells(z);
         int Count(string s) => cells.Count(c => c.State == s);
         int planted = Count("growing") + Count("ripe"), room = Count("sow") + Count("till"), total = planted + room;
-        int have = CountItem(plant.SeedId, plant.SeedId == 6 ? plant.SeedMeta : -1);
-        o["plant"] = plant.Id;
+        o["plant"] = z.Plant;
+        o["active_plant"] = plant?.Id;
         o["sow"] = z.Sow;
         o["harvest"] = z.Harvest;
+        if (z.Bills != null) BillsJson(w, z, o, room); // planting bills (StoryColony.GrowBills.cs)
+        if (plant == null)
+        {
+            o["status"] = (z.Bills is { Count: 0 } ? "no planting bills" : "all bills met") + $": sowing nothing, {planted} growing, {Count("ripe")} ripe";
+            return o;
+        }
+        int have = CountItem(plant.SeedId, plant.SeedId == 6 ? plant.SeedMeta : -1);
         o["status"] = $"{planted}/{total} sown, {Count("ripe")} ripe" + (Count("dry") > 0 ? $", {Count("dry")} too far from water" : "");
         o["seeds"] = new JsonObject
         {

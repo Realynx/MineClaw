@@ -65,6 +65,25 @@ public static class StoryPlants
 
     public static JsonArray Json(IGameData d) => new(For(d).Select(p => (JsonNode)p.Json(d)).ToArray());
 
+    /// <summary>
+    /// What a harvest yields, as the item an "until N in storage" planting bill counts: wheat, the carrot, the potato, beetroot, the
+    /// pumpkin block, the melon slice, the cane, the cactus, the wart; a tree's logs (its kind's meta).
+    /// </summary>
+    public static (int Id, int Meta) Produce(StoryPlant p) => p.Id switch
+    {
+        "wheat" => (296, -1),
+        "carrots" => (391, -1),
+        "potatoes" => (392, -1),
+        "beetroot" => (434, -1),
+        "pumpkin" => (86, -1),
+        "melon" => (360, -1),
+        "sugar_cane" => (338, -1),
+        "cactus" => (81, -1),
+        "nether_wart" => (372, -1),
+        _ when p.Harvest == "tree" => p.SeedMeta < 4 ? (17, p.SeedMeta) : (162, p.SeedMeta - 4),
+        _ => (p.SeedId, -1),
+    };
+
     /// <summary>Does this stack sow <paramref name="p"/>?</summary>
     public static bool IsSeed(StoryPlant p, Stack s) => s.Id == p.SeedId && (p.SeedId != 6 || (s.Meta & 7) == p.SeedMeta);
 
