@@ -114,6 +114,7 @@ public sealed partial class Pathfinder
         var startCell = Cell(start.X, start.Y, start.Z);
         if (!startCell.Ok)
             return new PathResult(PathStatus.InvalidStart, [], 0, 0, sw.Elapsed, 0, $"start {start} is not a standable cell");
+        _fromSurface = _o.SkyLight is { } sky && Math.Max(sky(start.X, start.Y, start.Z), sky(start.X, start.Y + 1, start.Z)) >= 8;
 
         var nodes = new Dictionary<(long, int), Node>();
         var open = new PriorityQueue<(Node N, double G), double>();
@@ -176,7 +177,7 @@ public sealed partial class Pathfinder
                 // ravine lake's bed at 126,52,295).
                 int under = Breath.HeadUnderAt(_w, m.X, m.Floor, m.Z) ? n.Under + 1 : 0;
                 if (under > _o.MaxHeadUnderSteps && m.Y <= n.Y) continue; // rising toward the air is always allowed
-                double ng = n.G + m.Cost + under * _o.HeadUnderStepCost;
+                double ng = n.G + m.Cost + under * _o.HeadUnderStepCost + TerrainPenalty(m.X, m.Y, m.Z);
                 if (ng >= t.G) continue;
                 t.G = ng;
                 t.Under = under;
@@ -574,6 +575,29 @@ public sealed partial class Pathfinder
             c += _o.DigCost?.Invoke(id, meta) ?? Math.Max(0, _w.Info(id).Hardness) * 30 + 5;
         }
         return c;
+    }
+
+    /// <summary>The start was under the sky (<see cref="PathOptions.SkyLight"/>): cave cells cost more on this search.</summary>
+    private bool _fromSurface;
+
+    /// <summary>
+    /// What a step into foot cell x,y,z costs on top of its move: flowing water in the body's cells (a stream is crossed, a waterfall
+    /// column avoided: live 11-04, pawns stuck in waterfalls), and for a path from the surface, a cell the sky doesn't reach (a cave:
+    /// the surface route wins when there is one; live 11-04, pawns walked into caves and couldn't get back out).
+    /// </summary>
+    private double TerrainPenalty(int x, int y, int z)
+    {
+        double p = 0;
+        for (int yy = y; yy <= y + 1; yy++)
+        {
+            int id = _w.GetBlock(x, yy, z);
+            if (id is not (BlockShapes.Water or 9)) continue;
+            int meta = _w.GetMeta(x, yy, z);
+            if (meta >= 8) { p = Math.Max(p, _o.FallingWaterPenalty); break; }
+            if (meta != 0) p = Math.Max(p, _o.FlowingWaterPenalty);
+        }
+        if (_fromSurface && _o.SkyLight is { } sky && sky(x, y, z) <= 3 && sky(x, y + 1, z) <= 3) p += _o.UndergroundPenalty;
+        return p;
     }
 
     private double HazardPenalty(int x, int y, int z)

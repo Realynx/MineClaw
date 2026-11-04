@@ -20,6 +20,12 @@ public interface IStoryPort
     /// <summary>Is <paramref name="job"/> still <paramref name="body"/>'s? False once the director took it back (real work came up for
     /// an idle pawn): <c>story.during</c> then cuts what the script is doing. A director that never takes jobs back keeps the default.</summary>
     bool Holds(string body, string job) => true;
+
+    /// <summary>
+    /// <paramref name="body"/> can't get out of where it is by itself (no stairs to dig, no blocks to pillar with): the colony sends help
+    /// (another pawn brings blocks) or, as a last resort, teleports it home. Returns what happens, for the pawn's report.
+    /// </summary>
+    string Stuck(string body, string why) => "no colony to ask for help";
 }
 
 /// <summary>Which director a body's script talks to: a process-wide resolver (account → port), set by the colony host.</summary>

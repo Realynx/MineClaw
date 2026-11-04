@@ -393,6 +393,7 @@ export const ZONE_TOOLS: ReadonlyArray<{ id: StoryZoneKind; label: string; hint:
   { id: 'mine', label: 'Quarry', hint: 'Pawns mine here when idle', color: '#9aa3ad' },
   { id: 'fish', label: 'Fishing zone', hint: 'Pawns fish here with rods (still water only)', color: '#3fb8d9' },
   { id: 'forbidden', label: 'Keep out', hint: 'Pawns never walk here', color: '#e0525a' },
+  { id: 'dump', label: 'Drop spot', hint: 'Loot goes here while the colony has no storage', color: '#c8a46a' },
 ];
 
 export function zoneColor(kind: string): string {

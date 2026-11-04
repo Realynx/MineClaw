@@ -102,6 +102,9 @@ public sealed partial class StoryColony
         void Column(int x, int z, int refY, bool inZone)
         {
             if (!seen.Add((x, z)) || StoryWander.GroundNear(w, x, z, refY) is not { } at) return;
+            // Never a cave cell (live 11-04: pawns wandered into caves and couldn't get back out); a home zone's own floors (a basement
+            // at the zone's height) still count.
+            if (StoryWander.Underground(w, at) && !(inZone && at.Y >= refY - 1)) return;
             if (night && !(inZone && StoryWander.Roofed(w, at)) && !(w.NightLight(at.X, at.Y, at.Z) is >= 8)) return;
             cells.Add(at);
         }

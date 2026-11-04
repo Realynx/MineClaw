@@ -36,6 +36,7 @@ public sealed partial class StoryColony
                 ["version"] = w?.Version, ["work_types"] = new JsonArray(WorkTypes.All.Select(t => (JsonNode)t!).ToArray()),
                 ["pawns"] = new JsonArray(Pawns.Values.Select(p => (JsonNode)PawnJson(p)).ToArray()),
                 ["seats"] = SeatsJson(),
+                ["unstored_kinds"] = UnstoredKinds(), // a condition: drops and loot with nowhere to go (StoryColony.Hauling.cs)
                 ["zones"] = new JsonArray(Zones.Where(z => New(z.Rev) || z.Plant != null || z.Bills != null || z.Kind == "fish").Select(z => (JsonNode)ZoneJson(z)).ToArray()),
                 ["beds"] = BedsJson(),
                 ["designations"] = new JsonArray(Designations.Where(d => New(d.Rev)).Select(d => (JsonNode)DesignationJson(d)).ToArray()),
@@ -104,6 +105,7 @@ public sealed partial class StoryColony
             ["pos"] = new JsonArray(Math.Round(live.X, 2), Math.Round(live.Y, 2), Math.Round(live.Z, 2)), ["dim"] = live.Dim, ["drafted"] = p.Drafted,
             ["state"] = state,
             ["leaving"] = _leaving.ContainsKey(p.Name),
+            ["stuck"] = _stuck.TryGetValue(p.Name, out var stuck) ? stuck.Why : null, // why it is stuck (StoryColony.Rescue.cs)
             ["offline_reason"] = OfflineReason(p, live),
             ["job"] = cur == null ? null : new JsonObject
             {

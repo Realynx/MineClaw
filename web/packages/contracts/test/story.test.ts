@@ -469,7 +469,9 @@ describe('the mock director', () => {
       autoPlaceBenches: false,
       detectBenches: false,
       idle: 'recreation',
+      rescueTeleport: true,
     });
+    expect(sim.options(id, { keepDisallowed: true }).keepDisallowed).toBe(true);
     expect(sim.state(id).options?.autoPlaceBenches).toBe(false);
   });
 });

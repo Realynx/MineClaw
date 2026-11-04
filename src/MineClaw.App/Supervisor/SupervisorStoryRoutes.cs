@@ -375,10 +375,15 @@ public sealed class SupervisorStoryRoutes(SupervisorOptions o, StoryColonies col
                 if (b["spare_tools"] != null && spare == null) return Bad("spare_tools must be {count, kinds}");
                 // idle: recreation | wander | stay (what pawns do with nothing to do; StoryColony.Recreation.cs)
                 var idle = b["idle"] is null ? null : b["idle"] is JsonValue iv && iv.TryGetValue<string>(out var im) ? im : "";
-                if (auto == null && detect == null && idle == null && craftTools == null && spare == null)
-                    return Bad("auto_place_benches, detect_benches, idle, auto_craft_tools or spare_tools required");
+                // {rescue_teleport?, unfiltered_storage_takes_anything?, keep_disallowed?: bool} (StoryColony.Hauling.cs)
+                var rescue = Flag("rescue_teleport");
+                var unfiltered = Flag("unfiltered_storage_takes_anything");
+                var keep = Flag("keep_disallowed");
+                if (auto == null && detect == null && idle == null && craftTools == null && spare == null && rescue == null && unfiltered == null && keep == null)
+                    return Bad("auto_place_benches, detect_benches, idle, auto_craft_tools, spare_tools, rescue_teleport, unfiltered_storage_takes_anything or keep_disallowed required");
                 if (c.SetIdle(idle) is { } idleErr) return Bad(idleErr);
                 if ((craftTools != null || spare != null) && c.SetGearOptions(craftTools, spare) is { } gerr) return Bad(gerr);
+                if (rescue != null || unfiltered != null || keep != null) c.SetHaulOptions(rescue, unfiltered, keep);
                 return Reply(200, auto == null && detect == null ? c.OptionsNow() : c.SetOptions(auto, detect));
             }
             default:
