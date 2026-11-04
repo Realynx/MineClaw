@@ -99,11 +99,17 @@ public static class StructureCapture
 
     public enum CellClass { Air, Natural, Build, Unsupported }
 
+    /// <summary>Ores, ice and technical blocks (portals, fire, spawners, cobwebs, piston parts, silverfish stone, huge mushrooms).</summary>
+    private static readonly HashSet<int> TerrainIds =
+    [
+        Data.Blocks.Bedrock, Data.Blocks.GoldOre, Data.Blocks.IronOre, Data.Blocks.CoalOre, Data.Blocks.LapisOre, Data.Blocks.DiamondOre,
+        Data.Blocks.RedstoneOre, Data.Blocks.LitRedstoneOre, Data.Blocks.Ice, Data.Blocks.Portal, Data.Blocks.Fire, Data.Blocks.MobSpawner,
+        Data.Blocks.Web, Data.Blocks.PistonMoving, Data.Blocks.PistonHead, Data.Blocks.MonsterEgg, Data.Blocks.BrownMushroomBlock,
+        Data.Blocks.RedMushroomBlock,
+    ];
+
     /// <summary>Natural terrain, plants and fluids: never part of a build (a living tree's logs are checked separately).</summary>
-    public static bool IsTerrain(int id) => Protection.IsNaturalFill(id) || id is Data.Blocks.Bedrock or Data.Blocks.GoldOre or Data.Blocks.IronOre
-        or Data.Blocks.CoalOre or Data.Blocks.LapisOre or Data.Blocks.DiamondOre or Data.Blocks.RedstoneOre or Data.Blocks.LitRedstoneOre
-        or Data.Blocks.Ice or Data.Blocks.Portal or Data.Blocks.Fire or Data.Blocks.MobSpawner or Data.Blocks.Web or Data.Blocks.PistonMoving
-        or Data.Blocks.PistonHead or Data.Blocks.MonsterEgg or Data.Blocks.BrownMushroomBlock or Data.Blocks.RedMushroomBlock;
+    public static bool IsTerrain(int id) => Protection.IsNaturalFill(id) || TerrainIds.Contains(id);
 
     /// <summary>The scan: classify every cell of the region, generate the DSL, parse it back and verify.</summary>
     public static CaptureResult Capture(CaptureRequest req)
@@ -113,99 +119,130 @@ public static class StructureCapture
         var trees = new Dictionary<BlockPos, bool>();
         var region = new HashSet<BlockPos>();
         var frontier = new HashSet<BlockPos>(); // flood cells that ran into unloaded chunks
-        if (req.Corners is { } c)
-        {
-            var (lo, hi) = (Lo(c.A, c.B), Hi(c.A, c.B));
-            if (Too(lo, hi, req.MaxSide) is { } big) { res.Min = lo; res.Max = hi; res.Refusal = big; return res; }
-            for (int y = lo.Y; y <= hi.Y; y++)
-                for (int z = lo.Z; z <= hi.Z; z++)
-                    for (int x = lo.X; x <= hi.X; x++)
-                    {
-                        var p = new BlockPos(x, y, z);
-                        if (w.IsLoaded(x, z) && Classify(w, p, req.Exclude, trees).Class is CellClass.Build or CellClass.Unsupported) region.Add(p);
-                    }
-            res.Min = lo;
-            res.Max = hi;
-        }
-        else if (req.Seed is { } seed)
-        {
-            if (Flood(req, seed, trees, region, frontier) is { } why) { res.Refusal = why; return res; }
-            if (region.Count == 0)
-            {
-                res.Refusal = $"I see no build at {seed.X},{seed.Y},{seed.Z}: only natural blocks around it (stand inside it, point at it, or give two corners)";
-                return res;
-            }
-            res.Min = new BlockPos(region.Min(p => p.X), region.Min(p => p.Y), region.Min(p => p.Z));
-            res.Max = new BlockPos(region.Max(p => p.X), region.Max(p => p.Y), region.Max(p => p.Z));
-        }
-        else
-        {
-            res.Refusal = "capture needs two corners, a pointed block or where you stand";
-            return res;
-        }
+        if (!SelectRegion(req, res, trees, region, frontier) || !LoadedEnough(req, res, frontier)) return res;
+        ReadStates(req, res, region, trees);
+        if (req.Corners == null) Doorsteps(res, w, req.Exclude, trees, req.MaxSide);
+        if (res.Cells.Values.Any(s => s.Id == Data.Blocks.Chest)) res.Notes.Add("chest contents not captured");
+        if (Unbuildable(res) is { } why) { res.Refusal = why; return res; }
+        InteriorAir(res, w);
+        res.Dsl = Dsl(res);
+        Verify(res, w);
+        return res;
+    }
 
-        // Unknown (unloaded) and stale (remembered) cells of the box, and where the flood ran into unloaded chunks (the build
-        // may go on there).
+    /// <summary>The cells to capture: the box between two corners, or the flood from a seed (false = refused).</summary>
+    private static bool SelectRegion(CaptureRequest req, CaptureResult res, Dictionary<BlockPos, bool> trees, HashSet<BlockPos> region, HashSet<BlockPos> frontier)
+    {
+        if (req.Corners is { } c) return BoxRegion(req, res, c, trees, region);
+        if (req.Seed is { } seed) return FloodRegion(req, res, seed, trees, region, frontier);
+        res.Refusal = "capture needs two corners, a pointed block or where you stand";
+        return false;
+    }
+
+    private static bool BoxRegion(CaptureRequest req, CaptureResult res, (BlockPos A, BlockPos B) c, Dictionary<BlockPos, bool> trees, HashSet<BlockPos> region)
+    {
+        var w = req.World;
+        var (lo, hi) = (Lo(c.A, c.B), Hi(c.A, c.B));
+        (res.Min, res.Max) = (lo, hi);
+        if (Too(lo, hi, req.MaxSide) is { } big) { res.Refusal = big; return false; }
+        for (int y = lo.Y; y <= hi.Y; y++)
+            for (int z = lo.Z; z <= hi.Z; z++)
+                for (int x = lo.X; x <= hi.X; x++)
+                {
+                    var p = new BlockPos(x, y, z);
+                    if (w.IsLoaded(x, z) && Classify(w, p, req.Exclude, trees).Class is CellClass.Build or CellClass.Unsupported) region.Add(p);
+                }
+        return true;
+    }
+
+    private static bool FloodRegion(CaptureRequest req, CaptureResult res, BlockPos seed, Dictionary<BlockPos, bool> trees, HashSet<BlockPos> region,
+        HashSet<BlockPos> frontier)
+    {
+        if (Flood(req, seed, trees, region, frontier) is { } why) { res.Refusal = why; return false; }
+        if (region.Count == 0)
+        {
+            res.Refusal = $"I see no build at {seed.X},{seed.Y},{seed.Z}: only natural blocks around it (stand inside it, point at it, or give two corners)";
+            return false;
+        }
+        res.Min = new BlockPos(region.Min(p => p.X), region.Min(p => p.Y), region.Min(p => p.Z));
+        res.Max = new BlockPos(region.Max(p => p.X), region.Max(p => p.Y), region.Max(p => p.Z));
+        return true;
+    }
+
+    /// <summary>Unknown (unloaded) and stale (remembered) cells of the box, and where the flood ran into unloaded chunks (the build
+    /// may go on there); false = too much of it unseen.</summary>
+    private static bool LoadedEnough(CaptureRequest req, CaptureResult res, HashSet<BlockPos> frontier)
+    {
+        var w = req.World;
         for (int z = res.Min.Z; z <= res.Max.Z; z++)
             for (int x = res.Min.X; x <= res.Max.X; x++)
             {
                 if (!w.IsLoaded(x, z)) res.Unknown += res.H;
                 else if (req.Live?.Invoke(x, z) == false) res.Stale += res.H;
             }
-        int beyond = frontier.Count(p => p.X < res.Min.X || p.X > res.Max.X || p.Y < res.Min.Y || p.Y > res.Max.Y || p.Z < res.Min.Z || p.Z > res.Max.Z);
+        int beyond = frontier.Count(p => !Within(res, p));
         res.Unknown += beyond;
-        if (res.Unknown > req.MaxUnknown * (res.Volume + beyond))
-        {
-            res.Refusal = string.Create(CultureInfo.InvariantCulture,
-                $"{res.Unknown} of the {res.Volume + beyond} cells ({100.0 * res.Unknown / (res.Volume + beyond):0}%) at {res.Bounds} aren't loaded: come closer so I can see all of it");
-            return res;
-        }
+        if (res.Unknown <= req.MaxUnknown * (res.Volume + beyond)) return true;
+        res.Refusal = string.Create(CultureInfo.InvariantCulture,
+            $"{res.Unknown} of the {res.Volume + beyond} cells ({100.0 * res.Unknown / (res.Volume + beyond):0}%) at {res.Bounds} aren't loaded: come closer so I can see all of it");
+        return false;
+    }
 
-        // The states, with stand-ins for what a blueprint can't hold.
-        foreach (var p in region.OrderBy(p => p.Y))
-        {
-            var (cls, id, meta, note) = Classify(w, p, req.Exclude, trees);
-            if (cls != CellClass.Build) { if (cls == CellClass.Unsupported) Count(res.Skipped, note ?? Data.Blocks.Get(id).Name.Replace('_', ' ')); continue; }
-            if (note != null) Count(res.Substituted, note);
-            if (BuildBlocks.KindOf(id) == BuildKind.Door)
-            {
-                if ((meta & 8) != 0) continue; // the lower half writes both
-                var up = p.Up();
-                if (up.Y > res.Max.Y || w.GetBlock(up.X, up.Y, up.Z) != id || (w.GetMeta(up.X, up.Y, up.Z) & 8) == 0) { Count(res.Skipped, "half door"); continue; }
-                res.Cells[p] = (id, meta & 7);
-                res.Cells[up] = (id, (meta & 7) | 8);
-                continue;
-            }
-            res.Cells[p] = (id, meta);
-        }
+    private static bool Within(CaptureResult res, BlockPos p) =>
+        p.X >= res.Min.X && p.X <= res.Max.X && p.Y >= res.Min.Y && p.Y <= res.Max.Y && p.Z >= res.Min.Z && p.Z <= res.Max.Z;
+
+    /// <summary>The states, with stand-ins for what a blueprint can't hold.</summary>
+    private static void ReadStates(CaptureRequest req, CaptureResult res, HashSet<BlockPos> region, Dictionary<BlockPos, bool> trees)
+    {
+        var w = req.World;
+        foreach (var p in region.OrderBy(p => p.Y)) ReadCell(req, res, p, trees);
         // An upper door half whose lower half isn't captured (outside the box, or not a door).
         foreach (var p in region)
             if (BuildBlocks.KindOf(w.GetBlock(p.X, p.Y, p.Z)) == BuildKind.Door && (w.GetMeta(p.X, p.Y, p.Z) & 8) != 0 && !res.Cells.ContainsKey(p))
                 Count(res.Skipped, "half door");
-        if (req.Corners == null) Doorsteps(res, w, req.Exclude, trees, req.MaxSide);
-        if (res.Cells.Values.Any(s => s.Id == Data.Blocks.Chest)) res.Notes.Add("chest contents not captured");
-        if (res.Cells.Count == 0)
-        {
-            res.Refusal = $"nothing buildable at {res.Bounds}" + (res.Skipped.Count > 0 ? $" ({res.Report()})" : "");
-            return res;
-        }
-        if (res.Blocks > BlueprintNormalizer.MaxBlocks)
-        {
-            res.Refusal = $"{res.Blocks} blocks at {res.Bounds}: a design holds at most {BlueprintNormalizer.MaxBlocks} (give two corners around a part of it)";
-            return res;
-        }
+    }
 
-        // Interior air: between the lowest and highest captured block of its column (rooms, doorways under lintels).
+    private static void ReadCell(CaptureRequest req, CaptureResult res, BlockPos p, Dictionary<BlockPos, bool> trees)
+    {
+        var (cls, id, meta, note) = Classify(req.World, p, req.Exclude, trees);
+        if (cls != CellClass.Build)
+        {
+            if (cls == CellClass.Unsupported) Count(res.Skipped, note ?? Data.Blocks.Get(id).Name.Replace('_', ' '));
+            return;
+        }
+        if (note != null) Count(res.Substituted, note);
+        if (BuildBlocks.KindOf(id) == BuildKind.Door) ReadDoor(req.World, res, p, id, meta);
+        else res.Cells[p] = (id, meta);
+    }
+
+    /// <summary>A door's lower half writes both halves (when its upper half stands above it in the box).</summary>
+    private static void ReadDoor(IBlockAccess w, CaptureResult res, BlockPos p, int id, int meta)
+    {
+        if ((meta & 8) != 0) return;
+        var up = p.Up();
+        if (up.Y > res.Max.Y || w.GetBlock(up.X, up.Y, up.Z) != id || (w.GetMeta(up.X, up.Y, up.Z) & 8) == 0) { Count(res.Skipped, "half door"); return; }
+        res.Cells[p] = (id, meta & 7);
+        res.Cells[up] = (id, (meta & 7) | 8);
+    }
+
+    /// <summary>Why the captured cells can't be a design (none, or too many), else null.</summary>
+    private static string? Unbuildable(CaptureResult res)
+    {
+        if (res.Cells.Count == 0) return $"nothing buildable at {res.Bounds}" + (res.Skipped.Count > 0 ? $" ({res.Report()})" : "");
+        if (res.Blocks > BlueprintNormalizer.MaxBlocks)
+            return $"{res.Blocks} blocks at {res.Bounds}: a design holds at most {BlueprintNormalizer.MaxBlocks} (give two corners around a part of it)";
+        return null;
+    }
+
+    /// <summary>Interior air: between the lowest and highest captured block of its column (rooms, doorways under lintels).</summary>
+    private static void InteriorAir(CaptureResult res, IBlockAccess w)
+    {
         var cols = new Dictionary<(int X, int Z), (int Lo, int Hi)>();
         foreach (var p in res.Cells.Keys)
             cols[(p.X, p.Z)] = cols.TryGetValue((p.X, p.Z), out var r) ? (Math.Min(r.Lo, p.Y), Math.Max(r.Hi, p.Y)) : (p.Y, p.Y);
         foreach (var ((x, z), (lo, hi)) in cols)
             for (int y = lo + 1; y < hi; y++)
                 if (!res.Cells.ContainsKey(new BlockPos(x, y, z)) && w.IsLoaded(x, z) && w.GetBlock(x, y, z) == 0) res.Air.Add(new BlockPos(x, y, z));
-
-        res.Dsl = Dsl(res);
-        Verify(res, w);
-        return res;
     }
 
     /// <summary>
@@ -222,27 +259,42 @@ public static class StructureCapture
         {
             if (BuildBlocks.KindOf(id) != BuildKind.Door || (meta & 8) != 0 || p.Y - 1 < res.Min.Y) continue;
             var (dx, dz) = BuildBlocks.DoorPlacerFacing(meta).Offset();
-            foreach (int sign in new[] { 1, -1 })
-            {
-                var front = p.Offset(dx * sign, 0, dz * sign);
-                var step = front.Down();
-                // Outside: open, nothing of the build over it (inside cells are under the roof).
-                if (res.Cells.ContainsKey(front) || res.Cells.ContainsKey(step) || roofed.GetValueOrDefault((front.X, front.Z), int.MinValue) > front.Y
-                    || !w.IsLoaded(step.X, step.Z) || w.GetBlock(front.X, front.Y, front.Z) is var f && f != 0 && Data.Blocks.Get(f).Solid) continue;
-                var (cls, sid, smeta, _) = Classify(w, step, exclude, trees);
-                int ground = w.GetBlock(step.X, step.Y, step.Z);
-                (int Id, int Meta)? state = cls == CellClass.Build ? (sid, smeta)
-                    : cls == CellClass.Natural && Data.Blocks.Get(ground).Solid && !Data.Blocks.IsWater(ground) && !Data.Blocks.IsLava(ground) ? (Data.Blocks.Dirt, 0) : null;
-                if (state is not { } s) continue;
-                var lo = new BlockPos(Math.Min(res.Min.X, step.X), res.Min.Y, Math.Min(res.Min.Z, step.Z));
-                var hi = new BlockPos(Math.Max(res.Max.X, step.X), res.Max.Y, Math.Max(res.Max.Z, step.Z));
-                if (hi.X - lo.X + 1 > maxSide || hi.Z - lo.Z + 1 > maxSide) continue;
-                (res.Min, res.Max) = (lo, hi);
-                res.Cells[step] = s;
-                added++;
-            }
+            foreach (int sign in DoorSides)
+                if (TryDoorstep(res, w, exclude, trees, maxSide, roofed, p.Offset(dx * sign, 0, dz * sign))) added++;
         }
         if (added > 0) res.Notes.Add($"added {added} doorstep{(added == 1 ? "" : "s")} (the ground in front of the door) so the copy can be walked into");
+    }
+
+    /// <summary>In front of a door, and behind it.</summary>
+    private static readonly int[] DoorSides = [1, -1];
+
+    /// <summary>The ground cell under <paramref name="front"/> joins the build when the door opens onto open ground there and the
+    /// box stays within <paramref name="maxSide"/>.</summary>
+    private static bool TryDoorstep(CaptureResult res, IBlockAccess w, Func<BlockPos, bool>? exclude, Dictionary<BlockPos, bool> trees, int maxSide,
+        Dictionary<(int X, int Z), int> roofed, BlockPos front)
+    {
+        var step = front.Down();
+        if (!OpenOutside(res, w, roofed, front, step) || DoorstepState(w, step, exclude, trees) is not { } s) return false;
+        var lo = new BlockPos(Math.Min(res.Min.X, step.X), res.Min.Y, Math.Min(res.Min.Z, step.Z));
+        var hi = new BlockPos(Math.Max(res.Max.X, step.X), res.Max.Y, Math.Max(res.Max.Z, step.Z));
+        if (hi.X - lo.X + 1 > maxSide || hi.Z - lo.Z + 1 > maxSide) return false;
+        (res.Min, res.Max) = (lo, hi);
+        res.Cells[step] = s;
+        return true;
+    }
+
+    /// <summary>Outside: open, nothing of the build over it (inside cells are under the roof), the ground under it loaded.</summary>
+    private static bool OpenOutside(CaptureResult res, IBlockAccess w, Dictionary<(int X, int Z), int> roofed, BlockPos front, BlockPos step) =>
+        !(res.Cells.ContainsKey(front) || res.Cells.ContainsKey(step) || roofed.GetValueOrDefault((front.X, front.Z), int.MinValue) > front.Y
+          || !w.IsLoaded(step.X, step.Z) || w.GetBlock(front.X, front.Y, front.Z) is var f && f != 0 && Data.Blocks.Get(f).Solid);
+
+    /// <summary>The doorstep's state: a building block as itself, solid natural ground as dirt, else none.</summary>
+    private static (int Id, int Meta)? DoorstepState(IBlockAccess w, BlockPos step, Func<BlockPos, bool>? exclude, Dictionary<BlockPos, bool> trees)
+    {
+        var (cls, sid, smeta, _) = Classify(w, step, exclude, trees);
+        int ground = w.GetBlock(step.X, step.Y, step.Z);
+        if (cls == CellClass.Build) return (sid, smeta);
+        return cls == CellClass.Natural && Data.Blocks.Get(ground).Solid && !Data.Blocks.IsWater(ground) && !Data.Blocks.IsLava(ground) ? (Data.Blocks.Dirt, 0) : null;
     }
 
     /// <summary>
@@ -250,52 +302,50 @@ public static class StructureCapture
     /// from the building blocks within 2 of the seed; then the floor under that footprint ("plus the floor it stands on"). With
     /// nothing above the floor, the floor itself (8-connected in its layer) is the build. Refuses past <see cref="CaptureRequest.MaxSide"/>.
     /// </summary>
-    private static string? Flood(CaptureRequest req, BlockPos seed, Dictionary<BlockPos, bool> trees, HashSet<BlockPos> region, HashSet<BlockPos> unknown)
+    private static string? Flood(CaptureRequest req, BlockPos seed, Dictionary<BlockPos, bool> trees, HashSet<BlockPos> region, HashSet<BlockPos> unknown) =>
+        new FloodFill(req, trees, region, unknown).Run(seed);
+
+    /// <summary>One flood: the region it grows, the cells it ran into unloaded chunks at, and the bounds it has reached.</summary>
+    private sealed class FloodFill(CaptureRequest req, Dictionary<BlockPos, bool> trees, HashSet<BlockPos> region, HashSet<BlockPos> unknown)
     {
-        var w = req.World;
-        int max = req.MaxSide, height = w.WorldHeight;
-        bool Building(BlockPos p) => w.IsLoaded(p.X, p.Z) && (uint)p.Y < height
-                                     && Classify(w, p, req.Exclude, trees).Class is CellClass.Build or CellClass.Unsupported;
-        int floorY = req.FloorY ?? FloorOf(w, seed, Building);
-        var q = new Queue<BlockPos>();
-        foreach (var p in Start(seed, floorY, Building))
-            if (region.Add(p)) q.Enqueue(p);
-        int x0 = seed.X, x1 = seed.X, y0 = seed.Y, y1 = seed.Y, z0 = seed.Z, z1 = seed.Z;
-        bool first = true;
-        void Grow(BlockPos p)
+        private readonly IBlockAccess w = req.World;
+        private readonly int height = req.World.WorldHeight;
+        private int x0, x1, y0, y1, z0, z1, floorY;
+        private bool first = true;
+
+        private bool Building(BlockPos p) => w.IsLoaded(p.X, p.Z) && (uint)p.Y < height
+                                             && Classify(w, p, req.Exclude, trees).Class is CellClass.Build or CellClass.Unsupported;
+
+        /// <summary>The floor it stands on: building blocks of the floor layer under the footprint (one-thick floors and platforms;
+        /// the stone of a thick island underneath isn't a floor).</summary>
+        private bool FloorCell(BlockPos p) => Building(p) && !(w.GetBlock(p.X, p.Y, p.Z) == Data.Blocks.Stone && w.GetBlock(p.X, p.Y - 1, p.Z) is var below
+                                                               && below != 0 && (below == Data.Blocks.Stone || IsTerrain(below)));
+
+        private void Grow(BlockPos p)
         {
             if (first) { (x0, x1, y0, y1, z0, z1) = (p.X, p.X, p.Y, p.Y, p.Z, p.Z); first = false; return; }
             (x0, x1, y0, y1, z0, z1) = (Math.Min(x0, p.X), Math.Max(x1, p.X), Math.Min(y0, p.Y), Math.Max(y1, p.Y), Math.Min(z0, p.Z), Math.Max(z1, p.Z));
         }
-        foreach (var p in region) Grow(p);
-        string? Over() => x1 - x0 + 1 > max || y1 - y0 + 1 > max || z1 - z0 + 1 > max
-            ? string.Create(CultureInfo.InvariantCulture,
-                $"the build keeps going past {max}×{max}×{max} (reached x {x0}..{x1}, y {y0}..{y1}, z {z0}..{z1}: it joins something bigger); give me two corners around it")
-            : null;
-        while (q.Count > 0)
+
+        private string? Over()
         {
-            var p = q.Dequeue();
-            for (int dy = -1; dy <= 1; dy++)
-                for (int dz = -1; dz <= 1; dz++)
-                    for (int dx = -1; dx <= 1; dx++)
-                    {
-                        if (dx == 0 && dy == 0 && dz == 0) continue;
-                        var n = p.Offset(dx, dy, dz);
-                        if (n.Y <= floorY || region.Contains(n)) continue;
-                        if (!w.IsLoaded(n.X, n.Z)) { unknown.Add(n); continue; }
-                        if (!Building(n)) continue;
-                        region.Add(n);
-                        Grow(n);
-                        if (Over() is { } big) return big;
-                        q.Enqueue(n);
-                    }
+            int max = req.MaxSide;
+            return x1 - x0 + 1 > max || y1 - y0 + 1 > max || z1 - z0 + 1 > max
+                ? string.Create(CultureInfo.InvariantCulture,
+                    $"the build keeps going past {max}×{max}×{max} (reached x {x0}..{x1}, y {y0}..{y1}, z {z0}..{z1}: it joins something bigger); give me two corners around it")
+                : null;
         }
-        // The floor it stands on: building blocks of the floor layer under the footprint (one-thick floors and platforms; the
-        // stone of a thick island underneath isn't a floor).
-        bool FloorCell(BlockPos p) => Building(p) && !(w.GetBlock(p.X, p.Y, p.Z) == Data.Blocks.Stone && w.GetBlock(p.X, p.Y - 1, p.Z) is var below
-                                                     && below != 0 && (below == Data.Blocks.Stone || IsTerrain(below)));
-        if (region.Count > 0)
+
+        public string? Run(BlockPos seed)
         {
+            (x0, x1, y0, y1, z0, z1) = (seed.X, seed.X, seed.Y, seed.Y, seed.Z, seed.Z);
+            floorY = req.FloorY ?? FloorOf(w, seed, Building);
+            var q = new Queue<BlockPos>();
+            foreach (var p in Start(seed, floorY, Building))
+                if (region.Add(p)) q.Enqueue(p);
+            foreach (var p in region) Grow(p);
+            if (AboveFloor(q) is { } big) return big;
+            if (region.Count == 0) return FloorOnly(seed, q);
             for (int z = z0; z <= z1; z++)
                 for (int x = x0; x <= x1; x++)
                 {
@@ -304,30 +354,59 @@ public static class StructureCapture
                 }
             return null;
         }
-        // Only a floor (a platform, a path): its layer, 8-connected.
-        var start = new BlockPos(seed.X, floorY, seed.Z);
-        if (!FloorCell(start)) return null;
-        region.Add(start);
-        q.Enqueue(start);
-        first = true;
-        Grow(start);
-        while (q.Count > 0)
+
+        /// <summary>26-connected over building blocks above the floor.</summary>
+        private string? AboveFloor(Queue<BlockPos> q)
         {
-            var p = q.Dequeue();
-            for (int dz = -1; dz <= 1; dz++)
-                for (int dx = -1; dx <= 1; dx++)
-                {
-                    var n = p.Offset(dx, 0, dz);
-                    if (region.Contains(n)) continue;
-                    if (!w.IsLoaded(n.X, n.Z)) { unknown.Add(n); continue; }
-                    if (!FloorCell(n)) continue;
-                    region.Add(n);
-                    Grow(n);
-                    if (Over() is { } big) return big;
-                    q.Enqueue(n);
-                }
+            Func<BlockPos, bool> building = Building;
+            while (q.Count > 0)
+            {
+                var p = q.Dequeue();
+                for (int dy = -1; dy <= 1; dy++)
+                    for (int dz = -1; dz <= 1; dz++)
+                        for (int dx = -1; dx <= 1; dx++)
+                        {
+                            if (dx == 0 && dy == 0 && dz == 0) continue;
+                            var n = p.Offset(dx, dy, dz);
+                            if (n.Y > floorY && Visit(n, q, building) is { } big) return big;
+                        }
+            }
+            return null;
         }
-        return null;
+
+        /// <summary>Only a floor (a platform, a path): its layer, 8-connected.</summary>
+        private string? FloorOnly(BlockPos seed, Queue<BlockPos> q)
+        {
+            var start = new BlockPos(seed.X, floorY, seed.Z);
+            if (!FloorCell(start)) return null;
+            Func<BlockPos, bool> floorCell = FloorCell;
+            region.Add(start);
+            q.Enqueue(start);
+            first = true;
+            Grow(start);
+            while (q.Count > 0)
+            {
+                var p = q.Dequeue();
+                for (int dz = -1; dz <= 1; dz++)
+                    for (int dx = -1; dx <= 1; dx++)
+                        if (Visit(p.Offset(dx, 0, dz), q, floorCell) is { } big) return big;
+            }
+            return null;
+        }
+
+        /// <summary>A neighbour joins the region when loaded and accepted (unloaded ones are noted); the refusal when the
+        /// region outgrows the limit.</summary>
+        private string? Visit(BlockPos n, Queue<BlockPos> q, Func<BlockPos, bool> accept)
+        {
+            if (region.Contains(n)) return null;
+            if (!w.IsLoaded(n.X, n.Z)) { unknown.Add(n); return null; }
+            if (!accept(n)) return null;
+            region.Add(n);
+            Grow(n);
+            if (Over() is { } big) return big;
+            q.Enqueue(n);
+            return null;
+        }
     }
 
     /// <summary>
@@ -343,20 +422,29 @@ public static class StructureCapture
         var frontier = new List<BlockPos> { seed };
         var found = new List<BlockPos>();
         for (int depth = 0; depth < Radius * 3 && frontier.Count > 0 && found.Count == 0; depth++)
-        {
-            var next = new List<BlockPos>();
-            foreach (var p in frontier)
-                foreach (var f in BlockFaceExtensions.All)
-                {
-                    var n = p.Offset(f);
-                    if (n.Y <= floorY || Math.Abs(n.X - seed.X) > Radius || Math.Abs(n.Y - seed.Y) > Radius || Math.Abs(n.Z - seed.Z) > Radius || !seen.Add(n)) continue;
-                    if (building(n)) found.Add(n);
-                    else next.Add(n);
-                }
-            frontier = next;
-        }
+            frontier = Expand(frontier, seed, floorY, Radius, building, seen, found);
         return found;
     }
+
+    /// <summary>One step of the walk: new open cells to walk on, building blocks into <paramref name="found"/>.</summary>
+    private static List<BlockPos> Expand(List<BlockPos> frontier, BlockPos seed, int floorY, int radius, Func<BlockPos, bool> building,
+        HashSet<BlockPos> seen, List<BlockPos> found)
+    {
+        var next = new List<BlockPos>();
+        foreach (var p in frontier)
+            foreach (var f in BlockFaceExtensions.All)
+            {
+                var n = p.Offset(f);
+                if (!InReach(seed, n, floorY, radius) || !seen.Add(n)) continue;
+                if (building(n)) found.Add(n);
+                else next.Add(n);
+            }
+        return next;
+    }
+
+    /// <summary>Above the floor and within <paramref name="radius"/> of the seed on every axis.</summary>
+    private static bool InReach(BlockPos seed, BlockPos n, int floorY, int radius) =>
+        n.Y > floorY && Math.Abs(n.X - seed.X) <= radius && Math.Abs(n.Y - seed.Y) <= radius && Math.Abs(n.Z - seed.Z) <= radius;
 
     /// <summary>The floor under a seed: air → the first solid below it; a block → the cell under the run of building blocks
     /// below it (a wall on grass: the grass; a planks floor on grass: the grass, so the floor is part of the build).</summary>
@@ -381,37 +469,46 @@ public static class StructureCapture
         if (id == 0) return (CellClass.Air, 0, 0, null);
         if (IsTerrain(id) || exclude?.Invoke(p) == true) return (CellClass.Natural, id, meta, null);
         if (id == Data.Blocks.Log && LivingTree(w, p, trees)) return (CellClass.Natural, id, meta, null);
-        switch (id)
-        {
-            case Data.Blocks.LitFurnace: return (CellClass.Build, Data.Blocks.Furnace, Front(meta), "lit furnace as furnace");
-            case Data.Blocks.RedstoneTorch or Data.Blocks.RedstoneTorchOff:
-                return (CellClass.Build, Data.Blocks.Torch, meta is >= 1 and <= 5 ? meta : 5, "redstone torch as torch");
-            case Data.Blocks.DoubleSlab:
-                {
-                    var (sub, name) = (meta & 7) switch
-                    {
-                        1 => (Data.Blocks.Sandstone, "sandstone"), 2 => (Data.Blocks.Planks, "planks"), 3 => (Data.Blocks.Cobblestone, "cobblestone"),
-                        4 => (Data.Blocks.Bricks, "bricks"), 5 => (Data.Blocks.StoneBricks, "stone bricks"), _ => (Data.Blocks.Stone, "stone"),
-                    };
-                    return (CellClass.Build, sub, 0, $"double slab as {name}");
-                }
-            case Data.Blocks.LockedChest: return (CellClass.Build, Data.Blocks.Chest, 0, "locked chest as chest");
-        }
+        if (StandIn(id, meta) is { } standIn) return standIn;
         if (!BuildBlocks.Buildable(id)) return (CellClass.Unsupported, id, meta, Data.Blocks.Get(id).Name.Replace('_', ' '));
-        int m = id switch
-        {
-            Data.Blocks.Slab => meta & 7,
-            Data.Blocks.Furnace or Data.Blocks.Dispenser => Front(meta),
-            _ => meta,
-        };
         if (BuildBlocks.KindOf(id) == BuildKind.Door) return (CellClass.Build, id, meta & 15, null);
-        if (BuildBlocks.MetaProblem(id, m) != null)
-        {
-            if (BuildBlocks.MetaProblem(id, 0) == null) return (CellClass.Build, id, 0, $"{Data.Blocks.Get(id).Name.Replace('_', ' ')} meta {meta} as 0");
-            return (CellClass.Unsupported, id, meta, Data.Blocks.Get(id).Name.Replace('_', ' '));
-        }
-        return (CellClass.Build, id, m, null);
+        int m = BuildMeta(id, meta);
+        return BuildBlocks.MetaProblem(id, m) == null ? (CellClass.Build, id, m, null) : MetaAsZero(id, meta);
     }
+
+    /// <summary>A block a blueprint can't hold, captured as the nearest one it can (named in the note), else null.</summary>
+    private static (CellClass Class, int Id, int Meta, string? Note)? StandIn(int id, int meta) => id switch
+    {
+        Data.Blocks.LitFurnace => (CellClass.Build, Data.Blocks.Furnace, Front(meta), "lit furnace as furnace"),
+        Data.Blocks.RedstoneTorch or Data.Blocks.RedstoneTorchOff => (CellClass.Build, Data.Blocks.Torch, meta is >= 1 and <= 5 ? meta : 5, "redstone torch as torch"),
+        Data.Blocks.DoubleSlab => DoubleSlabAs(meta),
+        Data.Blocks.LockedChest => (CellClass.Build, Data.Blocks.Chest, 0, "locked chest as chest"),
+        _ => null,
+    };
+
+    private static (CellClass Class, int Id, int Meta, string? Note) DoubleSlabAs(int meta)
+    {
+        var (sub, name) = (meta & 7) switch
+        {
+            1 => (Data.Blocks.Sandstone, "sandstone"), 2 => (Data.Blocks.Planks, "planks"), 3 => (Data.Blocks.Cobblestone, "cobblestone"),
+            4 => (Data.Blocks.Bricks, "bricks"), 5 => (Data.Blocks.StoneBricks, "stone bricks"), _ => (Data.Blocks.Stone, "stone"),
+        };
+        return (CellClass.Build, sub, 0, $"double slab as {name}");
+    }
+
+    /// <summary>The meta a blueprint holds for a world state: a slab's type only, a furnace/dispenser's front.</summary>
+    private static int BuildMeta(int id, int meta) => id switch
+    {
+        Data.Blocks.Slab => meta & 7,
+        Data.Blocks.Furnace or Data.Blocks.Dispenser => Front(meta),
+        _ => meta,
+    };
+
+    /// <summary>A state whose meta a blueprint can't hold: captured as meta 0 when that is valid, else unsupported.</summary>
+    private static (CellClass Class, int Id, int Meta, string? Note) MetaAsZero(int id, int meta) =>
+        BuildBlocks.MetaProblem(id, 0) == null
+            ? (CellClass.Build, id, 0, $"{Data.Blocks.Get(id).Name.Replace('_', ' ')} meta {meta} as 0")
+            : (CellClass.Unsupported, id, meta, Data.Blocks.Get(id).Name.Replace('_', ' '));
 
     private static int Front(int meta) => meta is >= 2 and <= 5 ? meta : 3;
 
@@ -443,7 +540,23 @@ public static class StructureCapture
     /// <summary>The DSL that reproduces <see cref="CaptureResult.Cells"/> exactly at <see cref="CaptureResult.Min"/>.</summary>
     internal static string Dsl(CaptureResult r)
     {
-        // One symbol per state (an upper door half draws its lower's symbol: the normalizer derives the half).
+        var (sym, palette) = Symbolize(r);
+        var sb = new StringBuilder();
+        sb.Append(CultureInfo.InvariantCulture, $"# captured from the world at {r.Bounds}: {r.Blocks} blocks, drawn as it stands\n");
+        sb.Append(CultureInfo.InvariantCulture, $"blueprint {r.Name}\n");
+        sb.Append(CultureInfo.InvariantCulture, $"size {r.W}x{r.H}x{r.D}\n");
+        if (r.Version != null) sb.Append("version ").Append(r.Version).Append('\n');
+        sb.Append(CultureInfo.InvariantCulture, $"origin {r.Min.X},{r.Min.Y},{r.Min.Z}\n");
+        sb.Append("facing south\n");
+        for (int i = 0; i < palette.Count; i += 8) sb.Append("palette ").Append(string.Join(' ', palette.Skip(i).Take(8))).Append('\n');
+        AppendLayers(sb, Layers(r, sym));
+        return sb.ToString();
+    }
+
+    /// <summary>One symbol per state (an upper door half draws its lower's symbol: the normalizer derives the half), most used
+    /// first: the block's initial when free, else the next free symbol; and the palette entries ("C=cobblestone").</summary>
+    private static (Dictionary<(int Id, int Meta), char> Sym, List<string> Palette) Symbolize(CaptureResult r)
+    {
         var states = r.Cells.Where(c => !(BuildBlocks.KindOf(c.Value.Id) == BuildKind.Door && (c.Value.Meta & 8) != 0))
             .GroupBy(c => c.Value).OrderByDescending(g => g.Count()).ThenBy(g => g.Key.Id).ThenBy(g => g.Key.Meta).Select(g => g.Key).ToList();
         var sym = new Dictionary<(int Id, int Meta), char>();
@@ -460,14 +573,12 @@ public static class StructureCapture
             sym[s] = c;
             palette.Add($"{c}={name}");
         }
-        var sb = new StringBuilder();
-        sb.Append(CultureInfo.InvariantCulture, $"# captured from the world at {r.Bounds}: {r.Blocks} blocks, drawn as it stands\n");
-        sb.Append(CultureInfo.InvariantCulture, $"blueprint {r.Name}\n");
-        sb.Append(CultureInfo.InvariantCulture, $"size {r.W}x{r.H}x{r.D}\n");
-        if (r.Version != null) sb.Append("version ").Append(r.Version).Append('\n');
-        sb.Append(CultureInfo.InvariantCulture, $"origin {r.Min.X},{r.Min.Y},{r.Min.Z}\n");
-        sb.Append("facing south\n");
-        for (int i = 0; i < palette.Count; i += 8) sb.Append("palette ").Append(string.Join(' ', palette.Skip(i).Take(8))).Append('\n');
+        return (sym, palette);
+    }
+
+    /// <summary>Each layer's rows (north first) of symbols, '.' for interior air, '_' for the rest.</summary>
+    private static List<string[]> Layers(CaptureResult r, Dictionary<(int Id, int Meta), char> sym)
+    {
         var layers = new List<string[]>();
         for (int y = r.Min.Y; y <= r.Max.Y; y++)
         {
@@ -475,59 +586,59 @@ public static class StructureCapture
             for (int z = r.Min.Z; z <= r.Max.Z; z++)
             {
                 var row = new char[r.W];
-                for (int x = r.Min.X; x <= r.Max.X; x++)
-                {
-                    var p = new BlockPos(x, y, z);
-                    char ch = '_';
-                    if (r.Cells.TryGetValue(p, out var s))
-                    {
-                        if (BuildBlocks.KindOf(s.Id) == BuildKind.Door && (s.Meta & 8) != 0 && r.Cells.TryGetValue(p.Down(), out var lo)) s = lo;
-                        ch = sym.TryGetValue(s, out var c) ? c : '_';
-                    }
-                    else if (r.Air.Contains(p)) ch = '.';
-                    row[x - r.Min.X] = ch;
-                }
+                for (int x = r.Min.X; x <= r.Max.X; x++) row[x - r.Min.X] = CellChar(r, sym, new BlockPos(x, y, z));
                 rows[z - r.Min.Z] = new string(row);
             }
             layers.Add(rows);
         }
-        // Consecutive identical layers share one block ("layer 1-3").
+        return layers;
+    }
+
+    private static char CellChar(CaptureResult r, Dictionary<(int Id, int Meta), char> sym, BlockPos p)
+    {
+        if (!r.Cells.TryGetValue(p, out var s)) return r.Air.Contains(p) ? '.' : '_';
+        if (BuildBlocks.KindOf(s.Id) == BuildKind.Door && (s.Meta & 8) != 0 && r.Cells.TryGetValue(p.Down(), out var lo)) s = lo;
+        return sym.TryGetValue(s, out var c) ? c : '_';
+    }
+
+    /// <summary>Consecutive identical layers share one block ("layer 1-3"); an all-'_' layer says nothing (kept as is).</summary>
+    private static void AppendLayers(StringBuilder sb, List<string[]> layers)
+    {
         for (int a = 0; a < layers.Count;)
         {
             int b = a;
             while (b + 1 < layers.Count && layers[b + 1].SequenceEqual(layers[a])) b++;
-            if (layers[a].All(row => row.All(ch => ch == '_'))) { a = b + 1; continue; } // nothing to say: kept as is
-            sb.Append(a == b ? $"layer {a}\n" : $"layer {a}-{b}\n");
-            foreach (var row in layers[a]) sb.Append(row).Append('\n');
+            if (!layers[a].All(row => row.All(ch => ch == '_')))
+            {
+                sb.Append(a == b ? $"layer {a}\n" : $"layer {a}-{b}\n");
+                foreach (var row in layers[a]) sb.Append(row).Append('\n');
+            }
             a = b + 1;
         }
-        return sb.ToString();
     }
 
     /// <summary>"planks", "cobblestone_stairs:2", "wooden_door:5" — a name the parser resolves back to exactly (id, meta).</summary>
     internal static string? PaletteName(int id, int meta, bool full = false)
     {
-        if (full)
-        {
-            // A versioned design: the design palette's spelling (resolves back to exactly this state in its version).
-            var pal = DesignPalette.Current;
-            int lower = BuildBlocks.KindOf(id) == BuildKind.Door ? meta & 7 : meta;
-            var spec = pal.Spec(id, lower);
-            return pal.TryResolve(spec, out var st, out _) && st == (id, lower) ? spec : null;
-        }
+        int want = BuildBlocks.KindOf(id) == BuildKind.Door ? meta & 7 : meta; // the palette names a door's lower half
+        if (full) return DesignPaletteName(id, want);
         var name = Data.Blocks.Get(id).Name;
         var arg = meta != 0 ? meta.ToString(CultureInfo.InvariantCulture) : null;
-        var (e, _) = BlueprintParser.Resolve('X', name, arg, name);
-        int want = BuildBlocks.KindOf(id) == BuildKind.Door ? meta & 7 : meta;
-        if (e != null && e.Id == id && e.CanonicalMeta == want) return arg == null ? name : $"{name}:{arg}";
+        if (ResolvesTo(name, arg, id, want)) return arg == null ? name : $"{name}:{arg}";
         // A name the item table reads as another damage (e.g. a variant): spell the meta out.
-        if (arg == null)
-        {
-            (e, _) = BlueprintParser.Resolve('X', name, "0", name);
-            if (e != null && e.Id == id && e.CanonicalMeta == want) return $"{name}:0";
-        }
-        return null;
+        return arg == null && ResolvesTo(name, "0", id, want) ? $"{name}:0" : null;
     }
+
+    /// <summary>A versioned design: the design palette's spelling (resolves back to exactly this state in its version).</summary>
+    private static string? DesignPaletteName(int id, int lower)
+    {
+        var pal = DesignPalette.Current;
+        var spec = pal.Spec(id, lower);
+        return pal.TryResolve(spec, out var st, out _) && st == (id, lower) ? spec : null;
+    }
+
+    private static bool ResolvesTo(string name, string? arg, int id, int meta) =>
+        BlueprintParser.Resolve('X', name, arg, name).Entry is { } e && e.Id == id && e.CanonicalMeta == meta;
 
     /// <summary>Parse the DSL back and compare it to the captured states voxel by voxel (and the drawn air to the world).</summary>
     internal static void Verify(CaptureResult r, IBlockAccess w)
@@ -541,6 +652,15 @@ public static class StructureCapture
             return;
         }
         r.Plan = plan;
+        Compare(r, plan, w);
+        if (r.Mismatched.Count > 0)
+            r.Refusal = $"the captured design doesn't match the world at {r.Mismatched.Count} cell(s), e.g. "
+                        + string.Join(" ", r.Mismatched.Take(4).Select(p => $"{p.X},{p.Y},{p.Z}"));
+    }
+
+    /// <summary>Each captured state against the plan's, the plan's extra blocks, and its drawn air against the world.</summary>
+    private static void Compare(CaptureResult r, VoxelPlan plan, IBlockAccess w)
+    {
         foreach (var (p, s) in r.Cells)
         {
             if (plan.Blocks.TryGetValue(p, out var b) && b.Id == s.Id && b.Meta == s.Meta) r.Matched++;
@@ -548,9 +668,6 @@ public static class StructureCapture
         }
         foreach (var p in plan.Blocks.Keys) if (!r.Cells.ContainsKey(p)) r.Mismatched.Add(p);
         foreach (var p in plan.Air) if (w.GetBlock(p.X, p.Y, p.Z) != 0) r.Mismatched.Add(p);
-        if (r.Mismatched.Count > 0)
-            r.Refusal = $"the captured design doesn't match the world at {r.Mismatched.Count} cell(s), e.g. "
-                        + string.Join(" ", r.Mismatched.Take(4).Select(p => $"{p.X},{p.Y},{p.Z}"));
     }
 
     // ------------------------------------------------------------------ helpers
