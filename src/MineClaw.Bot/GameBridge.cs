@@ -209,37 +209,47 @@ public sealed class GameBridge : IDisposable
     /// </summary>
     public string? BodySafety(IReadOnlyList<(string Tool, System.Text.Json.JsonElement Input)> steps)
     {
-        if (!_c.IsPlaying) return null;
+        if (!_c.IsPlaying || _c.World.Dimension != 0) return null;
         var w = _c.World;
-        if (w.Dimension != 0) return null;
-        bool night = w.IsNight, mobs = w.Entities.Nearby(w.Player.Position, 16, e => e.IsHostileMob && MineClaw.Client.Combat.CombatGeometry.CanGetAt(w, e, w.Player.Position), 1).Count > 0;
+        bool night = w.IsNight;
         // A clone spawn walks out at the spawn, not at main: only the night counts for it, not the mobs around main.
         // A spawn that names a clone is a new job for a body already out (live 10-29: "the order to 101 was refused because it's
         // night and there's no food"): only spawns that bring fresh bodies into the night are held.
         bool spawns = steps.Count > 0 && steps.All(s => BotAgent.IsCloneSpawn(s.Tool, s.Input));
-        if (spawns && steps.All(s => s.Input.TryGetProperty("name", out var n) && n.ValueKind == System.Text.Json.JsonValueKind.String && n.GetString() is { Length: > 0 }))
-            return null;
-        if (spawns) mobs = false;
-        if (!night && !mobs) return null;
-        if (!spawns && (_c.Brave || w.Player.Health > LowHealthLine && w.Player.Food > HungryLine)) return null;
-        if (FoodSupply.HasReady(_c)) return null;
-        if (steps.All(s => NightOk.Contains(s.Tool) || s.Tool == "goto" && GoesHome(s.Input, w) || ToNearPlayer(s.Tool, s.Input, w))) return null;
-        string what;
-        if (Volatile.Read(ref _feeding) == 1) what = "already getting food (reflex)";
-        else
-        {
-            FoodSupply.Outlook look;
-            try { look = new FoodSupply(_c).Survey(); }
-            catch (Exception ex) { _log.LogDebug(ex, "food survey failed"); look = new FoodSupply.Outlook([], "no food known"); }
-            if (look.CanObtain && Interlocked.CompareExchange(ref _feeding, 1, 0) == 0)
-            {
-                Feeding = Task.Run(FetchFoodAsync);
-                what = $"getting food first ({look.Text})";
-            }
-            else what = $"none to get ({look.Text}): staying in until it's day or someone brings food";
-        }
+        if (spawns && steps.All(s => NamesBody(s.Input))) return null;
+        if (!night && (spawns || !HostileNear(w))) return null;
+        if (!spawns && FitToGo(w)) return null;
+        if (FoodSupply.HasReady(_c) || steps.All(s => SafeAtNight(s.Tool, s.Input, w))) return null;
+        string what = FeedFirst();
         if (spawns) return $"night + no food: {what}; not spawning clones into the night now (they'd be pinned at once); at day, or once there is food";
         return $"{(night ? "night" : "mobs near")} + no food: {what}; not starting {steps[0].Tool} now (home ground only: eat, chests, gen)";
+    }
+
+    private static bool NamesBody(System.Text.Json.JsonElement input) =>
+        input.TryGetProperty("name", out var n) && n.ValueKind == System.Text.Json.JsonValueKind.String && n.GetString() is { Length: > 0 };
+
+    /// <summary>A hostile within 16 that can get at the body.</summary>
+    private static bool HostileNear(WorldState w) =>
+        w.Entities.Nearby(w.Player.Position, 16, e => e.IsHostileMob && MineClaw.Client.Combat.CombatGeometry.CanGetAt(w, e, w.Player.Position), 1).Count > 0;
+
+    /// <summary>Brave (the brain's override), or neither hurt nor hungry.</summary>
+    private bool FitToGo(WorldState w) => _c.Brave || w.Player.Health > LowHealthLine && w.Player.Food > HungryLine;
+
+    /// <summary>Home-ground steps (eat, chests, gen), a walk home, or a walk to a nearby player.</summary>
+    private bool SafeAtNight(string tool, System.Text.Json.JsonElement input, WorldState w) =>
+        NightOk.Contains(tool) || tool == "goto" && GoesHome(input, w) || ToNearPlayer(tool, input, w);
+
+    /// <summary>Starts the food reflex when food can be had (once at a time); what the refusal says about food.</summary>
+    private string FeedFirst()
+    {
+        if (Volatile.Read(ref _feeding) == 1) return "already getting food (reflex)";
+        FoodSupply.Outlook look;
+        try { look = new FoodSupply(_c).Survey(); }
+        catch (Exception ex) { _log.LogDebug(ex, "food survey failed"); look = new FoodSupply.Outlook([], "no food known"); }
+        if (!look.CanObtain || Interlocked.CompareExchange(ref _feeding, 1, 0) != 0)
+            return $"none to get ({look.Text}): staying in until it's day or someone brings food";
+        Feeding = Task.Run(FetchFoodAsync);
+        return $"getting food first ({look.Text})";
     }
 
     /// <summary>A walk to a player within this is defending, escorting or rescuing them (or picking up their drops): never refused.</summary>

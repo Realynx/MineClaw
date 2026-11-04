@@ -191,28 +191,10 @@ public sealed class DemonstrationRecorder(IGameClient client, BotOptions? option
         {
             if (ch.OldId == ch.NewId) return; // meta-only (crops, liquid levels, levers): not a step
             if (!Near(ch.Pos)) return;
-            var p = ch.Pos;
             bool swungRecently;
             lock (_lock) swungRecently = Now - _lastSwing.At < TimeSpan.FromSeconds(1.5) &&
-                                         (_lastSwing.Target is not { } st || st.DistanceSquaredTo(p) <= 4);
-            bool newLiquid = BlockShapes.IsLiquid(ch.NewId), oldLiquid = BlockShapes.IsLiquid(ch.OldId);
-            DemoAction? a = null;
-            bool mine = swungRecently;
-            if (newLiquid)
-            {
-                if (swungRecently && ch.NewMeta == 0) a = new(Now, DemoActionKind.BlockPlaced, p.X, p.Y, p.Z, Names.Block(ch.NewId), "poured");
-            }
-            else if (ch.NewId == 0)
-            {
-                if (oldLiquid) { if (swungRecently && ch.OldMeta == 0) a = new(Now, DemoActionKind.BlockBroken, p.X, p.Y, p.Z, Names.Block(ch.OldId), "scooped"); }
-                else a = new(Now, DemoActionKind.BlockBroken, p.X, p.Y, p.Z, Names.Block(ch.OldId), mine ? null : "vanished");
-            }
-            else
-            {
-                // Lava meeting water makes stone/cobble/obsidian: that is the structure working, not the player placing.
-                if (ch.NewId is Blocks.Cobblestone or Blocks.Stone or Blocks.Obsidian && TouchesLiquid(p)) mine = false;
-                a = new(Now, DemoActionKind.BlockPlaced, p.X, p.Y, p.Z, Names.Block(ch.NewId), mine ? null : "appeared");
-            }
+                                         (_lastSwing.Target is not { } st || st.DistanceSquaredTo(ch.Pos) <= 4);
+            var (a, mine) = ActionFor(ch, swungRecently);
             if (a == null) return;
             lock (_lock)
             {
@@ -220,6 +202,24 @@ public sealed class DemonstrationRecorder(IGameClient client, BotOptions? option
                 if (mine) Touch(true);
                 _raw.Add(new Raw(a, 0, mine));
             }
+        }
+
+        /// <summary>The step a block change is, and whether the player did it (a swing just before): a poured/scooped bucket
+        /// (source blocks only, after a swing), a broken block ("vanished" without one), a placed block ("appeared" without one,
+        /// and always for stone/cobble/obsidian a liquid made).</summary>
+        private (DemoAction? A, bool Mine) ActionFor(BlockChange ch, bool swung)
+        {
+            var p = ch.Pos;
+            if (BlockShapes.IsLiquid(ch.NewId))
+                return (swung && ch.NewMeta == 0 ? new DemoAction(Now, DemoActionKind.BlockPlaced, p.X, p.Y, p.Z, Names.Block(ch.NewId), "poured") : null, swung);
+            if (ch.NewId == 0)
+            {
+                if (!BlockShapes.IsLiquid(ch.OldId)) return (new DemoAction(Now, DemoActionKind.BlockBroken, p.X, p.Y, p.Z, Names.Block(ch.OldId), swung ? null : "vanished"), swung);
+                return (swung && ch.OldMeta == 0 ? new DemoAction(Now, DemoActionKind.BlockBroken, p.X, p.Y, p.Z, Names.Block(ch.OldId), "scooped") : null, swung);
+            }
+            // Lava meeting water makes stone/cobble/obsidian: that is the structure working, not the player placing.
+            bool mine = swung && !(ch.NewId is Blocks.Cobblestone or Blocks.Stone or Blocks.Obsidian && TouchesLiquid(p));
+            return (new DemoAction(Now, DemoActionKind.BlockPlaced, p.X, p.Y, p.Z, Names.Block(ch.NewId), mine ? null : "appeared"), mine);
         }
 
         private bool TouchesLiquid(BlockPos p) =>
