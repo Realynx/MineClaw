@@ -567,7 +567,10 @@ public sealed partial class MinecraftClient
             // Mining down my own pillar (a block a hive bot placed) is a 1-block step onto the next solid block: fine.
             // Leaves, a longer drop or the void below never are (hard safety), and ground I didn't build stays a floor.
             int under = World.GetBlock(pos);
-            bool shortStep = !Trees.Wood.IsLeaves(under) && OverridesSoft(pos, under) && !NextToLava(pos)
+            // Mine: the protection policy's record, or this body's own placement log (a pillar it just put up: Story Mode's nerd-pole).
+            bool mine = OverridesSoft(pos, under)
+                        || World.Placed.Get(pos, World.Dimension) is { } placed && placed.Bot == Options.Username && World.Placed.IsPlaced(pos, World.Dimension, under);
+            bool shortStep = !Trees.Wood.IsLeaves(under) && mine && !NextToLava(pos)
                              && Safety.RemovalIsShortSafeDrop(World, World.Player.Position, pos);
             if (!shortStep)
                 return $"won't dig the {name} I'm standing on at {Fmt(pos)}" + (WouldDropIntoVoid(pos) ? " (it's all that holds me over the void)"

@@ -681,7 +681,11 @@ public sealed partial class MinecraftClient
         if (stage < 2) return false;
         // The server confirms with a block change (or reverts it, and we fall back down).
         await WaitTicksAsync(4, ct).ConfigureAwait(false);
-        return World.GetBlock(feet) == block && World.Player.Position.Y >= feet.Y + 1 - 1e-3;
+        bool held = World.GetBlock(feet) == block && World.Player.Position.Y >= feet.Y + 1 - 1e-3;
+        // Mine (rule 1: self-placed is always minable): the pillar is dug back down standing on it, one short step at a time, even
+        // when the server's echo of the placement never came (the prediction already shows it).
+        if (held) World.Placed.Note(feet, World.Dimension, block, Options.Username, DateTimeOffset.UtcNow);
+        return held;
     }
 
     /// <summary>Steps off the pillar and digs it back: only cells the bot itself placed this chop, only while they still
