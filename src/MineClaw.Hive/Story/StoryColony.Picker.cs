@@ -480,6 +480,7 @@ public sealed partial class StoryColony
         if (j.Lease != null) { _leaseFails.Remove(j.Lease); _softFails.Remove(j.Lease); }
         Reached(p, j); // it isn't stuck; a rescue's blocks arrived (StoryColony.Rescue.cs)
         if (WorkTypes.Known(j.Type)) _lastWork[p.Name] = j.Type; // what it gathers next keeps its loot (KeepGathering)
+        HauledDone(j); // every drop a collect trip leased: its haul designation is done (StoryColony.EntityMarks.cs)
         if (j.Source == "deliver") _leaseFails.Remove("deliver:" + p.Name);
         switch (j.Source)
         {

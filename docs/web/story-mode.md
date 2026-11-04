@@ -543,6 +543,15 @@ Fox 11-03: "+ and − buttons to add or remove pawns in Story Mode."
 - Add: `POST …/designations` `{op:"add", kind: chop|cut|harvest|mine|haul|hunt|deconstruct|forbid|allow, area?:[x1,y1,z1,x2,y2,z2] | blocks?:[[x,y,z]], filter?: all|ores|stone|soil}`
   → `{count, targets:[[x,y,z]] | [entity id]}`.
 - Remove: `{op:"remove"|"cancel", kind?, area? | blocks? | ids?}` → `{count, removed:[id]}`.
+- **Marks on entities follow their entity (added 2026-11-04).** Fox: "When I have items selected for hauling and they get hauled to a
+  chest or into an inventory, the hauling icons don't go away, but the items do."
+  - A haul trip takes the designated drops within 6 blocks of the first one with it (each leased, "(+2 more)").
+  - A collect job done completes the haul designation of every drop it leased, standing pick-ups included.
+  - Every 3 s, a haul, hunt or forbid designation whose entity the colony's view hasn't shown for 8 s goes (picked up by a player or
+    another bot, killed, despawned). That happens only while the column where the entity lay is in view and no pawn's job holds it.
+  - A drop that merged into a stack of the same item right beside it passes its designation on to that stack (or simply goes when
+    that stack is designated already).
+  - Each removal is in the state delta's `removed.designations`, so the web clears the icon.
 
 The area expands at designation time to the matching targets in the bot's world view. Each target is one designation, at most
 4096 per request; targets already designated are skipped.
