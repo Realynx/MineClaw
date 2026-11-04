@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using MineClaw.Agent.Rag;
 using MineClaw.Agent.Rag.Beliefs;
@@ -134,29 +135,40 @@ public static class MemoryTools
     internal static ToolResult RememberNote(MemoryStore memory, BeliefStore beliefs, string subject, string text, string? by, DirectiveStore? rules = null)
     {
         text = TextUtil.Truncate(TextUtil.OneLine(text), 200);
-        var seen = SeenPrefix.Match(text);
-        if (seen.Success) by ??= "me"; // the bot's own look, kept verbatim as a note
-        var claimant = string.IsNullOrWhiteSpace(by) ? TurnContext.Current?.Speaker : by.Trim().TrimStart('@');
+        var claimant = ClaimantOf(text, by);
         bool own = claimant == null || OwnWords.Contains(claimant) || beliefs.IsBot?.Invoke(claimant) == true;
         if (!own && rules != null && rules.Trusted(claimant) && DirectiveParser.IsInstruction(text))
         {
             var r = rules.Add(claimant!, text);
-            if (r.Stored || TurnContext.IsTest) return ToolResult.Success(r.Text);
-            return ToolResult.Error(r.Text);
+            return Saved(r.Stored, r.Text);
         }
         if (!own && beliefs.Options.Enabled)
         {
-            var s = subject.Trim();
-            var claimText = !GenericSubjects.Contains(s) && !s.Equals(claimant, StringComparison.OrdinalIgnoreCase)
-                && !text.Contains(s, StringComparison.OrdinalIgnoreCase) ? $"{s} {text}" : text;
-            var r = beliefs.Ingest(claimant!, claimText);
-            if (r.Stored || TurnContext.IsTest) return ToolResult.Success(r.Text);
-            return ToolResult.Error(r.Text);
+            var r = beliefs.Ingest(claimant!, ClaimText(subject, text, claimant!));
+            return Saved(r.Stored, r.Text);
         }
         if (ClaimParser.IsDirective(text)) return ToolResult.Error("not saved: that's an instruction, not a fact");
         var n = memory.AddNote(subject, text);
         return ToolResult.Success($"note#{n.Id} saved");
     }
+
+    /// <summary>Who states the fact: explicit <paramref name="by"/>, the bot for its own "seen:" look, else this turn's speaker.</summary>
+    private static string? ClaimantOf(string text, string? by)
+    {
+        if (SeenPrefix.Match(text).Success) by ??= "me"; // the bot's own look, kept verbatim as a note
+        return string.IsNullOrWhiteSpace(by) ? TurnContext.Current?.Speaker : by.Trim().TrimStart('@');
+    }
+
+    /// <summary>The claim text: a specific subject that the text doesn't name yet goes in front ("wheat grows faster near water").</summary>
+    private static string ClaimText(string subject, string text, string claimant)
+    {
+        var s = subject.Trim();
+        return !GenericSubjects.Contains(s) && !s.Equals(claimant, StringComparison.OrdinalIgnoreCase)
+            && !text.Contains(s, StringComparison.OrdinalIgnoreCase) ? $"{s} {text}" : text;
+    }
+
+    /// <summary>A stored claim or rule answers ok; one not stored is an error (test chat always answers ok).</summary>
+    private static ToolResult Saved(bool stored, string text) => stored || TurnContext.IsTest ? ToolResult.Success(text) : ToolResult.Error(text);
 
     public static readonly string[] RecallKinds =
         ["waypoint", "structure", "note", "player", "routine", "episode", "knowledge", "world", "chat"];
@@ -172,75 +184,95 @@ public static class MemoryTools
             ToolSchema.Create().Str("query", required: false).Str("kind", required: false, enumValues: RecallKinds)
                 .Str("near", "\"here\" or x,y,z", required: false).Int("radius", "blocks, default 16", required: false)
                 .Int("limit", required: false).Str("dim", "overworld|nether|any; default yours", required: false).Build(),
-            async (input, ct) =>
-            {
-                var query = input.Str("query")?.Trim();
-                var kind = input.Str("kind")?.Trim().ToLowerInvariant();
-                int limit = Math.Clamp(input.Int("limit") ?? o.RecallLimit, 1, 12);
-                if (!WorldDim.TryParse(input.Str("dim"), memory.CurrentDimension, out var dim)) return ToolResult.Error("dim: overworld|nether|any");
-                (double, double, double)? near = null;
-                if (input.Str("near") is { Length: > 0 } ns)
-                {
-                    var p = ParseNear(ns, position);
-                    if (p == null) return ToolResult.Error("near must be \"here\" or x,y,z");
-                    near = p;
-                }
-                if (string.IsNullOrEmpty(query) && near == null) return ToolResult.Error("give a query or near");
-
-                if (kind == "chat")
-                {
-                    var rows = index.SearchChat(query, null, limit);
-                    if (rows.Count == 0) return ToolResult.Success("no chat matches");
-                    return ToolResult.Success(Bounded(rows.Select(r => TextUtil.Truncate(r.Format(), 160)), o.RecallMaxChars));
-                }
-
-                IReadOnlyCollection<string>? kinds = kind switch
-                {
-                    null or "" => null,
-                    "note" => ["note", "player", BeliefStore.DocKind, DirectiveStore.DocKind],
-                    _ => [kind],
-                };
-                var hits = await index.SearchAsync(new RagQuery
-                {
-                    Text = query, Kinds = kinds, Near = near, Radius = Math.Clamp(input.Int("radius") ?? 16, 1, 128), Limit = limit,
-                    Dimension = dim,
-                }, ct).ConfigureAwait(false);
-                MemoryAccess.Note(index, "recall", hits); // the viewer's memory map (observer only)
-                return ToolResult.Success(MemoryStore.FormatHits(index, hits, o.RecallMaxChars, 200));
-            }, cheapTier: true);
+            (input, ct) => RecallAsync(input, memory, position, ct), cheapTier: true);
 
         registry.Register("recall_detail", "Full text of a recall/[memory] entry by id (#12, or c34 for chat). Long ones are paged.",
             ToolSchema.Create().Str("id").Int("page", required: false).Build(),
-            (input, _) =>
-            {
-                var raw = input.ReqStr("id").Trim().TrimStart('#');
-                int page = Math.Max(1, input.Int("page") ?? 1);
-                string? text = null;
-                if (raw.StartsWith('c') && long.TryParse(raw[1..], out var cid))
-                {
-                    var rows = index.ChatAround(cid);
-                    if (rows.Count > 0) text = string.Join("\n", rows.Select(r => r.Format()));
-                }
-                else if (long.TryParse(raw, out var id) && index.Get(id) is { } h)
-                {
-                    text = h.Kind switch
-                    {
-                        "knowledge" => $"{h.Title}\n{h.Body}",
-                        "episode" => h.Body,
-                        _ => h.Body,
-                    };
-                    if (h.Bounds is { } b && h.Kind is "world" or "episode") text += $" @{b.Format()}";
-                    text = $"#{h.Id} [{h.Tag ?? h.Kind}] " + text;
-                    MemoryAccess.Note(index, "tool", [h]); // the viewer's memory map (observer only)
-                    if (index.Corrections?.Superseding(h) is { } fix) text = $"[{fix.Correction}] " + text; // stale lesson, corrected
-                }
-                if (text == null) return Task.FromResult(ToolResult.Error("no such id"));
-                int size = Math.Max(100, o.RecallMaxChars - 20);
-                int pages = (text.Length + size - 1) / size;
-                if (page > pages) return Task.FromResult(ToolResult.Error($"only {pages} page(s)"));
-                var slice = text.Substring((page - 1) * size, Math.Min(size, text.Length - (page - 1) * size));
-                return Task.FromResult(ToolResult.Success(pages > 1 ? $"{slice} (page {page}/{pages})" : slice));
-            }, cheapTier: true);
+            (input, _) => Task.FromResult(RecallDetail(input, memory.Index)), cheapTier: true);
+    }
+
+    private static async Task<ToolResult> RecallAsync(JsonElement input, MemoryStore memory, Func<BlockPos?>? position, CancellationToken ct)
+    {
+        var index = memory.Index;
+        var o = index.Options;
+        var query = input.Str("query")?.Trim();
+        var kind = input.Str("kind")?.Trim().ToLowerInvariant();
+        int limit = Math.Clamp(input.Int("limit") ?? o.RecallLimit, 1, 12);
+        if (!WorldDim.TryParse(input.Str("dim"), memory.CurrentDimension, out var dim)) return ToolResult.Error("dim: overworld|nether|any");
+        if (!TryNear(input, position, out var near)) return ToolResult.Error("near must be \"here\" or x,y,z");
+        if (string.IsNullOrEmpty(query) && near == null) return ToolResult.Error("give a query or near");
+        if (kind == "chat") return ChatRecall(index, query, limit);
+
+        var hits = await index.SearchAsync(new RagQuery
+        {
+            Text = query, Kinds = RecallKindsOf(kind), Near = near, Radius = Math.Clamp(input.Int("radius") ?? 16, 1, 128), Limit = limit,
+            Dimension = dim,
+        }, ct).ConfigureAwait(false);
+        MemoryAccess.Note(index, "recall", hits); // the viewer's memory map (observer only)
+        return ToolResult.Success(MemoryStore.FormatHits(index, hits, o.RecallMaxChars, 200));
+    }
+
+    /// <summary>The <c>near</c> arg: false when given but unreadable.</summary>
+    private static bool TryNear(JsonElement input, Func<BlockPos?>? position, out (double, double, double)? near)
+    {
+        near = null;
+        if (input.Str("near") is not { Length: > 0 } ns) return true;
+        near = ParseNear(ns, position);
+        return near != null;
+    }
+
+    private static ToolResult ChatRecall(RagIndex index, string? query, int limit)
+    {
+        var rows = index.SearchChat(query, null, limit);
+        if (rows.Count == 0) return ToolResult.Success("no chat matches");
+        return ToolResult.Success(Bounded(rows.Select(r => TextUtil.Truncate(r.Format(), 160)), index.Options.RecallMaxChars));
+    }
+
+    private static IReadOnlyCollection<string>? RecallKindsOf(string? kind) => kind switch
+    {
+        null or "" => null,
+        "note" => ["note", "player", BeliefStore.DocKind, DirectiveStore.DocKind],
+        _ => [kind],
+    };
+
+    private static ToolResult RecallDetail(JsonElement input, RagIndex index)
+    {
+        var raw = input.ReqStr("id").Trim().TrimStart('#');
+        int page = Math.Max(1, input.Int("page") ?? 1);
+        var text = DetailText(index, raw);
+        if (text == null) return ToolResult.Error("no such id");
+        int size = Math.Max(100, index.Options.RecallMaxChars - 20);
+        int pages = (text.Length + size - 1) / size;
+        if (page > pages) return ToolResult.Error($"only {pages} page(s)");
+        var slice = text.Substring((page - 1) * size, Math.Min(size, text.Length - (page - 1) * size));
+        return ToolResult.Success(pages > 1 ? $"{slice} (page {page}/{pages})" : slice);
+    }
+
+    /// <summary>"c34": the chat around that line; "12": the record's full text (tagged, its place, a stale lesson's correction).</summary>
+    private static string? DetailText(RagIndex index, string raw)
+    {
+        if (raw.StartsWith('c') && long.TryParse(raw[1..], out var cid))
+        {
+            var rows = index.ChatAround(cid);
+            return rows.Count > 0 ? string.Join("\n", rows.Select(r => r.Format())) : null;
+        }
+        if (!long.TryParse(raw, out var id) || index.Get(id) is not { } h) return null;
+        return HitDetail(index, h);
+    }
+
+    private static string HitDetail(RagIndex index, RagHit h)
+    {
+        var text = h.Kind switch
+        {
+            "knowledge" => $"{h.Title}\n{h.Body}",
+            "episode" => h.Body,
+            _ => h.Body,
+        };
+        if (h.Bounds is { } b && h.Kind is "world" or "episode") text += $" @{b.Format()}";
+        text = $"#{h.Id} [{h.Tag ?? h.Kind}] " + text;
+        MemoryAccess.Note(index, "tool", [h]); // the viewer's memory map (observer only)
+        if (index.Corrections?.Superseding(h) is { } fix) text = $"[{fix.Correction}] " + text; // stale lesson, corrected
+        return text;
     }
 
     internal static (double, double, double)? ParseNear(string s, Func<BlockPos?>? position)

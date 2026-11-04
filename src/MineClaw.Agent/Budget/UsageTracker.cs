@@ -406,6 +406,20 @@ public sealed class UsageTracker
 
     private (BudgetMode Mode, string Reason) Evaluate()
     {
+        var (d, m) = SpendSoFar();
+        Prune();
+        if (CapReached(d, m, 1m) is { } paused) return (BudgetMode.Paused, $"{paused} budget used up");
+        // Hard caps only: no hourly call cap (MaxCallsPerHour is ignored); CheapOnlyFraction 0 = no cheap-only stage.
+        var f = _options.CheapOnlyFraction > 0 ? (decimal)_options.CheapOnlyFraction : 1m;
+        if (f < 1m && CapReached(d, m, f) is { } cheap) return (BudgetMode.CheapOnly, $"{cheap} budget nearly used");
+        var w = (decimal)_options.WorkerBrainFraction;
+        if (w > 0 && w < f && CapReached(d, m, w) is { } economy) return (BudgetMode.Economy, $"{economy} budget past the economy mark");
+        return (BudgetMode.Normal, "ok");
+    }
+
+    /// <summary>Today's and this month's spend, plus the external ledger's when there is one.</summary>
+    private (decimal Day, decimal Month) SpendSoFar()
+    {
         var d = Get(_state.Days, DayKey).TotalUsd;
         var m = Get(_state.Months, MonthKey).TotalUsd;
         if (ExternalSpend is { } ext)
@@ -413,23 +427,15 @@ public sealed class UsageTracker
             try { var (xd, xm) = ext(); d += xd; m += xm; }
             catch (Exception) { /* ledger unavailable: own spend only */ }
         }
-        Prune();
-        if (_options.MonthlyCapUsd > 0 && m >= _options.MonthlyCapUsd) return (BudgetMode.Paused, "monthly budget used up");
-        if (_options.DailyCapUsd > 0 && d >= _options.DailyCapUsd) return (BudgetMode.Paused, "daily budget used up");
-        // Hard caps only: no hourly call cap (MaxCallsPerHour is ignored); CheapOnlyFraction 0 = no cheap-only stage.
-        var f = _options.CheapOnlyFraction > 0 ? (decimal)_options.CheapOnlyFraction : 1m;
-        if (f < 1m)
-        {
-            if (_options.MonthlyCapUsd > 0 && m >= _options.MonthlyCapUsd * f) return (BudgetMode.CheapOnly, "monthly budget nearly used");
-            if (_options.DailyCapUsd > 0 && d >= _options.DailyCapUsd * f) return (BudgetMode.CheapOnly, "daily budget nearly used");
-        }
-        var w = (decimal)_options.WorkerBrainFraction;
-        if (w > 0 && w < f)
-        {
-            if (_options.MonthlyCapUsd > 0 && m >= _options.MonthlyCapUsd * w) return (BudgetMode.Economy, "monthly budget past the economy mark");
-            if (_options.DailyCapUsd > 0 && d >= _options.DailyCapUsd * w) return (BudgetMode.Economy, "daily budget past the economy mark");
-        }
-        return (BudgetMode.Normal, "ok");
+        return (d, m);
+    }
+
+    /// <summary>"monthly" or "daily" when that spend reached <paramref name="fraction"/> of its cap (the month checked first), else null.</summary>
+    private string? CapReached(decimal day, decimal month, decimal fraction)
+    {
+        if (_options.MonthlyCapUsd > 0 && month >= _options.MonthlyCapUsd * fraction) return "monthly";
+        if (_options.DailyCapUsd > 0 && day >= _options.DailyCapUsd * fraction) return "daily";
+        return null;
     }
 
     private void Prune()

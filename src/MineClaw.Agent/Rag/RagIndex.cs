@@ -736,20 +736,34 @@ public sealed class RagIndex : IRetrievalIndex, IDisposable
         {
             foreach (var (id, e) in _vecs)
             {
-                if (kinds is { Length: > 0 } ? Array.IndexOf(kinds, e.Kind) < 0 : e.Kind is "chat" or SummaryKind) continue;
-                if (skip != null && skip(id)) continue;
-                if (tags is { Length: > 0 } && (e.Tag == null || Array.IndexOf(tags, e.Tag) < 0)) continue;
-                if (dim is { } dm && e.Dim is { } ed && ed != dm && e.Kind != EpisodeKind) continue;
+                if (KindExcluded(e, kinds) || (skip != null && skip(id)) || TagOrDimExcluded(e, tags, dim)) continue;
                 double c = VectorMath.Dot(q, e.Vec);
                 if (c < floor) continue;
-                if (top.Count == limit && c <= top[^1].Cos) continue;
-                int i = top.Count;
-                while (i > 0 && top[i - 1].Cos < c) i--;
-                top.Insert(i, (id, c));
-                if (top.Count > limit) top.RemoveAt(top.Count - 1);
+                InsertTop(top, id, c, limit);
             }
         }
         return top;
+    }
+
+    /// <summary>Not one of the kinds asked for; with none asked, chat and summaries (they have their own retrievers).</summary>
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    private static bool KindExcluded(VecEntry e, string[]? kinds) =>
+        kinds is { Length: > 0 } ? Array.IndexOf(kinds, e.Kind) < 0 : e.Kind is "chat" or SummaryKind;
+
+    /// <summary>Not tagged as asked, or placed in another dimension (episodes span dimensions).</summary>
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    private static bool TagOrDimExcluded(VecEntry e, string[]? tags, int? dim) =>
+        (tags is { Length: > 0 } && (e.Tag == null || Array.IndexOf(tags, e.Tag) < 0))
+        || (dim is { } dm && e.Dim is { } ed && ed != dm && e.Kind != EpisodeKind);
+
+    /// <summary>Keeps <paramref name="top"/> sorted by cosine, highest first, at most <paramref name="limit"/> long.</summary>
+    private static void InsertTop(List<(long Id, double Cos)> top, long id, double c, int limit)
+    {
+        if (top.Count == limit && c <= top[^1].Cos) return;
+        int i = top.Count;
+        while (i > 0 && top[i - 1].Cos < c) i--;
+        top.Insert(i, (id, c));
+        if (top.Count > limit) top.RemoveAt(top.Count - 1);
     }
 
     private List<(RagHit Hit, double Weight)> LoadHits(IEnumerable<long> ids)

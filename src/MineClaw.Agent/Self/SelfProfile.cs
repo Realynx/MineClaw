@@ -266,14 +266,7 @@ public sealed class SelfProfile
                 if (lastS == null) _db.SetMeta(key, now.ToString("O"));
                 return 0;
             }
-            var dropped = new List<SelfEntry>();
-            foreach (var e in _entries)
-            {
-                if ((now - e.Reinforced).TotalDays < 1) continue; // grace period after reinforcement
-                double rate = e.Section == SelfSection.Milestone ? _o.DecayPerDay / 2 : _o.DecayPerDay;
-                e.Strength *= Math.Pow(1 - rate, days);
-                if (e.Strength < _o.MinStrength) dropped.Add(e);
-            }
+            var dropped = DecayEntries(now, days);
             foreach (var d in dropped) _entries.Remove(d);
             _db.Tx(() =>
             {
@@ -287,6 +280,20 @@ public sealed class SelfProfile
             });
             return dropped.Count;
         }
+    }
+
+    /// <summary>Weakens every entry past its grace day by <paramref name="days"/> of decay (milestones at half rate); returns the faded ones.</summary>
+    private List<SelfEntry> DecayEntries(DateTimeOffset now, double days)
+    {
+        var dropped = new List<SelfEntry>();
+        foreach (var e in _entries)
+        {
+            if ((now - e.Reinforced).TotalDays < 1) continue; // grace period after reinforcement
+            double rate = e.Section == SelfSection.Milestone ? _o.DecayPerDay / 2 : _o.DecayPerDay;
+            e.Strength *= Math.Pow(1 - rate, days);
+            if (e.Strength < _o.MinStrength) dropped.Add(e);
+        }
+        return dropped;
     }
 
     // ---------------- admin ----------------

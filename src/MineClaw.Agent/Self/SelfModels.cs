@@ -9,19 +9,38 @@ public sealed record MoodState(double Cheer, double Confidence, double Energy, d
     public string Words()
     {
         var w = new List<string>();
-        if (Cheer >= 0.45) w.Add("giddy");
-        else if (Cheer >= 0.18) w.Add("cheery");
-        else if (Cheer <= -0.45) w.Add("pretty down");
-        else if (Cheer <= -0.18) w.Add("a bit down");
-        if (Confidence >= 0.45) w.Add("cocky");
-        else if (Confidence >= 0.2) w.Add("confident");
-        else if (Confidence <= -0.4) w.Add("shaken");
-        else if (Confidence <= -0.2) w.Add("unsure of yourself");
-        if (Energy <= -0.4) w.Add("sleepy");
-        else if (Energy <= -0.2) w.Add("kinda tired");
-        if (Affection >= 0.4) w.Add("clingy");
-        else if (Affection >= 0.2) w.Add("feeling loved");
+        Bands.AddFirst(w, Cheer, CheerBands);
+        Bands.AddFirst(w, Confidence, ConfidenceBands);
+        Bands.AddFirst(w, Energy, EnergyBands);
+        Bands.AddFirst(w, Affection, AffectionBands);
         return string.Join(", ", w);
+    }
+
+    private static readonly Bands.Band[] CheerBands =
+        [new(0.45, true, "giddy"), new(0.18, true, "cheery"), new(-0.45, false, "pretty down"), new(-0.18, false, "a bit down")];
+    private static readonly Bands.Band[] ConfidenceBands =
+        [new(0.45, true, "cocky"), new(0.2, true, "confident"), new(-0.4, false, "shaken"), new(-0.2, false, "unsure of yourself")];
+    private static readonly Bands.Band[] EnergyBands = [new(-0.4, false, "sleepy"), new(-0.2, false, "kinda tired")];
+    private static readonly Bands.Band[] AffectionBands = [new(0.4, true, "clingy"), new(0.2, true, "feeling loved")];
+}
+
+/// <summary>Threshold bands for the self model's words: the first band a value reaches names it.</summary>
+internal static class Bands
+{
+    /// <param name="Above">True: the value is at least <paramref name="At"/>; false: at most.</param>
+    internal readonly record struct Band(double At, bool Above, string Word);
+
+    /// <summary>Adds the word of the first band <paramref name="value"/> falls in (none when it falls in no band).</summary>
+    public static void AddFirst(List<string> words, double value, Band[] bands)
+    {
+        foreach (var b in bands)
+        {
+            if (b.Above ? value >= b.At : value <= b.At)
+            {
+                words.Add(b.Word);
+                return;
+            }
+        }
     }
 }
 
@@ -51,26 +70,26 @@ public sealed record RelationshipState(string Player)
     public string Describe()
     {
         var parts = new List<string>();
-        switch (Dominant)
-        {
-            case SignalKinds.Tease: parts.Add("fave tease target"); break;
-            case SignalKinds.Praise: parts.Add("hypes you up"); break;
-            case SignalKinds.Thanks: parts.Add("always says ty"); break;
-            case SignalKinds.Affection: parts.Add("gives you headpats"); break;
-            case SignalKinds.Scold: parts.Add("strict with you"); break;
-            case SignalKinds.Abuse: parts.Add("been rude lately"); break;
-        }
-        if (Affinity >= 0.6) parts.Add("bestie");
-        else if (Affinity >= 0.3) parts.Add("warm");
-        else if (Affinity <= -0.15) parts.Add("you're wary of them (stay polite)");
-        if (Playful >= 0.5 && Dominant != SignalKinds.Tease) parts.Add("banter buddy");
+        var dominant = Dominant;
+        if (dominant != null && DominantWords.TryGetValue(dominant, out var how)) parts.Add(how);
+        Bands.AddFirst(parts, Affinity, AffinityBands);
+        if (Playful >= 0.5 && dominant != SignalKinds.Tease) parts.Add("banter buddy");
         if (TopRequest is { } r) parts.Add($"trusts you w/ {TaskTypes.Label(r)}");
-        if (Trust <= -0.2) parts.Add("double-check their claims");
-        else if (Trust >= 0.4) parts.Add("their info checks out");
+        Bands.AddFirst(parts, Trust, TrustBands);
         if (Nickname != null) parts.Add($"calls you \"{Nickname}\"");
         if (InsideJokes.Count > 0) parts.Add($"joke: \"{InsideJokes[0]}\"");
         return string.Join(", ", parts);
     }
+
+    private static readonly Dictionary<string, string> DominantWords = new(StringComparer.Ordinal)
+    {
+        [SignalKinds.Tease] = "fave tease target", [SignalKinds.Praise] = "hypes you up", [SignalKinds.Thanks] = "always says ty",
+        [SignalKinds.Affection] = "gives you headpats", [SignalKinds.Scold] = "strict with you", [SignalKinds.Abuse] = "been rude lately",
+    };
+
+    private static readonly Bands.Band[] AffinityBands =
+        [new(0.6, true, "bestie"), new(0.3, true, "warm"), new(-0.15, false, "you're wary of them (stay polite)")];
+    private static readonly Bands.Band[] TrustBands = [new(-0.2, false, "double-check their claims"), new(0.4, true, "their info checks out")];
 }
 
 /// <summary>An emerging preference: activity × outcome × treatment for one task type.</summary>

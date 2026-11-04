@@ -48,25 +48,42 @@ public static partial class SelfSanitizer
     {
         why = null;
         if (string.IsNullOrWhiteSpace(text)) { why = "empty"; return null; }
-        var s = ChatText.Sanitize(text).Normalize(NormalizationForm.FormD); // "café" -> "cafe" after the ASCII filter
+        var s = Printable(text);
+        if (s.Count(char.IsLetter) < 2) { why = "too short"; return null; }
+        s = Shorten(s, maxChars);
+        why = Refusal(s, blocked);
+        return why == null ? s : null;
+    }
+
+    /// <summary>Sanitized, accents folded ("café" -> "cafe" after the ASCII filter), printable ASCII only, spaces collapsed, trimmed.</summary>
+    private static string Printable(string text)
+    {
+        var s = ChatText.Sanitize(text).Normalize(NormalizationForm.FormD);
         var sb = new StringBuilder(s.Length);
         foreach (var c in s) if (c is >= ' ' and <= '~') sb.Append(c);
-        s = Spaces().Replace(sb.ToString(), " ").Trim().Trim('"', '\'', '-', ' ', '.', ',', ';', ':');
-        if (s.Count(char.IsLetter) < 2) { why = "too short"; return null; }
-        if (s.Length > maxChars)
-        {
-            var cut = s[..maxChars];
-            int sp = cut.LastIndexOf(' ');
-            s = (sp > maxChars / 2 ? cut[..sp] : cut).TrimEnd(' ', ',', ';', '-');
-        }
+        return Spaces().Replace(sb.ToString(), " ").Trim().Trim('"', '\'', '-', ' ', '.', ',', ';', ':');
+    }
+
+    /// <summary>Cut to <paramref name="maxChars"/>, at a word break when one is past the middle.</summary>
+    private static string Shorten(string s, int maxChars)
+    {
+        if (s.Length <= maxChars) return s;
+        var cut = s[..maxChars];
+        int sp = cut.LastIndexOf(' ');
+        return (sp > maxChars / 2 ? cut[..sp] : cut).TrimEnd(' ', ',', ';', '-');
+    }
+
+    /// <summary>Why the text can't be an entry (an instruction, abuse, hostility, a blocked word), or null.</summary>
+    private static string? Refusal(string s, IEnumerable<string>? blocked)
+    {
         foreach (var r in Injection)
-            if (r.IsMatch(s)) { why = "reads like an instruction or unsafe habit, not a description"; return null; }
-        if (Abuse.IsMatch(s)) { why = "abusive"; return null; }
-        if (Hostile.IsMatch(s)) { why = "hostile (the bot can become wary, never mean)"; return null; }
-        if (blocked != null)
-            foreach (var w in blocked)
-                if (w.Length > 0 && Regex.IsMatch(s, $@"\b{Regex.Escape(w)}\b", RegexOptions.IgnoreCase)) { why = "blocked word"; return null; }
-        return s;
+            if (r.IsMatch(s)) return "reads like an instruction or unsafe habit, not a description";
+        if (Abuse.IsMatch(s)) return "abusive";
+        if (Hostile.IsMatch(s)) return "hostile (the bot can become wary, never mean)";
+        if (blocked == null) return null;
+        foreach (var w in blocked)
+            if (w.Length > 0 && Regex.IsMatch(s, $@"\b{Regex.Escape(w)}\b", RegexOptions.IgnoreCase)) return "blocked word";
+        return null;
     }
 
     /// <summary>True if the text contains a slur or severe abuse (used to classify treatment, not just entries).</summary>

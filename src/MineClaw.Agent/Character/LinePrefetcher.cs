@@ -72,22 +72,8 @@ public sealed class LinePrefetcher
     /// <summary>One refresh: sync the bank's context, and if moments are missing (and the budget allows) one call. Returns lines added.</summary>
     public async Task<int> RefreshAsync(CancellationToken ct = default)
     {
-        if (!_o.Prefetch || Context?.Invoke() is not { } ctx) return 0;
-        var sig = ctx.Signature;
-        int dropped = _bank.SetContext(sig);
-        if (dropped > 0) _log?.LogDebug("line bank: context changed, {N} line(s) expired", dropped);
-        if (ctx.Players.Count == 0) return 0; // nobody to talk to
-        var need = Needed(ctx);
-        if (need.Count == 0) return 0;
-        if (_usage.CheckMode() is not (BudgetMode.Normal or BudgetMode.Economy)) return 0;
-        var now = _time.GetUtcNow();
-        lock (_calls)
-        {
-            while (_calls.Count > 0 && now - _calls.Peek() > TimeSpan.FromHours(1)) _calls.Dequeue();
-            if (_calls.Count >= Math.Max(0, _o.MaxPrefetchPerHour)) return 0;
-            if (Interlocked.CompareExchange(ref _inFlight, 1, 0) != 0) return 0;
-            _calls.Enqueue(now);
-        }
+        if (MissingMoments(out var ctx, out var sig) is not { } need) return 0;
+        if (!TryReserveCall()) return 0;
         try
         {
             string? self = null;
@@ -104,18 +90,7 @@ public sealed class LinePrefetcher
             Calls++;
             _usage.Record(response.Model, response.Usage, ModelTier.Cheap);
             if (_bank.Context != sig) return 0; // the world moved on while it was writing
-            int added = 0;
-            foreach (var (key, lines) in Parse(response.Text))
-            {
-                var (moment, player) = SplitKey(key);
-                if (!need.Any(n => n.Moment == moment && (n.Player == null || n.Player.Equals(player, StringComparison.OrdinalIgnoreCase)))) continue;
-                foreach (var raw in lines.Take(Math.Max(1, _o.LinesPerMoment)))
-                {
-                    if (Lint(raw, ctx, _o.MaxLineChars) is not { } line || _bank.RecentlySaid(line)) continue;
-                    _bank.Add(moment, player, line, sig);
-                    added++;
-                }
-            }
+            int added = AddLines(response.Text, need, ctx, sig);
             _log?.LogInformation("line prefetch: {Added} line(s) for {Moments} ({Context})", added, string.Join(",", need.Select(n => n.Moment + (n.Player != null ? "@" + n.Player : ""))), ctx.Activity);
             return added;
         }
@@ -125,6 +100,57 @@ public sealed class LinePrefetcher
             return 0;
         }
         finally { Interlocked.Exchange(ref _inFlight, 0); }
+    }
+
+    /// <summary>
+    /// Syncs the bank's context, then the moments to prefetch: null when prefetch is off, nobody is around, nothing is missing or
+    /// the budget is tight.
+    /// </summary>
+    private IReadOnlyList<(string Moment, string? Player)>? MissingMoments(out CharacterContext ctx, out string sig)
+    {
+        ctx = CharacterContext.Idle;
+        sig = "";
+        if (!_o.Prefetch || Context?.Invoke() is not { } current) return null;
+        ctx = current;
+        sig = ctx.Signature;
+        int dropped = _bank.SetContext(sig);
+        if (dropped > 0) _log?.LogDebug("line bank: context changed, {N} line(s) expired", dropped);
+        if (ctx.Players.Count == 0) return null; // nobody to talk to
+        var need = Needed(ctx);
+        if (need.Count == 0) return null;
+        return _usage.CheckMode() is BudgetMode.Normal or BudgetMode.Economy ? need : null;
+    }
+
+    /// <summary>One call at a time, at most <see cref="CharacterOptions.MaxPrefetchPerHour"/> an hour.</summary>
+    private bool TryReserveCall()
+    {
+        var now = _time.GetUtcNow();
+        lock (_calls)
+        {
+            while (_calls.Count > 0 && now - _calls.Peek() > TimeSpan.FromHours(1)) _calls.Dequeue();
+            if (_calls.Count >= Math.Max(0, _o.MaxPrefetchPerHour)) return false;
+            if (Interlocked.CompareExchange(ref _inFlight, 1, 0) != 0) return false;
+            _calls.Enqueue(now);
+            return true;
+        }
+    }
+
+    /// <summary>Banks the reply's lines for the moments asked (each linted, none said recently); returns how many.</summary>
+    private int AddLines(string? text, IReadOnlyList<(string Moment, string? Player)> need, CharacterContext ctx, string sig)
+    {
+        int added = 0;
+        foreach (var (key, lines) in Parse(text))
+        {
+            var (moment, player) = SplitKey(key);
+            if (!need.Any(n => n.Moment == moment && (n.Player == null || n.Player.Equals(player, StringComparison.OrdinalIgnoreCase)))) continue;
+            foreach (var raw in lines.Take(Math.Max(1, _o.LinesPerMoment)))
+            {
+                if (Lint(raw, ctx, _o.MaxLineChars) is not { } line || _bank.RecentlySaid(line)) continue;
+                _bank.Add(moment, player, line, sig);
+                added++;
+            }
+        }
+        return added;
     }
 
     private static (string Moment, string? Player) SplitKey(string key)
