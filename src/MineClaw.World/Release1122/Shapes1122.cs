@@ -154,21 +154,30 @@ public static partial class Shapes1122
         for (int o = i; o < j; o++)
         for (int p = m; p < n; p++)
         {
-            bool edgeX = o == i || o == j - 1, edgeZ = p == m || p == n - 1;
+            bool edgeX = IsScanEdge(o, i, j), edgeZ = IsScanEdge(p, m, n);
             if (edgeX && edgeZ) continue;
             if (!w.IsLoaded(o, p)) continue;
-            for (int q = k; q < l; q++)
-            {
-                if ((edgeX || edgeZ) && q == l - 1) continue;
-                int id = w.GetBlock(o, q, p);
-                if (id == 0) continue;
-                tmp.Clear();
-                AddCollisionBoxes(w, id, w.GetMeta(o, q, p), o, q, p, tmp);
-                foreach (var b in tmp)
-                    if (b.Intersects(area)) output.Add(b);
-            }
+            AddColumnBoxes(w, o, p, k, edgeX || edgeZ ? l - 1 : l, area, output, tmp); // edge columns: not their top layer
         }
         return output;
+    }
+
+    /// <summary>The first or last of a scan range [lo, hi).</summary>
+    private static bool IsScanEdge(int v, int lo, int hi) => v == lo || v == hi - 1;
+
+    /// <summary>The boxes of column (x, z) from <paramref name="y0"/> up to (not including) <paramref name="y1"/> that intersect
+    /// the area.</summary>
+    private static void AddColumnBoxes(IBlockAccess w, int x, int z, int y0, int y1, AABB area, List<AABB> output, List<AABB> tmp)
+    {
+        for (int q = y0; q < y1; q++)
+        {
+            int id = w.GetBlock(x, q, z);
+            if (id == 0) continue;
+            tmp.Clear();
+            AddCollisionBoxes(w, id, w.GetMeta(x, q, z), x, q, z, tmp);
+            foreach (var b in tmp)
+                if (b.Intersects(area)) output.Add(b);
+        }
     }
 
     [ThreadStatic] private static List<AABB>? Tmp;
@@ -297,31 +306,23 @@ public static partial class Shapes1122
     {
         var facing = StairFacing(meta);
         bool top = StairTop(meta);
-        var (fx, fz) = Offset(facing);
-        int front = w.GetBlock(x + fx, y, z + fz);
-        if (IsStairs(front))
-        {
-            int fm = w.GetMeta(x + fx, y, z + fz);
-            if (StairTop(fm) == top)
-            {
-                var f1 = StairFacing(fm);
-                if (AxisZ(f1) != AxisZ(facing) && DifferentStairs(w, meta, x, y, z, Opposite(f1)))
-                    return f1 == Ccw(facing) ? StairsShape.OuterLeft : StairsShape.OuterRight;
-            }
-        }
-        var (bx, bz) = Offset(Opposite(facing));
-        int back = w.GetBlock(x + bx, y, z + bz);
-        if (IsStairs(back))
-        {
-            int bm = w.GetMeta(x + bx, y, z + bz);
-            if (StairTop(bm) == top)
-            {
-                var f2 = StairFacing(bm);
-                if (AxisZ(f2) != AxisZ(facing) && DifferentStairs(w, meta, x, y, z, f2))
-                    return f2 == Ccw(facing) ? StairsShape.InnerLeft : StairsShape.InnerRight;
-            }
-        }
+        if (CornerStair(w, x, y, z, facing, top, facing) is { } f1 && DifferentStairs(w, meta, x, y, z, Opposite(f1)))
+            return f1 == Ccw(facing) ? StairsShape.OuterLeft : StairsShape.OuterRight;
+        if (CornerStair(w, x, y, z, facing, top, Opposite(facing)) is { } f2 && DifferentStairs(w, meta, x, y, z, f2))
+            return f2 == Ccw(facing) ? StairsShape.InnerLeft : StairsShape.InnerRight;
         return StairsShape.Straight;
+    }
+
+    /// <summary>The facing of the stairs beside us toward <paramref name="dir"/> when they are the same half (top or bottom) and
+    /// face across ours; else null.</summary>
+    private static Face? CornerStair(IBlockAccess w, int x, int y, int z, Face facing, bool top, Face dir)
+    {
+        var (dx, dz) = Offset(dir);
+        if (!IsStairs(w.GetBlock(x + dx, y, z + dz))) return null;
+        int m = w.GetMeta(x + dx, y, z + dz);
+        if (StairTop(m) != top) return null;
+        var f = StairFacing(m);
+        return AxisZ(f) != AxisZ(facing) ? f : null;
     }
 
     private static bool DifferentStairs(IBlockAccess w, int meta, int x, int y, int z, Face dir)
@@ -342,32 +343,39 @@ public static partial class Shapes1122
         var shape = StairShape(w, meta, x, y, z);
         if (top) box.Add(0, 0.5, 0, 1, 1, 1); else box.Add(0, 0, 0, 1, 0.5, 1);
         double y0 = top ? 0 : 0.5, y1 = top ? 0.5 : 1;
-        if (shape is StairsShape.Straight or StairsShape.InnerLeft or StairsShape.InnerRight)
+        if (shape is StairsShape.Straight or StairsShape.InnerLeft or StairsShape.InnerRight) AddStairQuarter(box, facing, y0, y1);
+        if (shape != StairsShape.Straight) AddStairEighth(box, EighthFacing(shape, facing), y0, y1);
+    }
+
+    /// <summary>The quarter on the facing's half.</summary>
+    private static void AddStairQuarter(BoxSink box, Face facing, double y0, double y1)
+    {
+        switch (facing)
         {
-            switch (facing)
-            {
-                case Face.North: box.Add(0, y0, 0, 1, y1, 0.5); break;
-                case Face.South: box.Add(0, y0, 0.5, 1, y1, 1); break;
-                case Face.West: box.Add(0, y0, 0, 0.5, y1, 1); break;
-                default: box.Add(0.5, y0, 0, 1, y1, 1); break;
-            }
+            case Face.North: box.Add(0, y0, 0, 1, y1, 0.5); break;
+            case Face.South: box.Add(0, y0, 0.5, 1, y1, 1); break;
+            case Face.West: box.Add(0, y0, 0, 0.5, y1, 1); break;
+            default: box.Add(0.5, y0, 0, 1, y1, 1); break;
         }
-        if (shape != StairsShape.Straight)
+    }
+
+    private static Face EighthFacing(StairsShape shape, Face facing) => shape switch
+    {
+        StairsShape.OuterRight => Cw(facing),
+        StairsShape.InnerRight => Opposite(facing),
+        StairsShape.InnerLeft => Ccw(facing),
+        _ => facing,                                                          // OUTER_LEFT
+    };
+
+    /// <summary>The eighth: N → NW, S → SE, W → SW, E → NE.</summary>
+    private static void AddStairEighth(BoxSink box, Face f1, double y0, double y1)
+    {
+        switch (f1)
         {
-            Face f1 = shape switch
-            {
-                StairsShape.OuterRight => Cw(facing),
-                StairsShape.InnerRight => Opposite(facing),
-                StairsShape.InnerLeft => Ccw(facing),
-                _ => facing,                                                          // OUTER_LEFT
-            };
-            switch (f1)                                                               // N → NW, S → SE, W → SW, E → NE
-            {
-                case Face.North: box.Add(0, y0, 0, 0.5, y1, 0.5); break;
-                case Face.South: box.Add(0.5, y0, 0.5, 1, y1, 1); break;
-                case Face.West: box.Add(0, y0, 0.5, 0.5, y1, 1); break;
-                default: box.Add(0.5, y0, 0, 1, y1, 0.5); break;
-            }
+            case Face.North: box.Add(0, y0, 0, 0.5, y1, 0.5); break;
+            case Face.South: box.Add(0.5, y0, 0.5, 1, y1, 1); break;
+            case Face.West: box.Add(0, y0, 0.5, 0.5, y1, 1); break;
+            default: box.Add(0.5, y0, 0, 1, y1, 0.5); break;
         }
     }
 

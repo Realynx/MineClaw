@@ -197,7 +197,6 @@ public sealed class EdgeGuard
         UpdateLastSupport(w, s);
         bool near = IsNearEdge(w, s);
         var acts = GuardActions.None;
-        var input = proposed;
         Vec3d? landing = null;
         if (parkour is { } pc)
         {
@@ -206,40 +205,56 @@ public sealed class EdgeGuard
             landing = pc.Plan.Landing;
         }
 
-        if (near && input.Sprint)
-        {
-            input = input with { Sprint = false };
-            acts |= GuardActions.StoppedSprint;
-        }
-        if (near && s.OnGround && !input.Sneak && Options.ForceSneakNearEdge)
-        {
-            bool verifiedDrop = allowDrop && Simulate(w, s, ThenBrake(input), true, Options.MaxSafeFall, out _);
-            if (!verifiedDrop)
-            {
-                input = input with { Sneak = true };
-                acts |= GuardActions.ForcedSneak;
-            }
-        }
-        if (input.Jump && s.OnGround && !s.InWater && !s.InLava && !LandsSafely(w, s, input))
-        {
-            input = input with { Jump = false };
-            acts |= GuardActions.CancelledJump;
-        }
-
+        var input = Restrict(w, s, proposed, allowDrop, near, ref acts);
         if (IsViable(w, s, input)) return Done(input, acts, near);
 
         foreach (var c in Fallbacks(s, input))
             if (IsViable(w, s, c)) return Done(c, acts | GuardActions.ClampedInput, near);
 
+        return Steer(w, s, input, acts | GuardActions.AirSteer, near, landing);
+    }
+
+    /// <summary>Near an edge: no sprint, and sneak on the ground (unless it's a verified planned drop); no jump whose landing
+    /// isn't verified safe.</summary>
+    private MoveInput Restrict(IBlockAccess w, PhysicsState s, MoveInput input, bool allowDrop, bool near, ref GuardActions acts)
+    {
+        if (near && input.Sprint)
+        {
+            input = input with { Sprint = false };
+            acts |= GuardActions.StoppedSprint;
+        }
+        if (near && NeedsSneak(w, s, input, allowDrop))
+        {
+            input = input with { Sneak = true };
+            acts |= GuardActions.ForcedSneak;
+        }
+        if (input.Jump && JumpUnsafe(w, s, input))
+        {
+            input = input with { Jump = false };
+            acts |= GuardActions.CancelledJump;
+        }
+        return input;
+    }
+
+    private bool NeedsSneak(IBlockAccess w, PhysicsState s, MoveInput input, bool allowDrop) =>
+        s.OnGround && !input.Sneak && Options.ForceSneakNearEdge
+        && !(allowDrop && Simulate(w, s, ThenBrake(input), true, Options.MaxSafeFall, out _));
+
+    private bool JumpUnsafe(IBlockAccess w, PhysicsState s, MoveInput input) =>
+        s.OnGround && !s.InWater && !s.InLava && !LandsSafely(w, s, input);
+
+    /// <summary>Air steering: a policy that settles safely (strictly, then any), else the first one, unrecoverable.</summary>
+    private GuardDecision Steer(IBlockAccess w, PhysicsState s, MoveInput input, GuardActions acts, bool near, Vec3d? landing)
+    {
         var steers = SteerPolicies(w, s, input, landing);
         foreach (var p in steers)
-            if (Simulate(w, s, p, true, Options.MaxSafeFall, out _)) return Done(p(0, s), acts | GuardActions.AirSteer, near);
+            if (Simulate(w, s, p, true, Options.MaxSafeFall, out _)) return Done(p(0, s), acts, near);
         // Already committed to leaving support (e.g. knocked out over the void): accept any path that settles safely.
         foreach (var p in steers)
-            if (Simulate(w, s, p, false, Options.MaxSafeFall, out _)) return Done(p(0, s), acts | GuardActions.AirSteer, near);
+            if (Simulate(w, s, p, false, Options.MaxSafeFall, out _)) return Done(p(0, s), acts, near);
 
         var best = steers.Count > 0 ? steers[0](0, s) : Brake(s) with { Yaw = input.Yaw, Pitch = input.Pitch };
-        return Done(best, acts | GuardActions.AirSteer | GuardActions.Unrecoverable, near);
+        return Done(best, acts | GuardActions.Unrecoverable, near);
     }
 
     private GuardDecision Done(MoveInput input, GuardActions acts, bool near)
@@ -341,37 +356,58 @@ public sealed class EdgeGuard
     {
         var s = start.Clone();
         bool hazardBefore = s.InLava || Safety.TouchesHazard(w, s.BoundingBox);
-        double peak = s.Position.Y + (s.OnGround ? 0 : Math.Max(0, s.FallDistance));
-        bool wasGround = s.OnGround;
-        fall = 0;
+        var track = new FallTrack { Peak = s.Position.Y + (s.OnGround ? 0 : Math.Max(0, s.FallDistance)), WasGround = s.OnGround };
         for (int t = 0; t < Options.MaxSimTicks; t++)
         {
             PlayerPhysics.Tick(w, s, policy(t, s));
-            if (s.Frozen || s.Position.Y < 1) return false;
-            if (!hazardBefore && (s.InLava || Safety.TouchesHazard(w, s.BoundingBox))) return false;
-            bool overVoid = Safety.IsPlayerOverVoid(w, s.Position);
-            if (strict && overVoid) return false;
-            if (s.OnGround)
-            {
-                if (!wasGround)
-                {
-                    fall = Math.Max(fall, peak - s.Position.Y);
-                    if (fall > maxFall + 1e-6) return false;
-                }
-                peak = s.Position.Y;
-                wasGround = true;
-                if (s.Velocity.HorizontalLength < 0.02) return true;
-            }
-            else
-            {
-                wasGround = false;
-                if (s.Position.Y > peak) peak = s.Position.Y;
-                if (!overVoid && (s.OnLadder || (s.InWater && !s.InLava))) return true;
-            }
+            var o = SimStep(w, s, hazardBefore, strict, maxFall, ref track);
+            if (o == SimOutcome.Running) continue;
+            fall = track.Fall;
+            return o == SimOutcome.Safe;
         }
+        fall = track.Fall;
         // On the ground in flowing water the current keeps pushing, so the speed never settles under 0.02.
         // A whole horizon that stayed on the ground, in water, never over the void (strict: checked every tick) is safe.
         return strict && s.OnGround && s.InWater && !s.InLava && !Safety.IsPlayerOverVoid(w, s.Position);
+    }
+
+    private enum SimOutcome { Running, Safe, Failed }
+
+    /// <summary>One simulated tick's verdict: failed (frozen, the void, a new hazard, strictly over the void, a fall too far),
+    /// safe (settled on the ground, on a ladder, in water not over the void), or still running.</summary>
+    private static SimOutcome SimStep(IBlockAccess w, PhysicsState s, bool hazardBefore, bool strict, double maxFall, ref FallTrack track)
+    {
+        if (s.Frozen || s.Position.Y < 1) return SimOutcome.Failed;
+        if (!hazardBefore && (s.InLava || Safety.TouchesHazard(w, s.BoundingBox))) return SimOutcome.Failed;
+        bool overVoid = Safety.IsPlayerOverVoid(w, s.Position);
+        if (strict && overVoid) return SimOutcome.Failed;
+        return s.OnGround ? track.Grounded(s, maxFall) : track.Airborne(s, overVoid);
+    }
+
+    /// <summary>The simulated body's highest point since it last stood, and the largest landing fall so far.</summary>
+    private struct FallTrack
+    {
+        public double Peak, Fall;
+        public bool WasGround;
+
+        public SimOutcome Grounded(PhysicsState s, double maxFall)
+        {
+            if (!WasGround)
+            {
+                Fall = Math.Max(Fall, Peak - s.Position.Y);
+                if (Fall > maxFall + 1e-6) return SimOutcome.Failed;
+            }
+            Peak = s.Position.Y;
+            WasGround = true;
+            return s.Velocity.HorizontalLength < 0.02 ? SimOutcome.Safe : SimOutcome.Running;
+        }
+
+        public SimOutcome Airborne(PhysicsState s, bool overVoid)
+        {
+            WasGround = false;
+            if (s.Position.Y > Peak) Peak = s.Position.Y;
+            return !overVoid && (s.OnLadder || (s.InWater && !s.InLava)) ? SimOutcome.Safe : SimOutcome.Running;
+        }
     }
 
     /// <summary>The planned-parkour exemption test: the proposed input is the plan's input for this tick, and the
@@ -396,10 +432,32 @@ public sealed class EdgeGuard
     /// </summary>
     public ClutchPlan? PlanClutch(IBlockAccess w, PhysicsState s, double reach, int blockId = 1)
     {
-        var box = s.BoundingBox;
-        var eye = s.EyePosition;
-        var steer = _clutchTarget is { } ct ? Homing(ct) : LastSupport is { } ls ? Homing(ls) : ThenBrake(Brake(s));
+        var steer = ClutchSteer(s);
+        var traj = Trajectory(w, s, steer);
+        var cands = ClutchCells(traj, (int)Math.Floor(s.Position.Y + 1e-6) - 1);
 
+        ClutchPlan? bestSave = null;
+        (ClutchPlan Plan, int Index)? furthest = null;
+        foreach (var (cell, idx) in cands)
+        {
+            if (ClutchAt(w, s, cell, reach, blockId, steer) is not { } plan) continue;
+            if (plan.Saves)
+            {
+                if (bestSave is null || plan.PredictedFall < bestSave.Value.PredictedFall - 1e-6) bestSave = plan;
+            }
+            else if (furthest is null || idx > furthest.Value.Index)
+                furthest = (plan, idx);
+        }
+        return bestSave ?? furthest?.Plan;
+    }
+
+    /// <summary>Steering while falling: onto a placed clutch block, else the last support, else braking.</summary>
+    private Func<int, PhysicsState, MoveInput> ClutchSteer(PhysicsState s) =>
+        _clutchTarget is { } ct ? Homing(ct) : LastSupport is { } ls ? Homing(ls) : ThenBrake(Brake(s));
+
+    /// <summary>The steered fall from here: up to 24 ticks, until it lands (or the chunk isn't loaded).</summary>
+    private static List<Vec3d> Trajectory(IBlockAccess w, PhysicsState s, Func<int, PhysicsState, MoveInput> steer)
+    {
         var traj = new List<Vec3d> { s.Position };
         var sim = s.Clone();
         for (int t = 0; t < 24 && sim.Position.Y > 1; t++)
@@ -409,8 +467,13 @@ public sealed class EdgeGuard
             traj.Add(sim.Position);
             if (sim.OnGround) break;
         }
+        return traj;
+    }
 
-        int floorLevel = (int)Math.Floor(s.Position.Y + 1e-6) - 1;
+    /// <summary>The two cells under the hitbox at each trajectory point (never above the floor level), each with the first
+    /// point it's under.</summary>
+    private static List<(BlockPos Cell, int TrajIndex)> ClutchCells(List<Vec3d> traj, int floorLevel)
+    {
         var cands = new List<(BlockPos Cell, int TrajIndex)>();
         var seen = new HashSet<BlockPos>();
         for (int i = 0; i < traj.Count; i++)
@@ -426,26 +489,20 @@ public sealed class EdgeGuard
                 if (seen.Add(c)) cands.Add((c, i));
             }
         }
+        return cands;
+    }
 
-        ClutchPlan? bestSave = null;
-        (ClutchPlan Plan, int Index)? furthest = null;
-        foreach (var (cell, idx) in cands)
-        {
-            if (!w.IsLoaded(cell.X, cell.Z) || !Aiming.IsReplaceable(w, w.GetBlock(cell.X, cell.Y, cell.Z))) continue;
-            if (Aiming.FindPlaceAim(w, eye, cell, reach, box) is not { } aim) continue;
-            var overlay = new BlockOverlay(w).Set(cell, blockId);
-            var top = new Vec3d(cell.X + 0.5, cell.Y + 1, cell.Z + 0.5);
-            bool saves = Simulate(overlay, s, Homing(top), false, Options.MaxClutchFall, out double fall);
-            if (!saves && Simulate(overlay, s, steer, false, Options.MaxClutchFall, out double fall2)) { saves = true; fall = fall2; }
-            if (saves)
-            {
-                if (bestSave is null || fall < bestSave.Value.PredictedFall - 1e-6)
-                    bestSave = new ClutchPlan(cell, aim, true, fall);
-            }
-            else if (furthest is null || idx > furthest.Value.Index)
-                furthest = (new ClutchPlan(cell, aim, false, double.PositiveInfinity), idx);
-        }
-        return bestSave ?? furthest?.Plan;
+    /// <summary>A block placed at <paramref name="cell"/> right now: null when it can't be placed; Saves when homing onto it
+    /// (or the steering) then lands within the clutch fall.</summary>
+    private ClutchPlan? ClutchAt(IBlockAccess w, PhysicsState s, BlockPos cell, double reach, int blockId, Func<int, PhysicsState, MoveInput> steer)
+    {
+        if (!w.IsLoaded(cell.X, cell.Z) || !Aiming.IsReplaceable(w, w.GetBlock(cell.X, cell.Y, cell.Z))) return null;
+        if (Aiming.FindPlaceAim(w, s.EyePosition, cell, reach, s.BoundingBox) is not { } aim) return null;
+        var overlay = new BlockOverlay(w).Set(cell, blockId);
+        var top = new Vec3d(cell.X + 0.5, cell.Y + 1, cell.Z + 0.5);
+        bool saves = Simulate(overlay, s, Homing(top), false, Options.MaxClutchFall, out double fall);
+        if (!saves && Simulate(overlay, s, steer, false, Options.MaxClutchFall, out double fall2)) { saves = true; fall = fall2; }
+        return saves ? new ClutchPlan(cell, aim, true, fall) : new ClutchPlan(cell, aim, false, double.PositiveInfinity);
     }
 
     // ------------------------------------------------------------------ interior

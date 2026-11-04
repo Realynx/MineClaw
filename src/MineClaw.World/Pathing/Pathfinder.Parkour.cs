@@ -207,23 +207,37 @@ public sealed partial class Pathfinder
             int cx = x + i * dx, cz = z + i * dz;
             // A partial-height walk into the adjacent foot-cell row is a step, not a gap to simulate jumps across.
             var c = WalkCell(cx, y, cz, here.Floor, out _);
-            bool flat = c.Ok && c.Ground && !c.Water && !c.Climb && Math.Abs(c.Floor - here.Floor) < 0.01;
-            if (flat && dx != 0 && dz != 0)
-            {
-                var a = Cell(cx - dx, y, cz);
-                var b = Cell(cx, y, cz - dz);
-                flat = a.Ok && b.Ok && Math.Abs(a.Floor - here.Floor) < 0.01 && Math.Abs(b.Floor - here.Floor) < 0.01;
-                if (!flat) return -1; // a corner in the way: no straight diagonal run
-            }
+            bool flat = IsFlatRun(c, here);
+            // A corner in the way: no straight diagonal run.
+            if (flat && dx != 0 && dz != 0 && !DiagonalRunClear(here, cx, y, cz, dx, dz)) return -1;
             if (flat)
             {
                 if (i == Parkour.MaxRunCells + 1) return -1;
                 continue;
             }
-            if (c.Ok && Math.Abs(c.Floor - here.Floor) <= 0.5 + 1e-6) return -1; // a step, not a gap
-            return BodyClear(cx, cz, here.Floor) ? i - 1 : -1;
+            return GapAt(here, c, cx, cz, i);
         }
         return -1;
+    }
+
+    /// <summary>A run-up cell: standing ground (not water, not a ladder) at the takeoff's height.</summary>
+    private static bool IsFlatRun(CellInfo c, CellInfo here) =>
+        c.Ok && c.Ground && !c.Water && !c.Climb && Math.Abs(c.Floor - here.Floor) < 0.01;
+
+    /// <summary>A diagonal run-up cell's two side neighbours are flat too.</summary>
+    private bool DiagonalRunClear(CellInfo here, int cx, int y, int cz, int dx, int dz)
+    {
+        var a = Cell(cx - dx, y, cz);
+        var b = Cell(cx, y, cz - dz);
+        return a.Ok && b.Ok && Math.Abs(a.Floor - here.Floor) < 0.01 && Math.Abs(b.Floor - here.Floor) < 0.01;
+    }
+
+    /// <summary>The first cell off the run-up: a gap after <paramref name="i"/> − 1 run cells when the body passes it at the
+    /// run height, −1 for a step (or a wall).</summary>
+    private int GapAt(CellInfo here, CellInfo c, int cx, int cz, int i)
+    {
+        if (c.Ok && Math.Abs(c.Floor - here.Floor) <= 0.5 + 1e-6) return -1; // a step, not a gap
+        return BodyClear(cx, cz, here.Floor) ? i - 1 : -1;
     }
 
     /// <summary>The landing cell is the first standable one of its area when coming from (−ox,−oz): the cell one block

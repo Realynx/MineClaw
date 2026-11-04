@@ -389,25 +389,29 @@ public sealed class WorldState : IBlockAccess, IDisposable
             c.Set(lx, y, lz, id, meta);
             seenId = oldId;
             seenMeta = oldMeta;
-            if (c.SharedHolders is { } holders)
-            {
-                var p = new BlockPos(x, y, z);
-                if (!Told.IsEmpty && Told.TryRemove(p, out int t)) { seenId = t >> 4; seenMeta = t & 15; }
-                int now = (byte)id << 4 | meta;
-                if (now != (oldId << 4 | oldMeta))
-                    foreach (var h in holders)
-                    {
-                        if (ReferenceEquals(h, this)) continue;
-                        // Keep what the other world saw first; forget it once the cell is back to that (a reverted prediction).
-                        if (h.Told.TryGetValue(p, out int theirs)) { if (theirs == now) h.Told.TryRemove(p, out _); }
-                        else h.Told[p] = oldId << 4 | oldMeta;
-                    }
-            }
+            if (c.SharedHolders is { } holders) TellSharers(holders, new BlockPos(x, y, z), id, meta, oldId, oldMeta, ref seenId, ref seenMeta);
         }
         if (oldId != (byte)id) Light.OnBlockChanged(x, y, z, oldId, id);
         if (seenId != (byte)id || seenMeta != meta)
             BlockChanged?.Invoke(new BlockChange(new BlockPos(x, y, z), seenId, seenMeta, id, meta));
         return true;
+    }
+
+    /// <summary>A shared column's change: what this world was told it had (another world's earlier change) is what it saw before,
+    /// and every other world that shares the column is told the old state (unless it already has one: kept, or forgotten once the
+    /// cell is back to it, a reverted prediction). Callers hold the column's <see cref="ChunkColumn.Sync"/>.</summary>
+    private void TellSharers(WorldState[] holders, BlockPos p, int id, int meta, int oldId, int oldMeta, ref int seenId, ref int seenMeta)
+    {
+        if (!Told.IsEmpty && Told.TryRemove(p, out int t)) { seenId = t >> 4; seenMeta = t & 15; }
+        int now = (byte)id << 4 | meta;
+        if (now == (oldId << 4 | oldMeta)) return;
+        foreach (var h in holders)
+        {
+            if (ReferenceEquals(h, this)) continue;
+            // Keep what the other world saw first; forget it once the cell is back to that (a reverted prediction).
+            if (h.Told.TryGetValue(p, out int theirs)) { if (theirs == now) h.Told.TryRemove(p, out _); }
+            else h.Told[p] = oldId << 4 | oldMeta;
+        }
     }
 
     /// <summary>Store mode: forgets what this world was told about other worlds' changes in one x/z column of cells (it just got
@@ -440,38 +444,46 @@ public sealed class WorldState : IBlockAccess, IDisposable
         if (ids.Length < volume) throw new ArgumentException($"ids has {ids.Length} entries, region needs {volume}");
 
         var newColumns = new List<(int, int)>();
+        var region = new RegionRun(originY, sizeY, ids, meta, blockLight, skyLight);
         // Iterate column by column so each chunk column is locked once per (dx,dz) run.
         for (int dx = 0; dx < sizeX; dx++)
-        {
-            int x = originX + dx;
-            for (int dz = 0; dz < sizeZ; dz++)
-            {
-                int z = originZ + dz;
-                var col = GetOrCreate(x >> 4, z >> 4, out bool created);
-                if (created) newColumns.Add((x >> 4, z >> 4));
-                int src = (dx * sizeZ + dz) * sizeY;
-                // The part of the y run inside the world.
-                int d0 = Math.Max(0, -originY), d1 = Math.Min(sizeY, WorldHeight - originY);
-                lock (col.Sync)
-                {
-                    if (d1 > d0)
-                    {
-                        int s0 = src + d0, n = d1 - d0;
-                        col.WriteRun(x & 15, z & 15, originY + d0, ids.AsSpan(s0, n), Run(meta, s0, n), Run(blockLight, s0, n), Run(skyLight, s0, n));
-                        if (!Told.IsEmpty) ForgetTold(x, z, originY + d0, originY + d1 - 1);
-                    }
-                    col.HasData = true;
-                }
-            }
-        }
+        for (int dz = 0; dz < sizeZ; dz++)
+            WriteRegionColumn(originX + dx, originZ + dz, (dx * sizeZ + dz) * sizeY, region, newColumns);
         // Live data replaces what was remembered of these columns.
-        if (!_remembered.IsEmpty)
-            for (int cx = originX >> 4; cx <= (originX + sizeX - 1) >> 4; cx++)
-            for (int cz = originZ >> 4; cz <= (originZ + sizeZ - 1) >> 4; cz++)
-                _remembered.TryRemove(Key(cx, cz), out _);
+        if (!_remembered.IsEmpty) ForgetRemembered(originX, originZ, sizeX, sizeZ);
         Light.OnRegion(originX, originZ, sizeX, sizeZ, hasSky: skyLight != null, hasBlock: blockLight != null);
         foreach (var (cx, cz) in newColumns) ColumnLoaded?.Invoke(cx, cz);
         RegionUpdated?.Invoke(new BlockPos(originX, originY, originZ), new BlockPos(sizeX, sizeY, sizeZ));
+    }
+
+    /// <summary>A 0x33 region's y span and arrays (indexed <c>(dx * sizeZ + dz) * sizeY + dy</c>).</summary>
+    private readonly record struct RegionRun(int OriginY, int SizeY, byte[] Ids, byte[]? Meta, byte[]? BlockLight, byte[]? SkyLight);
+
+    /// <summary>One x/z column of a region (its run from <paramref name="src"/>): the part inside the world written under the
+    /// column's lock (creating the column if needed), and the column marked as having data.</summary>
+    private void WriteRegionColumn(int x, int z, int src, in RegionRun r, List<(int, int)> newColumns)
+    {
+        var col = GetOrCreate(x >> 4, z >> 4, out bool created);
+        if (created) newColumns.Add((x >> 4, z >> 4));
+        // The part of the y run inside the world.
+        int d0 = Math.Max(0, -r.OriginY), d1 = Math.Min(r.SizeY, WorldHeight - r.OriginY);
+        lock (col.Sync)
+        {
+            if (d1 > d0)
+            {
+                int s0 = src + d0, n = d1 - d0;
+                col.WriteRun(x & 15, z & 15, r.OriginY + d0, r.Ids.AsSpan(s0, n), Run(r.Meta, s0, n), Run(r.BlockLight, s0, n), Run(r.SkyLight, s0, n));
+                if (!Told.IsEmpty) ForgetTold(x, z, r.OriginY + d0, r.OriginY + d1 - 1);
+            }
+            col.HasData = true;
+        }
+    }
+
+    private void ForgetRemembered(int originX, int originZ, int sizeX, int sizeZ)
+    {
+        for (int cx = originX >> 4; cx <= (originX + sizeX - 1) >> 4; cx++)
+        for (int cz = originZ >> 4; cz <= (originZ + sizeZ - 1) >> 4; cz++)
+            _remembered.TryRemove(Key(cx, cz), out _);
     }
 
     /// <summary>The part of <paramref name="a"/> from <paramref name="start"/>, at most <paramref name="n"/> long (shorter or empty
@@ -495,6 +507,7 @@ public sealed class WorldState : IBlockAccess, IDisposable
         double r2 = radius * radius;
         int cx = (int)Math.Floor(center.X), cy = (int)Math.Floor(center.Y), cz = (int)Math.Floor(center.Z);
         int y0 = Math.Max(0, cy - r), y1 = Math.Min(WorldHeight - 1, cy + r);
+        var search = new BlockSearch(center, r2, match, where, results);
         for (int x = cx - r; x <= cx + r; x++)
         for (int z = cz - r; z <= cz + r; z++)
         {
@@ -503,21 +516,29 @@ public sealed class WorldState : IBlockAccess, IDisposable
             double hx = x + 0.5 - center.X, hz = z + 0.5 - center.Z;
             double h2 = hx * hx + hz * hz;
             if (h2 > r2) continue;
-            int lx = x & 15, lz = z & 15;
-            for (int y = y0; y <= y1; y++)
-            {
-                int id = col.GetBlock(lx, y, lz);
-                if (id == 0 && !match(0, 0)) continue;
-                double hy = y + 0.5 - center.Y;
-                double d2 = h2 + hy * hy;
-                if (d2 > r2) continue;
-                int m = col.GetMeta(lx, y, lz);
-                if (match(id, m) && (where is null || where(new BlockPos(x, y, z)))) results.Add(new FoundBlock(new BlockPos(x, y, z), id, m, d2));
-            }
+            SearchColumn(col, x, z, y0, y1, h2, search);
         }
         results.Sort((a, b) => a.DistanceSquared.CompareTo(b.DistanceSquared));
         if (results.Count > maxResults) results.RemoveRange(maxResults, results.Count - maxResults);
         return results;
+    }
+
+    private readonly record struct BlockSearch(Vec3d Center, double R2, Func<int, int, bool> Match, Func<BlockPos, bool>? Where, List<FoundBlock> Results);
+
+    /// <summary>The matches of one column (y0..y1) inside the sphere (<paramref name="h2"/>: its squared horizontal distance).</summary>
+    private static void SearchColumn(ChunkColumn col, int x, int z, int y0, int y1, double h2, in BlockSearch s)
+    {
+        int lx = x & 15, lz = z & 15;
+        for (int y = y0; y <= y1; y++)
+        {
+            int id = col.GetBlock(lx, y, lz);
+            if (id == 0 && !s.Match(0, 0)) continue;
+            double hy = y + 0.5 - s.Center.Y;
+            double d2 = h2 + hy * hy;
+            if (d2 > s.R2) continue;
+            int m = col.GetMeta(lx, y, lz);
+            if (s.Match(id, m) && (s.Where is null || s.Where(new BlockPos(x, y, z)))) s.Results.Add(new FoundBlock(new BlockPos(x, y, z), id, m, d2));
+        }
     }
 
     public List<FoundBlock> FindBlocks(Vec3d center, double radius, int blockId, int maxResults = 64) =>

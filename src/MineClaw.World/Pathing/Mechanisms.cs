@@ -367,6 +367,23 @@ public sealed class MechanismGraph
     {
         var k = kind ?? Mechanisms.KindOf(w.GetBlock(trigger.X, trigger.Y, trigger.Z)) ?? TriggerKind.Button;
         bool on = k == TriggerKind.Lever && Openables.IsActuatorOn(Openables.Lever, w.GetMeta(trigger.X, trigger.Y, trigger.Z));
+        var effects = TaughtEffects(w, targets, on);
+        var old = Get(trigger, dimension);
+        var link = new MechanismLink(trigger, k, old is null ? effects : Merge(old.Effects, effects))
+        {
+            Dimension = dimension, Taught = true, By = by, LastSeen = at,
+            Confidence = Math.Max(old?.Confidence ?? 0, 0.6), Observations = old?.Observations ?? 0,
+            PulseTicks = old?.PulseTicks, LagTicks = old?.LagTicks ?? 0,
+            Dangerous = Mechanisms.LooksDangerous(w, trigger, effects),
+        };
+        Put(link);
+        return link;
+    }
+
+    /// <summary>The targets' state blocks (both halves of a door) as effects: openables flip their open bit, anything else
+    /// vanishes; <paramref name="on"/> = what we see now is the trigger's on state.</summary>
+    private static List<MechanismEffect> TaughtEffects(IBlockAccess w, IEnumerable<BlockPos> targets, bool on)
+    {
         var effects = new List<MechanismEffect>();
         void Add(BlockPos p)
         {
@@ -383,16 +400,7 @@ public sealed class MechanismGraph
             int id = w.GetBlock(s.X, s.Y, s.Z);
             if (Openables.IsDoor(id) && w.GetBlock(s.X, s.Y + 1, s.Z) == id) Add(s.Up());
         }
-        var old = Get(trigger, dimension);
-        var link = new MechanismLink(trigger, k, old is null ? effects : Merge(old.Effects, effects))
-        {
-            Dimension = dimension, Taught = true, By = by, LastSeen = at,
-            Confidence = Math.Max(old?.Confidence ?? 0, 0.6), Observations = old?.Observations ?? 0,
-            PulseTicks = old?.PulseTicks, LagTicks = old?.LagTicks ?? 0,
-            Dangerous = Mechanisms.LooksDangerous(w, trigger, effects),
-        };
-        Put(link);
-        return link;
+        return effects;
     }
 
     private static IReadOnlyList<MechanismEffect> Merge(IReadOnlyList<MechanismEffect> a, IReadOnlyList<MechanismEffect> b) =>

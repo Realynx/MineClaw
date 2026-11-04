@@ -17,38 +17,43 @@ public sealed partial class PathFollower
     {
         if (Commitment is not null || StepIndex >= _steps.Count) return 0;
         var step = _steps[StepIndex];
-        if (step.HasActions || step.Sneak || step.Jump is not null || step.Requires is not null) return 0;
+        if (NoBoost(step)) return 0;
         var pos = s.Position;
-        switch (step.Kind)
+        return step.Kind switch
         {
-            case MoveKind.ClimbUp:
-            {
-                double top = step.Y;
-                for (int i = StepIndex + 1; i < _steps.Count; i++)
-                {
-                    var n = _steps[i];
-                    if (n.Kind != MoveKind.ClimbUp || n.X != step.X || n.Z != step.Z || n.HasActions) break;
-                    top = n.Y;
-                }
-                return Math.Clamp(top - pos.Y, 0, MaxBoostRoom);
-            }
-            case MoveKind.Swim:
-                return NeedsPrecision(step) ? 0 : Math.Min(Horizontal(pos, step.Target), MaxBoostRoom);
-            case MoveKind.Walk:
-            case MoveKind.Diagonal:
-                break;
-            default:
-                return 0;
+            MoveKind.ClimbUp => LadderRoom(step, pos),
+            MoveKind.Swim => NeedsPrecision(step) ? 0 : Math.Min(Horizontal(pos, step.Target), MaxBoostRoom),
+            MoveKind.Walk or MoveKind.Diagonal => NeedsPrecision(step) ? 0 : WalkRoom(step, pos),
+            _ => 0,
+        };
+    }
+
+    /// <summary>A step that does something on the way, sneaks, jumps or needs a mechanism's effect: never boosted.</summary>
+    private static bool NoBoost(PathStep step) => step.HasActions || step.Sneak || step.Jump is not null || step.Requires is not null;
+
+    /// <summary>Up the rest of the ladder above (the climb steps in the same column after this one).</summary>
+    private double LadderRoom(PathStep step, Vec3d pos)
+    {
+        double top = step.Y;
+        for (int i = StepIndex + 1; i < _steps.Count; i++)
+        {
+            var n = _steps[i];
+            if (n.Kind != MoveKind.ClimbUp || n.X != step.X || n.Z != step.Z || n.HasActions) break;
+            top = n.Y;
         }
-        if (NeedsPrecision(step)) return 0;
+        return Math.Clamp(top - pos.Y, 0, MaxBoostRoom);
+    }
+
+    /// <summary>To the step's cell centre, plus the following plain legs that go on in a straight line at the same floor.</summary>
+    private double WalkRoom(PathStep step, Vec3d pos)
+    {
         double room = Horizontal(pos, step.Target);
         var from = step.Target;
         double dirX = from.X - pos.X, dirZ = from.Z - pos.Z;
         for (int i = StepIndex + 1; i < _steps.Count && room < MaxBoostRoom; i++)
         {
             var n = _steps[i];
-            if (n.Kind is not (MoveKind.Walk or MoveKind.Diagonal) || n.HasActions || n.Sneak || n.Jump is not null
-                || Math.Abs(n.Floor - step.Floor) > 0.01 || i == _steps.Count - 1) break;
+            if (EndsStraightRun(n, step, i)) break;
             double nx = n.Target.X - from.X, nz = n.Target.Z - from.Z;
             if (dirX * dirX + dirZ * dirZ < 1e-12) { dirX = nx; dirZ = nz; } // standing on the centre: the next leg sets the line
             else if (!Straight(dirX, dirZ, nx, nz)) break;
@@ -57,6 +62,11 @@ public sealed partial class PathFollower
         }
         return Math.Min(room, MaxBoostRoom);
     }
+
+    /// <summary>A leg that isn't a plain walk at the same floor, or the last step (its stop is precise).</summary>
+    private bool EndsStraightRun(PathStep n, PathStep step, int i) =>
+        n.Kind is not (MoveKind.Walk or MoveKind.Diagonal) || n.HasActions || n.Sneak || n.Jump is not null
+        || Math.Abs(n.Floor - step.Floor) > 0.01 || i == _steps.Count - 1;
 
     private static double Horizontal(Vec3d a, Vec3d b) => Math.Sqrt((b.X - a.X) * (b.X - a.X) + (b.Z - a.Z) * (b.Z - a.Z));
 

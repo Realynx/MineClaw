@@ -136,29 +136,35 @@ public sealed partial class PathFollower
             var step = _steps[StepIndex];
             _segmentStart ??= s.Position;
 
-            if (Reached(w, s, step))
-            {
-                if (_o.RestoreDoors)
-                    foreach (var tg in step.Opens)
-                        if (tg.CanRestore(w) && !_restore.Any(r => r.Toggle.Pos == tg.Pos)) _restore.Add((tg, StepIndex));
-                if (step.Trigger is { Restore: true, Link.Kind: TriggerKind.Lever } lever && _leverRestore.All(r => r.Use.Pos != lever.Pos))
-                    _leverRestore.Add((lever, LastRequiring(lever)));
-                _plateWait = 0;
-                _triggerWait = 0;
-                _triggerClicked = false;
-                if (step.Jump is { } done) _jumps.Add(done);
-                _pk.Reset();
-                StepIndex++;
-                _segmentStart = s.Position;
-                _bestDist = double.MaxValue;
-                _noProgress = 0;
-                _jumpCancels = 0;
-                _jumpFrom = null;
-                continue;
-            }
-            return Drive(w, s, step);
+            if (!Reached(w, s, step)) return Drive(w, s, step);
+            CompleteStep(w, s, step);
         }
         return new FollowerOutput(FollowerStatus.Moving, MoveInput.Idle(s.Yaw, s.Pitch));
+    }
+
+    /// <summary>A reached step: its doors and lever queued for restoring, its gap jump recorded, and on to the next step.</summary>
+    private void CompleteStep(IBlockAccess w, PhysicsState s, PathStep step)
+    {
+        if (_o.RestoreDoors) QueueDoorRestores(w, step);
+        if (step.Trigger is { Restore: true, Link.Kind: TriggerKind.Lever } lever && _leverRestore.All(r => r.Use.Pos != lever.Pos))
+            _leverRestore.Add((lever, LastRequiring(lever)));
+        _plateWait = 0;
+        _triggerWait = 0;
+        _triggerClicked = false;
+        if (step.Jump is { } done) _jumps.Add(done);
+        _pk.Reset();
+        StepIndex++;
+        _segmentStart = s.Position;
+        _bestDist = double.MaxValue;
+        _noProgress = 0;
+        _jumpCancels = 0;
+        _jumpFrom = null;
+    }
+
+    private void QueueDoorRestores(IBlockAccess w, PathStep step)
+    {
+        foreach (var tg in step.Opens)
+            if (tg.CanRestore(w) && !_restore.Any(r => r.Toggle.Pos == tg.Pos)) _restore.Add((tg, StepIndex));
     }
 
     /// <summary>Index of the last step that needs <paramref name="tu"/>'s effects (the trigger step itself if none).</summary>
@@ -175,10 +181,12 @@ public sealed partial class PathFollower
         if (StepIndex == _steps.Count - 1 || step.Sneak || step.Opens.Count > 0 || step.Trigger is not null) return true;
         var next = StepIndex + 1 < _steps.Count ? _steps[StepIndex + 1] : null;
         // Doorways are 0.81 wide once the panel swings in: line up on the cell centre before and inside them.
-        return next is not null && (next.Kind is MoveKind.Pillar or MoveKind.Bridge or MoveKind.ClimbUp or MoveKind.ClimbDown
-            or MoveKind.OpenDoor or MoveKind.OpenGate or MoveKind.OpenTrapdoor || next.Sneak || next.Opens.Count > 0
-            || next.Jump is not null);
+        return next is not null && (LinesUpBefore(next.Kind) || next.Sneak || next.Opens.Count > 0 || next.Jump is not null);
     }
+
+    /// <summary>Steps the body lines up on the cell centre for, before they start.</summary>
+    private static bool LinesUpBefore(MoveKind kind) => kind is MoveKind.Pillar or MoveKind.Bridge or MoveKind.ClimbUp or MoveKind.ClimbDown
+        or MoveKind.OpenDoor or MoveKind.OpenGate or MoveKind.OpenTrapdoor;
 
     /// <summary>Restores a door once the body is a full step past it, still within reach, and clear of its old box.</summary>
     private FollowerOutput? RestoreRequest(IBlockAccess w, PhysicsState s)
@@ -187,25 +195,57 @@ public sealed partial class PathFollower
         for (int i = _restore.Count - 1; i >= 0; i--)
         {
             var (tg, at) = _restore[i];
-            if (tg.Restored(w)) { _restore.RemoveAt(i); continue; }
-            if (StepIndex <= at + 1 && StepIndex < _steps.Count) continue; // not past it yet
-            var target = tg.Actuator ?? tg.Pos;
-            var c = new Vec3d(target.X + 0.5, target.Y + 0.5, target.Z + 0.5);
-            // A lever behind the wall can't be clicked through it.
-            bool reachable = (c - s.EyePosition).Length <= _o.Reach
-                             && (tg.Actuator is null || Aiming.FindDigAim(w, s.EyePosition, target, _o.Reach) is not null);
-            if (!reachable) { if (StepIndex >= _steps.Count) _restore.RemoveAt(i); continue; }
-            var box = s.BoundingBox;
-            var after = new List<AABB>(2);
-            BlockShapes.AddCollisionBoxes(w, tg.Id, tg.FromMeta, tg.Pos.X, tg.Pos.Y, tg.Pos.Z, after);
-            if (Openables.IsDoor(tg.Id))
-                BlockShapes.AddCollisionBoxes(w, tg.Id, tg.FromMeta | Openables.UpperBit, tg.Pos.X, tg.Pos.Y + 1, tg.Pos.Z, after);
-            if (after.Any(b => b.Intersects(box))) continue; // would close it on myself
-            if (!Activation(target)) { _restore.RemoveAt(i); continue; }
-            return new FollowerOutput(FollowerStatus.NeedsAction, MoveInput.Idle(s.Yaw, s.Pitch),
-                new FollowerAction(FollowerActionKind.Activate, target));
+            var output = DoorRestore(w, s, tg, at, out bool drop);
+            if (drop) _restore.RemoveAt(i);
+            if (output is not null) return output;
         }
         return null;
+    }
+
+    /// <summary>The click that restores one queued door now, or null; <paramref name="drop"/> when it leaves the queue (already
+    /// restored, out of reach once the path is done, out of clicks).</summary>
+    private FollowerOutput? DoorRestore(IBlockAccess w, PhysicsState s, DoorToggle tg, int at, out bool drop)
+    {
+        drop = false;
+        if (tg.Restored(w))
+        {
+            drop = true;
+            return null;
+        }
+        if (StepIndex <= at + 1 && StepIndex < _steps.Count) return null; // not past it yet
+        var target = tg.Actuator ?? tg.Pos;
+        if (!CanClickRestore(w, s, tg, target))
+        {
+            drop = StepIndex >= _steps.Count;
+            return null;
+        }
+        if (WouldCloseOnMe(w, s, tg)) return null;
+        if (!Activation(target))
+        {
+            drop = true;
+            return null;
+        }
+        return new FollowerOutput(FollowerStatus.NeedsAction, MoveInput.Idle(s.Yaw, s.Pitch),
+            new FollowerAction(FollowerActionKind.Activate, target));
+    }
+
+    /// <summary>Within reach; a lever behind the wall can't be clicked through it.</summary>
+    private bool CanClickRestore(IBlockAccess w, PhysicsState s, DoorToggle tg, BlockPos target)
+    {
+        var c = new Vec3d(target.X + 0.5, target.Y + 0.5, target.Z + 0.5);
+        return (c - s.EyePosition).Length <= _o.Reach
+               && (tg.Actuator is null || Aiming.FindDigAim(w, s.EyePosition, target, _o.Reach) is not null);
+    }
+
+    /// <summary>The door's closed boxes (both halves) would close it on myself.</summary>
+    private static bool WouldCloseOnMe(IBlockAccess w, PhysicsState s, DoorToggle tg)
+    {
+        var box = s.BoundingBox;
+        var after = new List<AABB>(2);
+        BlockShapes.AddCollisionBoxes(w, tg.Id, tg.FromMeta, tg.Pos.X, tg.Pos.Y, tg.Pos.Z, after);
+        if (Openables.IsDoor(tg.Id))
+            BlockShapes.AddCollisionBoxes(w, tg.Id, tg.FromMeta | Openables.UpperBit, tg.Pos.X, tg.Pos.Y + 1, tg.Pos.Z, after);
+        return after.Any(b => b.Intersects(box));
     }
 
     /// <summary>Flips a Trigger step's lever back once past the last step needing its effects, when it can be clicked
@@ -242,40 +282,49 @@ public sealed partial class PathFollower
 
     private bool Reached(IBlockAccess w, PhysicsState s, PathStep step)
     {
+        if (!StepWorkDone(w, step)) return false;
+        var pos = s.Position;
+        if ((int)Math.Floor(pos.X) != step.X || (int)Math.Floor(pos.Z) != step.Z) return false;
+        if (!Settled(w, s)) return false;
+        if (step.Jump is not null) return LandedJump(s, step);
+        return AtStepHeight(pos, step) && (!NeedsPrecision(step) || OnCentre(pos, step));
+    }
+
+    /// <summary>On the ground, in water or on a ladder.</summary>
+    private static bool Settled(IBlockAccess w, PhysicsState s) => s.OnGround || s.InWater || s.OnLadder || PlayerPhysics.IsOnLadder(w, s);
+
+    /// <summary>The step's doors are open, its trigger fired, its blocks broken and its block placed.</summary>
+    private static bool StepWorkDone(IBlockAccess w, PathStep step)
+    {
         if (step.Opens.Count > 0 && step.Opens.Any(o => !o.Done(w))) return false;
         if (step.Trigger is { } tu && !tu.Fired(w)) return false;
         if (step.Break.Count > 0 && step.Break.Any(b => BlockPresent(w, b))) return false;
-        if (step.Place is { } p && Aiming.IsReplaceable(w, w.GetBlock(p.X, p.Y, p.Z))) return false;
+        return !(step.Place is { } p && Aiming.IsReplaceable(w, w.GetBlock(p.X, p.Y, p.Z)));
+    }
+
+    /// <summary>Landed and braked on the landing cell (the plan's own settle condition, a little looser).</summary>
+    private bool LandedJump(PhysicsState s, PathStep step)
+    {
         var pos = s.Position;
-        if ((int)Math.Floor(pos.X) != step.X || (int)Math.Floor(pos.Z) != step.Z) return false;
-        bool settled = s.OnGround || s.InWater || s.OnLadder || PlayerPhysics.IsOnLadder(w, s);
-        if (!settled) return false;
-        if (step.Jump is not null)
-        {
-            // Landed and braked on the landing cell (the plan's own settle condition, a little looser).
-            var c = step.Target;
-            double ex = c.X - pos.X, ez = c.Z - pos.Z;
-            return _pk.Phase == ParkourPhase.Landed && Math.Abs(pos.Y - step.Floor) < 0.02 && ex * ex + ez * ez <= 0.3 * 0.3
-                   && s.Velocity.HorizontalLength < 0.02;
-        }
-        switch (step.Kind)
-        {
-            case MoveKind.Swim:
-            case MoveKind.ClimbUp:
-            case MoveKind.ClimbDown:
-                if ((int)Math.Floor(pos.Y + 0.2) != step.Y) return false;
-                break;
-            default:
-                if (Math.Abs(pos.Y - step.Floor) > 0.15) return false;
-                break;
-        }
-        if (NeedsPrecision(step))
-        {
-            var t = step.Target;
-            double dx = t.X - pos.X, dz = t.Z - pos.Z;
-            if (dx * dx + dz * dz > 0.2 * 0.2) return false;
-        }
-        return true;
+        var c = step.Target;
+        double ex = c.X - pos.X, ez = c.Z - pos.Z;
+        return _pk.Phase == ParkourPhase.Landed && Math.Abs(pos.Y - step.Floor) < 0.02 && ex * ex + ez * ez <= 0.3 * 0.3
+               && s.Velocity.HorizontalLength < 0.02;
+    }
+
+    /// <summary>Swims and climbs: the feet's cell (+0.2) is the step's; else the feet within 0.15 of the step's floor.</summary>
+    private static bool AtStepHeight(Vec3d pos, PathStep step) => step.Kind switch
+    {
+        MoveKind.Swim or MoveKind.ClimbUp or MoveKind.ClimbDown => (int)Math.Floor(pos.Y + 0.2) == step.Y,
+        _ => !(Math.Abs(pos.Y - step.Floor) > 0.15),
+    };
+
+    /// <summary>Within 0.2 of the step's cell centre.</summary>
+    private static bool OnCentre(Vec3d pos, PathStep step)
+    {
+        var t = step.Target;
+        double dx = t.X - pos.X, dz = t.Z - pos.Z;
+        return !(dx * dx + dz * dz > 0.2 * 0.2);
     }
 
     private static bool BlockPresent(IBlockAccess w, BlockPos b)
@@ -460,7 +509,6 @@ public sealed partial class PathFollower
 
     private static void KindGait(ref Gait g, IBlockAccess w, PhysicsState s, PathStep step, MoveKind kind, double dist, double speed)
     {
-        var pos = s.Position;
         switch (kind)
         {
             case MoveKind.Jump:
@@ -475,15 +523,26 @@ public sealed partial class PathFollower
                 g.Sneak = false;
                 break;
             case MoveKind.Swim:
-                g.Jump = step.Target.Y >= pos.Y - 0.2 || !s.InWater;
-                g.Forward = dist > 0.1 ? 1 : 0;
+                SwimGait(ref g, s, step, dist);
                 break;
             case MoveKind.Drop:
-                g.Sneak = false;
-                // Arrive gently: in the air keep homing on the landing cell center, never accelerate past it.
-                if (!s.OnGround) g.Forward = dist > Math.Max(0.1, speed * 4) ? 1 : 0;
+                DropGait(ref g, s, dist, speed);
                 break;
         }
+    }
+
+    /// <summary>Swimming: hold jump while the target is level or above (or out of the water), forward until close.</summary>
+    private static void SwimGait(ref Gait g, PhysicsState s, PathStep step, double dist)
+    {
+        g.Jump = step.Target.Y >= s.Position.Y - 0.2 || !s.InWater;
+        g.Forward = dist > 0.1 ? 1 : 0;
+    }
+
+    /// <summary>Arrive gently: in the air keep homing on the landing cell center, never accelerate past it.</summary>
+    private static void DropGait(ref Gait g, PhysicsState s, double dist, double speed)
+    {
+        g.Sneak = false;
+        if (!s.OnGround) g.Forward = dist > Math.Max(0.1, speed * 4) ? 1 : 0;
     }
 
     /// <summary>A Jump step jumps once standing (or swimming) below its floor, against the wall or close to it.</summary>
@@ -689,31 +748,46 @@ public sealed partial class PathFollower
     /// </summary>
     private FollowerOutput? TriggerAction(IBlockAccess w, PhysicsState s, PathStep step, TriggerUse tu, MoveInput idle, double dist)
     {
-        var pos = s.Position;
-        bool onCell = (int)Math.Floor(pos.X) == step.X && (int)Math.Floor(pos.Z) == step.Z && Math.Abs(pos.Y - step.Floor) < 0.2
-                      && (s.OnGround || s.OnLadder);
-        if (!onCell || dist > 0.25 || Speed(s) > 0.06) return null;
+        if (!StillOnTriggerCell(s, step, dist)) return null;
         _noProgress = 0;
+        if (tu.IsPlate) return StandOnPlate(idle, tu);
         int wait = _o.TriggerWaitTicks + tu.Link.LagTicks;
         var p = tu.Pos;
-        if (tu.IsPlate)
-        {
-            if (++_triggerWait > _o.PlateWaitTicks + tu.Link.LagTicks) return TriggerFailed(idle, tu, "nothing happened on the plate");
-            return Move(idle);
-        }
         int id = w.GetBlock(p.X, p.Y, p.Z);
         if (id != tu.Link.TriggerId) return TriggerFailed(idle, tu, "it's gone");
         bool on = Openables.IsActuatorOn(id, w.GetMeta(p.X, p.Y, p.Z));
-        bool click = tu.Link.Kind == TriggerKind.Lever ? on != tu.TurnOn : !on && (!_triggerClicked || _triggerWait > wait);
-        if (click)
-        {
-            if (!Activation(p)) return TriggerFailed(idle, tu, "it didn't respond");
-            _triggerClicked = true;
-            _triggerWait = 0;
-            return new FollowerOutput(FollowerStatus.NeedsAction, idle, new FollowerAction(FollowerActionKind.Activate, p));
-        }
+        if (ShouldClick(tu, on, wait)) return ClickTrigger(idle, tu, p);
         if (++_triggerWait > wait * 2 + 10) return TriggerFailed(idle, tu, "its effect never showed");
         return Move(idle);
+    }
+
+    /// <summary>On the trigger step's cell, settled (ground or ladder), centred and still.</summary>
+    private static bool StillOnTriggerCell(PhysicsState s, PathStep step, double dist)
+    {
+        var pos = s.Position;
+        bool onCell = (int)Math.Floor(pos.X) == step.X && (int)Math.Floor(pos.Z) == step.Z && Math.Abs(pos.Y - step.Floor) < 0.2
+                      && (s.OnGround || s.OnLadder);
+        return onCell && !(dist > 0.25 || Speed(s) > 0.06);
+    }
+
+    /// <summary>A plate: stand on it and wait for the effects.</summary>
+    private FollowerOutput StandOnPlate(MoveInput idle, TriggerUse tu)
+    {
+        if (++_triggerWait > _o.PlateWaitTicks + tu.Link.LagTicks) return TriggerFailed(idle, tu, "nothing happened on the plate");
+        return Move(idle);
+    }
+
+    /// <summary>A lever: until it is in the wanted position (never back); a button: when it's up (again only after it popped
+    /// and the wait ran out).</summary>
+    private bool ShouldClick(TriggerUse tu, bool on, int wait) =>
+        tu.Link.Kind == TriggerKind.Lever ? on != tu.TurnOn : !on && (!_triggerClicked || _triggerWait > wait);
+
+    private FollowerOutput ClickTrigger(MoveInput idle, TriggerUse tu, BlockPos p)
+    {
+        if (!Activation(p)) return TriggerFailed(idle, tu, "it didn't respond");
+        _triggerClicked = true;
+        _triggerWait = 0;
+        return new FollowerOutput(FollowerStatus.NeedsAction, idle, new FollowerAction(FollowerActionKind.Activate, p));
     }
 
     private FollowerOutput TriggerFailed(MoveInput idle, TriggerUse tu, string why)

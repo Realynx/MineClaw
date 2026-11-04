@@ -126,46 +126,85 @@ public sealed record DigPattern
     /// </summary>
     public static DigPattern? Parse(string rule, BlockPos anchor, out string? error)
     {
-        error = null;
-        var unit = new List<BlockPos>();
-        BlockPos? step = null;
-        int turn = 0;
-        double px = 0, pz = 0;
         var t = rule.Replace(';', ' ').Replace('=', ' ').Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        for (int i = 0; i < t.Length; i++)
+        var reader = new RuleReader(t);
+        error = reader.ReadAll();
+        if (error is not null) return null;
+        return reader.Build(anchor, out error);
+    }
+
+    /// <summary>The rule's words, read in order: each keyword takes its arguments from the words after it.</summary>
+    private sealed class RuleReader(string[] t)
+    {
+        private int _i;
+        private readonly List<BlockPos> _unit = new();
+        private BlockPos? _step;
+        private int _turn;
+        private double _px, _pz;
+
+        /// <summary>Null when every word was understood, else the error.</summary>
+        public string? ReadAll()
         {
-            switch (t[i].ToLowerInvariant())
-            {
-                case "column":
-                    if (i + 1 >= t.Length || !int.TryParse(t[++i], out int n) || n is < 1 or > 16) { error = "column needs a height 1..16"; return null; }
-                    for (int k = 0; k < n; k++) unit.Add(new BlockPos(0, -k, 0));
-                    break;
-                case "unit":
-                    while (i + 1 < t.Length && Triple(t[i + 1]) is { } u) { unit.Add(u); i++; }
-                    break;
-                case "step":
-                    if (i + 1 >= t.Length || Triple(t[++i]) is not { } s) { error = "step needs dx,dy,dz"; return null; }
-                    step = s;
-                    break;
-                case "turn":
-                    if (i + 1 >= t.Length || !int.TryParse(t[++i].TrimEnd('°'), out turn) || turn % 90 != 0) { error = "turn is 0, 90, 180 or -90"; return null; }
-                    break;
-                case "pivot" or "about":
-                    var v = i + 1 < t.Length ? t[++i].Split(',') : [];
-                    if (v.Length != 2 || !double.TryParse(v[0], NumberStyles.Float, CultureInfo.InvariantCulture, out px)
-                        || !double.TryParse(v[1], NumberStyles.Float, CultureInfo.InvariantCulture, out pz)) { error = "pivot needs x,z (relative, may end in .5)"; return null; }
-                    break;
-                default:
-                    error = $"unknown word '{t[i]}' (rule: column N | unit x,y,z …, step dx,dy,dz, turn deg, pivot x,z)";
-                    return null;
-            }
+            for (_i = 0; _i < t.Length; _i++)
+                if (Word(t[_i].ToLowerInvariant()) is { } error) return error;
+            return null;
         }
-        if (unit.Count == 0) { error = "no unit cells (column N or unit x,y,z …)"; return null; }
-        if (step is not { } st || st == default && turn % 360 == 0) { error = "needs a step dx,dy,dz"; return null; }
-        var p = new DigPattern { Anchor = anchor, Unit = unit.Distinct().ToList(), Step = st, Turn = Norm(turn), PivotX = px, PivotZ = pz };
-        if (p.Quarter % 2 == 1 && !SameFraction(px, pz)) { error = "a 90° turn needs a pivot on a cell centre or corner (x and z both .0 or both .5)"; return null; }
-        if (p.Quarter != 0 && st.Y == 0) { error = "a turning pattern needs a vertical step (it would dig the same cells again)"; return null; }
-        return p;
+
+        private string? Word(string word) => word switch
+        {
+            "column" => ReadColumn(),
+            "unit" => ReadUnit(),
+            "step" => ReadStep(),
+            "turn" => ReadTurn(),
+            "pivot" or "about" => ReadPivot(),
+            _ => $"unknown word '{t[_i]}' (rule: column N | unit x,y,z …, step dx,dy,dz, turn deg, pivot x,z)",
+        };
+
+        private string? ReadColumn()
+        {
+            if (_i + 1 >= t.Length || !int.TryParse(t[++_i], out int n) || n is < 1 or > 16) return "column needs a height 1..16";
+            for (int k = 0; k < n; k++) _unit.Add(new BlockPos(0, -k, 0));
+            return null;
+        }
+
+        private string? ReadUnit()
+        {
+            while (_i + 1 < t.Length && Triple(t[_i + 1]) is { } u) { _unit.Add(u); _i++; }
+            return null;
+        }
+
+        private string? ReadStep()
+        {
+            if (_i + 1 >= t.Length || Triple(t[++_i]) is not { } s) return "step needs dx,dy,dz";
+            _step = s;
+            return null;
+        }
+
+        private string? ReadTurn()
+        {
+            if (_i + 1 >= t.Length || !int.TryParse(t[++_i].TrimEnd('°'), out _turn) || _turn % 90 != 0) return "turn is 0, 90, 180 or -90";
+            return null;
+        }
+
+        private string? ReadPivot()
+        {
+            var v = _i + 1 < t.Length ? t[++_i].Split(',') : [];
+            if (v.Length != 2 || !double.TryParse(v[0], NumberStyles.Float, CultureInfo.InvariantCulture, out _px)
+                || !double.TryParse(v[1], NumberStyles.Float, CultureInfo.InvariantCulture, out _pz)) return "pivot needs x,z (relative, may end in .5)";
+            return null;
+        }
+
+        /// <summary>The pattern the words describe, or null with the reason it isn't one.</summary>
+        public DigPattern? Build(BlockPos anchor, out string? error)
+        {
+            error = null;
+            if (_unit.Count == 0) { error = "no unit cells (column N or unit x,y,z …)"; return null; }
+            if (_step is not { } st || st == default && _turn % 360 == 0) { error = "needs a step dx,dy,dz"; return null; }
+            var p = new DigPattern { Anchor = anchor, Unit = _unit.Distinct().ToList(), Step = st, Turn = Norm(_turn), PivotX = _px, PivotZ = _pz };
+            if (p.Quarter % 2 == 1 && !SameFraction(_px, _pz)) { error = "a 90° turn needs a pivot on a cell centre or corner (x and z both .0 or both .5)"; return null; }
+            if (p.Quarter != 0 && st.Y == 0) { error = "a turning pattern needs a vertical step (it would dig the same cells again)"; return null; }
+            return p;
+        }
     }
 
     private static int Norm(int deg) => (((deg / 90) % 4 + 4) % 4) switch { 1 => 90, 2 => 180, 3 => -90, _ => 0 };
@@ -198,59 +237,96 @@ public sealed record DigPattern
     {
         var set = cells as IReadOnlySet<BlockPos> ?? cells.ToHashSet();
         if (set.Count < 3 || set.Count > 8192) return null;
+        var candidates = ShiftCandidates();
+        AddTurnCandidates(set, candidates);
+        var top = set.OrderByDescending(c => c.Y).ThenBy(c => c.X).ThenBy(c => c.Z).First();
+        Learned? best = null;
+        double bestScore = double.MaxValue;
+        foreach (var (turn, step, cx, cz) in candidates)
+        {
+            if (Explain(set, top, turn, step, cx, cz, bestScore) is not { } found) continue;
+            (best, bestScore) = found;
+        }
+        return best;
+    }
+
+    /// <summary>Every step within 4 down / up and 3 across, no turn.</summary>
+    private static List<(int Turn, BlockPos Step, double Cx, double Cz)> ShiftCandidates()
+    {
+        var candidates = new List<(int Turn, BlockPos Step, double Cx, double Cz)>();
+        for (int dy = -4; dy <= 4; dy++)
+        for (int dx = -3; dx <= 3; dx++)
+        for (int dz = -3; dz <= 3; dz++)
+            if (dx != 0 || dy != 0 || dz != 0) candidates.Add((0, new BlockPos(dx, dy, dz), 0, 0));
+        return candidates;
+    }
+
+    /// <summary>A vertical step with a quarter or half turn about an axis candidate: the cells' box centre, and their mean on the
+    /// half-block grid (a stray wall hole moves the box, not the mean); a quarter turn only about a cell centre or corner.</summary>
+    private static void AddTurnCandidates(IReadOnlySet<BlockPos> set, List<(int Turn, BlockPos Step, double Cx, double Cz)> candidates)
+    {
         int minX = set.Min(c => c.X), maxX = set.Max(c => c.X), minZ = set.Min(c => c.Z), maxZ = set.Max(c => c.Z);
-        // Axis candidates: the cells' box centre, and their mean on the half-block grid (a stray wall hole moves the box, not the mean).
         double Half(double v) => Math.Round(v * 2) / 2;
         var axes = new HashSet<(double X, double Z)>
         {
             ((minX + maxX) / 2.0, (minZ + maxZ) / 2.0),
             (Half(set.Average(c => c.X)), Half(set.Average(c => c.Z))),
         };
-        var top = set.OrderByDescending(c => c.Y).ThenBy(c => c.X).ThenBy(c => c.Z).First();
-        var candidates = new List<(int Turn, BlockPos Step, double Cx, double Cz)>();
-        for (int dy = -4; dy <= 4; dy++)
-        for (int dx = -3; dx <= 3; dx++)
-        for (int dz = -3; dz <= 3; dz++)
-            if (dx != 0 || dy != 0 || dz != 0) candidates.Add((0, new BlockPos(dx, dy, dz), 0, 0));
         foreach (var (ax, az) in axes)
         foreach (int turn in new[] { 90, -90, 180 })
         {
             if (turn != 180 && !SameFraction(ax, az)) continue;
             for (int dy = -4; dy <= 4; dy++) if (dy != 0) candidates.Add((turn, new BlockPos(0, dy, 0), ax, az));
         }
-        Learned? best = null;
-        double bestScore = double.MaxValue;
-        foreach (var (turn, step, cx, cz) in candidates)
+    }
+
+    /// <summary>
+    /// How one transform explains the cells: they split into chains c, T(c), T²(c)… whose starts are the unit (chains at least half
+    /// the longest), the rest are outliers. Null when it doesn't repeat (a cycle, fewer than 3 repeats) or scores no better than
+    /// <paramref name="bestScore"/>.
+    /// </summary>
+    private static (Learned Learned, double Score)? Explain(IReadOnlySet<BlockPos> set, BlockPos top, int turn, BlockPos step, double cx, double cz,
+        double bestScore)
+    {
+        var probe = new DigPattern { Anchor = top, Unit = [default], Step = step, Turn = turn, PivotX = cx - top.X, PivotZ = cz - top.Z };
+        var starts = set.Where(c => !set.Contains(probe.Prev(c))).ToList();
+        if (starts.Count == 0 || starts.Count * 3 > set.Count) return null; // a cycle, or fewer than 3 repeats on average
+        var len = ChainLengths(set, probe, starts);
+        int reps = len.Values.Max();
+        if (reps < 3) return null;
+        var unit = starts.Where(s => len[s] * 2 >= reps).ToList();
+        var outliers = starts.Where(s => len[s] * 2 < reps).SelectMany(s => Chain(probe, s, len[s])).ToList();
+        int missing = unit.Sum(s => reps - len[s]);
+        double score = 4 * unit.Count + outliers.Count + missing + (step.Y < 0 ? 0 : 0.5) + 0.01 * (Math.Abs(step.X) + Math.Abs(step.Z));
+        if (score >= bestScore) return null;
+        return (new Learned(Anchored(unit, step, turn, cx, cz), reps, outliers, missing), score);
+    }
+
+    /// <summary>How many cells each chain start's chain has (capped past the set's size: a cycle).</summary>
+    private static Dictionary<BlockPos, int> ChainLengths(IReadOnlySet<BlockPos> set, DigPattern probe, List<BlockPos> starts)
+    {
+        var len = new Dictionary<BlockPos, int>(starts.Count);
+        foreach (var s in starts)
         {
-            var probe = new DigPattern { Anchor = top, Unit = [default], Step = step, Turn = turn, PivotX = cx - top.X, PivotZ = cz - top.Z };
-            var starts = set.Where(c => !set.Contains(probe.Prev(c))).ToList();
-            if (starts.Count == 0 || starts.Count * 3 > set.Count) continue; // a cycle, or fewer than 3 repeats on average
-            var len = new Dictionary<BlockPos, int>(starts.Count);
-            foreach (var s in starts)
-            {
-                int n = 0;
-                for (var p = s; set.Contains(p) && n <= set.Count; p = probe.Next(p)) n++;
-                len[s] = n;
-            }
-            int reps = len.Values.Max();
-            if (reps < 3) continue;
-            var unit = starts.Where(s => len[s] * 2 >= reps).ToList();
-            var outliers = starts.Where(s => len[s] * 2 < reps).SelectMany(s => Chain(probe, s, len[s])).ToList();
-            int missing = unit.Sum(s => reps - len[s]);
-            double score = 4 * unit.Count + outliers.Count + missing + (step.Y < 0 ? 0 : 0.5) + 0.01 * (Math.Abs(step.X) + Math.Abs(step.Z));
-            if (score >= bestScore) continue;
-            // The unit sits relative to its own top cell: anchor = its highest, then west-most, then north-most cell.
-            var anchor = unit.OrderByDescending(c => c.Y).ThenBy(c => c.X).ThenBy(c => c.Z).First();
-            var pattern = new DigPattern
-            {
-                Anchor = anchor, Unit = unit.Select(u => u - anchor).OrderByDescending(u => u.Y).ThenBy(u => u.X).ThenBy(u => u.Z).ToList(),
-                Step = step, Turn = turn, PivotX = cx - anchor.X, PivotZ = cz - anchor.Z,
-            };
-            if (pattern.Quarter == 0) pattern = pattern with { PivotX = 0, PivotZ = 0 };
-            bestScore = score;
-            best = new Learned(pattern, reps, outliers, missing);
+            int n = 0;
+            for (var p = s; set.Contains(p) && n <= set.Count; p = probe.Next(p)) n++;
+            len[s] = n;
         }
-        return best;
+        return len;
+    }
+
+    /// <summary>The unit relative to its own top cell: anchor = its highest, then west-most, then north-most cell (no pivot
+    /// without a turn).</summary>
+    private static DigPattern Anchored(List<BlockPos> unit, BlockPos step, int turn, double cx, double cz)
+    {
+        var anchor = unit.OrderByDescending(c => c.Y).ThenBy(c => c.X).ThenBy(c => c.Z).First();
+        var pattern = new DigPattern
+        {
+            Anchor = anchor, Unit = unit.Select(u => u - anchor).OrderByDescending(u => u.Y).ThenBy(u => u.X).ThenBy(u => u.Z).ToList(),
+            Step = step, Turn = turn, PivotX = cx - anchor.X, PivotZ = cz - anchor.Z,
+        };
+        if (pattern.Quarter == 0) pattern = pattern with { PivotX = 0, PivotZ = 0 };
+        return pattern;
     }
 
     private static IEnumerable<BlockPos> Chain(DigPattern t, BlockPos s, int n)

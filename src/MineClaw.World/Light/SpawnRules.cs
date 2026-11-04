@@ -44,20 +44,31 @@ public static class SpawnRules
     {
         int x = p.X, y = p.Y, z = p.Z;
         if ((uint)y >= w.WorldHeight || y < 1 || !w.IsLoaded(x, z)) return SpawnBlock.NotLoaded;
-        // The version's block rules (IPhysicsRules: b1.8.1 normal cubes; 1.12.2 isTopSolid / isValidEmptySpawnBlock, biomes).
+        if (BlockRules(w, x, y, z) is { } refused) return refused;
+        if (w.Light.LightLevel(x, y, z, skylightSubtracted) > maxLight) return SpawnBlock.Lit;
+        if (spawnRadius && NearSpawn(w, x, y, z)) return SpawnBlock.NearSpawn;
+        if (!Fits(w, x + 0.5, y, z + 0.5, 0.6, 1.8) && !Fits(w, x + 0.5, y, z + 0.5, 1.4, 0.9)) return SpawnBlock.NoRoom;
+        return SpawnBlock.Spawnable;
+    }
+
+    /// <summary>The version's block rules (IPhysicsRules: b1.8.1 normal cubes; 1.12.2 isTopSolid / isValidEmptySpawnBlock,
+    /// biomes): the floor, the feet and head cells, the biome; null when they all allow a spawn.</summary>
+    private static SpawnBlock? BlockRules(WorldState w, int x, int y, int z)
+    {
         var rules = w.Physics;
         if (!rules.IsSpawnFloor(w.GetBlock(x, y - 1, z), w.GetMeta(x, y - 1, z))) return SpawnBlock.NoFloor;
         if (!rules.IsSpawnCellClear(w.GetBlock(x, y, z), w.GetMeta(x, y, z))
             || !rules.IsSpawnHeadClear(w.GetBlock(x, y + 1, z), w.GetMeta(x, y + 1, z))) return SpawnBlock.Blocked;
         if (!rules.BiomeSpawnsMonsters(w.GetBiome(x, z))) return SpawnBlock.Biome;
-        if (w.Light.LightLevel(x, y, z, skylightSubtracted) > maxLight) return SpawnBlock.Lit;
-        if (spawnRadius && w.HasSpawn)
-        {
-            float dx = x + 0.5F - w.Spawn.X, dy = (float)y - w.Spawn.Y, dz = z + 0.5F - w.Spawn.Z;
-            if (dx * dx + dy * dy + dz * dz < 576.0F) return SpawnBlock.NearSpawn;
-        }
-        if (!Fits(w, x + 0.5, y, z + 0.5, 0.6, 1.8) && !Fits(w, x + 0.5, y, z + 0.5, 1.4, 0.9)) return SpawnBlock.NoRoom;
-        return SpawnBlock.Spawnable;
+        return null;
+    }
+
+    /// <summary>Within 24 blocks of the world spawn (when there is one).</summary>
+    private static bool NearSpawn(WorldState w, int x, int y, int z)
+    {
+        if (!w.HasSpawn) return false;
+        float dx = x + 0.5F - w.Spawn.X, dy = (float)y - w.Spawn.Y, dz = z + 0.5F - w.Spawn.Z;
+        return dx * dx + dy * dy + dz * dz < 576.0F;
     }
 
     /// <summary>EntityLiving.d()'s block part: no collision box intersects the box and no liquid touches it (World.c(AABB)).</summary>

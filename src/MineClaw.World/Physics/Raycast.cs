@@ -12,38 +12,66 @@ public static class Raycast
     {
         var dir = direction.Normalized();
         if (dir == Vec3d.Zero) return null;
-        int x = (int)Math.Floor(origin.X), y = (int)Math.Floor(origin.Y), z = (int)Math.Floor(origin.Z);
-        int stepX = Math.Sign(dir.X), stepY = Math.Sign(dir.Y), stepZ = Math.Sign(dir.Z);
-        double tDeltaX = stepX == 0 ? double.PositiveInfinity : Math.Abs(1 / dir.X);
-        double tDeltaY = stepY == 0 ? double.PositiveInfinity : Math.Abs(1 / dir.Y);
-        double tDeltaZ = stepZ == 0 ? double.PositiveInfinity : Math.Abs(1 / dir.Z);
-        double tMaxX = stepX == 0 ? double.PositiveInfinity : (stepX > 0 ? (x + 1 - origin.X) : (origin.X - x)) * tDeltaX;
-        double tMaxY = stepY == 0 ? double.PositiveInfinity : (stepY > 0 ? (y + 1 - origin.Y) : (origin.Y - y)) * tDeltaY;
-        double tMaxZ = stepZ == 0 ? double.PositiveInfinity : (stepZ > 0 ? (z + 1 - origin.Z) : (origin.Z - z)) * tDeltaZ;
-
+        var walk = new VoxelWalk(origin, dir);
         var boxes = new List<AABB>(4);
-        double t = 0;
-        for (int guard = 0; guard < 1024 && t <= maxDistance; guard++)
+        for (int guard = 0; guard < 1024 && walk.T <= maxDistance; guard++)
         {
-            if (y >= 0 && y < w.WorldHeight)
-            {
-                boxes.Clear();
-                BlockShapes.AddSelectionBoxes(w, x, y, z, boxes);
-                RaycastHit? best = null;
-                foreach (var b in boxes)
-                {
-                    var hit = b.RayIntersect(origin, dir, maxDistance);
-                    if (hit is { } h && (best is null || h.T < best.Value.Distance))
-                        best = new RaycastHit(new BlockPos(x, y, z), h.Face, origin + dir * h.T, h.T, w.GetBlock(x, y, z));
-                }
-                if (best is not null) return best;
-            }
-
-            if (tMaxX < tMaxY && tMaxX < tMaxZ) { x += stepX; t = tMaxX; tMaxX += tDeltaX; }
-            else if (tMaxY < tMaxZ) { y += stepY; t = tMaxY; tMaxY += tDeltaY; }
-            else { z += stepZ; t = tMaxZ; tMaxZ += tDeltaZ; }
+            if (walk.Y >= 0 && walk.Y < w.WorldHeight && HitIn(w, walk.X, walk.Y, walk.Z, origin, dir, maxDistance, boxes) is { } hit) return hit;
+            walk.Step();
         }
         return null;
+    }
+
+    /// <summary>The nearest of the cell's selection boxes the ray hits within <paramref name="maxDistance"/>, or null.</summary>
+    private static RaycastHit? HitIn(IBlockAccess w, int x, int y, int z, Vec3d origin, Vec3d dir, double maxDistance, List<AABB> boxes)
+    {
+        boxes.Clear();
+        BlockShapes.AddSelectionBoxes(w, x, y, z, boxes);
+        RaycastHit? best = null;
+        foreach (var b in boxes)
+        {
+            var hit = b.RayIntersect(origin, dir, maxDistance);
+            if (hit is { } h && (best is null || h.T < best.Value.Distance))
+                best = new RaycastHit(new BlockPos(x, y, z), h.Face, origin + dir * h.T, h.T, w.GetBlock(x, y, z));
+        }
+        return best;
+    }
+
+    /// <summary>Amanatides–Woo voxel traversal: the current cell, the ray distance at its entry, and per axis the step and the
+    /// distances to the next boundary.</summary>
+    private struct VoxelWalk
+    {
+        public int X, Y, Z;
+        public double T;
+        private readonly int _stepX, _stepY, _stepZ;
+        private readonly double _deltaX, _deltaY, _deltaZ;
+        private double _maxX, _maxY, _maxZ;
+
+        public VoxelWalk(Vec3d origin, Vec3d dir)
+        {
+            X = (int)Math.Floor(origin.X);
+            Y = (int)Math.Floor(origin.Y);
+            Z = (int)Math.Floor(origin.Z);
+            T = 0;
+            Axis(origin.X, dir.X, X, out _stepX, out _deltaX, out _maxX);
+            Axis(origin.Y, dir.Y, Y, out _stepY, out _deltaY, out _maxY);
+            Axis(origin.Z, dir.Z, Z, out _stepZ, out _deltaZ, out _maxZ);
+        }
+
+        private static void Axis(double o, double d, int cell, out int step, out double delta, out double max)
+        {
+            step = Math.Sign(d);
+            delta = step == 0 ? double.PositiveInfinity : Math.Abs(1 / d);
+            max = step == 0 ? double.PositiveInfinity : (step > 0 ? (cell + 1 - o) : (o - cell)) * delta;
+        }
+
+        /// <summary>Into the next cell across the nearest boundary (ties: z, then y).</summary>
+        public void Step()
+        {
+            if (_maxX < _maxY && _maxX < _maxZ) { X += _stepX; T = _maxX; _maxX += _deltaX; }
+            else if (_maxY < _maxZ) { Y += _stepY; T = _maxY; _maxY += _deltaY; }
+            else { Z += _stepZ; T = _maxZ; _maxZ += _deltaZ; }
+        }
     }
 
     /// <summary>Raycast along a yaw/pitch look direction.</summary>

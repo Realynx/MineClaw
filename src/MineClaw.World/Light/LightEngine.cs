@@ -138,18 +138,30 @@ public sealed class LightEngine
     /// </summary>
     public int LightLevel(int x, int y, int z, int skylightSubtracted, bool neighbours = true)
     {
-        if (neighbours)
-        {
-            int id = (uint)y < _height ? _w.GetBlock(x, y, z) : 0;
-            if (id is 44 or 60 or 67 or 53)
-            {
-                int best = LightLevel(x, y + 1, z, skylightSubtracted, false);
-                best = Math.Max(best, LightLevel(x + 1, y, z, skylightSubtracted, false));
-                best = Math.Max(best, LightLevel(x - 1, y, z, skylightSubtracted, false));
-                best = Math.Max(best, LightLevel(x, y, z + 1, skylightSubtracted, false));
-                return Math.Max(best, LightLevel(x, y, z - 1, skylightSubtracted, false));
-            }
-        }
+        if (neighbours && ReadsNeighbourLight(x, y, z)) return BrightestAround(x, y, z, skylightSubtracted);
+        return OwnLightLevel(x, y, z, skylightSubtracted);
+    }
+
+    /// <summary>A slab, farmland or wooden/cobble stairs cell (mc-dev's exact id list).</summary>
+    private bool ReadsNeighbourLight(int x, int y, int z)
+    {
+        int id = (uint)y < _height ? _w.GetBlock(x, y, z) : 0;
+        return id is 44 or 60 or 67 or 53;
+    }
+
+    /// <summary>The brightest of the cell above and the 4 side neighbours.</summary>
+    private int BrightestAround(int x, int y, int z, int skylightSubtracted)
+    {
+        int best = OwnLightLevel(x, y + 1, z, skylightSubtracted);
+        best = Math.Max(best, OwnLightLevel(x + 1, y, z, skylightSubtracted));
+        best = Math.Max(best, OwnLightLevel(x - 1, y, z, skylightSubtracted));
+        best = Math.Max(best, OwnLightLevel(x, y, z + 1, skylightSubtracted));
+        return Math.Max(best, OwnLightLevel(x, y, z - 1, skylightSubtracted));
+    }
+
+    /// <summary>max(sky − k, block) of the cell itself.</summary>
+    private int OwnLightLevel(int x, int y, int z, int skylightSubtracted)
+    {
         if (y < 0) return 0;
         if (y >= _height) y = _height - 1;
         var c = _w.ColumnAtRaw(x, z);
@@ -221,35 +233,50 @@ public sealed class LightEngine
             {
                 var c = _w.ColumnAtRaw(x, z);
                 if (c is null) continue;
-                int lx = x & 15, lz = z & 15;
-                RecomputeHeight(c, lx, lz);
-                if (!hasSky) InitSky(c, lx, lz);
-                if (!hasBlock)
-                {
-                    for (int y = 0; y < _height; y++)
-                    {
-                        c.SetBlockLight(lx, y, lz, 0);
-                        if (Emission(c.GetBlock(lx, y, lz)) > 0) emitters.Add(new BlockPos(x, y, z));
-                    }
-                }
+                InitColumn(c, x, z, hasSky, hasBlock, emitters);
             }
             // Chunk.i(): every column initLighting marked gets its sky spread sideways (overhangs, the underside of an island).
-            if (!hasSky && spread)
-                for (int x = originX; x < originX + sizeX; x++)
-                for (int z = originZ; z < originZ + sizeZ; z++)
-                {
-                    if (Col(x, z) is null || !Loaded((x >> 4) * 16 + 8, 64, (z >> 4) * 16 + 8, 16)) continue; // Chunk.i's guard
-                    int l = HeightC(x, z);
-                    int k1 = Math.Min(Math.Min(HeightC(x - 1, z), HeightC(x + 1, z)), Math.Min(HeightC(x, z - 1), HeightC(x, z + 1)));
-                    ColumnF(x, z, k1);
-                    ColumnF(x - 1, z, l);
-                    ColumnF(x + 1, z, l);
-                    ColumnF(x, z - 1, l);
-                    ColumnF(x, z + 1, l);
-                }
+            if (!hasSky && spread) SpreadSky(originX, originZ, sizeX, sizeZ);
             foreach (var e in emitters) Update(false, e.X, e.Y, e.Z);
         }
         Interlocked.Add(ref _ticks, Stopwatch.GetTimestamp() - t0);
+    }
+
+    /// <summary>Chunk.initLighting for one column: its height, the sky pass (no sky array came), and with no block light array the
+    /// block light cleared and its emitters collected.</summary>
+    private void InitColumn(ChunkColumn c, int x, int z, bool hasSky, bool hasBlock, List<BlockPos> emitters)
+    {
+        int lx = x & 15, lz = z & 15;
+        RecomputeHeight(c, lx, lz);
+        if (!hasSky) InitSky(c, lx, lz);
+        if (!hasBlock) ClearBlockLight(c, x, z, emitters);
+    }
+
+    private void ClearBlockLight(ChunkColumn c, int x, int z, List<BlockPos> emitters)
+    {
+        int lx = x & 15, lz = z & 15;
+        for (int y = 0; y < _height; y++)
+        {
+            c.SetBlockLight(lx, y, lz, 0);
+            if (Emission(c.GetBlock(lx, y, lz)) > 0) emitters.Add(new BlockPos(x, y, z));
+        }
+    }
+
+    /// <summary>Chunk.i(): each column's sky relit between its height and its lowest neighbour's, and its neighbours' up to its own.</summary>
+    private void SpreadSky(int originX, int originZ, int sizeX, int sizeZ)
+    {
+        for (int x = originX; x < originX + sizeX; x++)
+        for (int z = originZ; z < originZ + sizeZ; z++)
+        {
+            if (Col(x, z) is null || !Loaded((x >> 4) * 16 + 8, 64, (z >> 4) * 16 + 8, 16)) continue; // Chunk.i's guard
+            int l = HeightC(x, z);
+            int k1 = Math.Min(Math.Min(HeightC(x - 1, z), HeightC(x + 1, z)), Math.Min(HeightC(x, z - 1), HeightC(x, z + 1)));
+            ColumnF(x, z, k1);
+            ColumnF(x - 1, z, l);
+            ColumnF(x + 1, z, l);
+            ColumnF(x, z - 1, l);
+            ColumnF(x, z + 1, l);
+        }
     }
 
     /// <summary>Chunk.f(x, z, y): relight the sky between a column's height and <paramref name="k"/>.</summary>
@@ -335,8 +362,22 @@ public sealed class LightEngine
         WorldG(lx, lz, i1, l);
         c.HeightMap[lz << 4 | lx] = (short)i1;
         int wx = c.ChunkX * 16 + lx, wz = c.ChunkZ * 16 + lz;
+        RefillSky(c, lx, lz, i1, l);
+        FadeSky(c, lx, lz, i1);
+        RelightAround(wx, wz, l, c.HeightMap[lz << 4 | lx]);
+    }
+
+    /// <summary>Between the old height <paramref name="l"/> and the new <paramref name="i1"/>: full sky where it rose out, none
+    /// where it is now covered.</summary>
+    private static void RefillSky(ChunkColumn c, int lx, int lz, int i1, int l)
+    {
         if (i1 < l) for (int y = i1; y < l; y++) c.SetSkyLight(lx, y, lz, 15);
         else for (int y = l; y < i1; y++) c.SetSkyLight(lx, y, lz, 0);
+    }
+
+    /// <summary>Under the new height: 15 minus the opacities (at least 1 a block) going down, until it reaches 0.</summary>
+    private void FadeSky(ChunkColumn c, int lx, int lz, int i1)
+    {
         int j2 = 15;
         while (i1 > 0 && j2 > 0)
         {
@@ -347,7 +388,12 @@ public sealed class LightEngine
             if (j2 < 0) j2 = 0;
             c.SetSkyLight(lx, i1, lz, j2);
         }
-        int b0 = c.HeightMap[lz << 4 | lx];
+    }
+
+    /// <summary>The changed span (old height <paramref name="l"/> to new <paramref name="b0"/>) relit in the 4 neighbour columns
+    /// and the column itself.</summary>
+    private void RelightAround(int wx, int wz, int l, int b0)
+    {
         int l2 = l, i3 = b0;
         if (b0 < l) { l2 = b0; i3 = l; }
         ChunkD(wx - 1, wz, l2, i3);
@@ -425,7 +471,7 @@ public sealed class LightEngine
         if (!Loaded(i, j, k, 17)) return; // mc-dev areChunksLoaded(i, j, k, 17)
         Interlocked.Increment(ref _updates);
         var h = _h;
-        int l = 0, i1 = 0;
+        int i1 = 0;
         int j1 = GetC(sky, i, j, k);
         int k1 = TypeId(i, j, k);
         int l1 = Opacity(k1);
@@ -438,28 +484,49 @@ public sealed class LightEngine
         else if (i2 < j1)
         {
             h[i1++] = 133152 + (j1 << 18);
-            while (l < i1)
-            {
-                int e = h[l++];
-                int x = (e & 63) - 32 + i, y = (e >> 6 & 63) - 32 + j, z = (e >> 12 & 63) - 32 + k;
-                int level = e >> 18 & 15;
-                visits++;
-                if (GetC(sky, x, y, z) != level) continue;
-                Set(sky, x, y, z, 0);
-                --level;
-                if (level <= 0) continue;
-                if (Math.Abs(x - i) + Math.Abs(y - j) + Math.Abs(z - k) >= 17) continue;
-                for (int n = 0; n < 6; n++)
-                {
-                    int s = n % 2 * 2 - 1;
-                    int nx = x + n / 2 % 3 / 2 * s, ny = y + (n / 2 + 1) % 3 / 2 * s, nz = z + (n / 2 + 2) % 3 / 2 * s;
-                    if (GetC(sky, nx, ny, nz) == level && i1 < h.Length)
-                        h[i1++] = Pack(nx, ny, nz, i, j, k) + (level << 18);
-                }
-            }
-            l = 0;
+            Darken(sky, i, j, k, h, ref i1, ref visits);
         }
+        Brighten(sky, i, j, k, h, i1, ref visits);
+        Interlocked.Add(ref _visits, visits);
+    }
 
+    /// <summary>The darkening pass: every queued cell still at its queued level goes to 0 and queues its neighbours one level
+    /// lower (within 17 of the origin); those then become the brightening pass's queue.</summary>
+    private void Darken(bool sky, int i, int j, int k, int[] h, ref int i1, ref int visits)
+    {
+        int l = 0;
+        while (l < i1)
+        {
+            int e = h[l++];
+            int x = (e & 63) - 32 + i, y = (e >> 6 & 63) - 32 + j, z = (e >> 12 & 63) - 32 + k;
+            int level = e >> 18 & 15;
+            visits++;
+            if (GetC(sky, x, y, z) != level) continue;
+            Set(sky, x, y, z, 0);
+            --level;
+            if (level <= 0) continue;
+            if (Far(x, y, z, i, j, k)) continue;
+            QueueAtLevel(sky, x, y, z, i, j, k, level, h, ref i1);
+        }
+    }
+
+    /// <summary>The 6 neighbours (World.b's order) whose light is exactly <paramref name="level"/>, while the queue has room.</summary>
+    private void QueueAtLevel(bool sky, int x, int y, int z, int i, int j, int k, int level, int[] h, ref int i1)
+    {
+        for (int n = 0; n < 6; n++)
+        {
+            int s = n % 2 * 2 - 1;
+            int nx = x + n / 2 % 3 / 2 * s, ny = y + (n / 2 + 1) % 3 / 2 * s, nz = z + (n / 2 + 2) % 3 / 2 * s;
+            if (GetC(sky, nx, ny, nz) == level && i1 < h.Length)
+                h[i1++] = Pack(nx, ny, nz, i, j, k) + (level << 18);
+        }
+    }
+
+    /// <summary>The brightening pass: every queued cell takes the light it should have, and a cell that got brighter queues its
+    /// darker neighbours (within 17 of the origin, while the queue has room).</summary>
+    private void Brighten(bool sky, int i, int j, int k, int[] h, int i1, ref int visits)
+    {
+        int l = 0;
         while (l < i1)
         {
             int e = h[l++];
@@ -473,14 +540,22 @@ public sealed class LightEngine
             if (want == cur) continue;
             Set(sky, x, y, z, want);
             if (want <= cur) continue;
-            if (Math.Abs(x - i) + Math.Abs(y - j) + Math.Abs(z - k) >= 17 || i1 >= h.Length - 6) continue;
-            if (GetC(sky, x - 1, y, z) < want) h[i1++] = Pack(x - 1, y, z, i, j, k);
-            if (GetC(sky, x + 1, y, z) < want) h[i1++] = Pack(x + 1, y, z, i, j, k);
-            if (GetC(sky, x, y - 1, z) < want) h[i1++] = Pack(x, y - 1, z, i, j, k);
-            if (GetC(sky, x, y + 1, z) < want) h[i1++] = Pack(x, y + 1, z, i, j, k);
-            if (GetC(sky, x, y, z - 1) < want) h[i1++] = Pack(x, y, z - 1, i, j, k);
-            if (GetC(sky, x, y, z + 1) < want) h[i1++] = Pack(x, y, z + 1, i, j, k);
+            if (Far(x, y, z, i, j, k) || i1 >= h.Length - 6) continue;
+            QueueDarker(sky, x, y, z, i, j, k, want, h, ref i1);
         }
-        Interlocked.Add(ref _visits, visits);
     }
+
+    /// <summary>The 6 neighbours darker than <paramref name="want"/>, in World.b's order (−x, +x, −y, +y, −z, +z).</summary>
+    private void QueueDarker(bool sky, int x, int y, int z, int i, int j, int k, int want, int[] h, ref int i1)
+    {
+        if (GetC(sky, x - 1, y, z) < want) h[i1++] = Pack(x - 1, y, z, i, j, k);
+        if (GetC(sky, x + 1, y, z) < want) h[i1++] = Pack(x + 1, y, z, i, j, k);
+        if (GetC(sky, x, y - 1, z) < want) h[i1++] = Pack(x, y - 1, z, i, j, k);
+        if (GetC(sky, x, y + 1, z) < want) h[i1++] = Pack(x, y + 1, z, i, j, k);
+        if (GetC(sky, x, y, z - 1) < want) h[i1++] = Pack(x, y, z - 1, i, j, k);
+        if (GetC(sky, x, y, z + 1) < want) h[i1++] = Pack(x, y, z + 1, i, j, k);
+    }
+
+    /// <summary>17 or more (Manhattan) from the update's origin: World.b stops spreading there.</summary>
+    private static bool Far(int x, int y, int z, int i, int j, int k) => Math.Abs(x - i) + Math.Abs(y - j) + Math.Abs(z - k) >= 17;
 }

@@ -78,24 +78,34 @@ public static class Breath
         while (q.Count > 0 && parent.Count <= maxCells)
         {
             var (p, d) = q.Dequeue();
-            if (Breathable(w, p))
-            {
-                var path = new List<BlockPos>();
-                for (var c = p; c != feet; c = parent[c]) path.Add(c);
-                path.Reverse();
-                return (p, d, path);
-            }
+            if (Breathable(w, p)) return (p, d, PathTo(parent, feet, p));
             // Up first (the surface is usually straight above), then the sides; down only one block (a cave mouth just below).
             foreach (var n in new[] { p.Up(), p.Offset(1, 0, 0), p.Offset(-1, 0, 0), p.Offset(0, 0, 1), p.Offset(0, 0, -1), p.Down() })
             {
-                if (n.Y < feet.Y - 1 || Math.Abs(n.X - feet.X) > maxRadius || Math.Abs(n.Z - feet.Z) > maxRadius) continue;
-                if (n.Y < 0 || n.Y + 1 >= w.WorldHeight || !w.IsLoaded(n.X, n.Z) || parent.ContainsKey(n)) continue;
-                if (!Passable(w, n) || !Passable(w, n.Up())) continue;
+                if (!CanSwimInto(w, feet, n, maxRadius, parent)) continue;
                 parent[n] = p;
                 q.Enqueue((n, d + 1));
             }
         }
         return null;
+    }
+
+    /// <summary>The search's path from <paramref name="feet"/> (excluded) to <paramref name="p"/>.</summary>
+    private static List<BlockPos> PathTo(Dictionary<BlockPos, BlockPos> parent, BlockPos feet, BlockPos p)
+    {
+        var path = new List<BlockPos>();
+        for (var c = p; c != feet; c = parent[c]) path.Add(c);
+        path.Reverse();
+        return path;
+    }
+
+    /// <summary>A cell the search may enter: within the radius, at most a block below the start, in the world and loaded, not
+    /// seen yet, and the body fits (feet and head passable).</summary>
+    private static bool CanSwimInto(IBlockAccess w, BlockPos feet, BlockPos n, int maxRadius, Dictionary<BlockPos, BlockPos> parent)
+    {
+        if (n.Y < feet.Y - 1 || Math.Abs(n.X - feet.X) > maxRadius || Math.Abs(n.Z - feet.Z) > maxRadius) return false;
+        if (n.Y < 0 || n.Y + 1 >= w.WorldHeight || !w.IsLoaded(n.X, n.Z) || parent.ContainsKey(n)) return false;
+        return Passable(w, n) && Passable(w, n.Up());
     }
 
     /// <summary>The air needed to swim <paramref name="steps"/> cells to a breathable one, with the margin.</summary>
