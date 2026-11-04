@@ -115,7 +115,7 @@ public sealed class StoryZonePaintingTests
     public void Erase_shrinks_splits_and_deletes()
     {
         var (c, _, _) = StoryRig.Make();
-        var z = Op(c, "add", "mine", Area.Of(0, 10, 0, 8, 12, 0), "Quarry")["id"]!.GetValue<string>();
+        var z = Op(c, "add", "mine", Area.Of(0, 10, 0, 8, 12, 0), "Quarry", new JsonObject { ["mode"] = "ores" })["id"]!.GetValue<string>(); // 1-wide: ores only
         var r = Op(c, "remove", "mine", Area.Of(4, 0, 0, 4, 0, 0));
         Assert.Equal([z], Ids(r["shrunk"]));
         var part = Ids(r["split"]![0]!["into"]).Single();
@@ -191,7 +191,7 @@ public sealed class StoryZonePaintingTests
         h.Lives[c.P()] = FakeStoryHost.Live(0, 64, 0);
         w.Set(2, 60, 0, 15); // iron, near
         w.Set(8, 60, 0, 16); // coal, farther
-        Op(c, "add", "mine", Area.Of(1, 58, -1, 9, 62, 1));
+        Op(c, "add", "mine", Area.Of(1, 58, -1, 9, 62, 1), body: new JsonObject { ["mode"] = "ores" });
         Op(c, "remove", "mine", Area.Of(2, 0, 0, 2, 0, 0));
         var job = c.Next();
         Assert.Equal("dig", job["kind"]!.GetValue<string>());

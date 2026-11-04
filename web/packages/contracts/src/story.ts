@@ -395,6 +395,22 @@ export const StoryGrowBill = z.object({
 });
 export type StoryGrowBill = z.infer<typeof StoryGrowBill>;
 
+/** A quarry's progress and its stair (docs/web/story-mode.md "Quarries"). */
+export const StoryQuarry = z.object({
+  top: z.number().int().describe('the y digging starts at (the first step)'),
+  bottom: z.number().int().describe('the lowest y it digs (over the bedrock)'),
+  depth: z.number().int().describe('layers from top to bottom'),
+  layer: z.number().int().describe('the layer being dug (0 = the top)'),
+  y: z.number().int(),
+  cellsLeft: z.number().int().default(0),
+  stairFixes: z.number().int().default(0).describe('steps waiting for a block (air, liquid, sand or gravel)'),
+  sealed: z.number().int().default(0).describe('cells left standing beside lava or water'),
+  done: z.boolean().default(false),
+  stair: z.array(z.tuple([z.number().int(), z.number().int(), z.number().int()])).default([]).describe('the steps, top first'),
+  status: z.string().nullish(),
+});
+export type StoryQuarry = z.infer<typeof StoryQuarry>;
+
 /** A zone row run: `[z, x1, x2]`. */
 export const StoryZoneRow = z.tuple([z.number().int(), z.number().int(), z.number().int()]);
 
@@ -420,6 +436,8 @@ export const StoryZone = z.object({
   waterCells: z.number().int().nullish().describe('a fishing zone: its still-water cells'),
   fishers: z.array(z.string()).nullish().describe('a fishing zone: who is fishing there now'),
   catches: z.number().int().nullish().describe('a fishing zone: fish caught there so far'),
+  mode: z.enum(['ores', 'quarry']).nullish().describe('a mine zone: quarry (everything to bedrock, a stair) or ores only'),
+  quarry: z.lazy(() => StoryQuarry).nullish(),
   sow: z.boolean().nullish().describe('pawns till and sow it'),
   harvest: z.boolean().nullish().describe('pawns harvest what is ripe'),
   status: z.string().nullish().describe('a growing zone: "12/40 sown, 6 ripe"'),
@@ -1021,6 +1039,7 @@ export const StoryZoneRequest = z.union([
       kind: StoryZoneKind.optional(),
       area: StoryArea,
       into: ZoneId.optional().describe('extend this zone: the painted cells take its type'),
+      mode: z.enum(['ores', 'quarry']).optional().describe('a mine zone: quarry (default) or ores only'),
       name: z.string().trim().max(40).optional(),
       plant: z.string().min(1).max(32).optional(),
       sow: z.boolean().optional(),
@@ -1034,6 +1053,7 @@ export const StoryZoneRequest = z.union([
       plant: z.string().max(32).nullable().optional(),
       sow: z.boolean().optional(),
       harvest: z.boolean().optional(),
+      mode: z.enum(['ores', 'quarry']).optional().describe('a mine zone: quarry or ores only'),
     })
     .strict(),
   z.object({ op: z.literal('seek_seeds'), id: ZoneId }).strict(),
