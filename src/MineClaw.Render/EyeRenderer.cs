@@ -823,13 +823,22 @@ public sealed class EyeRenderer
         QuadTex.WaterFlow => FluidTextures.Sample(FluidTextures.WaterFlow, uv.X, uv.Y),
         QuadTex.LavaStill => FluidTextures.Sample(FluidTextures.LavaStill, uv.X, uv.Y),
         QuadTex.LavaFlow => FluidTextures.Sample(FluidTextures.LavaFlow, uv.X, uv.Y),
-        QuadTex.Fire => FluidTextures.Sample(q.Tile == 1 ? FluidTextures.FireB : FluidTextures.FireA, Math.Clamp(uv.X, 0, 0.999f), Math.Clamp(uv.Y, 0, 0.999f)),
+        QuadTex.Fire => FireTexel(q, uv),
         QuadTex.Entity => EntityTexel(atlas0, q, uv),
-        QuadTex.Item => atlas0?.SampleItem(q.Tile, Math.Clamp(uv.X, 0, 0.999f), Math.Clamp(uv.Y, 0, 0.999f)) ?? 0xff000000 | q.Flat,
+        QuadTex.Item => ItemTexel(atlas0, q, uv),
         QuadTex.Flat => 0xff000000 | q.Flat,
-        QuadTex.Block => atlas0?.Models is { } models ? models.SampleQuad(q, uv) : 0xff000000 | q.Flat,
+        QuadTex.Block => ModelTexel(atlas0, q, uv),
         _ => TerrainTexel(atlas0, q, uv),
     };
+
+    private static uint FireTexel(in GeoQuad q, Vector2 uv) =>
+        FluidTextures.Sample(q.Tile == 1 ? FluidTextures.FireB : FluidTextures.FireA, Math.Clamp(uv.X, 0, 0.999f), Math.Clamp(uv.Y, 0, 0.999f));
+
+    private static uint ItemTexel(TextureAtlas? atlas, in GeoQuad q, Vector2 uv) =>
+        atlas?.SampleItem(q.Tile, Math.Clamp(uv.X, 0, 0.999f), Math.Clamp(uv.Y, 0, 0.999f)) ?? 0xff000000 | q.Flat;
+
+    private static uint ModelTexel(TextureAtlas? atlas, in GeoQuad q, Vector2 uv) =>
+        atlas?.Models is { } models ? models.SampleQuad(q, uv) : 0xff000000 | q.Flat;
 
     private static uint EntityTexel(TextureAtlas? atlas, in GeoQuad q, Vector2 uv)
     {

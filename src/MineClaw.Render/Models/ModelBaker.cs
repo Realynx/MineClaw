@@ -256,11 +256,10 @@ public sealed class ModelBaker
     {
         // EnumFaceDirection's vertex order: (P1 − P0) × (P3 − P0) points out of the face (as GeoQuad.Normal).
         var n = Vector3.Normalize(Vector3.Cross(pos[1] - pos[0], pos[3] - pos[0]));
-        if (float.IsNaN(n.X)) n = v.Rotated ? Vector3.TransformNormal(Normals[face], v.Rotation) : Normals[face];
+        if (float.IsNaN(n.X)) n = TurnedNormal(face, v);
         int dir = DirOf(n);
         if (v.UvLock && v.Rotated && dir >= 0 && el.Angle == 0) LockUv(dir, pos, uv);
-        int cull = fd.Cull;
-        if (cull >= 0 && v.Rotated) cull = DirOf(Vector3.TransformNormal(Normals[cull], v.Rotation));
+        int cull = CullDir(fd.Cull, v);
         var q = GeoQuad.Make(pos[0] / 16f, pos[1] / 16f, pos[2] / 16f, pos[3] / 16f, uv[0] / 16f, uv[1] / 16f, uv[2] / 16f, uv[3] / 16f);
         q.Tex = QuadTex.Block;
         q.Tile = (short)_tex.IndexOf(ResolveTexture(textures, fd.Texture));
@@ -268,6 +267,13 @@ public sealed class ModelBaker
         q.LightFace = (sbyte)(dir >= 0 && OnBoundary(dir, pos) ? dir : -1);
         return new ModelQuad { Q = q, TintIndex = (sbyte)fd.TintIndex, Cull = (sbyte)cull, Dir = (sbyte)dir };
     }
+
+    /// <summary>A face's normal turned with the variant (a degenerate quad's fallback).</summary>
+    private static Vector3 TurnedNormal(int face, Variant v) => v.Rotated ? Vector3.TransformNormal(Normals[face], v.Rotation) : Normals[face];
+
+    /// <summary>The cull face turned with the variant.</summary>
+    private static int CullDir(int cull, Variant v) => cull >= 0 && v.Rotated ? DirOf(Vector3.TransformNormal(Normals[cull], v.Rotation)) : cull;
+
     /// <summary>uv lock: the uvs follow the rotated face's position in the block, not the element.</summary>
     private static void LockUv(int dir, Span<Vector3> pos, Span<Vector2> uv)
     {

@@ -532,10 +532,14 @@ public static class EntityGeometry
     }
 
     /// <summary>Entity width (EntityLiving.setSize) for the fire layers.</summary>
-    public static float Width(string kind, int variant) => kind switch
+    public static float Width(string kind, int variant) =>
+        kind == "slime" ? 0.6f * Math.Max(1, variant) : kind != null && Widths.TryGetValue(kind, out var w) ? w : 0.6f;
+
+    /// <summary>Entity widths (b1.8.1 setSize) of the models not 0.6 wide; slimes scale with their size.</summary>
+    private static readonly Dictionary<string, float> Widths = new(StringComparer.Ordinal)
     {
-        "spider" => 1.4f, "cavespider" => 0.7f, "pig" or "cow" or "sheep" => 0.9f, "chicken" => 0.3f, "slime" => 0.6f * Math.Max(1, variant),
-        "ghast" => 4f, "wolf" => 0.8f, "squid" => 0.95f, "silverfish" => 0.3f, _ => 0.6f,
+        ["spider"] = 1.4f, ["cavespider"] = 0.7f, ["pig"] = 0.9f, ["cow"] = 0.9f, ["sheep"] = 0.9f, ["chicken"] = 0.3f, ["ghast"] = 4f, ["wolf"] = 0.8f,
+        ["squid"] = 0.95f, ["silverfish"] = 0.3f,
     };
 
     /// <summary>

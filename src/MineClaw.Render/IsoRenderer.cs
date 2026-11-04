@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using MineClaw.Agent.Telemetry;
 
 namespace MineClaw.Render;
@@ -496,10 +497,14 @@ public sealed class IsoRenderer
         }
     }
 
-    /// <summary>3. Blocks, back to front. Returns how many were drawn.</summary>
+    /// <summary>3. Blocks, back to front: each block's sprite, depth-shaded (outlines only on edges; translucent ones blend and
+    /// don't occlude). Returns how many were drawn.</summary>
+    // complexity: the TUI's per-pixel hot loop (~5k blocks × their sprite pixels per frame); split into per-block / per-pixel
+    // calls it ran ~20 % slower (IsoTests.RenderTime_IsUnderFiveMillisecondsPerFrame), so it stays one loop.
     private int Blocks(IsoInput input, IsoSprite s, int r, int? cutY, int W, int PH, int ox, int oy, bool glyphMode)
     {
         var vol = input.Volume;
+        var colours = input.Colours;
         int rot = input.View.Rotation & 3;
         var cells = vol.Cells();
         var order = PaintOrder(vol, rot, s);
@@ -508,60 +513,45 @@ public sealed class IsoRenderer
         {
             int id = cells[i];
             if (id == 0) continue;
-            int wy = vol.Y0 + i / sxz;
+            int y = i / sxz, wy = vol.Y0 + y;
             if (cutY is { } cy && wy > cy) continue;
             int dx = i % vol.SizeX + vol.X0 - vol.Cx, dz = i / vol.SizeX % vol.SizeZ + vol.Z0 - vol.Cz;
             if (Math.Abs(dx) > r || Math.Abs(dz) > r) continue;
-            if (IsoPalette.Mat(id) is not { } mat) continue;
-            if (DrawBlock(input, s, rot, id, mat, dx, wy, dz, W, PH, ox, oy, glyphMode)) drawn++;
+            var mat = IsoPalette.Mat(id);
+            if (mat == null) continue;
+            var (u, v) = IsoProjection.Rotate(dx, dz, rot);
+            int dy = wy - vol.Cy;
+            var (bx, by) = IsoProjection.Project(u, v, dy, s);
+            bx += ox; by += oy;
+            if (bx + s.W <= 0 || bx >= W || by + s.H <= 0 || by >= PH) continue;
+            int key = IsoProjection.Depth(u, v, dy, s);
+            var flags = mat.Flags;
+            var pixels = (flags & MatFlags.Small) != 0 ? s.Small : (flags & MatFlags.Flat) != 0 ? s.Flat : s.Full;
+            bool outline = (flags & MatFlags.Outline) != 0, translucent = (flags & MatFlags.Translucent) != 0;
+            bool occludes = !outline && !translucent;
+            float df = 1f - 0.045f * Math.Max(0, -dy) - 0.012f * Math.Max(0, -(u + v));
+            df = Math.Clamp(df, 0.5f, 1f);
+            if ((flags & MatFlags.Emissive) != 0) df = 1f - (1f - df) * 0.3f;
+            int wx = vol.Cx + dx, wz = vol.Cz + dz;
+            drawn++;
+            foreach (var p in pixels)
+            {
+                if (outline && !p.Edge) continue;
+                int X = bx + p.X, Y = by + p.Y;
+                if ((uint)X >= (uint)W || (uint)Y >= (uint)PH) continue;
+                int k = Y * W + X;
+                uint c = glyphMode && colours == IsoColours.None ? 0
+                    : _texturer?.Invoke(id, wx, wy, wz, p, s) is { } tc ? IsoPalette.Scale(tc, df) : Shade(mat, p, wx, wy, wz, df, colours, s);
+                if (translucent && colours == IsoColours.TrueColor && (_px[k] & IsoPalette.Indexed) == 0) c = IsoPalette.Mix(_px[k], c, 0.62f);
+                _px[k] = c;
+                _mat[k] = (byte)id;
+                _face[k] = p.Face;
+                _grid[k] = false;
+                if (occludes) _depth[k] = key;
+            }
         }
         return drawn;
     }
-
-    /// <summary>One block's sprite, depth-shaded; false when it falls outside the buffer.</summary>
-    private bool DrawBlock(IsoInput input, IsoSprite s, int rot, int id, IsoMat mat, int dx, int wy, int dz, int W, int PH, int ox, int oy, bool glyphMode)
-    {
-        var vol = input.Volume;
-        var (u, v) = IsoProjection.Rotate(dx, dz, rot);
-        int dy = wy - vol.Cy;
-        var (bx, by) = IsoProjection.Project(u, v, dy, s);
-        bx += ox; by += oy;
-        if (bx + s.W <= 0 || bx >= W || by + s.H <= 0 || by >= PH) return false;
-        int key = IsoProjection.Depth(u, v, dy, s);
-        var flags = mat.Flags;
-        var pixels = (flags & MatFlags.Small) != 0 ? s.Small : (flags & MatFlags.Flat) != 0 ? s.Flat : s.Full;
-        float df = 1f - 0.045f * Math.Max(0, -dy) - 0.012f * Math.Max(0, -(u + v));
-        df = Math.Clamp(df, 0.5f, 1f);
-        if ((flags & MatFlags.Emissive) != 0) df = 1f - (1f - df) * 0.3f;
-        var at = new BlockAt(id, mat, vol.Cx + dx, wy, vol.Cz + dz, bx, by, key, df);
-        foreach (var p in pixels) DrawPixel(input, s, at, p, W, PH, glyphMode);
-        return true;
-    }
-
-    /// <summary>A block being drawn: id, material, world cell, sprite origin, painter's depth and depth shade.</summary>
-    private readonly record struct BlockAt(int Id, IsoMat Mat, int Wx, int Wy, int Wz, int Bx, int By, int Key, float Df);
-
-    private void DrawPixel(IsoInput input, IsoSprite s, in BlockAt b, SpritePx p, int W, int PH, bool glyphMode)
-    {
-        var flags = b.Mat.Flags;
-        bool outline = (flags & MatFlags.Outline) != 0, translucent = (flags & MatFlags.Translucent) != 0;
-        if (outline && !p.Edge) return;
-        int X = b.Bx + p.X, Y = b.By + p.Y;
-        if ((uint)X >= (uint)W || (uint)Y >= (uint)PH) return;
-        int k = Y * W + X;
-        var colours = input.Colours;
-        uint c = glyphMode && colours == IsoColours.None ? 0 : PixelColour(s, b, p, colours);
-        if (translucent && colours == IsoColours.TrueColor && (_px[k] & IsoPalette.Indexed) == 0) c = IsoPalette.Mix(_px[k], c, 0.62f);
-        _px[k] = c;
-        _mat[k] = (byte)b.Id;
-        _face[k] = p.Face;
-        _grid[k] = false;
-        if (!outline && !translucent) _depth[k] = b.Key;
-    }
-
-    /// <summary>A sprite pixel's colour: the image texturer's, else the palette shading.</summary>
-    private uint PixelColour(IsoSprite s, in BlockAt b, SpritePx p, IsoColours colours) =>
-        _texturer?.Invoke(b.Id, b.Wx, b.Wy, b.Wz, p, s) is { } tc ? IsoPalette.Scale(tc, b.Df) : Shade(b.Mat, p, b.Wx, b.Wy, b.Wz, b.Df, colours, s);
 
     /// <summary>4. Target outline.</summary>
     private void TargetOutline(IsoInput input, int[] tgt, IsoSprite s, int zoom, int W, int PH, int ox, int oy)
@@ -668,24 +658,24 @@ public sealed class IsoRenderer
         switch (m.Kind)
         {
             case "item": return ('i', 0xf2e46a);
-            case "mob":
-                return (m.Name ?? "").ToLowerInvariant() switch
-                {
-                    "zombie" => ('z', 0x52b08e),
-                    "skeleton" => ('s', 0xe8e8e8),
-                    "creeper" => ('c', 0x3ce83c),
-                    "spider" or "cave_spider" => ('S', 0xd04848),
-                    "enderman" => ('e', 0xc77dff),
-                    "slime" => ('o', 0x8de08d),
-                    "zombie_pigman" => ('p', 0xf0a0a0),
-                    "ghast" => ('g', 0xf4f4f4),
-                    _ => ('m', 0xff5555),
-                };
-            default:
-                uint pc = m.Name != null && input.NameColour != null ? input.NameColour(m.Name) : 0x5fd7ff;
-                if (m.Name != null && input.HiveGlyph?.Invoke(m.Name) is { } h) return (h, pc);
-                return (string.IsNullOrEmpty(m.Name) ? 'P' : m.Name[0], pc);
+            case "mob": return MobLooks.TryGetValue((m.Name ?? "").ToLowerInvariant(), out var look) ? look : ('m', 0xff5555);
+            default: return PlayerLook(m, input);
         }
+    }
+
+    private static readonly Dictionary<string, (char Glyph, uint Colour)> MobLooks = new(StringComparer.Ordinal)
+    {
+        ["zombie"] = ('z', 0x52b08e), ["skeleton"] = ('s', 0xe8e8e8), ["creeper"] = ('c', 0x3ce83c), ["spider"] = ('S', 0xd04848),
+        ["cave_spider"] = ('S', 0xd04848), ["enderman"] = ('e', 0xc77dff), ["slime"] = ('o', 0x8de08d), ["zombie_pigman"] = ('p', 0xf0a0a0),
+        ["ghast"] = ('g', 0xf4f4f4),
+    };
+
+    /// <summary>Players by first letter (hive bots by their roster glyph), in their name colour.</summary>
+    private static (char Glyph, uint Colour) PlayerLook(ViewMarker m, IsoInput input)
+    {
+        uint pc = m.Name != null && input.NameColour != null ? input.NameColour(m.Name) : 0x5fd7ff;
+        if (m.Name != null && input.HiveGlyph?.Invoke(m.Name) is { } h) return (h, pc);
+        return (string.IsNullOrEmpty(m.Name) ? 'P' : m.Name[0], pc);
     }
 
     private static uint Colour(uint rgb, IsoColours c, int idx16) => c switch
@@ -696,6 +686,7 @@ public sealed class IsoRenderer
         _ => 0,
     };
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static int Noise(int x, int y, int z, int px, int py, IsoFace f)
     {
         unchecked
@@ -707,7 +698,8 @@ public sealed class IsoRenderer
     }
 
     /// <summary>Colour of one sprite pixel of a block (face shade × texture × depth), in the terminal's colour system.</summary>
-    internal static uint Shade(IsoMat mat, SpritePx p, int wx, int wy, int wz, float depth, IsoColours colours, IsoSprite s)
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static uint Shade(IsoMat mat, in SpritePx p, int wx, int wy, int wz, float depth, IsoColours colours, IsoSprite s)
     {
         int n = Noise(wx, wy, wz, p.X, p.Y, p.Face);
         bool accent = mat.Accent != 0 && p.Face != IsoFace.Top && p.Centre && AccentFace(mat.Tex, p.Face);
@@ -722,6 +714,7 @@ public sealed class IsoRenderer
     private static int FaceIndex(IsoFace f) => f == IsoFace.Top ? 0 : f == IsoFace.Left ? 1 : 2;
 
     /// <summary>The faces that show a block's accent pixel: the chest latch and furnace mouth on the left face, a bench on any side.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static bool AccentFace(MatTex tex, IsoFace f) => tex switch
     {
         MatTex.Chest or MatTex.Furnace or MatTex.LitFurnace => f == IsoFace.Left,
@@ -730,16 +723,16 @@ public sealed class IsoRenderer
     };
 
     /// <summary>The green top row of a grass block's sides.</summary>
-    private static bool GrassFringe(IsoMat mat, SpritePx p) => mat.Tex == MatTex.Grass && p.Face != IsoFace.Top && p.Row == 0;
+    private static bool GrassFringe(IsoMat mat, in SpritePx p) => mat.Tex == MatTex.Grass && p.Face != IsoFace.Top && p.Row == 0;
 
-    private static uint Shade16(IsoMat mat, SpritePx p, bool accent)
+    private static uint Shade16(IsoMat mat, in SpritePx p, bool accent)
     {
         if (accent) return IsoPalette.Indexed | (uint)IsoPalette.To16(mat.Accent);
         if (GrassFringe(mat, p)) return IsoPalette.Indexed | mat.C16[0];
         return IsoPalette.Indexed | mat.C16[FaceIndex(p.Face)];
     }
 
-    private static uint Shade256(IsoMat mat, SpritePx p, int n, bool accent)
+    private static uint Shade256(IsoMat mat, in SpritePx p, int n, bool accent)
     {
         if (accent) return IsoPalette.Indexed | (uint)IsoPalette.To256(mat.Accent);
         if (GrassFringe(mat, p)) return IsoPalette.Indexed | mat.C256[0];
@@ -749,98 +742,103 @@ public sealed class IsoRenderer
         return IsoPalette.Indexed | mat.C256[FaceIndex(p.Face)];
     }
 
-    private static uint ShadeTrue(IsoMat mat, SpritePx p, int n, bool accent, float depth, IsoSprite s)
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static uint ShadeTrue(IsoMat mat, in SpritePx p, int n, bool accent, float depth, IsoSprite s)
     {
         uint baseC = p.Face == IsoFace.Top ? mat.Top : mat.Side;
         float k = IsoPalette.FaceShade(p.Face);
         if ((mat.Flags & MatFlags.Emissive) != 0) k = 1f - (1f - k) * 0.4f;
-        if ((uint)mat.Tex < (uint)Textures.Length && Textures[(int)mat.Tex] is { } texture) texture(mat, p, n, accent, s, ref baseC, ref k);
+        Texture(mat, p, n, accent, s, ref baseC, ref k);
         return IsoPalette.Scale(baseC, k * depth);
     }
 
     /// <summary>A material texture: varies the base colour and the shade of one sprite pixel (n = its noise, 0..255).</summary>
-    private delegate void Texture(IsoMat mat, SpritePx p, int n, bool accent, IsoSprite s, ref uint baseC, ref float k);
-
-    /// <summary>The texture per <see cref="MatTex"/> (null = plain).</summary>
-    private static readonly Texture?[] Textures = BuildTextures();
-
-    private static Texture?[] BuildTextures()
+    private static void Texture(IsoMat mat, in SpritePx p, int n, bool accent, IsoSprite s, ref uint baseC, ref float k)
     {
-        var t = new Texture?[Enum.GetValues<MatTex>().Length];
-        t[(int)MatTex.Noise] = NoiseTex;
-        t[(int)MatTex.Speckle] = SpeckleTex;
-        t[(int)MatTex.Grass] = GrassTex;
-        t[(int)MatTex.Log] = LogTex;
-        t[(int)MatTex.Leaves] = LeavesTex;
-        t[(int)MatTex.Planks] = PlanksTex;
-        t[(int)MatTex.Chest] = ChestTex;
-        t[(int)MatTex.Furnace] = FurnaceTex;
-        t[(int)MatTex.LitFurnace] = FurnaceTex;
-        t[(int)MatTex.Bench] = BenchTex;
-        t[(int)MatTex.Lava] = LavaTex;
-        t[(int)MatTex.Water] = WaterTex;
-        return t;
+        switch (mat.Tex)
+        {
+            case MatTex.Noise: NoiseTex(mat, p, n, accent, s, ref baseC, ref k); break;
+            case MatTex.Speckle: SpeckleTex(mat, p, n, accent, s, ref baseC, ref k); break;
+            case MatTex.Grass: GrassTex(mat, p, n, accent, s, ref baseC, ref k); break;
+            case MatTex.Log: LogTex(mat, p, n, accent, s, ref baseC, ref k); break;
+            case MatTex.Leaves: LeavesTex(mat, p, n, accent, s, ref baseC, ref k); break;
+            case MatTex.Planks: PlanksTex(mat, p, n, accent, s, ref baseC, ref k); break;
+            default: BlockTexture(mat, p, n, accent, s, ref baseC, ref k); break;
+        }
     }
 
-    private static void NoiseTex(IsoMat mat, SpritePx p, int n, bool accent, IsoSprite s, ref uint baseC, ref float k) => k *= 0.94f + n % 13 / 100f;
+    /// <summary>The textures of the furniture and fluids (chest, furnaces, bench, lava, water); plain ones stay as they are.</summary>
+    private static void BlockTexture(IsoMat mat, in SpritePx p, int n, bool accent, IsoSprite s, ref uint baseC, ref float k)
+    {
+        switch (mat.Tex)
+        {
+            case MatTex.Chest: ChestTex(mat, p, n, accent, s, ref baseC, ref k); break;
+            case MatTex.Furnace or MatTex.LitFurnace: FurnaceTex(mat, p, n, accent, s, ref baseC, ref k); break;
+            case MatTex.Bench: BenchTex(mat, p, n, accent, s, ref baseC, ref k); break;
+            case MatTex.Lava: LavaTex(mat, p, n, accent, s, ref baseC, ref k); break;
+            case MatTex.Water: WaterTex(mat, p, n, accent, s, ref baseC, ref k); break;
+        }
+    }
 
-    private static void SpeckleTex(IsoMat mat, SpritePx p, int n, bool accent, IsoSprite s, ref uint baseC, ref float k)
+    private static void NoiseTex(IsoMat mat, in SpritePx p, int n, bool accent, IsoSprite s, ref uint baseC, ref float k) => k *= 0.94f + n % 13 / 100f;
+
+    private static void SpeckleTex(IsoMat mat, in SpritePx p, int n, bool accent, IsoSprite s, ref uint baseC, ref float k)
     {
         if (mat.Accent != 0 && n % 11 == 0) baseC = mat.Accent;
         else if (n < 70) k *= 0.74f;
         else if (n > 215) k *= 1.16f;
     }
 
-    private static void GrassTex(IsoMat mat, SpritePx p, int n, bool accent, IsoSprite s, ref uint baseC, ref float k)
+    private static void GrassTex(IsoMat mat, in SpritePx p, int n, bool accent, IsoSprite s, ref uint baseC, ref float k)
     {
         if (p.Face == IsoFace.Top) k *= 0.9f + n % 19 / 100f;
         else if (p.Row == 0) { baseC = mat.Accent; k *= 0.95f; }
         else k *= 0.93f + n % 13 / 100f;
     }
 
-    private static void LogTex(IsoMat mat, SpritePx p, int n, bool accent, IsoSprite s, ref uint baseC, ref float k)
+    private static void LogTex(IsoMat mat, in SpritePx p, int n, bool accent, IsoSprite s, ref uint baseC, ref float k)
     {
         if (p.Face == IsoFace.Top) { if (!p.Inner) baseC = mat.Side; else if (n % 3 == 0) baseC = mat.Accent; }
         else if ((p.X & 1) == 0) k *= 0.8f;
     }
 
-    private static void LeavesTex(IsoMat mat, SpritePx p, int n, bool accent, IsoSprite s, ref uint baseC, ref float k)
+    private static void LeavesTex(IsoMat mat, in SpritePx p, int n, bool accent, IsoSprite s, ref uint baseC, ref float k)
     {
         if (n < 64) k *= 0.6f;
         else if (n > 200) k *= 1.2f;
     }
 
-    private static void PlanksTex(IsoMat mat, SpritePx p, int n, bool accent, IsoSprite s, ref uint baseC, ref float k)
+    private static void PlanksTex(IsoMat mat, in SpritePx p, int n, bool accent, IsoSprite s, ref uint baseC, ref float k)
     {
         if ((p.Y & 1) == 1) k *= 0.87f;
     }
 
-    private static void ChestTex(IsoMat mat, SpritePx p, int n, bool accent, IsoSprite s, ref uint baseC, ref float k)
+    private static void ChestTex(IsoMat mat, in SpritePx p, int n, bool accent, IsoSprite s, ref uint baseC, ref float k)
     {
         if (accent) { baseC = mat.Accent; k = 1f; }
         else if (p.Face != IsoFace.Top && p.Row == (s.C > 2 ? 1 : 0)) k *= 0.62f; // lid seam
         else if (p.Face == IsoFace.Top && p.Edge && s.Zoom >= 2) k *= 0.8f;
     }
 
-    private static void FurnaceTex(IsoMat mat, SpritePx p, int n, bool accent, IsoSprite s, ref uint baseC, ref float k)
+    private static void FurnaceTex(IsoMat mat, in SpritePx p, int n, bool accent, IsoSprite s, ref uint baseC, ref float k)
     {
         if (accent) { baseC = mat.Accent; k = 1f; }
         else k *= 0.95f + n % 9 / 100f;
     }
 
-    private static void BenchTex(IsoMat mat, SpritePx p, int n, bool accent, IsoSprite s, ref uint baseC, ref float k)
+    private static void BenchTex(IsoMat mat, in SpritePx p, int n, bool accent, IsoSprite s, ref uint baseC, ref float k)
     {
         if (accent) { baseC = mat.Accent; }
         else if (p.Face == IsoFace.Top && ((p.X + p.Y) & 1) == 0) baseC = IsoPalette.Mix(mat.Top, mat.Accent, 0.35f);
     }
 
-    private static void LavaTex(IsoMat mat, SpritePx p, int n, bool accent, IsoSprite s, ref uint baseC, ref float k)
+    private static void LavaTex(IsoMat mat, in SpritePx p, int n, bool accent, IsoSprite s, ref uint baseC, ref float k)
     {
         if (n < 45) baseC = mat.Accent;
         else k *= 0.88f + n % 21 / 100f;
     }
 
-    private static void WaterTex(IsoMat mat, SpritePx p, int n, bool accent, IsoSprite s, ref uint baseC, ref float k)
+    private static void WaterTex(IsoMat mat, in SpritePx p, int n, bool accent, IsoSprite s, ref uint baseC, ref float k)
     {
         if (p.Face == IsoFace.Top && n % 5 == 0) k *= 1.15f;
     }

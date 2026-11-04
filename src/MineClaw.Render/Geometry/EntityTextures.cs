@@ -244,11 +244,13 @@ public static class ItemIcons
     }
 
     /// <summary>A flat colour for an item (no texture available).</summary>
-    public static uint Colour(int id) => id is > 0 and < 256 ? BlockGeometry.FlatColour(id, Face.North) : id switch
+    public static uint Colour(int id) =>
+        id is > 0 and < 256 ? BlockGeometry.FlatColour(id, Face.North) : Colours.TryGetValue(id, out var c) ? c : 0xe0d070;
+
+    private static readonly Dictionary<int, uint> Colours = new()
     {
-        263 => 0x2a2a2a, 264 => 0x5fe0e0, 265 => 0xd8d8d8, 266 => 0xf0d040, 280 => 0x8a6a3a, 295 => 0x6ab040, 296 => 0xc8b048, 331 => 0xc01010,
-        338 => 0x8ac060, 344 => 0xf0e0c0, 352 => 0xe8e8e0, 287 => 0xf0f0f0, 288 => 0xf0f0f0, 289 => 0x505050, 334 => 0x8a5030, 337 => 0xa0a8b8,
-        _ => 0xe0d070,
+        [263] = 0x2a2a2a, [264] = 0x5fe0e0, [265] = 0xd8d8d8, [266] = 0xf0d040, [280] = 0x8a6a3a, [295] = 0x6ab040, [296] = 0xc8b048, [331] = 0xc01010,
+        [338] = 0x8ac060, [344] = 0xf0e0c0, [352] = 0xe8e8e0, [287] = 0xf0f0f0, [288] = 0xf0f0f0, [289] = 0x505050, [334] = 0x8a5030, [337] = 0xa0a8b8,
     };
 }
 
