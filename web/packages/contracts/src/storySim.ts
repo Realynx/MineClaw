@@ -78,6 +78,8 @@ import {
   type StoryPawnsRequest,
   type StoryPawnsResponse,
   type StoryPlant,
+  type StoryRole,
+  type StoryRolesRequest,
   type StoryStorage,
   type StoryStorageRequest,
   type StoryWorkbench,
@@ -85,6 +87,7 @@ import {
   type StoryZoneRequest,
 } from './story.js';
 import type { StoryGearRequest, StoryMaterialRulesRequest, StoryPoliciesRequest } from './storyGear.js';
+import { applyRole, defaultRoles, rolesOp, rolesState } from './storyRoles.js';
 import {
   checkAttack,
   draftGear,
@@ -194,6 +197,8 @@ interface Colony {
   wanted?: number;
   options: StoryColonyOptions;
   gear: SimGear;
+  /** Work roles (docs/web/story-mode.md "Roles"). */
+  roles: Array<Omit<StoryRole, 'pawns'>>;
 }
 
 /** What growing zones can grow (the mock speaks 1.12.2). */
@@ -543,6 +548,7 @@ export class StorySim {
       ]),
       options: { autoPlaceBenches: true, detectBenches: false, idle: 'recreation', autoCraftTools: true, spareTools: { count: 0, kinds: [] }, rescueTeleport: true, unfilteredStorageTakesAnything: true, keepDisallowed: false, speed: 'normal', speedEffect: true, allowLava: false },
       gear: newSimGear(),
+      roles: defaultRoles(),
     };
     for (let i = 0; i < req.pawns; i++) {
       const display = NAMES[(i + n * 3) % NAMES.length]!;
@@ -605,6 +611,7 @@ export class StorySim {
         skills,
         traits,
         priorities,
+        role: null,
         schedule: [...DEFAULT_SCHEDULE],
         held: null,
         inventory: [],
@@ -672,6 +679,10 @@ export class StorySim {
       ai: this.opts.world.ai?.() ?? [],
       directives: pick(c.directives),
       policies: c.gear.policies.map((x) => ({ ...x, tools: [...x.tools] })),
+      roles: rolesState(
+        c.roles,
+        [...c.pawns.values()].map((p) => p.p),
+      ),
       materialRules: c.gear.rules.map((x) => ({ ...x })),
       ...(full ? { materials: SIM_MATERIALS } : {}),
       ...(Object.keys(removed).length ? { removed } : {}),
@@ -874,13 +885,45 @@ export class StorySim {
     return out;
   }
 
-  priorities(id: string, body: { pawns: string[]; work: Partial<Record<string, number>> }) {
+  /** POST …/priorities: cells (a pawn with a role turns Custom, values kept) or a role (null = Custom). */
+  priorities(
+    id: string,
+    body: { pawns: string[]; work: Partial<Record<string, number>> } | { pawns: string[]; role: string | null },
+  ) {
     const c = this.colony(id);
+    const role = 'role' in body && body.role ? c.roles.find((r) => r.id === body.role) : null;
+    if ('role' in body && body.role && !role)
+      throw Object.assign(new Error(`role: no such role '${body.role}'`), { status: 404 });
     for (const p of this.pawnsOf(c, body.pawns)) {
-      Object.assign(p.p.priorities, body.work);
+      if ('work' in body) {
+        p.p.role = null;
+        Object.assign(p.p.priorities, body.work);
+      } else {
+        p.p.role = role?.id ?? null;
+        if (role) applyRole(p.p, role);
+      }
       p.rev = this.bump(c);
     }
     return { ok: true, rev: c.rev };
+  }
+
+  /** POST …/roles: add, update (its pawns follow), remove (its pawns turn Custom), reset_defaults. */
+  roles(id: string, body: StoryRolesRequest) {
+    const c = this.colony(id);
+    const pawns = [...c.pawns.values()];
+    const out = rolesOp(
+      c.roles,
+      pawns.map((p) => p.p),
+      body,
+    );
+    for (const p of pawns) p.rev = this.bump(c);
+    return {
+      ...out,
+      roles: rolesState(
+        c.roles,
+        pawns.map((p) => p.p),
+      ),
+    };
   }
 
   schedule(id: string, body: { pawns: string[]; hours: Partial<Record<string, string>> }) {

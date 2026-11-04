@@ -106,6 +106,7 @@ export interface RouteTypes {
   'story.home': { params: z.input<typeof C.StoryColonyParams>; query: never; body: z.input<typeof C.StoryHomeRequest>; response: z.output<typeof C.StoryHomeResponse> };
   'story.beds': { params: z.input<typeof C.StoryColonyParams>; query: never; body: z.input<typeof C.StoryBedsRequest>; response: z.output<typeof C.StoryBedsResponse> };
   'story.priorities': { params: z.input<typeof C.StoryColonyParams>; query: never; body: z.input<typeof C.StoryPrioritiesRequest>; response: z.output<typeof C.StoryAck> };
+  'story.roles': { params: z.input<typeof C.StoryColonyParams>; query: never; body: z.input<typeof C.StoryRolesRequest>; response: z.output<typeof C.StoryRolesResponse> };
   'story.schedule': { params: z.input<typeof C.StoryColonyParams>; query: never; body: z.input<typeof C.StoryScheduleRequest>; response: z.output<typeof C.StoryAck> };
   'story.draft': { params: z.input<typeof C.StoryColonyParams>; query: never; body: z.input<typeof C.StoryDraftRequest>; response: z.output<typeof C.StoryAck> };
   'story.orders': { params: z.input<typeof C.StoryColonyParams>; query: never; body: z.input<typeof C.StoryOrderRequest>; response: z.output<typeof C.StoryAck> };

@@ -15,7 +15,7 @@ namespace MineClaw.App.Supervisor;
 /// <list type="bullet">
 /// <item><c>GET /api/story</c> → <c>{colonies:[…], ai:[…], directives:[…]}</c>; <c>GET /api/story/recipes?workbench=</c> → <c>[Recipe]</c></item>
 /// <item><c>POST /api/story/colonies</c> <c>{name, pawns, home?}</c> → <c>{id}</c>; <c>GET /api/story/colonies/{id}?since=rev</c> → the state (delta with since)</item>
-/// <item><c>POST /api/story/colonies/{id}/release|resume|online|pause|home|priorities|schedule|draft|orders|zones|designations|builds|storage|bills|workbenches|options|policies|material-rules|gear</c></item>
+/// <item><c>POST /api/story/colonies/{id}/release|resume|online|pause|home|priorities|roles|schedule|draft|orders|zones|designations|builds|storage|bills|workbenches|options|policies|material-rules|gear</c></item>
 /// <item><c>GET /api/story/colonies/{id}/architect</c> → <c>{entries:[…], benches, tabs}</c> (the Architect palette with tiers)</item>
 /// <item><c>POST /api/story/time</c> <c>{time}</c> → <c>{time, by}</c> (409 no op account, 429 over one a second)</item>
 /// <item><c>POST /api/story/directives</c> → <c>{id, delivered}</c>; <c>GET /api/story/directives[/{id}]</c></item>
@@ -271,7 +271,15 @@ public sealed class SupervisorStoryRoutes(SupervisorOptions o, StoryColonies col
             {
                 var (ps, err) = Pawns();
                 if (err != null) return Bad(err);
-                if (b["work"] is not JsonObject work) return Bad("work must be {type: 0..4}");
+                // {pawns, role: id|null}: the pawns take a role's priorities, or turn Custom with the values they have (Roles).
+                if (b.ContainsKey("role"))
+                {
+                    if (b["work"] != null) return Bad("role or work, not both");
+                    if (b["role"] != null && S(b, "role") is not { Length: > 0 }) return Bad("role must be a role id or null");
+                    var rerr = c.SetRole(ps, S(b, "role"));
+                    return rerr != null && rerr.StartsWith("role: no such", StringComparison.Ordinal) ? Reply(404, new JsonObject { ["error"] = rerr }) : Ok(rerr);
+                }
+                if (b["work"] is not JsonObject work) return Bad("work must be {type: 0..4} (or role: id|null)");
                 var map = work.ToDictionary(kv => kv.Key, kv => kv.Value is JsonValue x && x.TryGetValue<int>(out var i) ? i : -1);
                 return Ok(c.SetPriorities(ps, map));
             }
@@ -301,6 +309,8 @@ public sealed class SupervisorStoryRoutes(SupervisorOptions o, StoryColonies col
                     return Reply(409, new JsonObject { ["error"] = oe, ["confirm"] = given.Result?["confirm"]?.DeepClone() });
                 return Result(given);
             }
+            case "roles":
+                return Result(c.RolesOp(b)); // work roles: add|update|remove|reset_defaults (StoryColony.Roles.cs)
             case "policies":
                 return Result(c.PoliciesOp(b));
             case "material-rules":

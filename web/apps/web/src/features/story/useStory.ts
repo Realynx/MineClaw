@@ -75,6 +75,7 @@ type ColonyWrite =
   | 'story.home'
   | 'story.beds'
   | 'story.priorities'
+  | 'story.roles'
   | 'story.schedule'
   | 'story.draft'
   | 'story.orders'
