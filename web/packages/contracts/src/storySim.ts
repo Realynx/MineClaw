@@ -521,7 +521,7 @@ export class StorySim {
         ['280:0', 16],
         ['263:0', 8],
       ]),
-      options: { autoPlaceBenches: true, detectBenches: false, idle: 'recreation', autoCraftTools: true, spareTools: { count: 0, kinds: [] } },
+      options: { autoPlaceBenches: true, detectBenches: false, idle: 'recreation', autoCraftTools: true, spareTools: { count: 0, kinds: [] }, rescueTeleport: true, unfilteredStorageTakesAnything: true, keepDisallowed: false },
       gear: newSimGear(),
     };
     for (let i = 0; i < req.pawns; i++) {
@@ -1931,21 +1931,16 @@ export class StorySim {
   /** POST …/options. */
   options(id: string, body: StoryOptionsRequest): StoryColonyOptions {
     const c = this.colony(id);
-    if (
-      body.autoPlaceBenches === undefined &&
-      body.detectBenches === undefined &&
-      body.idle === undefined &&
-      body.autoCraftTools === undefined &&
-      body.spareTools === undefined
-    )
-      throw Object.assign(new Error('autoPlaceBenches, detectBenches, idle, autoCraftTools or spareTools required'), {
-        status: 400,
-      });
+    if (Object.values(body).every((v) => v === undefined))
+      throw Object.assign(new Error('autoPlaceBenches, detectBenches, idle, autoCraftTools, spareTools, rescueTeleport, unfilteredStorageTakesAnything or keepDisallowed required'), { status: 400 });
     if (body.idle !== undefined) c.options.idle = body.idle;
     if (body.autoCraftTools !== undefined) c.options.autoCraftTools = body.autoCraftTools;
     if (body.spareTools !== undefined) c.options.spareTools = { count: body.spareTools.count, kinds: [...body.spareTools.kinds] };
     if (body.autoPlaceBenches !== undefined) c.options.autoPlaceBenches = body.autoPlaceBenches;
     if (body.detectBenches !== undefined) c.options.detectBenches = body.detectBenches;
+    if (body.rescueTeleport !== undefined) c.options.rescueTeleport = body.rescueTeleport;
+    if (body.unfilteredStorageTakesAnything !== undefined) c.options.unfilteredStorageTakesAnything = body.unfilteredStorageTakesAnything;
+    if (body.keepDisallowed !== undefined) c.options.keepDisallowed = body.keepDisallowed;
     this.bump(c);
     this.plan(c);
     return { ...c.options };

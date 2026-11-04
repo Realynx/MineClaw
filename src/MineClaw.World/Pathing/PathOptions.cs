@@ -33,6 +33,16 @@ public sealed record PathOptions
     public double EdgeCostMultiplier { get; init; } = 3.0;
     /// <summary>Penalty for cells adjacent to lava, fire or cactus.</summary>
     public double HazardAdjacentPenalty { get; init; } = 40;
+    /// <summary>Extra cost per step whose body cells hold flowing (non-source) water: a stream is crossed, never followed. Live 11-04:
+    /// pawns carried off by streams and stuck in waterfalls.</summary>
+    public double FlowingWaterPenalty { get; init; } = 4;
+    /// <summary>Extra cost per step whose body cells hold falling water (a waterfall column): it pushes the body down.</summary>
+    public double FallingWaterPenalty { get; init; } = 30;
+    /// <summary>Raw sky light at a cell (0-15), or null (no light data: no cave penalty). With it, a path that starts under the sky
+    /// pays <see cref="UndergroundPenalty"/> per step through cells the sky doesn't reach, so a surface route beats a cave one.</summary>
+    public Func<int, int, int, int>? SkyLight { get; init; }
+    /// <summary>Extra cost per underground step (sky light ≤ 3) for a path that starts under the sky (see <see cref="SkyLight"/>).</summary>
+    public double UndergroundPenalty { get; init; } = 3;
 
     /// <summary>Plan through closed wooden doors, fence gates and head-height trapdoors (and iron doors with a reachable
     /// button/lever/plate on the near side) as <see cref="MoveKind.OpenDoor"/>/<see cref="MoveKind.OpenGate"/>/

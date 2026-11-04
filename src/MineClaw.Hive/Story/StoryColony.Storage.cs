@@ -74,36 +74,6 @@ public sealed partial class StoryColony
         }
     }
 
-    /// <summary>
-    /// Background haul: a stack in a chest that doesn't accept it any more, or that a higher-priority chest accepts and has room for,
-    /// moves there (withdraw, then deposit).
-    /// </summary>
-    internal ActiveJob? RebalanceJob(PawnState p, P3 from)
-    {
-        foreach (var src in Storages.OrderBy(s => StoragePriority.Rank(s.Priority)).ThenBy(s => s.Chest.Dist(from)))
-            foreach (var st in src.Contents)
-            {
-                var dst = BestChest(st.Id, st.Meta, src.Chest, except: src);
-                if (dst == null) continue;
-                bool misfiled = !Accepts(src, st.Id, st.Meta);
-                if (!misfiled && StoragePriority.Rank(dst.Priority) <= StoragePriority.Rank(src.Priority)) continue;
-                var key = $"move:{src.Chest}:{st.Id}:{st.Meta}";
-                if (!Open(key, p.Name, null)) continue;
-                int n = Math.Min(st.Count, MaxStack(st.Id) * 4);
-                var name = ItemName(st.Id, st.Meta);
-                var j = Job(WorkTypes.Haul, "go", $"moving {name} to {(dst.Label ?? dst.Priority + " storage")}", dst.Chest, key, "move", null, "working", f =>
-                {
-                    f["dist"] = 2;
-                    f["fetch"] = new JsonArray(new JsonObject { ["from"] = src.Chest.ToString(), ["item"] = name, ["n"] = n });
-                    f["stash"] = new JsonArray(new JsonObject { ["to"] = dst.Chest.ToString(), ["items"] = new JsonArray(name) });
-                }, xp: 5);
-                j.Takes.Add((src.Chest, st with { Count = n }));
-                j.Puts.Add((dst.Chest, [st with { Count = n }]));
-                return j;
-            }
-        return null;
-    }
-
     // ---------------------------------------------------------------- the storage route
 
     /// <summary>set | remove | copy | assign_area. Returns the affected chests, or an error.</summary>

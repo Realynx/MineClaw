@@ -267,6 +267,7 @@ public sealed class StoryFakeServerTests(ITestOutputHelper output)
         Assert.Null(c.StorageOp("set", [FoodChest], new StorageFilter { Allow = ["food"] }, "critical", "Food").Error);
         Assert.Equal(1, c.Designate("add", "chop", Area.Of(10, 60, 6, 14, 72, 10), null, null).Result!["count"]!.GetValue<int>());
         Only(x, WorkTypes.Chop, WorkTypes.Haul);
+        c.SetHaulOptions(null, false, null); // no fallback chest: what no filter takes stays with the pawn
         // It chops, then carries the logs to the Wood chest (the director's record, kept after each deposit; the 1.12.2 fake
         // server keeps the chest's slots too).
         Assert.True(await Until(() => c.StorageAt(WoodChest)!.Contents.Any(s => s.Id == Blocks.Log), 90_000), "logs stored: " + x.Diag());
@@ -276,7 +277,7 @@ public sealed class StoryFakeServerTests(ITestOutputHelper output)
         Assert.Equal(0, InChest(srv, FoodChest, _ => true));
         Assert.Contains(srv.Dug, d => d.Id == Blocks.Log && d.X == 12 && d.Z == 8);
         Assert.Empty(c.Designations); // the tree's job is done
-        Assert.Contains(c.Alerts, a => a.Text.StartsWith("No storage accepts Cobblestone")); // kept, never dropped
+        Assert.Contains(c.Alerts, a => a.Text.StartsWith("No storage for:") && a.Text.Contains("Cobblestone")); // kept, never dropped
         var chop = c.Pawns[pawn].Skills[WorkTypes.Chop];
         Assert.True(chop.Xp > 0 || chop.Level > StoryCharacter.Generate(pawn).Skills[WorkTypes.Chop].Level, "chop experience");
     });
@@ -302,6 +303,40 @@ public sealed class StoryFakeServerTests(ITestOutputHelper output)
         Assert.All(x.Pawns, p => Assert.True(x.Placed.GetValueOrDefault(p) > 0, p + " placed some")); // both pawns worked on it
         Assert.Contains(c.Alerts, a => a.Text.Contains("is done"));
     });
+
+    /// <summary>
+    /// Building fast (docs/web/story-mode.md "Building fast"; live 11-03 "building floors goes very slowly"): three builders split a
+    /// 6×6 planks floor into batches, each fetches its share in one chest session and lays it from one stand spot. No cell fails
+    /// (no "busy" chest, no "too far", no "occupied" for a cell that is already built) and the floor is done in well under a minute.
+    /// </summary>
+    [Fact]
+    public Task Three_pawns_lay_a_6x6_floor_from_one_chest_fast_and_without_failures() => Colony("1.12.2", 3, async x =>
+    {
+        var c = x.C;
+        Assert.Null(c.StorageOp("set", [WoodChest], null, "normal", "Wood").Error);
+        c.AddContents(c.StorageAt(WoodChest)!, new Stack(Blocks.Planks, 0, 64)); // what the bot remembers of the chest
+        Only(x, WorkTypes.Build);
+        int logBefore;
+        lock (x.Log) logBefore = x.Log.Count;
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        Assert.Null(c.BuildsOp("add", new JsonArray(new JsonObject
+        {
+            ["kind"] = "floor", ["area"] = new JsonArray(14, 64, 14, 19, 64, 19), ["material"] = "planks",
+        }), null).Error);
+        var b = c.Builds.Single();
+        Assert.Equal(36, b.BlocksTotal);
+        Assert.True(await Until(() => b.Status == "done", 120_000), $"floor: {b.BlocksDone}/{b.BlocksTotal} {b.Status} {b.Reason}: " + x.Diag());
+        sw.Stop();
+        var srv = x.Servers[x.Pawns[0]];
+        foreach (var g in b.Ghosts) Assert.Equal(Blocks.Planks, srv.Blocks.GetValueOrDefault((g.At.X, g.At.Y, g.At.Z)));
+        List<string> lines;
+        lock (x.Log) lines = x.Log.Skip(logBefore).Where(l => l.StartsWith("story story-1:", StringComparison.Ordinal) && l.Contains(" failed: ")).ToList();
+        output.WriteLine($"6x6 floor by 3 pawns: {sw.Elapsed.TotalSeconds:0.0} s; placed per pawn: " +
+                         string.Join(", ", x.Pawns.Select(p => $"{p} {x.Placed.GetValueOrDefault(p)}")));
+        Assert.True(lines.Count == 0, "failures: " + string.Join(" | ", lines));
+        Assert.True(x.Pawns.Count(p => x.Placed.GetValueOrDefault(p) > 0) >= 2, "the floor was shared: " + string.Join(", ", x.Pawns.Select(p => $"{p} {x.Placed.GetValueOrDefault(p)}")));
+        Assert.True(sw.Elapsed < TimeSpan.FromSeconds(60), $"took {sw.Elapsed.TotalSeconds:0} s");
+    }, s => s.Chests[(WoodChest.X, WoodChest.Y, WoodChest.Z)][0] = new ItemStack((short)Blocks.Planks, 64, 0));
 
     [Theory]
     [InlineData("b1.8.1")]
@@ -378,6 +413,28 @@ public sealed class StoryFakeServerTests(ITestOutputHelper output)
         s.Blocks[(5, 64, 4)] = 59; s.Metas[(5, 64, 4)] = 7;   // ripe wheat
         s.Blocks[(6, 64, 4)] = Blocks.Dirt;                   // a dirt block to mine
         s.Blocks[(7, 64, 4)] = Blocks.Planks;                 // a built block to deconstruct
+    });
+
+    /// <summary>Live 11-04: maid_chan_114 stood for good in a hole two deep ("no path … it's 2 blocks up"). Now it digs a stair out
+    /// (no blocks on it) and goes on to its job.</summary>
+    [Fact]
+    public Task An_empty_handed_pawn_in_a_two_deep_hole_digs_a_stair_out_and_cuts_its_grass() => Colony("1.12.2", 1, async x =>
+    {
+        var c = x.C;
+        var srv = x.Servers[x.Pawns[0]];
+        Only(x, WorkTypes.Chop);
+        Assert.Equal(1, c.Designate("add", "cut", null, [new P3(16, 64, 8)], null).Result!["count"]!.GetValue<int>());
+        Assert.True(await Until(() => c.Designations.Count == 0, 120_000),
+            "cut: " + string.Join(", ", c.Designations.Select(d => $"{d.Kind} {d.Fails} {d.Reason}")) + " | " + x.Diag());
+        Assert.Equal(0, srv.Blocks.GetValueOrDefault((16, 64, 8)));
+        Assert.Contains(srv.Dug, d => d.Y >= 62 && Math.Abs(d.X - 8) + Math.Abs(d.Z - 8) == 1); // a stair step out of the hole
+        Assert.DoesNotContain(srv.Dug, d => d.X == 8 && d.Z == 8 && d.Y < 62);                // never down
+        Assert.DoesNotContain(c.Alerts, a => a.Level == "warn" && !a.Text.StartsWith("No storage for")); // the stair's dirt has no chest here: that is said
+    }, s =>
+    {
+        EmptyHanded(s);
+        s.Blocks[(8, 62, 8)] = 0; s.Blocks[(8, 63, 8)] = 0;    // a 1×1 hole two deep where the pawns come in
+        s.Blocks[(16, 64, 8)] = 31; s.Metas[(16, 64, 8)] = 1;  // tall grass to cut
     });
 
     [Fact]

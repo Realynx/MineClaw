@@ -38,7 +38,8 @@ public sealed class StoryRecreationTests
         {
             var j = c.Next();
             Assert.Equal("dig", j["kind"]!.GetValue<string>());
-            c.Report(c.P(), j["id"]!.GetValue<string>(), "failed", "no route", null);
+            // (A run of "no route" failures is a stuck pawn: an escape job, StoryStuckPawnTests. Any other failure: a rest.)
+            c.Report(c.P(), j["id"]!.GetValue<string>(), "failed", "too hard to dig", null);
             clock.Now += TimeSpan.FromSeconds(1);
         }
         // Resting: on its feet about home, not standing still; the open mine job doesn't cut the rest short.

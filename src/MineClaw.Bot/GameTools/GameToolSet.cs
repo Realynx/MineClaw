@@ -431,6 +431,11 @@ public static class GameToolSet
             {
                 if (Items.ByName(i.ReqStr("block")) is not { } it) return ToolResult.Error($"unknown block '{i.Str("block")}'");
                 if (Locations.ParseCoords(i.ReqStr("at")) is not { } p) return ToolResult.Error("at must be x,y,z");
+                // At my own feet: a nerd-pole step (jump, place under myself, land on it). A Story pawn climbs out of a pit this way.
+                var me = c.World.Player.Position;
+                if (p == new BlockPos((int)Math.Floor(me.X), (int)Math.Floor(me.Y + 1e-6), (int)Math.Floor(me.Z))
+                    && GameClients.Minecraft(c)?.Inner is { } real)
+                    return R(await real.PillarPlaceAsync(p, it.Id, ct));
                 if (SnapAttachable(c, p, it.Id) is { } snap)
                 {
                     if (snap.Spot is not { } s) return ToolResult.Error(snap.Problem!);

@@ -865,7 +865,14 @@ export function ColonyPanel({
   onBringAll?: (overCap: boolean) => void;
   displayOf?: (account: string) => string;
   /** Colony options (auto-place benches builds need, detect benches near home). */
-  onOptions?: (o: { autoPlaceBenches?: boolean; detectBenches?: boolean; idle?: StoryIdleMode }) => void;
+  onOptions?: (o: {
+    autoPlaceBenches?: boolean;
+    detectBenches?: boolean;
+    idle?: StoryIdleMode;
+    rescueTeleport?: boolean;
+    unfilteredStorageTakesAnything?: boolean;
+    keepDisallowed?: boolean;
+  }) => void;
 }) {
   const offline = (state?.pawns ?? []).filter((p) => p.online === false || p.state === 'offline').length;
   const opts = state?.options;
@@ -944,6 +951,36 @@ export function ColonyPanel({
               onChange={(e) => onOptions({ detectBenches: e.target.checked })}
             />
             Use any bench near home (no designation)
+          </label>
+          <label className="flex items-center gap-2" title="Loot no chest's filter takes goes into any chest with room that doesn't deny it">
+            <input
+              type="checkbox"
+              disabled={!canWrite}
+              checked={opts.unfilteredStorageTakesAnything}
+              onChange={(e) => onOptions({ unfilteredStorageTakesAnything: e.target.checked })}
+            />
+            Unfiltered storage takes anything
+          </label>
+          <label
+            className="flex items-center gap-2"
+            title="Off (like the genre): what a chest's filter no longer allows and no chest takes is dropped beside it"
+          >
+            <input
+              type="checkbox"
+              disabled={!canWrite}
+              checked={opts.keepDisallowed}
+              onChange={(e) => onOptions({ keepDisallowed: e.target.checked })}
+            />
+            Keep disallowed items until a chest takes them
+          </label>
+          <label className="flex items-center gap-2" title="Last resort for a pawn stuck in a pit or a cave: teleport it home (op)">
+            <input
+              type="checkbox"
+              disabled={!canWrite}
+              checked={opts.rescueTeleport}
+              onChange={(e) => onOptions({ rescueTeleport: e.target.checked })}
+            />
+            Teleport stuck pawns home
           </label>
           <label
             className="flex items-center gap-2"

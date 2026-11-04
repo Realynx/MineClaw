@@ -7,7 +7,7 @@ const each = (list, f) => {
 // Walk over first: a block out of view reads as air.
 function reach(a, d) {
   if (!a || dist(pos(a)) <= d + 2) return { ok: true }
-  return go(a, d)
+  return story.go(a, d)
 }
 // THAT tree (" only"); some down: planks, once more at the lowest log; else partial.
 function chopTree(j) {
@@ -48,7 +48,7 @@ function digAt(j) {
 function work(j) {
   const a = j.at
   switch (j.kind) {
-    case 'go': return go(a, j.dist || 1)
+    case 'go': return story.go(a, j.dist || 1)
     case 'chop': return chopTree(j)
     case 'dig': {
       const there = reach(a, 3)
@@ -67,10 +67,7 @@ function work(j) {
       const r = collect(j.r || 4)
       return ok(r) || ok(there) ? r : there
     }
-    case 'place':
-      if (j.clear) dig(a)
-      if (j.stand) go(j.stand, 0)
-      return place(j.block, a)
+    case 'place': return story.place(j)
     case 'attack': if (a) go(a, 3); return attack('' + (j.target ?? j.mob))
     case 'eat': return eat()
     case 'craft': if (a) go(a, 2); return craft(j.item, j.n)
@@ -96,7 +93,7 @@ function pawn() {
     // Crafts first (a bench a build needs; at the table if need be).
     if (ok(r)) r = each(j.craft, c => { if (c.at) { const g = go(c.at, 2); if (!ok(g)) return g } return craft(c.item, c.n) })
     if (ok(r)) r = work(j)
-    if (ok(r)) r = each(j.stash, s => deposit(s.to, s.items))
+    if (ok(r) && j.stash) r = each(j.stash, s => deposit(s.to, s.items))
     story.report(j.id, ok(r) ? 'done' : 'failed', r && r.msg)
   }
   return 'shift over'

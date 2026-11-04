@@ -158,7 +158,7 @@ public sealed class ZonePaintResult
 /// </summary>
 public static class ZonePainter
 {
-    public static readonly IReadOnlyList<string> Overlays = ["home", "forbidden"];
+    public static readonly IReadOnlyList<string> Overlays = ["home", "forbidden", "dump"];
     public const int MaxCells = 65_536;
 
     public static bool IsOverlay(string kind) => Overlays.Contains(kind);

@@ -53,7 +53,7 @@ There is one per colony. It holds:
   The hour comes from the world time, at 1000 ticks per hour, with 0 = 06:00.
 - **Zones,** painted on the map RimWorld-style as cell sets (see "Zones"): chop, mine, farm (growing zones), fish (see
   "Fishing") are work zones;
-  home and forbidden are overlay layers. Storage is chests with their own settings (see "Storage").
+  home, forbidden and dump (the drop spot when the colony has no storage, see "Hauling") are overlay layers. Storage is chests with their own settings (see "Storage").
 - **Designations,** per block or area: chop this tree, mine these blocks, harvest, haul these drops, build design N here,
   deconstruct.
 - **Orders,** per pawn or group: move to, attack, chop, mine, haul, build, hold position, stop, and queued orders
@@ -94,7 +94,7 @@ work, so viewers can watch). JSON is snake_case with nulls written. Errors are `
 | POST | `/api/story/colonies/{id}/schedule` | `{pawns:[name], hours:{"0".."23": "work"|"sleep"|"anything"|"free"}}` → `{ok}` |
 | POST | `/api/story/colonies/{id}/draft` | `{pawns:[name], drafted}` → `{ok}` |
 | POST | `/api/story/colonies/{id}/orders` | `{pawns:[name], order:{kind: move|attack|chop|mine|haul|build|hold|stop, target?:{x,y,z}|{entity:id}|{player:name}|{area:[x1,y1,z1,x2,y2,z2]}, design?:id, confirm?:bool}, queue?:bool}` → `{ids:[order id]}`; an attack on a player or bot without `confirm:true` → 409 `{error, confirm:{entity, name, kind}}` (see "Drafted combat") |
-| POST | `/api/story/colonies/{id}/zones` | `{op: add, kind: chop|mine|farm|fish|home|forbidden, area, into?, name?, plant?, sow?, harvest?}` paints the area (see "Zones"); `{op: remove, kind?: kind|any, area}` erases its cells; both → `{id?, created, merged:[{into, from}], grown, shrunk, split:[{from, into}], deleted, removed (= deleted), warnings?}`; `{op: remove, id}` → `{removed:[id], deleted:[id]}` (the whole zone); `{op: rename, id, name}` → `{id, name}` (name ≤ 40 chars, empty clears it); `{op: update, id, plant?, sow?, harvest?}` → `{id, warnings}`; `{op: seek_seeds, id}` → `{count, kind: cut|bill}`; `{op: bill_add, id, plant, mode?, target?, paused?}` → `{id, bill, ids, active_bill, warnings}`, `bill_update {id, bill, plant?, mode?, target?, paused?}`, `bill_remove|bill_pause|bill_resume {id, bill}`, `bill_reorder {id, ids}` (see "Farming") |
+| POST | `/api/story/colonies/{id}/zones` | `{op: add, kind: chop|mine|farm|fish|home|forbidden|dump, area, into?, name?, plant?, sow?, harvest?}` paints the area (see "Zones"); `{op: remove, kind?: kind|any, area}` erases its cells; both → `{id?, created, merged:[{into, from}], grown, shrunk, split:[{from, into}], deleted, removed (= deleted), warnings?}`; `{op: remove, id}` → `{removed:[id], deleted:[id]}` (the whole zone); `{op: rename, id, name}` → `{id, name}` (name ≤ 40 chars, empty clears it); `{op: update, id, plant?, sow?, harvest?}` → `{id, warnings}`; `{op: seek_seeds, id}` → `{count, kind: cut|bill}`; `{op: bill_add, id, plant, mode?, target?, paused?}` → `{id, bill, ids, active_bill, warnings}`, `bill_update {id, bill, plant?, mode?, target?, paused?}`, `bill_remove|bill_pause|bill_resume {id, bill}`, `bill_reorder {id, ids}` (see "Farming") |
 | POST | `/api/story/colonies/{id}/beds` | `{op:"assign", bed:{x,y,z}, pawn}` or `{op:"unassign", bed:{x,y,z}}` → `{beds:[Bed]}`; 400 on a bad body or no bed there, 404 for an unknown colony or pawn. See "Homes and beds" |
 | POST | `/api/story/colonies/{id}/designations` | See "Designations" → `{count, targets}` or `{count, removed}` |
 | POST | `/api/story/colonies/{id}/builds` | See "Construction" |
@@ -148,7 +148,8 @@ The **Pawn** object:
 3. Urgent needs:
    - hp ≤ 8 (brave 4, skittish 12) with a monster within 12 blocks: flee home, or away from it.
    - food ≤ 6 (skittish 8): eat. With no food on it, the pawn fetches some from storage first; with none anywhere, an alert.
-4. After a gathering job, or with ≤ 4 free slots, the pawn takes what it carries to storage.
+4. With ≤ 4 free slots, or after a gathering job once that run is over (see "Keeping loot while gathering"), the pawn takes what it
+   carries to storage.
 5. The schedule hour (1000 ticks an hour, tick 0 = 06:00):
    - sleep: to its bed, else its own spot at home (see "Homes and beds").
    - free: wander the home area (see "Idle behaviour").
@@ -312,6 +313,81 @@ on it" ×6, and the bot at ~70% CPU. Fixed:
   10 pawns, 500 mine designations): a pick round of all 10 pawns 15.7 → 2.0 ms; a director tick with every pawn finishing a job, the
   watchdog tick and a state delta 6.7 → 3.1 ms.
 
+### Stuck pawns (added 2026-11-04)
+
+Live 11-04 (release 20261103-204549, `story-1`): maid_chan_114 stood in a hole two deep ("no path … it's 2 blocks up; unreachable even
+by pillaring/bridging" ×5) and failed grass after grass. Each failure rested that grass for the whole colony (and counted against it),
+so the other pawns stood idle in front of a field of work. Fox also saw pawns stuck in waterfalls and in caves.
+
+- **A failure is the pawn's own** when the target is out of reach from where it stands: "no path", "no route", "unreachable", or a
+  monster it couldn't find ("no skeleton within 16"). The target rests for that pawn only (30 s, 1 min, then 5 min) and the others take
+  it. Only when 3 different pawns couldn't reach it (fewer when fewer are online) is it the target's failure, with its reason, fail
+  count and alert as before. "can't reach" at the target (a soft refusal) rests it 15 s for that pawn only. A stuck pawn's failures
+  never count against a target, and an escape job never counts as a failure.
+- **Getting out is the pawn's.** `story.go(at, d)` is the usual `go`; when it finds no way, `story.escape(at)` runs before the job's own
+  retry, and then the walk is tried again. `story.escape` reads `storyPit` (zero tokens): **pit** (nothing over the body, and walking
+  reaches at most 30 cells and never 8 blocks away; a room under a build's roof is never a pit), **cave** (natural ground over the
+  body) or **water**. Then, in order:
+  1. walk to the exit, if there is one (the nearest bank out of the water; the nearest cell with open sky in a cave);
+  2. dig a staircase: the blocks in the way of a 1-block jump onto a neighbour, toward the target first. Never below the feet, never a
+     block with liquid beside or over it, never one with sand or gravel on top, never a container or anything as hard as obsidian;
+  3. nerd-pole with blocks it carries (cobblestone, dirt, planks, stone, netherrack, sandstone, stone bricks, logs): `place(block,
+     <its own feet>)` is a pillar step (jump, place under itself, land on it);
+  4. with no blocks, dig the pit's walls for some (dirt by hand; stone, cobble, netherrack with a pickaxe), head height first, then
+     pole;
+  5. ask the colony for help (`story.stuck`).
+- **The colony sees what the pawn can't.** Three unreachable targets in a row within a minute, or a pawn under ground (three blocks of
+  natural ground over it) with no mining, deconstructing or build within 16 blocks, outside a home zone and with no queued order: the
+  pawn's next job is `escape` (label "stuck: getting out", "stuck? heading home", "under ground: heading back up"). It gets out by
+  itself, else walks home, else asks for help. A pawn that moved more than 4 blocks from where it got stuck is free again.
+- **Help.** While another online pawn can bring blocks (from what it carries, or from storage), that pawn's next job is a rescue: kind
+  `give`, label "rescuing Nils: bringing cobblestone", 8 blocks tossed to the stuck pawn from the rim, fetched from storage first when
+  needed. The stuck pawn's escape job waits and tries again. After 90 s, or once the blocks came, or with nobody to help, the colony
+  **teleports it home** (option `rescue_teleport`, default on) through the op command path (never on b1.8.1, whose `/tp` takes no
+  coordinates). Each teleport is logged and said in an alert. When nothing can be done, one warning (at most every 10 minutes) says
+  why.
+- **Water and caves in pathing.** Every `goto` plan pays for flowing water in the body's cells (+4 a step: a stream is crossed, not
+  followed) and much more for a waterfall column (+30). A walk that starts under the sky pays +3 a step for cells the sky doesn't reach,
+  from the light the server sent, so a surface route wins over a cave one.
+- **Caves in picking.** Idle cells are never cave cells. A home zone's own floors still count, such as a basement at the zone's height.
+  Cut and harvest targets in a cave under the box wait; mine designations are explicit and still go. Guard targets in a cave are
+  ignored (see Defending).
+- The pawn's row carries `stuck` (why, or null).
+
+### Keeping loot while gathering (added 2026-11-04)
+
+Fox 11-04: "they bring the block they mined back to the chest right away. They shouldn't. They can dump their inventory all at once
+later while they keep mining until the job is done or their inventory is full."
+
+- After a gathering job (a designation, a zone task, a crop, a catch, a furnace's output), the pawn keeps what it picked up and goes on
+  to its next job. That is its next target of the same work when there is one.
+- One trip later takes everything to storage, by the usual rules (every chest of the load in one trip). That trip comes when:
+  - it has 2 free slots or fewer;
+  - no target of that work is left for it;
+  - its hours turn to sleep or free time;
+  - nothing is left to do at all.
+- Exceptions:
+  - A hauler's pick-ups still go at once (they are batched already).
+  - A drafted pawn keeps what it carries.
+  - A build that needs what a pawn carries takes it from its pockets (no fetch).
+- Benchmark (`StoryLootBatchingTests`, 24 dirt cells, the chest 9 blocks away, simulated time): about 6.5 → 18 blocks a minute.
+- **Tool rules between blocks.** Every block is its own job, and its tool is planned when it is handed out. A material rule or gear
+  policy changed while a pawn works takes effect at its next block: it fetches the newly wanted tool from storage on the way, or holds
+  the one it carries. The block under way finishes as it started (never cut mid-swing). A rule that now waits (an enchantment that isn't
+  there, fallback `wait`) leaves the rest of the field waiting with that reason and no failure.
+
+### Defending (added 2026-11-04)
+
+Live 11-04: "attack failed: no skeleton within 16" ×15, creeper ×8, zombie ×7 for one pawn (82 failures). The merged view showed every
+body's monsters, including cave mobs under home, and each one sent a pawn walking for nothing. A guard goes only after a monster
+that meets all of these:
+- **Fresh:** some body had news of it in the last 45 s (`seen_at`, the freshest copy across bodies).
+- **At home:** in a home area.
+- **Reachable:** within 8 blocks of home's ground level, or within 3 of the pawn, and not under ground.
+- **Not just missed by this pawn.** One it couldn't find rests 60 s for that pawn only. That is not a failure: no alert, no rest.
+
+Among guards with nothing better to do (idle or wandering), the nearest goes. Drafted pawns' attack orders are separate and unchanged.
+
 ### Idle behaviour (added 2026-11-03)
 
 Live 11-03 (Fox): "When there's nothing designated to do, they don't do anything at all. They tend to gather in the same spot." The
@@ -403,7 +479,10 @@ Fox 11-03: "+ and − buttons to add or remove pawns in Story Mode."
   - `story.idle(job)` is an idle leg inside `story.during`: walk to its cell, then linger looking at each point of `look` in turn
     (with the hidden `face{at}` action: turn the head, nothing else).
   - `story.till(job)` holds the hoe and uses it on the block (walking over first when it is far).
-- **A job** is `{id, type, kind, label, at?:"x,y,z", fetch?:[{from, item, n}], stash?:[{to, items}], ...}`.
+  - `story.fetch(job)` takes the fetch list (a busy chest is waited for), and `story.place(job)` lays a build job's cells and
+    reports each one.
+- **A job** is `{id, type, kind, label, at?:"x,y,z", fetch?:[{from, item, n}], stash?:[{to, items}], ...}`; a build job adds
+    `cells`, `want`, `clear` and `stand` (see "Building fast").
   - Kinds: `go|chop|dig|harvest|till|collect|place|attack|equip|eat|craft|smelt|collect_furnace|give|blueprint|sleep|idle|hold|end`.
   - The script withdraws the `fetch` items, runs the kind with the existing primitives (`go`, `chop`, `dig`, `collect`, `place`,
     `attack`, `eat`, `craft`, `smelt`, `collect_furnace`, `handTo`, `build`, `wait`), deposits the `stash` items and reports.
@@ -653,22 +732,115 @@ Ghosts: `[x,y,z,id,meta,build_id,state,kind]`, with state `todo|leased|done|bloc
 ghost's id/meta is the block expected there, read from the world view when it was queued).
 
 Execution:
-- Every ghost is one job for a pawn with Build on, by the picker and lease rules.
+- A pawn with Build on gets a batch of ghosts as one job (see "Building fast" below), by the picker and lease rules.
 - Order: the first unpaused build in queue order gives out its jobs, only from its lowest unfinished level (support first).
   Blocks touching something solid go first, then the nearest. When all of those are leased, the next build's jobs go out.
   A build that only digs goes top-down instead (a buried cell opens once the one above it is gone). A build of a `group`
   waits while an earlier build of that group still has cells to dig (a dig that keeps failing doesn't hold it).
 - Never a block where a player stands.
-- Material: the pawn uses its own, or fetches it from the nearest storage that holds it. With none anywhere, the build is
+- Material: the pawn uses its own, or fetches it from storage (see "Building fast"). With none anywhere, the build is
   `blocked` with `reason:"need 34 wooden planks"` and an alert. It goes on by itself once some is stored (a Chop, Mine or Haul
   pawn, or a bill, can supply it).
 - A ghost that failed 3 times is `blocked`.
 - Facing uses the place tool's own placement. Scaffolding and pillaring are the place and goto tools' own; there is no extra
   scaffold.
 
+### Building fast (added 2026-11-03, night)
+
+Live 11-03 (`story-1`, 10 pawns): "Building floors and placing blocks seems to go very slowly." The pawns' shifts were
+`wait 256x 1023.8s, dig 40x 44.7s, goto 266x 23.5s`: about 90 % waiting while build cells were queued. The journal had
+`place … failed: busy: maid_chan_102 is using chest 218,64,400` over and over, `can't place at …: its nearest support face is 8.7
+blocks from my eyes`, and `194,63,395 is occupied by planks` raised as a warning for a cell that was already built. Causes:
+
+- **One block per job, a stack per block.** Each ghost was its own job (fetch, walk, place one block, report), and its fetch
+  asked for up to 64 of the item, enough for the whole build. The next builder was sent to the same chest for the same stack,
+  because the director's ledger still listed it until the first job ended.
+- **A busy chest was a failure.** The withdraw refused at once while another body held the chest, so the job failed. Each
+  failure rested the cell (30 s, then 1 min, then 10 min), a pawn whose last three jobs failed rested 15 s, and a cell that failed
+  three times was `blocked` for good. The pawns spent their shift in these holds.
+- **No stand within reach.** A builder first went to a spot just outside the build's footprint at its lowest level. For a floor
+  at ground level that spot is inside the ground, and for a wide floor it is far from the middle. The place tool then had to path
+  in by itself, and when that didn't work the cell failed as if it were impossible.
+- **Built is not a failure.** A cell that already held its block, because the colony's view lagged or a retry came after a
+  placement that had worked, failed with "occupied by planks" and counted toward `blocked`.
+- **A probe leaked cells.** The idle-wake check asked the picker for work, and a build answer marked its cell `leased` with no
+  lease. Nobody was ever handed that cell again, so a build's last cells could hang.
+
+Now:
+
+- **A build job is a batch.** It holds up to 24 cells of one item (and facing) within 6 blocks of its first open cell, and comes
+  with one `stand`.
+  - The stand has feet and head open and solid ground under it, up to three blocks below the cell (a roof is laid from the
+    ground). It is not the first cell and not on a batch cell.
+  - The stand must have the first cell in reach, then as many as possible of the cells within 3 blocks of it. In reach means
+    3.8 blocks from the eyes to the cell's centre, under the client's 4.3 to a support face. That way the place tool never walks
+    on its own: on FakeServer, one that did walked into a hut and was walled in.
+  - The stand may be another open cell of the patch, so the pawn stands in the middle of its patch. That cell is then left out.
+  - Another builder's stand or a still-open cell of the build costs extra.
+  - A wall or fence ring is built from outside only. Its stand is never on or inside the footprint, and its batch has only cells
+    in reach of the stand, so builders never wall themselves in. (FakeServer: with stands inside the ring allowed, a hut's builder
+    was shut in and couldn't get to a chest.)
+  - The cells in reach of the stand come first, then the ones a few steps on. Cells left over between earlier batches are taken
+    along this way instead of becoming one-block jobs.
+  - A batch is one level: the next goes up once this one stands. (b1.8.1 FakeServer: a roof row laid early, over a wall still
+    going up, had no visible support face, and its builder climbed onto the wall and was shut in.) Within each group, each cell
+    has support when its turn comes: touching something solid or an earlier cell, then nearest the last one, along the row.
+- **Fair share.** The batch is the pawn's share of the build's cells still to place (`ceil(left / builders)`, 1 to 24), no more
+  than it can get items for. Ten builders on a 16×16 floor each get a part, and a seed next to another pawn's batch comes after the rest, so
+  they spread out. Each cell is leased (`g:<build>|x,y,z`) to the pawn until it reports that cell. The cells stay its own while it
+  works: they are renewed with the job's lease by the tick and by progress. A probe claims nothing: cells are leased only when the
+  job is handed out (`ActiveJob.Assign`), by `Next` or when a wandering pawn is handed work. (The wander path once skipped this,
+  and two pawns got the same cells: "busy: … is using block".)
+- **One fetch per batch.** The job's `fetch` covers the batch less what the pawn carries, taken from as few chests as possible.
+  Chests no other job is still fetching from come first, then the nearest. The amount a chest can give is what the ledger lists
+  minus the fetches other jobs haven't made yet. When the items are out of the chests the script reports `fetched`, and the ledger
+  is updated then, not when the batch ends.
+- **A busy chest waits.** A withdraw at a chest another body holds waits its turn, up to 12 s (`ClaimAwareGameClient.WithdrawWait`),
+  then says busy with the holder and the wait. The script waits 2 s, then 4 s, and tries again. A busy chest, a placement out of
+  reach ("couldn't get closer") or someone standing in the cell is a transient refusal, as for designations. The cell rests 15 s
+  with no fail count and no alert, and only the 5th in a row counts.
+- **Per-cell reports.** `story.place(job)` (SDK) goes to the stand, then for each cell:
+  - A cell that already shows the block (`want`) is reported done.
+  - A cell listed in `clear` is dug first.
+  - A cell out of reach makes the pawn step closer first.
+  - A "too far" or "standing in it" refusal makes the pawn step closer, or back to the stand, and try once more.
+  - Each cell is reported as progress `cell x,y,z done` or `cell x,y,z failed: why`.
+  - When the pawn runs out of items, the rest of the batch goes back to the queue.
+
+  The job ends `done` with `batch: n/m placed`. A cell left unreported at the end goes back to the queue with no failure, unless
+  the world shows it built. (A job's own message now rides with every `done`. Before, the stash step's empty result replaced
+  it, so a chop's `partial: …` note never reached the director.)
+- **Already built is done.** A cell that holds the same block and variant (`DesignFacing.VariantMask`; a facing is the
+  placement's own) is done at pick time, when the pawn reports it, and when a job ends or fails. "Occupied by" anything else is
+  transient: the next pick clears the cell first (`clear`), and only repeated refusals count. A "done" for a cell that shows another
+  block (another variant with the same name) is not taken.
+- A job: `{kind:"place", at, block, want, cells:["x,y,z"…], clear?:["x,y,z"…], stand?, facing?, fetch?:[{from, item, n}…]}`.
+  An older saved pawn script places only `at` and reports the whole job. Its first cell counts as built, and the rest go back.
+
+Measured on the director with a simulated colony (`StoryBuildBenchmarkTests`): 10 pawns with only Build on, a 16×16 planks
+floor and a 4×4×3 cobblestone wall ring, the planks and cobblestone split over two chests. The model: walking at 3.3 blocks/s,
+a 1.5 s chest session with the chest held, 0.6 s per placement, 0.5 s per job to ask and report. "Exact" stock is what the builds
+need and no more (what their auto bills make). "Plenty" is 320 planks and 42 cobblestone. Before is the old director with the old
+client, whose withdraw failed at once on a busy chest. After is the new director with a withdraw that waits its turn.
+
+| stock | before: blocks/min | before: idle | before: jobs, failed | after: blocks/min | after: idle | after: jobs, failed |
+|---|---|---|---|---|---|---|
+| exact | 108.6 (161 s) | 63 % | 328, 36 busy | 188.0 (93 s) | 10 % | 58, 0 |
+| plenty | 150.9 (116 s) | 47 % | 347, 54 busy | 188.0 (93 s) | 10 % | 58, 0 |
+
+The old run also depends on timing. In one variant of the model, ten cells hit their third busy failure, were `blocked` for good,
+and the build never finished: 282 of 292 cells after 30 simulated minutes, 99 % idle. That is the live picture. The simulation
+leaves out pathfinding and the reach failures, so live gains should be larger. Its pawns walk in straight lines, and every place
+within reach works.
+
+FakeServer 1.12.2 (`StoryFakeServerTests.Three_pawns_lay_a_6x6_floor_from_one_chest_fast_and_without_failures`): three pawns lay
+a 6×6 floor from one chest with no failed cell (no busy chest, no "too far", no "occupied") in about 2 s of wall time (1.8–2.5 s
+over the runs). The fake clients tick every 5 ms, so that is about 20 s of game time. Each pawn placed 12. The test allows 60 s.
+
 ## Storage
 
-Storage is chests; there are no ground stockpiles. `POST …/storage`:
+Storage is chests; there are no ground stockpiles (a `dump` zone is only where loot goes when the colony has no storage at all, see
+"Hauling"). `POST …/storage`:
 - `{op:"set", chests:[[x,y,z]], filter?:{allow:[…], deny:[…]}, priority?, label?}`. A double chest is one storage: its other half
   is found from the world.
 - `{op:"remove", chests}`, `{op:"copy", from:[x,y,z], to:[[x,y,z]]}` or `{op:"assign_area", area, filter?, priority?, label?}`
@@ -700,13 +872,40 @@ Categories come in the full state as `categories`: `{id, label, children:[Catego
   - ores_metals: ores, ingots, nuggets, metal & gem blocks
   - gems_minerals, tools, weapons, armour, mob_drops, redstone_mech, misc
 
-Hauling:
-- A pawn that carries loot (after chopping, mining, harvesting, hunting or picking up drops) delivers each stack to the
-  accepting chest with the highest priority, then the nearest, that has room. A full chest is skipped.
-- When nothing accepts a stack, the colony gets an alert "No storage accepts X" and the pawn keeps it. Loot is never dropped.
-- Tools, weapons, armour and one food stack stay with the pawn.
-- Background haul jobs, after every other haul: higher-priority chests pull matching items out of lower-priority ones, and a
-  chest whose filter changed gives up what it no longer accepts.
+Hauling (reworked 2026-11-04; Fox: "Dropped items should be auto-hauled by pawns that have hauling with high priority" and "if I
+limit the types of items allowed in a chest, pawns … should rearrange … Otherwise they end up dropped on the ground"):
+- **Where a stack goes:** the accepting chest with the highest priority, then the nearest, that has room (a full chest is skipped).
+  Else, with the option `unfiltered_storage_takes_anything` (default on), any chest with room whose filter doesn't *deny* it: open
+  (`"*"`) chests first, then the lowest priority, then the nearest. Else, when the colony has no storage at all, the **drop spot**: the
+  nearest `dump` zone (a zone kind), else a standable spot by home. Else nowhere.
+- **Nowhere** is a condition, not a stream of alerts: one alert "No storage for: Oak Wood, Dirt…" when the first kind has nowhere to go,
+  and the state's `unstored_kinds` lists them (a kind drops off the list as soon as a chest takes it). A pawn keeps loot that has
+  nowhere to go.
+- **Deliveries:** a pawn that carries loot (after chopping, mining, harvesting, hunting or picking up drops) takes every stack to
+  its chest in one trip (`stash` lists each chest, filter-accepted ones first). With no storage at all it drops them at the drop spot
+  (job kind `dump`, `drop:[{item, n}]`). Tools, weapons, armour and one food stack stay with the pawn.
+- **Drops on the ground** are a standing haul task when they meet all of these:
+  - Not forbidden.
+  - At home, or within 48 blocks of home or of colony work (a designation, a zone, a build).
+  - Within 12 blocks of the pawn's or home's height, and not under ground.
+  - Not within 4 blocks of a monster.
+  - Not dropped by a player (not a pawn) at their feet in the last 10 s.
+  - Not lying at the drop spot with nowhere better to go.
+  - Somewhere to go.
+  Designated drops come first. Then come drops at despawn risk: older than 3 of their 5 minutes (age from the first sighting by any
+  body), labelled "hauling Oak Wood (despawns in 95s)". Then the nearest.
+- **Priority:** hauling follows the pawn's Haul priority like any work type. Within one priority, a drop at despawn risk is hauled
+  before the other work types of that priority. A working pawn is cut for a haul only when a drop despawns within 30 s, nobody hauls it,
+  and the pawn's Haul priority is at least as important as its current work's. This never cuts an order, a need, an escape or a haul.
+  It is the nearest such pawn, once per drop, at most one every 5 s.
+- **Batching:** a trip picks up the drops within 6 blocks of the first one that go to the same place, up to the pawn's free slots
+  (`collect` with a radius; each drop is leased, so no other pawn is sent to them; label "(+2 more)").
+- **Re-sorting** (background, after drops): a stack a chest's filter no longer allows goes to a chest that takes it. A stack a
+  better-priority chest accepts moves up. One trip takes as many stacks out of one chest as the pawn has room for, each to its own
+  chest. With no chest for it, the fallback chest takes it (option on). What the fallback put somewhere stays there. Else the stack is
+  dropped beside its chest (job kind `dump`) and the condition alert names it. Like the genre, it then despawns unless a chest takes it
+  and a hauler picks it up. Option `keep_disallowed` (default off) leaves it in the chest instead.
+- Options (`POST …/options`): `rescue_teleport`, `unfiltered_storage_takes_anything`, `keep_disallowed` (booleans, in `options`).
 
 ## Workbenches & bills
 

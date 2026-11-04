@@ -195,6 +195,8 @@ public sealed partial class MinecraftClient
             CanSprint = CanSprintNow(),
             AllowVoidParkour = VoidParkourAuthorized(o),
             HasClutchBlock = HotbarHasClutchBlock(),
+            // A walk from the surface keeps to the surface when it can (caves cost more): the light the server sent says where the sky is.
+            SkyLight = (x, y, z) => World.Light.Get(true, x, y, z),
             ParkourCache = _parkourCache,
             MaxHeadUnderSteps = o.MaxHeadUnderSteps,
             HeadUnderStepCost = o.HeadUnderStepCost,

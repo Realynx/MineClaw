@@ -84,6 +84,24 @@ public static class StoryWander
         return false;
     }
 
+    /// <summary>Natural ground: stone, grass, dirt, bedrock, sand, gravel, ores, sandstone, obsidian, clay, netherrack, mycelium, terracotta…</summary>
+    private static readonly HashSet<int> Terrain = [1, 2, 3, 7, 12, 13, 14, 15, 16, 21, 24, 48, 49, 56, 73, 74, 82, 87, 88, 97, 110, 121, 129, 153, 159, 172, 179, 243];
+
+    /// <summary>
+    /// Under ground: three or more blocks of natural ground over the cell (a cave, a ravine's overhang), as opposed to a roof of a
+    /// build or a tree's canopy. Live 11-04: pawns walked into caves and couldn't get back out; cave cells are never wandered to, cave
+    /// mobs are never guarded against, cave plants are never cut, and a pawn found down there without mining to do heads back up.
+    /// An unloaded column reads as air: not under ground.
+    /// </summary>
+    public static bool Underground(IStoryWorld w, P3 c)
+    {
+        if (!w.Loaded(c.X, c.Z)) return false;
+        int n = 0;
+        for (int y = c.Y + 2; y < Math.Min(w.Height, c.Y + 48); y++)
+            if (Terrain.Contains(w.Block(c.X, y, c.Z).Id) && ++n >= 3) return true;
+        return false;
+    }
+
     /// <summary>Horizontal distance between two cells; cells more than two storeys apart never crowd each other.</summary>
     public static double Gap(P3 a, P3 b) =>
         Math.Abs(a.Y - b.Y) > 2 ? double.PositiveInfinity : Math.Sqrt((double)(a.X - b.X) * (a.X - b.X) + (double)(a.Z - b.Z) * (a.Z - b.Z));

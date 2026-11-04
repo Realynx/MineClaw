@@ -13,7 +13,6 @@ public sealed partial class StoryColony
     private readonly Dictionary<string, DateTimeOffset> _skip = new(StringComparer.Ordinal);
     private readonly Dictionary<string, int> _ghostFails = new(StringComparer.Ordinal);
     private readonly Dictionary<string, int> _leaseFails = new(StringComparer.Ordinal);
-    private readonly HashSet<string> _noStorageAlerted = new(StringComparer.Ordinal);
 
     /// <summary>The in-game hour now (12 when there is no world view yet).</summary>
     public int HourNow => World is { } w ? StoryCharacter.Hour(w.TimeOfDay) : 12;
@@ -55,6 +54,7 @@ public sealed partial class StoryColony
         if (!Meta.Active) return Job("idle", "end", "colony released", null, null, "none", null, "idle", xp: 0); // the script ends cleanly
         if (LeavingJob(p, live) is { } leave) return leave; // removed from the colony: store its things, then go (StoryColony.Roster.cs)
         if (Meta.Paused) return Hold("colony paused", "idle", s: 5);
+        if (!p.Drafted && EscapeJob(p, live) is { } escape) return escape; // stuck in a pit, a cave, water (StoryColony.Rescue.cs)
         if (GearJob(p, live) is { } gear) return gear; // gear work first: arming, armour, fetches the owner asked for (StoryColony.Gear.cs)
         if (p.Drafted)
             return DraftedEngage(p, live) ?? OrderJob(p, live) ?? DraftedReturn(p, live) ?? Hold("drafted: waiting for orders", "drafted", s: 3, type: "order");
@@ -75,6 +75,7 @@ public sealed partial class StoryColony
             case ScheduleBlocks.Anything when live.Food <= 14 && FoodIn(live) != null:
                 return Job("need", "eat", "eating", null, null, "need", null, "eating", xp: 0);
         }
+        if (RescueJob(p, live) is { } rescue) return rescue; // a pawn stuck in a pit gets blocks brought to it first
         if (Work(p, live) is { } work) return work;
         if (Deliver(p, live, force: true) is { } leftovers) return leftovers; // nothing else to do: store what it still carries
         if (!_idleAlert.TryGetValue(p.Name, out var last) || Now - last > TimeSpan.FromMinutes(5))
@@ -193,32 +194,14 @@ public sealed partial class StoryColony
         bool after = _lastSource.TryGetValue(p.Name, out var src) && Gathering.Contains(src);
         if (!after && !force && live.FreeSlots > 4) return null;
         if (Skipped("deliver:" + p.Name)) return null; // its last delivery failed: not again right away
+        // The genre's way: it keeps what it gathers and goes on to the next target of that work; one trip to storage later
+        // (inventory nearly full, that work done, its hours over). Live 11-04 (Fox): miners walked every block to the chest.
+        if (!force && after && src is "designation" or "zone" or "crop" or "fish" && KeepGathering(p, live)) return null;
         var items = Deliverables(live);
         if (items.Count == 0) { _lastSource.Remove(p.Name); return null; }
-        var groups = new Dictionary<P3, List<Stack>>();
-        foreach (var s in items)
-        {
-            if (BestChest(s.Id, s.Meta, live.Block) is not { } st)
-            {
-                var key = $"{s.Id}:{s.Meta}";
-                if (_noStorageAlerted.Add(key)) Alert("warn", $"No storage accepts {World!.Data.DisplayName(s.Id, s.Meta)}: {p.Display} keeps it", p.Name);
-                continue;
-            }
-            if (!groups.TryGetValue(st.Chest, out var g)) groups[st.Chest] = g = new List<Stack>();
-            g.Add(s);
-        }
         _lastSource.Remove(p.Name);
-        if (groups.Count == 0) return null;
-        var (chest, stacks) = groups.OrderBy(g => g.Key.Dist(live.X, live.Y, live.Z)).First();
-        var names = stacks.Select(s => ItemName(s.Id, s.Meta)).Distinct().ToList();
-        var j = Job(WorkTypes.Haul, "go", $"storing {string.Join(", ", names)}", chest, null, "deliver", chest.ToString(), "working",
-            f =>
-            {
-                f["dist"] = 2;
-                f["stash"] = new JsonArray(new JsonObject { ["to"] = chest.ToString(), ["items"] = new JsonArray(names.Select(n => (JsonNode)n!).ToArray()) });
-            }, xp: 5);
-        j.Puts.Add((chest, stacks));
-        return j;
+        // To the chests or the fallback chest; drops it hauled with no storage at all go to the drop spot (StoryColony.Hauling.cs).
+        return DeliverJob(p, live, items, dumpOk: after && src == "drop");
     }
 
     // ---------------------------------------------------------------- work
@@ -232,8 +215,17 @@ public sealed partial class StoryColony
 
     private ActiveJob? Work(PawnState p, PawnLive live)
     {
+        int riskChecked = 0;
         foreach (var t in WorkOrder(p))
+        {
+            // Within one priority, a drop about to despawn is hauled first (StoryColony.Hauling.cs).
+            if (t != WorkTypes.Haul && p.Priorities.GetValueOrDefault(t) is var pr && pr != riskChecked && pr == p.Priorities.GetValueOrDefault(WorkTypes.Haul))
+            {
+                riskChecked = pr;
+                if (HaulJob(p, live, riskOnly: true) is { } risky) return risky;
+            }
             if (Candidate(t, p, live) is { } j) return j;
+        }
         return null;
     }
 
@@ -249,7 +241,8 @@ public sealed partial class StoryColony
 
     private bool ForbiddenEntity(int id) => Index().ForbidEntities.Contains(id);
 
-    private bool Open(string key, string pawn, P3? at) => Free(key, pawn) && !Skipped(key) && (at == null || !Forbidden(at.Value));
+    private bool Open(string key, string pawn, P3? at) =>
+        Free(key, pawn) && !Skipped(key) && !Skipped(PawnKey(key, pawn)) && (at == null || !Forbidden(at.Value));
 
     /// <summary>The nearest available job of one work type for this pawn, or null.</summary>
     internal ActiveJob? Candidate(string type, PawnState p, PawnLive live)
@@ -258,14 +251,7 @@ public sealed partial class StoryColony
         switch (type)
         {
             case WorkTypes.Guard:
-            {
-                var home = Home();
-                if (home == null) return null;
-                var mob = Ents().Where(e => e.Kind == "mob" && e.Hostile && InHome(e.Block, home.Value) && Open("e:" + e.Id, p.Name, null))
-                    .OrderBy(e => e.Block.Dist(from)).FirstOrDefault();
-                return mob == null ? null : Job(type, "attack", $"guarding: {mob.Name}", mob.Block, "e:" + mob.Id, "guard", mob.Id.ToString(), "fighting",
-                    j => j["mob"] = mob.Name, xp: 25);
-            }
+                return GuardJob(p, live); // fresh, reachable monsters at home only (StoryColony.Defend.cs)
             case WorkTypes.Doctor:
             {
                 if (World is not { } w) return null;
@@ -314,7 +300,7 @@ public sealed partial class StoryColony
                 return DesignationJob(p, live, from, type, "chop", "chop", "chopping a tree") ?? DesignationJob(p, live, from, type, "cut", "dig", "cutting plants")
                     ?? ZoneJob(p, from, type, "chop");
             case WorkTypes.Haul:
-                return HaulJob(p, from) ?? RebalanceJob(p, from);
+                return HaulJob(p, live) ?? RebalanceJob(p, live); // StoryColony.Hauling.cs
         }
         return null;
     }
@@ -339,6 +325,8 @@ public sealed partial class StoryColony
             double score = at.Dist(from) - 0.25 * at.Y + (mine.Contains(at) ? 1000 : 0);
             if (score >= bestScore) continue;
             if (!Open(x.Key, p.Name, at)) continue;
+            // Cutting and harvesting are surface work: a plant in a cave under the box waits (live 11-04: pawns went into caves).
+            if (kind is "cut" or "harvest" && w != null && StoryWander.Underground(w, at)) continue;
             if (digs && w != null)
             {
                 // Only what a pawn can get at now: a buried cell waits (no failure) until the one over or beside it is gone.
@@ -477,25 +465,6 @@ public sealed partial class StoryColony
         return null;
     }
 
-    // ---------------------------------------------------------------- hauling
-
-    private ActiveJob? HaulJob(PawnState p, P3 from)
-    {
-        if (World is not { } w) return null;
-        if (Storages.Count == 0) return null; // hauling delivers into chests only: no loot left on the ground in a pile
-        var ents = Ents().Where(e => e.Kind == "item" && !ForbiddenEntity(e.Id)).ToDictionary(e => e.Id);
-        var d = Designations.Where(x => x.Kind == "haul" && x.Entity is { } id && ents.ContainsKey(id) && Open("e:" + id, p.Name, null))
-            .OrderBy(x => ents[x.Entity!.Value].Block.Dist(from)).FirstOrDefault();
-        StoryEntity? e = d != null ? ents[d.Entity!.Value] : null;
-        // Standing task: loose drops at home that some storage accepts.
-        if (e == null && Home() is { } home)
-            e = ents.Values.Where(x => InHome(x.Block, home) && !Forbidden(x.Block) && Open("e:" + x.Id, p.Name, null) && BestChest(x.ItemId, x.ItemMeta, x.Block) != null)
-                .OrderBy(x => x.Block.Dist(from)).FirstOrDefault();
-        if (e == null) return null;
-        return Job(WorkTypes.Haul, "collect", $"hauling {w.Data.DisplayName(e.ItemId, e.ItemMeta)}", e.Block, "e:" + e.Id, d != null ? "designation" : "drop",
-            d?.Id, "working", j => j["r"] = 3, xp: 5);
-    }
-
     // ---------------------------------------------------------------- done / failed
 
     private void Done(PawnState p, ActiveJob j, string? note)
@@ -507,6 +476,8 @@ public sealed partial class StoryColony
             Alert("info", $"{p.Display} is now level {p.Skills[j.Type].Level} at {j.Type}", p.Name);
         _fails.Remove(p.Name);
         if (j.Lease != null) { _leaseFails.Remove(j.Lease); _softFails.Remove(j.Lease); }
+        Reached(p, j); // it isn't stuck; a rescue's blocks arrived (StoryColony.Rescue.cs)
+        if (WorkTypes.Known(j.Type)) _lastWork[p.Name] = j.Type; // what it gathers next keeps its loot (KeepGathering)
         if (j.Source == "deliver") _leaseFails.Remove("deliver:" + p.Name);
         switch (j.Source)
         {
@@ -521,7 +492,7 @@ public sealed partial class StoryColony
                 }
                 break;
             case "ghost":
-                GhostDone(j);
+                BatchDone(p, j, note);
                 break;
             case "bill":
             case "furnace":
@@ -605,7 +576,9 @@ public sealed partial class StoryColony
         why.Contains("can't reach", StringComparison.OrdinalIgnoreCase) || why.Contains("can't see/reach", StringComparison.OrdinalIgnoreCase)
         || why.Contains("someone is standing on it", StringComparison.OrdinalIgnoreCase) || why.Contains("is busy", StringComparison.OrdinalIgnoreCase)
         || why.StartsWith("busy", StringComparison.OrdinalIgnoreCase) || why.Contains("a hive claim", StringComparison.OrdinalIgnoreCase)
-        || why.Contains("is not loaded", StringComparison.OrdinalIgnoreCase);
+        || why.Contains("is not loaded", StringComparison.OrdinalIgnoreCase)
+        // A placement out of reach from where the pawn got to, or with someone in the cell: it walks again next time.
+        || why.Contains("couldn't get closer", StringComparison.OrdinalIgnoreCase) || why.Contains("standing in it", StringComparison.OrdinalIgnoreCase);
 
     private void Failed(PawnState p, ActiveJob j, string? note)
     {
@@ -616,15 +589,19 @@ public sealed partial class StoryColony
         if (j.Source is "gear" or "policy") GearEnded(p, j, ok: false, why);
         foreach (var (chest, _) in j.Puts)
             if (StorageAt(chest) is { } st && why.Contains("full", StringComparison.OrdinalIgnoreCase)) { st.FreeSlots = 0; st.Rev = Touch(); }
-        if (j.Source == "designation" && j.Lease != null && Transient(why))
+        // Unreachable from where this pawn stands, a stuck pawn, a monster it couldn't find: its own rest, not the target's failure
+        // (live 11-04: one pawn in a hole failed grass after grass for everyone; StoryColony.Rescue.cs).
+        if (PawnOnly(p, j, why)) return;
+        if (j.Source is "designation" or "ghost" && j.Lease != null && Transient(why) && !Unreachable(why))
         {
             // Not now, not a failure (live 11-03: "can't reach dirt" ×46, "someone is standing on it" ×6, a tall plant "busy" ×11 all
             // counted, alerted and backed off as failures): the target rests a little, no fail count, no alert; only when it keeps
-            // happening (SoftLimit times in a row) does it count as a real failure.
+            // happening (SoftLimit times in a row) does it count as a real failure. "can't reach" rests it for this pawn only: from
+            // where another pawn stands it may well be in reach.
             int soft = _softFails[j.Lease] = _softFails.GetValueOrDefault(j.Lease) + 1;
             if (soft < SoftLimit)
             {
-                _skip[j.Lease] = Now + SoftRest;
+                _skip[ReachOnly(why) ? PawnKey(j.Lease, p.Name) : j.Lease] = Now + SoftRest;
                 return;
             }
             _softFails.Remove(j.Lease);
@@ -657,7 +634,7 @@ public sealed partial class StoryColony
                 }
                 break;
             case "ghost":
-                GhostFailed(p, j, why);
+                BatchFailed(p, j, why);
                 break;
             case "bill":
             case "furnace":
