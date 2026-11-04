@@ -183,12 +183,23 @@ public sealed partial class ChatRouter
         var line = ChatText.StripColors(raw ?? "").Trim();
         if (EmoteLine.Match(line) is { Success: true } em)
             return new(ChatKind.Emote, em.Groups["name"].Value, em.Groups["msg"].Value.Trim(), raw!);
-        foreach (var r in _whisper)
-            if (r.Match(line) is { Success: true } m) return new(ChatKind.Whisper, CleanName(m.Groups["name"].Value), m.Groups["msg"].Value.Trim(), raw!);
-        foreach (var r in _join)
-            if (r.Match(line) is { Success: true } m) return new(ChatKind.Join, CleanName(m.Groups["name"].Value), line, raw!);
-        foreach (var r in _leave)
-            if (r.Match(line) is { Success: true } m) return new(ChatKind.Leave, CleanName(m.Groups["name"].Value), line, raw!);
+        if (FirstMatch(_whisper, line) is { } w) return new(ChatKind.Whisper, CleanName(w.Groups["name"].Value), w.Groups["msg"].Value.Trim(), raw!);
+        if (FirstMatch(_join, line) is { } j) return new(ChatKind.Join, CleanName(j.Groups["name"].Value), line, raw!);
+        if (FirstMatch(_leave, line) is { } l) return new(ChatKind.Leave, CleanName(l.Groups["name"].Value), line, raw!);
+        return ParsePublic(line, raw!) ?? new(ChatKind.System, null, line, raw!);
+    }
+
+    /// <summary>The first of the patterns that matches the line; null = none.</summary>
+    private static Match? FirstMatch(IEnumerable<Regex> patterns, string line)
+    {
+        foreach (var r in patterns)
+            if (r.Match(line) is { Success: true } m) return m;
+        return null;
+    }
+
+    /// <summary>A public "name: msg" line (the loose patterns only for a known player); null = not one.</summary>
+    private ChatMessage? ParsePublic(string line, string raw)
+    {
         for (int i = 0; i < _public.Length; i++)
         {
             var m = _public[i].Match(line);
@@ -196,13 +207,16 @@ public sealed partial class ChatRouter
             var name = CleanName(m.Groups["name"].Value);
             if (name == null) continue;
             // Loose "name: msg" patterns also match server notices ("Usage: ..."); require a known player when we know who's online.
-            if (i > 0 && !IsSelf(name))
-            {
-                lock (_lock) if (_online.Count > 0 && !_online.Contains(name)) continue;
-            }
-            return new(ChatKind.Public, name, m.Groups["msg"].Value.Trim(), raw!);
+            if (i > 0 && !IsSelf(name) && !MayBeOnline(name)) continue;
+            return new(ChatKind.Public, name, m.Groups["msg"].Value.Trim(), raw);
         }
-        return new(ChatKind.System, null, line, raw!);
+        return null;
+    }
+
+    /// <summary>Online, or we don't know who is online yet.</summary>
+    private bool MayBeOnline(string name)
+    {
+        lock (_lock) return _online.Count == 0 || _online.Contains(name);
     }
 
     /// <summary>Feed every raw chat line from the server here.</summary>
@@ -228,15 +242,8 @@ public sealed partial class ChatRouter
         var msg = Parse(raw);
         switch (msg.Kind)
         {
-            case ChatKind.Join or ChatKind.Leave when IsHive(msg.Player):
-                break; // a hive bot logging in/out is not a player event
-            case ChatKind.Join when msg.Player != null && !IsSelf(msg.Player):
-                lock (_lock) { _online.Add(msg.Player); _joinedAt[msg.Player] = Now; }
-                Post(GameEvent.Joined(msg.Player));
-                break;
-            case ChatKind.Leave when msg.Player != null && !IsSelf(msg.Player):
-                lock (_lock) _online.Remove(msg.Player);
-                Post(GameEvent.Left(msg.Player));
+            case ChatKind.Join or ChatKind.Leave:
+                OnJoinOrLeave(msg);
                 break;
             case ChatKind.Public or ChatKind.Whisper or ChatKind.Emote when msg.Player != null:
                 HandleMessage(msg);
@@ -246,6 +253,22 @@ public sealed partial class ChatRouter
                 break;
         }
         return msg;
+    }
+
+    /// <summary>A player's join/leave: tracked and posted (a hive bot logging in/out, or the bot itself, is not a player event).</summary>
+    private void OnJoinOrLeave(ChatMessage msg)
+    {
+        if (IsHive(msg.Player) || msg.Player == null || IsSelf(msg.Player)) return;
+        if (msg.Kind == ChatKind.Join)
+        {
+            lock (_lock) { _online.Add(msg.Player); _joinedAt[msg.Player] = Now; }
+            Post(GameEvent.Joined(msg.Player));
+        }
+        else
+        {
+            lock (_lock) _online.Remove(msg.Player);
+            Post(GameEvent.Left(msg.Player));
+        }
     }
 
     private void HandleMessage(ChatMessage msg)
@@ -526,16 +549,26 @@ public sealed partial class ChatRouter
             {
                 if (reason is not (AddressReason.OtherPlayer or AddressReason.Rejected or AddressReason.FromBot)) _ignored[player] = (msg.Text, Now);
             }
-            else if (_ignored.Remove(player, out var prev) && Now - prev.At < TimeSpan.FromSeconds(_options.ReplyWindowSeconds) &&
-                     reason is AddressReason.Name)
+            else
             {
-                Addressing.Misses++;
-                missed = prev.Text;
-                if (Now - prev.At > TimeSpan.FromSeconds(Math.Max(0, _options.NameLinkSeconds))) { NoteMiss(player, missed, reason); return null; }
+                (missed, bool late) = TakeIgnoredLocked(player, reason);
+                if (late) { NoteMiss(player, missed!, reason); return null; }
             }
         }
         if (missed != null) NoteMiss(player, missed, reason);
         return missed;
+    }
+
+    /// <summary>
+    /// The player's ignored line, when they now name the bot within the reply window (a miss); Late = too long ago to link the
+    /// two (the miss is still reported, nothing is picked up).
+    /// </summary>
+    private (string? Missed, bool Late) TakeIgnoredLocked(string player, AddressReason reason)
+    {
+        if (!(_ignored.Remove(player, out var prev) && Now - prev.At < TimeSpan.FromSeconds(_options.ReplyWindowSeconds) &&
+              reason is AddressReason.Name)) return (null, false);
+        Addressing.Misses++;
+        return (prev.Text, Now - prev.At > TimeSpan.FromSeconds(Math.Max(0, _options.NameLinkSeconds)));
     }
 
     private void NoteMiss(string player, string missed, AddressReason reason)
@@ -551,23 +584,35 @@ public sealed partial class ChatRouter
         var player = msg.Player!;
         if (IsRegular?.Invoke(player) != true) return false;
         lock (_lock)
-        {
-            if (_waiters.Any(w => w.Player != null && w.Player.Equals(player, StringComparison.OrdinalIgnoreCase))) return false; // a waiter takes it anyway
-            bool thread = _lastTalkedWith.TryGetValue(player, out var at) && Now - at < TimeSpan.FromMinutes(Math.Max(0, c.ThreadMinutes));
-            bool near = false;
-            try { near = IsNear?.Invoke(player) == true; } catch (Exception) { }
-            if (!thread && !near) return false;
-            var cutoff = Now - TimeSpan.FromHours(1);
-            while (_classifierCalls.Count > 0 && _classifierCalls.Peek() < cutoff) _classifierCalls.Dequeue();
-            if (_classifierCalls.Count >= Math.Max(0, c.MaxPerHour)) return false;
-            _classifierCalls.Enqueue(Now);
-        }
+            if (!ClassifierWantedLocked(player, c)) return false;
         // In a hive only the bot that would own the line asks (one call per line, not one per process).
-        if (Arbiter != null)
-        {
-            try { if (!Arbiter(msg, true)) return false; } catch (Exception) { return false; }
-        }
+        return ArbiterOwns(msg);
+    }
+
+    /// <summary>No waiter takes the line, the player is in a thread with us or near, and the hourly budget has room (taken).</summary>
+    private bool ClassifierWantedLocked(string player, AddressClassifierOptions c)
+    {
+        if (_waiters.Any(w => w.Player != null && w.Player.Equals(player, StringComparison.OrdinalIgnoreCase))) return false; // a waiter takes it anyway
+        bool thread = _lastTalkedWith.TryGetValue(player, out var at) && Now - at < TimeSpan.FromMinutes(Math.Max(0, c.ThreadMinutes));
+        bool near = false;
+        try { near = IsNear?.Invoke(player) == true; } catch (Exception) { }
+        if (!thread && !near) return false;
+        return TakeClassifierCallLocked(c);
+    }
+
+    private bool TakeClassifierCallLocked(AddressClassifierOptions c)
+    {
+        var cutoff = Now - TimeSpan.FromHours(1);
+        while (_classifierCalls.Count > 0 && _classifierCalls.Peek() < cutoff) _classifierCalls.Dequeue();
+        if (_classifierCalls.Count >= Math.Max(0, c.MaxPerHour)) return false;
+        _classifierCalls.Enqueue(Now);
         return true;
+    }
+
+    private bool ArbiterOwns(ChatMessage msg)
+    {
+        if (Arbiter == null) return true;
+        try { return Arbiter(msg, true); } catch (Exception) { return false; }
     }
 
     private async Task ClassifyThenDeliverAsync(ChatMessage msg)
@@ -717,10 +762,7 @@ public sealed partial class ChatRouter
         Waiter? done = null;
         lock (_lock)
         {
-            // A reply already being collected from this player first, then their own waiter, then an "anyone" waiter.
-            var w = _waiters.FirstOrDefault(x => x.Parts.Count > 0 && string.Equals(x.From, player, StringComparison.OrdinalIgnoreCase))
-                ?? _waiters.FirstOrDefault(x => x.Parts.Count == 0 && x.Player != null && x.Player.Equals(player, StringComparison.OrdinalIgnoreCase))
-                ?? (addressed ? _waiters.FirstOrDefault(x => x.Parts.Count == 0 && x.Player == null) : null);
+            var w = WaiterForLocked(player, addressed);
             if (w == null) return false;
             if (w.Parts.Count == 0) { w.From = player; w.First = Now; }
             w.Parts.Add(text);
@@ -728,8 +770,7 @@ public sealed partial class ChatRouter
             _lastToUs[player] = Now; // an answer to us
 
             int quiet = Debounce is { Enabled: true } d ? Math.Max(0, d.ReplyQuietMs) : 0;
-            int max = Debounce?.MaxMs ?? 0;
-            if (quiet == 0 || Debounce!.IsImmediate(text) || Now - w.First >= TimeSpan.FromMilliseconds(max))
+            if (ReplyComplete(w, text, quiet))
             {
                 _waiters.Remove(w);
                 done = w;
@@ -742,6 +783,19 @@ public sealed partial class ChatRouter
         }
         if (done != null) Complete(done);
         return true;
+    }
+
+    /// <summary>A reply already being collected from this player first, then their own waiter, then an "anyone" waiter.</summary>
+    private Waiter? WaiterForLocked(string player, bool addressed) =>
+        _waiters.FirstOrDefault(x => x.Parts.Count > 0 && string.Equals(x.From, player, StringComparison.OrdinalIgnoreCase))
+        ?? _waiters.FirstOrDefault(x => x.Parts.Count == 0 && x.Player != null && x.Player.Equals(player, StringComparison.OrdinalIgnoreCase))
+        ?? (addressed ? _waiters.FirstOrDefault(x => x.Parts.Count == 0 && x.Player == null) : null);
+
+    /// <summary>The reply is whole: no debounce, a line that goes at once, or collecting for the debounce maximum already.</summary>
+    private bool ReplyComplete(Waiter w, string text, int quiet)
+    {
+        int max = Debounce?.MaxMs ?? 0;
+        return quiet == 0 || Debounce!.IsImmediate(text) || Now - w.First >= TimeSpan.FromMilliseconds(max);
     }
 
     private void FinishWaiter(Waiter w)

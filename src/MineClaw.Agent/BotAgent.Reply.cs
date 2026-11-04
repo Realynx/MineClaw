@@ -111,13 +111,7 @@ public sealed partial class BotAgent
         while (sp.Buf.Length > 0)
         {
             var s = sp.Buf.ToString();
-            int cut = s.IndexOf('\n') is var nl and >= 0 ? nl + 1 : -1;
-            if (cut < 0)
-                foreach (Match m in SentenceEnd.Matches(s))
-                {
-                    int end = m.Index + m.Length;
-                    if (!sp.FirstFlushed || end >= minChars) { cut = end; break; }
-                }
+            int cut = SegmentCut(sp, s, minChars);
             if (cut < 0) break;
             var seg = s[..cut].Trim();
             sp.Buf.Remove(0, cut);
@@ -130,6 +124,18 @@ public sealed partial class BotAgent
             if (rest.Length > 0) segs.Add(rest);
         }
         return segs;
+    }
+
+    /// <summary>Where the next segment ends: after the first line end, else after the first sentence end that may go now; -1 = none yet.</summary>
+    private static int SegmentCut(TurnSpeech sp, string s, int minChars)
+    {
+        if (s.IndexOf('\n') is var nl and >= 0) return nl + 1;
+        foreach (Match m in SentenceEnd.Matches(s))
+        {
+            int end = m.Index + m.Length;
+            if (!sp.FirstFlushed || end >= minChars) return end;
+        }
+        return -1;
     }
 
     /// <summary>Chains one segment behind the previous ones (order kept; never on the stream thread). Caller holds the lock.</summary>
@@ -180,19 +186,8 @@ public sealed partial class BotAgent
         if (IsSilent(text)) return "";
         List<string> said;
         lock (cx.Said) said = cx.Said.ToList();
-        if (cx.WhisperTo() == null && SpeechGate != null)
-        {
-            string? gated;
-            try { gated = SpeechGate(new EventBatch(cx.Events.ToList()), text, said.Count > 0); }
-            catch (Exception ex) { _log.LogWarning(ex, "speech gate failed"); gated = text; }
-            if (gated == null || IsSilent(gated.Trim()))
-            {
-                _log.LogDebug("muted: {Text}", text);
-                try { Muted?.Invoke(text); } catch (Exception) { }
-                return "";
-            }
-            text = gated.Trim();
-        }
+        if (GateStreamed(cx, text, said.Count > 0) is not { } passed) return "";
+        text = passed;
         text = MetaSpeech.Strip(text, out var meta, _turnStatusAsked, AddresseeNames(cx.Audience.ToArray()));
         foreach (var m in meta) _log.LogInformation("[meta suppressed] {Line}", m);
         if (IsSilent(text.Trim())) return "";
@@ -201,6 +196,22 @@ public sealed partial class BotAgent
         if (IsSilent(text)) return "";
         if (ack != null && SameLine(text, ack)) { _log.LogInformation("[repeat of ack suppressed] {Line}", text); return ""; }
         return LastLook(text, cx.Audience.ToArray());
+    }
+
+    /// <summary>A public segment through the speech gate: its text (trimmed), or null when the gate muted it. Whispers skip it.</summary>
+    private string? GateStreamed(SpeechCtx cx, string text, bool saidBefore)
+    {
+        if (cx.WhisperTo() != null || SpeechGate == null) return text;
+        string? gated;
+        try { gated = SpeechGate(new EventBatch(cx.Events.ToList()), text, saidBefore); }
+        catch (Exception ex) { _log.LogWarning(ex, "speech gate failed"); gated = text; }
+        if (gated == null || IsSilent(gated.Trim()))
+        {
+            _log.LogDebug("muted: {Text}", text);
+            try { Muted?.Invoke(text); } catch (Exception) { }
+            return null;
+        }
+        return gated.Trim();
     }
 
     private static string? AckOf(TurnSpeech sp) { lock (sp.Lock) return sp.Ack; }
@@ -271,59 +282,92 @@ public sealed partial class BotAgent
             return;
         }
         var lines = typed.Select(e => e.Text).ToList();
-        // A reflex already answered with the body (the brain sees "[reflex] ..."): no words needed first.
-        if (turnHead.Contains("[reflex]", StringComparison.Ordinal) || lines.All(l => IntentMatcher.Reflex(l, NameWords(), _ => true).IsReflex)) return;
-        if (preAck == null && o.AckSkipSmallTalk && QuickReply.Classify(lines, NameWords(), typed.All(e => e.Kind == EventKind.Emote)) != QuickKind.Brain) return;
+        if (AckNotNeeded(turnHead, lines, typed, preAck, o)) return;
+        var (callAt, due) = AckTimes(typed, o);
+        var plan = new AckPlan(sp, batch, preAck, whisperTo, audience, callAt, due, typed[0].Player ?? "player",
+            TextUtil.Truncate(string.Join(" / ", lines.Select(TextUtil.OneLine)), 200), sp.AckCts.Token, ct);
+        _ = Task.Run(() => RunAckAsync(plan), CancellationToken.None);
+    }
+
+    /// <summary>
+    /// A reflex already answered with the body (the brain sees "[reflex] ..."): no words needed first. Small talk the quick reply
+    /// handles needs no ack either (unless an instant line is waiting to go).
+    /// </summary>
+    private bool AckNotNeeded(string turnHead, List<string> lines, List<GameEvent> typed, string? preAck, ReplyOptions o)
+    {
+        if (turnHead.Contains("[reflex]", StringComparison.Ordinal) || lines.All(l => IntentMatcher.Reflex(l, NameWords(), _ => true).IsReflex)) return true;
+        return preAck == null && o.AckSkipSmallTalk && QuickReply.Classify(lines, NameWords(), typed.All(e => e.Kind == EventKind.Emote)) != QuickKind.Brain;
+    }
+
+    /// <summary>When to call the cheap tier and when the ack is due (from the chat's time, or now when its stamp doesn't match).</summary>
+    private (DateTimeOffset CallAt, DateTimeOffset Due) AckTimes(List<GameEvent> typed, ReplyOptions o)
+    {
         var chatAt = typed.Min(e => e.At);
         var now = _time.GetUtcNow();
         if (chatAt > now || now - chatAt > TimeSpan.FromSeconds(30)) chatAt = now; // a clock that doesn't match the queue's stamp
         var due = chatAt + TimeSpan.FromMilliseconds(Math.Max(0, o.AckAfterMs));
         var callAt = due - TimeSpan.FromMilliseconds(Math.Clamp(o.AckCallLeadMs, 0, Math.Max(0, o.AckAfterMs)));
-        var player = typed[0].Player ?? "player";
-        var line = TextUtil.Truncate(string.Join(" / ", lines.Select(TextUtil.OneLine)), 200);
-        var token = sp.AckCts.Token;
-        _ = Task.Run(async () =>
+        return (callAt, due);
+    }
+
+    /// <summary>One quick ack in flight: the turn's speech, its batch and audience, the line it answers and when.</summary>
+    private sealed record AckPlan(TurnSpeech Sp, EventBatch Batch, string? PreAck, string? WhisperTo, string[] Audience, DateTimeOffset CallAt,
+        DateTimeOffset Due, string Player, string Line, CancellationToken Token, CancellationToken Ct);
+
+    /// <summary>Waits for the call time, drafts (or takes the instant line), waits until due, gates, then sends unless the brain spoke.</summary>
+    private async Task RunAckAsync(AckPlan p)
+    {
+        try
         {
-            try
+            if (!await WaitUntilAsync(p.Sp, p.CallAt, p.Token).ConfigureAwait(false)) return;
+            var ack = p.PreAck ?? await DraftAckAsync(p).ConfigureAwait(false);
+            if (ack == null) return;
+            if (!await WaitUntilAsync(p.Sp, p.Due, p.Token).ConfigureAwait(false))
             {
-                if (!await WaitUntilAsync(sp, callAt, token).ConfigureAwait(false)) return;
-                var ack = preAck;
-                if (ack == null)
-                {
-                    if (_usage.CheckMode() == BudgetMode.Paused) return;
-                    ack = await AckCallAsync(player, line, token).ConfigureAwait(false);
-                    if (ack == null) return;
-                }
-                if (!await WaitUntilAsync(sp, due, token).ConfigureAwait(false))
-                {
-                    _log.LogDebug("quick ack not needed: the brain spoke first ({Ack})", ack);
-                    return;
-                }
-                if (whisperTo == null && SpeechGate != null)
-                {
-                    try { ack = SpeechGate(batch, ack, false); } catch (Exception ex) { _log.LogWarning(ex, "speech gate failed"); }
-                    if (ack == null || IsSilent(ack.Trim())) return;
-                }
-                var send = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-                lock (sp.Lock)
-                {
-                    if (sp.BrainSpoke || sp.Ack != null || sp.AckSend != null) return;
-                    sp.AckSend = send.Task;
-                }
-                try
-                {
-                    var sent = await _chat.SayAsync(ack, whisperTo, audience, ct).ConfigureAwait(false);
-                    if (sent.Count == 0) return;
-                    lock (sp.Lock) sp.Ack = string.Join(" ", sent);
-                    Latency?.NoteChatLine(_time.GetUtcNow(), ack: true);
-                    LogSaid(sent, whisperTo, batch.IsTest);
-                    _log.LogInformation("[quick ack] (cheap tier) {Ack}", string.Join(" ", sent));
-                }
-                finally { send.TrySetResult(); }
+                _log.LogDebug("quick ack not needed: the brain spoke first ({Ack})", ack);
+                return;
             }
-            catch (OperationCanceledException) { }
-            catch (Exception ex) { _log.LogWarning(ex, "quick ack failed"); }
-        }, CancellationToken.None);
+            if (GateAck(p, ack) is { } gated) await SendAckAsync(p, gated).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { _log.LogWarning(ex, "quick ack failed"); }
+    }
+
+    /// <summary>The cheap tier's ack (null when the budget is paused or it had nothing).</summary>
+    private async Task<string?> DraftAckAsync(AckPlan p)
+    {
+        if (_usage.CheckMode() == BudgetMode.Paused) return null;
+        return await AckCallAsync(p.Player, p.Line, p.Token).ConfigureAwait(false);
+    }
+
+    /// <summary>A public ack through the speech gate (a failing gate lets it pass); null = muted.</summary>
+    private string? GateAck(AckPlan p, string ack)
+    {
+        if (p.WhisperTo != null || SpeechGate == null) return ack;
+        string? gated = ack;
+        try { gated = SpeechGate(p.Batch, ack, false); } catch (Exception ex) { _log.LogWarning(ex, "speech gate failed"); }
+        return gated == null || IsSilent(gated.Trim()) ? null : gated;
+    }
+
+    private async Task SendAckAsync(AckPlan p, string ack)
+    {
+        var sp = p.Sp;
+        var send = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        lock (sp.Lock)
+        {
+            if (sp.BrainSpoke || sp.Ack != null || sp.AckSend != null) return;
+            sp.AckSend = send.Task;
+        }
+        try
+        {
+            var sent = await _chat.SayAsync(ack, p.WhisperTo, p.Audience, p.Ct).ConfigureAwait(false);
+            if (sent.Count == 0) return;
+            lock (sp.Lock) sp.Ack = string.Join(" ", sent);
+            Latency?.NoteChatLine(_time.GetUtcNow(), ack: true);
+            LogSaid(sent, p.WhisperTo, p.Batch.IsTest);
+            _log.LogInformation("[quick ack] (cheap tier) {Ack}", string.Join(" ", sent));
+        }
+        finally { send.TrySetResult(); }
     }
 
     /// <summary>Every typed line is for us with at least <see cref="ReplyOptions.AckMinConfidence"/> (router-less events count as sure).</summary>

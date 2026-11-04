@@ -36,8 +36,7 @@ public sealed partial class BotAgent
         var o = _options.Chat.JoinGreeting;
         if (!o.Enabled) return null;
         var waking = batch.Waking.ToList();
-        if (waking.Count == 0 || batch.HasDanger || waking.Any(e => e.Kind != EventKind.PlayerJoined || e.Player == null)) return null;
-        if (waking.Any(e => HasNewsFor?.Invoke(e.Player!) == true)) return null;
+        if (!OnlyQuietJoins(batch, waking)) return null;
 
         bool isClone = _options.Hive.CloneFor(_chat.Username) != null;
         var now = _time.GetUtcNow();
@@ -45,37 +44,54 @@ public sealed partial class BotAgent
         var said = new List<string>();
         foreach (var p in waking.Select(e => e.Player!).Distinct(StringComparer.OrdinalIgnoreCase))
         {
-            string why;
-            if (_chat.IsHiveBot?.Invoke(p) == true || _chat.IsOtherBot(p)) why = "a bot";
-            else if (isClone) why = "main greets";
-            else if (_chat.IsRegular?.Invoke(p) != true) why = "not a regular";
+            if (NoGreetingWhy(p, isClone, now, window) is { } why)
+                _log.LogInformation("join: {Player} not greeted ({Why}), no model call", p, why);
             else
-            {
-                DateTimeOffset? greeted, left;
-                lock (_greetedAt)
-                {
-                    greeted = _greetedAt.TryGetValue(p, out var g) ? g : null;
-                    left = _leftAt.TryGetValue(p, out var l) ? l : null;
-                }
-                if (greeted is { } gg && now - gg < window) why = $"greeted {(int)(now - gg).TotalSeconds}s ago";
-                else if (left is { } ll && now - ll < window) why = $"reconnect ({(int)(now - ll).TotalSeconds}s away)";
-                else
-                {
-                    var line = GreetingFor(p, o);
-                    lock (_greetedAt) _greetedAt[p] = now;
-                    try
-                    {
-                        var sent = await _chat.SayAsync(line, ct: ct).ConfigureAwait(false);
-                        said.AddRange(sent);
-                        _log.LogInformation("join: greeted {Player} (template, no model call): {Line}", p, line);
-                    }
-                    catch (Exception ex) when (ex is not OperationCanceledException) { _log.LogDebug(ex, "join greeting failed"); }
-                    continue;
-                }
-            }
-            _log.LogInformation("join: {Player} not greeted ({Why}), no model call", p, why);
+                await GreetAsync(p, o, now, said, ct).ConfigureAwait(false);
         }
         return new EpisodeOutcome(null, 0, LlmUsage.Zero, 0, said, false, "join handled");
+    }
+
+    /// <summary>Every waking event is a player's join, nothing dangerous, and none of them has news waiting.</summary>
+    private bool OnlyQuietJoins(EventBatch batch, List<GameEvent> waking)
+    {
+        if (waking.Count == 0 || batch.HasDanger || waking.Any(e => e.Kind != EventKind.PlayerJoined || e.Player == null)) return false;
+        return !waking.Any(e => HasNewsFor?.Invoke(e.Player!) == true);
+    }
+
+    /// <summary>Why a joining player gets no greeting (a bot, a clone, not a regular, greeted or left just now); null = greet.</summary>
+    private string? NoGreetingWhy(string p, bool isClone, DateTimeOffset now, TimeSpan window)
+    {
+        if (_chat.IsHiveBot?.Invoke(p) == true || _chat.IsOtherBot(p)) return "a bot";
+        if (isClone) return "main greets";
+        if (_chat.IsRegular?.Invoke(p) != true) return "not a regular";
+        return JustSeenWhy(p, now, window);
+    }
+
+    private string? JustSeenWhy(string p, DateTimeOffset now, TimeSpan window)
+    {
+        DateTimeOffset? greeted, left;
+        lock (_greetedAt)
+        {
+            greeted = _greetedAt.TryGetValue(p, out var g) ? g : null;
+            left = _leftAt.TryGetValue(p, out var l) ? l : null;
+        }
+        if (greeted is { } gg && now - gg < window) return $"greeted {(int)(now - gg).TotalSeconds}s ago";
+        if (left is { } ll && now - ll < window) return $"reconnect ({(int)(now - ll).TotalSeconds}s away)";
+        return null;
+    }
+
+    private async Task GreetAsync(string p, JoinGreetingOptions o, DateTimeOffset now, List<string> said, CancellationToken ct)
+    {
+        var line = GreetingFor(p, o);
+        lock (_greetedAt) _greetedAt[p] = now;
+        try
+        {
+            var sent = await _chat.SayAsync(line, ct: ct).ConfigureAwait(false);
+            said.AddRange(sent);
+            _log.LogInformation("join: greeted {Player} (template, no model call): {Line}", p, line);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException) { _log.LogDebug(ex, "join greeting failed"); }
     }
 
     private string GreetingFor(string player, JoinGreetingOptions o)

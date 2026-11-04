@@ -351,16 +351,18 @@ public sealed partial class BotAgent
         var kind = walk ? ActivityKind.Move : ActivityKind.Job;
         bool queue = parts.Any(p => p.Queue);
         // Walking, queued behind a walk, or queued behind a busy script: answer quickly; the brain keeps planning.
-        bool behind = bs.Enabled && (queue || activities.CurrentKind is ActivityKind.Move or ActivityKind.Speculative
-            || steps[0].Tool.Name.Equals("goto", StringComparison.OrdinalIgnoreCase)); // "walk there, then work" too
+        bool behind = bs.Enabled && QueuedBehind(queue, activities, steps);
         // Long jobs (chop, harvest, delegate, script...) answer "running in background" at once instead of holding the turn
         // (and every chat line after them) for the old 20 s; short jobs (craft, withdraw) get a few seconds to finish inline.
         bool longJob = steps.Any(s => bs.LongJobTools.Contains(s.Tool.Name, StringComparer.OrdinalIgnoreCase));
-        var wait = !bs.Enabled ? TimeSpan.FromSeconds(_options.InlineToolWaitSeconds)
-            : walk || behind || longJob ? TimeSpan.FromMilliseconds(Math.Max(0, bs.MoveInlineWaitMs))
-            : TimeSpan.FromMilliseconds(Math.Max(0, Math.Min(bs.JobInlineWaitMs, _options.InlineToolWaitSeconds * 1000)));
+        var wait = InlineWait(bs, walk || behind || longJob);
         var r = await activities.RunAsync(steps, wait, ct, kind, queue).ConfigureAwait(false);
+        return ResultsByPart(parts, r, walk);
+    }
 
+    /// <summary>The chain's step results handed back per planned call (a compound or prefixed call's steps combined).</summary>
+    private static List<ToolResult> ResultsByPart(IReadOnlyList<Planned> parts, IReadOnlyList<ToolResult> r, bool walk)
+    {
         var output = new List<ToolResult>(parts.Count);
         int k = 0;
         foreach (var p in parts)
@@ -371,6 +373,17 @@ public sealed partial class BotAgent
         }
         return output;
     }
+
+    /// <summary>Queued, behind a walk (or speculative step), or a "walk there, then work" chain.</summary>
+    private static bool QueuedBehind(bool queue, ActivityManager activities, List<(IAgentTool Tool, JsonElement Input)> steps) =>
+        queue || activities.CurrentKind is ActivityKind.Move or ActivityKind.Speculative
+        || steps[0].Tool.Name.Equals("goto", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>How long a chain may run inline: the legacy wait with the brainstem off, else short for quick answers, else the job wait.</summary>
+    private TimeSpan InlineWait(Brainstem.BrainstemOptions bs, bool quick) =>
+        !bs.Enabled ? TimeSpan.FromSeconds(_options.InlineToolWaitSeconds)
+        : quick ? TimeSpan.FromMilliseconds(Math.Max(0, bs.MoveInlineWaitMs))
+        : TimeSpan.FromMilliseconds(Math.Max(0, Math.Min(bs.JobInlineWaitMs, _options.InlineToolWaitSeconds * 1000)));
 
     /// <summary>A walk that outlived the short inline wait: say so, and that the brain may keep planning.</summary>
     private static ToolResult MoveText(ToolResult r) =>
@@ -396,35 +409,46 @@ public sealed partial class BotAgent
         var bs = _options.Brainstem;
         if (bs is not { Enabled: true, StreamingExecution: true } || tier != ModelTier.Main) return null;
         bool blocked = false;
-        return use =>
-        {
-            try
-            {
-                if (blocked || use.Name is EscalateToolName or "stop") { blocked = true; return; }
-                // Several bodies: a call for another body (or a turn focused on one) waits for the message (routed planning).
-                if (ActiveBodies != null && (TurnFocus != null || BodySpec(use.Input) != null)) { blocked = true; return; }
-                using (ToolCaller.Push(tier, model))
-                {
-                    var p = Plan(use, tier, retry, stopping: false, Array.Empty<string>());
-                    if (p.Result != null) { blocked |= !ReadOnlyTools.Contains(use.Name); return; }
-                    if (p.AllInstant && p.Steps.All(s => ReadOnlyTools.Contains(s.Tool.Name)))
-                    {
-                        _early[use.Id] = (Task.Run(() => RunInstantAsync(p, ct), ct), false);
-                        return;
-                    }
-                    blocked = true; // from here on nothing starts early: tool order is the model's order
-                    if (!p.Queue && p.Steps.Count > 0 && p.Steps.All(s => s.Tool.IsLongRunning && ActivityManager.MovementTools.Contains(s.Tool.Name)
-                        && s.Input.Bool("build") != true && s.Input.Str("into_void") == null && s.Input.Str("allow_parkour") != "void"))
-                    {
-                        Interlocked.Increment(ref _earlyChains);
-                        _log.LogDebug("streaming: started {Tool} before the message ended", use.Name);
-                        _early[use.Id] = (Task.Run(async () => (await RunChainAsync([p], ct).ConfigureAwait(false))[0], ct), true);
-                    }
-                }
-            }
-            catch (Exception ex) { _log.LogDebug(ex, "early tool start failed"); blocked = true; }
-        };
+        return use => blocked = EarlyStart(use, blocked, tier, retry, model, ct);
     }
+
+    /// <summary>One streamed tool call: starts it early when it may; returns whether later calls of the message must wait.</summary>
+    private bool EarlyStart(LlmToolUse use, bool blocked, ModelTier tier, bool retry, string model, CancellationToken ct)
+    {
+        try
+        {
+            if (blocked || use.Name is EscalateToolName or "stop") return true;
+            // Several bodies: a call for another body (or a turn focused on one) waits for the message (routed planning).
+            if (ActiveBodies != null && (TurnFocus != null || BodySpec(use.Input) != null)) return true;
+            using (ToolCaller.Push(tier, model))
+                return StartPlannedEarly(use, Plan(use, tier, retry, stopping: false, Array.Empty<string>()), ct);
+        }
+        catch (Exception ex) { _log.LogDebug(ex, "early tool start failed"); return true; }
+    }
+
+    /// <summary>Read-only lookups start at once; a pure walk starts and blocks the rest; anything else just blocks.</summary>
+    private bool StartPlannedEarly(LlmToolUse use, Planned p, CancellationToken ct)
+    {
+        if (p.Result != null) return !ReadOnlyTools.Contains(use.Name);
+        if (p.AllInstant && p.Steps.All(s => ReadOnlyTools.Contains(s.Tool.Name)))
+        {
+            _early[use.Id] = (Task.Run(() => RunInstantAsync(p, ct), ct), false);
+            return false;
+        }
+        // From here on nothing starts early: tool order is the model's order.
+        if (IsPlainWalk(p))
+        {
+            Interlocked.Increment(ref _earlyChains);
+            _log.LogDebug("streaming: started {Tool} before the message ended", use.Name);
+            _early[use.Id] = (Task.Run(async () => (await RunChainAsync([p], ct).ConfigureAwait(false))[0], ct), true);
+        }
+        return true;
+    }
+
+    /// <summary>Only cancellable movement (no build, no void, no parkour into the void), not queued.</summary>
+    private static bool IsPlainWalk(Planned p) =>
+        !p.Queue && p.Steps.Count > 0 && p.Steps.All(s => s.Tool.IsLongRunning && ActivityManager.MovementTools.Contains(s.Tool.Name)
+            && s.Input.Bool("build") != true && s.Input.Str("into_void") == null && s.Input.Str("allow_parkour") != "void");
 
     private readonly HashSet<string> _handled = new(StringComparer.Ordinal);
 

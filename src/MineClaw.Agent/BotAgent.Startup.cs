@@ -121,14 +121,7 @@ public sealed partial class BotAgent
     {
         if (!IdleWatchdog || idle.WatchdogMinutes <= 0) return false;
         var parts = new List<string>();
-        if (Orders?.Current != null)
-        {
-            string? why = null;
-            try { why = Orders.WhyNot(); } catch (Exception) { }
-            if (why != null && !why.StartsWith("nothing to do", StringComparison.Ordinal) && !why.StartsWith("snoozed", StringComparison.Ordinal)
-                && why != "held")
-                parts.Add(OrderLine(null)!);
-        }
+        if (OrderStalled()) parts.Add(OrderLine(null)!);
         parts.AddRange(PendingWorkNow());
         if (parts.Count == 0) { _watchdogStreak = 0; return false; }
 
@@ -144,5 +137,15 @@ public sealed partial class BotAgent
         _events.Post(GameEvent.Notice($"{WatchdogTag}: idle {idleMin}m, nothing running: {text}. Do what your rules call for, or say nothing to do",
             EventPriority.Normal));
         return true;
+    }
+
+    /// <summary>A standing order is set and stuck: not merely backing off ("nothing to do"), snoozed after a stop, or held.</summary>
+    private bool OrderStalled()
+    {
+        if (Orders?.Current == null) return false;
+        string? why = null;
+        try { why = Orders.WhyNot(); } catch (Exception) { }
+        return why != null && !why.StartsWith("nothing to do", StringComparison.Ordinal) && !why.StartsWith("snoozed", StringComparison.Ordinal)
+            && why != "held";
     }
 }
