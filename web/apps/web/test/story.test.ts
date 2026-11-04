@@ -430,7 +430,17 @@ describe('the Schedule grid', () => {
 describe('orders, designations and the mixed selection', () => {
   it('the right-click menu fits the target, and order bodies are valid (Shift queues)', () => {
     const tree = contextMenu({ kind: 'block', x: 6, y: 72, z: 6, id: 17, name: 'log' }, true, false);
-    expect(tree.map((i) => i.id)).toEqual(['chop', 'move', 'hold', 'stop']);
+    expect(tree.map((i) => i.id)).toEqual([
+      'chop',
+      'move',
+      'hold',
+      'stop',
+      'gear-arm',
+      'gear-armor',
+      'gear-pickup',
+      'gear-return',
+      'gear-tools',
+    ]);
     const chop = orderBody(['p_ash', 'p_bryn'], tree[0]!, true)!;
     expect(chop).toEqual({
       pawns: ['p_ash', 'p_bryn'],

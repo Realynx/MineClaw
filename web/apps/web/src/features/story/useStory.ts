@@ -82,7 +82,10 @@ type ColonyWrite =
   | 'story.storage'
   | 'story.bills'
   | 'story.workbenches'
-  | 'story.options';
+  | 'story.options'
+  | 'story.policies'
+  | 'story.materialRules'
+  | 'story.gear';
 
 /**
  * The Architect palette (placeables by tab, tier, unlock state, stock). Refreshed with the colony's revision while the

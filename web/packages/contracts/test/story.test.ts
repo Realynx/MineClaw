@@ -421,7 +421,7 @@ describe('the mock director', () => {
     expect(b.noCraft).toContain('fence');
     expect(b.materials[0]).toMatchObject({ via: 'none', crafting: 0, short: 3 });
     expect(() => sim.workbenches(id, { op: 'designate', pos: [9, 64, 9] })).toThrow(/no workbench/);
-    expect(sim.options(id, { autoPlaceBenches: false })).toEqual({ autoPlaceBenches: false, detectBenches: false });
+    expect(sim.options(id, { autoPlaceBenches: false })).toMatchObject({ autoPlaceBenches: false, detectBenches: false });
     expect(sim.state(id).options?.autoPlaceBenches).toBe(false);
   });
 });

@@ -60,6 +60,12 @@ function storyOverrides(): typeof OVERRIDES {
     'story.storage': { params: id, body: { op: 'assign_area', area: [14, 60, 0, 30, 70, 10] } },
     'story.bills': { params: id, body: { op: 'add', bench: [17, 63, 7], bill: { recipe: 'sticks', mode: 'until', target: 64, minSkill: 2 } } },
     'story.directives': { body: { bots: ['maid_chan'], directive: { kind: 'text', text: 'come here' }, requestId: 'r-story0001' } },
+    'story.workbenches': { params: id, body: { op: 'designate', pos: [17, 63, 7] } },
+    'story.options': { params: id, body: { autoCraftTools: true, spareTools: { count: 1, kinds: ['pickaxe'] } } },
+    'story.architect': { params: id },
+    'story.policies': { params: id, body: { op: 'set', policy: { name: 'Miners', tools: ['pickaxe', 'shovel'], armor: 'none' } } },
+    'story.materialRules': { params: id, body: { op: 'set', rule: { material: 'iron_ore', tier: 'iron', enchant: 'fortune' } } },
+    'story.gear': { params: id, body: { op: 'arm', pawns } },
   };
 }
 

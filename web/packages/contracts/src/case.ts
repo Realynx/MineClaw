@@ -21,6 +21,7 @@ export const OPAQUE_KEYS: ReadonlySet<string> = new Set([
   'see',
   'bill',
   'data',
+  'ench',
 ]);
 
 /**

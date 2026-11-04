@@ -197,6 +197,14 @@ import {
   StoryZoneRequest,
 } from './story.js';
 import {
+  StoryGearRequest,
+  StoryGearResponse,
+  StoryMaterialRulesRequest,
+  StoryMaterialRulesResponse,
+  StoryPoliciesRequest,
+  StoryPoliciesResponse,
+} from './storyGear.js';
+import {
   ShardExportRequest,
   ShardImportOptions,
   ShardImportPreviewResponse,
@@ -1311,7 +1319,8 @@ export const ROUTES = {
     bridge: b('/v1/sup/story/colonies/{id}/orders', 'POST'),
     supervisor: '/api/story/colonies/{id}/orders',
     audit: 'story',
-    summary: 'A direct order to one pawn or a group (queue = shift).',
+    summary:
+      'A direct order to one pawn or a group (queue = shift). An attack on a player or another bot needs confirm: true (else 409).',
   }),
   'story.zones': post('/api/story/colonies/:id/zones', {
     access: 'story',
@@ -1389,6 +1398,39 @@ export const ROUTES = {
     supervisor: '/api/story/colonies/{id}/options',
     audit: 'story',
     summary: 'Colony options: auto-place benches builds need, detect benches near home.',
+  }),
+  'story.policies': post('/api/story/colonies/:id/policies', {
+    access: 'story',
+    params: StoryColonyParams,
+    body: StoryPoliciesRequest,
+    response: StoryPoliciesResponse,
+    responseKind: 'json',
+    bridge: b('/v1/sup/story/colonies/{id}/policies', 'POST'),
+    supervisor: '/api/story/colonies/{id}/policies',
+    audit: 'story',
+    summary: 'Gear policies (the Assign tab): set, remove, assign to pawns.',
+  }),
+  'story.materialRules': post('/api/story/colonies/:id/material-rules', {
+    access: 'story',
+    params: StoryColonyParams,
+    body: StoryMaterialRulesRequest,
+    response: StoryMaterialRulesResponse,
+    responseKind: 'json',
+    bridge: b('/v1/sup/story/colonies/{id}/material-rules', 'POST'),
+    supervisor: '/api/story/colonies/{id}/material-rules',
+    audit: 'story',
+    summary: "Per material tool rules (tool, tier >= the material's floor, enchantment, fallback); 400 below the floor.",
+  }),
+  'story.gear': post('/api/story/colonies/:id/gear', {
+    access: 'story',
+    params: StoryColonyParams,
+    body: StoryGearRequest,
+    response: StoryGearResponse,
+    responseKind: 'json',
+    bridge: b('/v1/sup/story/colonies/{id}/gear', 'POST'),
+    supervisor: '/api/story/colonies/{id}/gear',
+    audit: 'story',
+    summary: 'One bulk gear op for a selection: arm, armor, pickup, return, tools (fair spread, items reserved).',
   }),
   'story.architect': get('/api/story/colonies/:id/architect', {
     access: 'viewer',

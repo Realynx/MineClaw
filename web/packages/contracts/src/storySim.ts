@@ -62,6 +62,20 @@ import {
   type StoryZone,
   type StoryZoneRequest,
 } from './story.js';
+import type { StoryGearRequest, StoryMaterialRulesRequest, StoryPoliciesRequest } from './storyGear.js';
+import {
+  checkAttack,
+  draftGear,
+  gearOp,
+  materialRulesOp,
+  newSimGear,
+  policiesOp,
+  seedEquipment,
+  SIM_ARMORY,
+  SIM_MATERIALS,
+  type AttackTarget,
+  type SimGear,
+} from './storySimGear.js';
 
 // The package builds without DOM or Node typings; both runtimes have these.
 declare function setTimeout(fn: () => void, ms: number): unknown;
@@ -155,6 +169,7 @@ interface Colony {
   seq: number;
   stock: Map<string, number>;
   options: StoryColonyOptions;
+  gear: SimGear;
 }
 
 const BENCH_KIND: Record<number, string> = {
@@ -373,7 +388,8 @@ export class StorySim {
         ['280:0', 16],
         ['263:0', 8],
       ]),
-      options: { autoPlaceBenches: true, detectBenches: false },
+      options: { autoPlaceBenches: true, detectBenches: false, autoCraftTools: true, spareTools: { count: 0, kinds: [] } },
+      gear: newSimGear(),
     };
     for (let i = 0; i < req.pawns; i++) {
       const display = NAMES[(i + n * 3) % NAMES.length]!;
@@ -436,6 +452,9 @@ export class StorySim {
         schedule: [...DEFAULT_SCHEDULE],
         held: null,
         inventory: [],
+        equipment: seedEquipment(i),
+        policy: i === 0 ? 'soldier' : null,
+        gearTasks: [],
       },
     };
   }
@@ -492,6 +511,9 @@ export class StorySim {
       ...(full || c.bedsRev > s ? { beds: this.bedList(c) } : {}),
       ai: this.opts.world.ai?.() ?? [],
       directives: pick(c.directives),
+      policies: c.gear.policies.map((x) => ({ ...x, tools: [...x.tools] })),
+      materialRules: c.gear.rules.map((x) => ({ ...x })),
+      ...(full ? { materials: SIM_MATERIALS } : {}),
       ...(Object.keys(removed).length ? { removed } : {}),
     };
   }
@@ -719,6 +741,7 @@ export class StorySim {
   draft(id: string, body: { pawns: string[]; drafted: boolean }) {
     const c = this.colony(id);
     for (const p of this.pawnsOf(c, body.pawns)) {
+      if (p.p.drafted !== body.drafted) draftGear(c.gear, p.p, body.drafted);
       p.p.drafted = body.drafted;
       this.drop(c, p);
       if (!body.drafted) p.p.queue = [];
@@ -731,6 +754,7 @@ export class StorySim {
   orders(id: string, body: StoryOrderRequest) {
     const c = this.colony(id);
     const pawns = this.pawnsOf(c, body.pawns);
+    if (body.order.kind === 'attack') checkAttack(this.attackTarget(c, body.order.target), body.order.confirm);
     pawns.forEach((p, i) => {
       const o: StoryOrder = {
         id: `o${c.seq++}`,
@@ -1062,7 +1086,7 @@ export class StorySim {
         label: prev?.label ?? null,
         priority: priority ?? prev?.priority ?? 'normal',
         filter: filter ?? prev?.filter ?? { allow: ['*'], deny: [] },
-        contents: prev?.contents ?? seedContents(p),
+        contents: prev?.contents ?? this.stock(c, seedContents(p)),
         freeSlots: prev?.freeSlots ?? (other ? 46 : 22),
         knownAt: this.iso(),
       };
@@ -1396,13 +1420,73 @@ export class StorySim {
   /** POST …/options. */
   options(id: string, body: StoryOptionsRequest): StoryColonyOptions {
     const c = this.colony(id);
-    if (body.autoPlaceBenches === undefined && body.detectBenches === undefined)
-      throw Object.assign(new Error('autoPlaceBenches or detectBenches required'), { status: 400 });
+    if (
+      body.autoPlaceBenches === undefined &&
+      body.detectBenches === undefined &&
+      body.autoCraftTools === undefined &&
+      body.spareTools === undefined
+    )
+      throw Object.assign(new Error('autoPlaceBenches, detectBenches, autoCraftTools or spareTools required'), { status: 400 });
+    if (body.autoCraftTools !== undefined) c.options.autoCraftTools = body.autoCraftTools;
+    if (body.spareTools !== undefined) c.options.spareTools = { count: body.spareTools.count, kinds: [...body.spareTools.kinds] };
     if (body.autoPlaceBenches !== undefined) c.options.autoPlaceBenches = body.autoPlaceBenches;
     if (body.detectBenches !== undefined) c.options.detectBenches = body.detectBenches;
     this.bump(c);
     this.plan(c);
     return { ...c.options };
+  }
+
+  /** The first chest the colony takes over also holds its armory (weapons, armour, spare tools) for the gear ops. */
+  private stock(c: Colony, contents: Array<[number, number, number]>): Array<[number, number, number]> {
+    if (c.gear.stocked) return contents;
+    c.gear.stocked = true;
+    return [...contents, ...SIM_ARMORY.map((x) => [...x] as [number, number, number])];
+  }
+
+  /** Who an attack order is on: a player or bot (confirm needed), one of the colony's pawns (refused), or a mob. */
+  private attackTarget(c: Colony, t: StoryOrderRequest['order']['target']): AttackTarget | null {
+    if (!t || typeof t !== 'object') return null;
+    const ai = this.opts.world.ai?.() ?? [];
+    const kindOf = (name: string): AttackTarget['kind'] =>
+      c.pawns.has(name) || [...c.pawns.values()].some((p) => p.p.display === name)
+        ? 'pawn'
+        : ai.some((a) => a.name === name)
+          ? 'bot'
+          : 'player';
+    if ('player' in t) return { name: t.player, kind: kindOf(t.player) };
+    if ('entity' in t) {
+      const e = this.opts.world.entities().find((x) => x.id === t.entity);
+      if (e?.kind === 'player') return { name: e.name ?? `#${e.id}`, kind: kindOf(e.name ?? '') };
+      return null;
+    }
+    return null;
+  }
+
+  /** POST …/policies. */
+  policies(id: string, body: StoryPoliciesRequest) {
+    const c = this.colony(id);
+    const out = policiesOp(c.gear, c.pawns, body);
+    for (const p of c.pawns.values()) p.rev = this.bump(c);
+    return out;
+  }
+
+  /** POST …/material-rules. */
+  materialRules(id: string, body: StoryMaterialRulesRequest) {
+    const c = this.colony(id);
+    const out = materialRulesOp(c.gear, body, null);
+    this.bump(c);
+    return out;
+  }
+
+  /** POST …/gear: one op for the selection (fair spread, each stored unit to one pawn). */
+  gear(id: string, body: StoryGearRequest) {
+    const c = this.colony(id);
+    const pawns = this.pawnsOf(c, body.pawns);
+    const stores = [...c.storages.values()].map((f) => f.v);
+    const out = gearOp(c.gear, pawns, stores, body, (i, m) => storyItemLabel(i, Math.max(0, m)).toLowerCase());
+    for (const f of c.storages.values()) f.rev = this.bump(c);
+    for (const p of pawns) p.rev = this.bump(c);
+    return out;
   }
 
   /** GET …/architect: the sim catalog with tiers unlocked by the colony's designated benches. */
@@ -1566,6 +1650,11 @@ export class StorySim {
     const skittish = pawn.traits.some((t) => t.id === 'skittish');
     let changed = false;
     pawn.food = Math.max(0, (pawn.food ?? 20) - dt / 40000);
+    // Gear work (a bulk gear op) is done in a few seconds.
+    if (pawn.gearTasks?.length && Math.random() < dt / 3000) {
+      pawn.gearTasks = [];
+      changed = true;
+    }
     if ((pawn.hp ?? 20) < 20 && Math.random() < dt / 8000) pawn.hp = Math.min(20, (pawn.hp ?? 20) + 1);
     // 1. urgent needs (not while drafted)
     if (!pawn.drafted && (pawn.food ?? 20) <= (skittish ? 9 : brave ? 4 : 6) && p.task?.kind !== 'eat') {

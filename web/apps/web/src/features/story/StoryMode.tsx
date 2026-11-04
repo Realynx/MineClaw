@@ -108,6 +108,18 @@ import {
   type Target,
 } from './tools';
 import type { StorageClip } from './storage';
+import { AssignPanel } from './assign/AssignPanel';
+import { AttackConfirm, EquipmentView, GearActions, PickupDialog } from './assign/GearActions';
+import {
+  attackSpec,
+  draftedOf,
+  gearBody,
+  isConfirmed,
+  needsConfirm,
+  rememberConfirm,
+  type AttackWho,
+} from './assign/gear';
+import type { StoryGearOp } from '@mineclaw/contracts';
 import { catchUp, colonyKey, useArchitect, useColonies, useColony, useStoryWrite } from './useStory';
 import { setItemIconSource } from './visuals';
 import { useQueryClient } from '@tanstack/react-query';
@@ -191,6 +203,10 @@ export function StoryMode() {
     target: Target;
   } | null>(null);
   const [toast, setToast] = useState<{ text: string; tone: 'ok' | 'warn' } | null>(null);
+  /** An attack on a player or bot waiting for the owner's confirm (once per target per session). */
+  const [confirmAttack, setConfirmAttack] = useState<{ who: AttackWho; pawns: string[]; queue: boolean } | null>(null);
+  /** "Pick up…" from the right-click menu: the item chooser for these pawns. */
+  const [pickupFor, setPickupFor] = useState<string[] | null>(null);
   const [help, setHelp] = useState(false);
   const [chat, setChat] = useState(false);
   const [clip, setClip] = useState<StorageClip | null>(null);
@@ -418,13 +434,23 @@ export function StoryMode() {
   };
 
   const onContext = (target: Target, at: { x: number; y: number }) => {
+    // Drafted pawns attack whatever entity is right-clicked (mob, animal, player, AI bot), the genre's way: no menu.
+    const drafted = draftedOf(state, split.pawns);
+    if (drafted.length && (target.kind === 'mob' || target.kind === 'player')) {
+      const who: AttackWho =
+        target.kind === 'mob'
+          ? { name: target.name, kind: target.animal ? 'animal' : 'mob', entity: target.entity }
+          : { name: target.name, kind: target.bot ? 'bot' : 'player', entity: target.entity };
+      void attack(who, drafted, keys.current.has('ShiftLeft') || keys.current.has('ShiftRight'));
+      return;
+    }
     const items = contextMenu(target, split.pawns.length > 0, split.ai.length > 0);
     const title =
       target.kind === 'block'
         ? target.name
         : target.kind === 'ghost'
           ? 'Blueprint'
-          : target.kind === 'mob' || target.kind === 'item'
+          : target.kind === 'mob' || target.kind === 'item' || target.kind === 'player'
             ? target.name
             : 'Here';
     setMenu({ at, title, items, target });
@@ -433,6 +459,16 @@ export function StoryMode() {
   const onMenuPick = async (item: MenuItem, queue: boolean) => {
     const target = menu?.target;
     setMenu(null);
+    if (item.action === 'gear' && item.gear) {
+      if (item.gear === 'pickup') setPickupFor(split.pawns);
+      else void gear(item.gear, split.pawns);
+      return;
+    }
+    if (item.confirm && split.pawns.length) {
+      await attack({ name: item.confirm.name, kind: item.confirm.kind, entity: item.confirm.entity }, split.pawns, queue);
+      if (!split.ai.length || !item.directive) return;
+      return void run(null, item.directive, 'ordered', () => item.label);
+    }
     if (item.action === 'cancel-build' && target?.kind === 'ghost') {
       await write('story.builds', { op: 'remove', ids: [target.build] }).then(
         () => say('Blueprint cancelled'),
@@ -461,6 +497,39 @@ export function StoryMode() {
       queue ? 'queued' : 'ordered',
       () => item.label,
     );
+  };
+
+  /**
+   * An attack order for these pawns. A player or another bot needs the owner's confirm once per target per session: asked
+   * here first, and again when the bot answers 409 (it insists on `confirm: true` too).
+   */
+  const attack = async (who: AttackWho, pawns: string[], queue: boolean, confirmed = false): Promise<void> => {
+    if (!canWrite) return say('Needs the story role', 'warn');
+    const sure = confirmed || (needsConfirm(who) && isConfirmed(who));
+    if (needsConfirm(who) && !sure) {
+      setConfirmAttack({ who, pawns, queue });
+      return;
+    }
+    try {
+      await write('story.orders', { pawns, order: attackSpec(who, needsConfirm(who)), ...(queue ? { queue: true } : {}) });
+      say(`${pawns.length} pawn${pawns.length === 1 ? '' : 's'} attacking ${who.name}`);
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 409) setConfirmAttack({ who, pawns, queue });
+      else say(errorText(e), 'warn');
+    }
+  };
+
+  /** One bulk gear op for the selected pawns; the director's summary is the toast. */
+  const gear = async (op: StoryGearOp, pawns: string[], item?: [number, number], count?: number) => {
+    if (!canWrite) return say('Needs the story role', 'warn');
+    if (!pawns.length) return say('Select pawns first', 'warn');
+    try {
+      const out = await write('story.gear', gearBody(op, pawns, item, count));
+      const none = out.results.length > 0 && !out.results.some((r) => r.got.length);
+      say(out.summary || 'Done', none ? 'warn' : 'ok');
+    } catch (e) {
+      say(errorText(e), 'warn');
+    }
   };
 
   /** A right-drag line: each drafted pawn moves to its own cell on it (drafted pawns then hold there). */
@@ -759,6 +828,17 @@ export function StoryMode() {
             onDraft={(d) => void draft([p.name], d)}
             onClearQueue={() => void write('story.orders', { pawns: [p.name], order: { kind: 'stop' } })}
             onClose={close}
+            extra={
+              <>
+                <EquipmentView pawn={p} policies={state?.policies ?? []} />
+                <GearActions
+                  state={state}
+                  pawns={[p.name]}
+                  canWrite={canWrite}
+                  onGear={(op, it, n) => void gear(op, [p.name], it, n)}
+                />
+              </>
+            }
             blocked={stillBlocked.filter((b) => b.pawn === p.name)}
             onBringOnline={state?.active === false ? undefined : (overCap) => void bringOnline([p.name], overCap)}
           />
@@ -774,6 +854,14 @@ export function StoryMode() {
           canWrite={canWrite}
           onDraft={(d) => void draft(split.pawns, d)}
           onClose={close}
+          extra={
+            <GearActions
+              state={state}
+              pawns={split.pawns}
+              canWrite={canWrite}
+              onGear={(op, it, n) => void gear(op, split.pawns, it, n)}
+            />
+          }
         />
       );
     return null;
@@ -916,6 +1004,45 @@ export function StoryMode() {
         );
       case 'directives':
         return <DirectivesPanel state={state} />;
+      case 'assign':
+        return (
+          <AssignPanel
+            state={state}
+            pawns={pawns}
+            canWrite={canWrite}
+            writes={{
+              assign: (policy, names) =>
+                void write('story.policies', { op: 'assign', id: policy, pawns: names }).catch((e) =>
+                  say(errorText(e), 'warn'),
+                ),
+              setPolicy: (pol) =>
+                void write('story.policies', {
+                  op: 'set',
+                  policy: {
+                    ...(pol.id ? { id: pol.id } : {}),
+                    name: pol.name,
+                    toolsByWork: pol.toolsByWork,
+                    tools: pol.tools as never,
+                    weapon: pol.weapon as never,
+                    armor: pol.armor as never,
+                    food: pol.food,
+                  },
+                }).then(
+                  () => say(`Policy “${pol.name}” saved`),
+                  (e) => say(errorText(e), 'warn'),
+                ),
+              removePolicy: (pid) =>
+                void write('story.policies', { op: 'remove', id: pid }).catch((e) => say(errorText(e), 'warn')),
+              rule: {
+                set: (rule) =>
+                  void write('story.materialRules', { op: 'set', rule }).catch((e) => say(errorText(e), 'warn')),
+                remove: (material) =>
+                  void write('story.materialRules', { op: 'remove', material }).catch((e) => say(errorText(e), 'warn')),
+              },
+              options: (o) => void write('story.options', o as never).catch((e) => say(errorText(e), 'warn')),
+            }}
+          />
+        );
       case 'colony':
         return (
           <ColonyPanel
@@ -1023,6 +1150,7 @@ export function StoryMode() {
             onFormation={(moves, queue, ignored) => void onFormation(moves, queue, ignored)}
             onDropTool={() => setTool({ kind: 'select' })}
             onCancelled={() => say('Cancelled')}
+            attackMode={draftedOf(state, split.pawns).length > 0}
           />
         </WorldHost>
 
@@ -1175,6 +1303,29 @@ export function StoryMode() {
             </div>
           ) : null}
         </div>
+        <AttackConfirm
+          who={confirmAttack?.who ?? null}
+          pawns={confirmAttack?.pawns.length ?? 0}
+          onCancel={() => setConfirmAttack(null)}
+          onConfirm={() => {
+            const c = confirmAttack;
+            setConfirmAttack(null);
+            if (!c) return;
+            rememberConfirm(c.who);
+            void attack(c.who, c.pawns, c.queue, true);
+          }}
+        />
+        <PickupDialog
+          open={!!pickupFor}
+          state={state}
+          n={pickupFor?.length ?? 0}
+          onClose={() => setPickupFor(null)}
+          onPick={(item, count) => {
+            const names = pickupFor ?? [];
+            setPickupFor(null);
+            void gear('pickup', names, item, count);
+          }}
+        />
         {menu ? (
           <ContextMenu
             at={menu.at}

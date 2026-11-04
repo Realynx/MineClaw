@@ -61,6 +61,8 @@ export interface FailedMark {
   kind: string;
   reason: string;
   cell: [number, number, number];
+  /** 'wait': waiting for a tool, not failing (a neutral label). */
+  tone?: 'fail' | 'wait';
 }
 
 export interface FailedCluster {
@@ -73,6 +75,7 @@ export interface FailedCluster {
   text: string;
   /** The cluster's middle cell (where its label anchors). */
   anchor: [number, number, number];
+  tone?: 'fail' | 'wait';
 }
 
 /**
@@ -83,7 +86,7 @@ export function clusterFailed(marks: readonly FailedMark[], reach = 2): FailedCl
   const groups = new Map<string, FailedMark[]>();
   for (const m of marks) {
     const s = shortReason(m.reason);
-    const key = `${m.kind}|${s.tag}`;
+    const key = `${m.kind}|${m.tone ?? 'fail'}|${s.tag}`;
     (groups.get(key) ?? groups.set(key, []).get(key)!).push(m);
   }
   const out: FailedCluster[] = [];
@@ -123,6 +126,7 @@ export function clusterFailed(marks: readonly FailedMark[], reach = 2): FailedCl
         ids: members.map((m) => m.id),
         kind,
         reason: members[0]!.reason,
+        tone: members[0]!.tone ?? 'fail',
         short,
         text: n === 1 ? short.title : `${n} ${n === 1 ? one : many}: ${short.tag}`,
         anchor,

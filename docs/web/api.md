@@ -390,6 +390,9 @@ Notes on specific routes:
 | `story.bills` | `POST /api/story/colonies/:id/bills` | story | params `StoryColonyParams`<br>body `StoryBillsRequest` | `StoryBillsResponse` | `POST /v1/sup/story/colonies/{id}/bills` | /api/story/colonies/{id}/bills | story |
 | `story.workbenches` | `POST /api/story/colonies/:id/workbenches` | story | params `StoryColonyParams`<br>body `StoryWorkbenchesRequest` | `StoryWorkbenchesResponse` | `POST /v1/sup/story/colonies/{id}/workbenches` | /api/story/colonies/{id}/workbenches | story |
 | `story.options` | `POST /api/story/colonies/:id/options` | story | params `StoryColonyParams`<br>body `StoryOptionsRequest` | `StoryColonyOptions` | `POST /v1/sup/story/colonies/{id}/options` | /api/story/colonies/{id}/options | story |
+| `story.policies` | `POST /api/story/colonies/:id/policies` | story | params `StoryColonyParams`<br>body `StoryPoliciesRequest` | `StoryPoliciesResponse` | `POST /v1/sup/story/colonies/{id}/policies` | /api/story/colonies/{id}/policies | story |
+| `story.materialRules` | `POST /api/story/colonies/:id/material-rules` | story | params `StoryColonyParams`<br>body `StoryMaterialRulesRequest` | `StoryMaterialRulesResponse` | `POST /v1/sup/story/colonies/{id}/material-rules` | /api/story/colonies/{id}/material-rules | story |
+| `story.gear` | `POST /api/story/colonies/:id/gear` | story | params `StoryColonyParams`<br>body `StoryGearRequest` | `StoryGearResponse` | `POST /v1/sup/story/colonies/{id}/gear` | /api/story/colonies/{id}/gear | story |
 | `story.architect` | `GET /api/story/colonies/:id/architect` | viewer | params `StoryColonyParams` | `StoryArchitectResponse` | `GET /v1/sup/story/colonies/{id}/architect` | /api/story/colonies/{id}/architect | – |
 
 ### Live stream
