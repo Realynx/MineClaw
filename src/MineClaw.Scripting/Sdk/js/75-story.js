@@ -35,7 +35,7 @@
     for (const c of cells) {
       const built = () => j.want && H.block(c) == j.want;
       if (!clear.includes(c) && built()) { if (j.cells) report(j, 'progress', 'cell ' + c + ' done'); n++; continue; }
-      if (!(H.inv(j.block) > 0)) break;
+      if (j.cells && !(H.inv(j.block) > 0)) break;
       if (clear.includes(c)) call('dig', c);
       if (eyes(c) > 4.4) call('go', c, 2);
       let r = call('place', j.block, c);
@@ -50,7 +50,7 @@
     }
     return { ok: true, msg: 'batch: ' + n + '/' + cells.length + ' placed' };
   };
-  /** story.next(s=0) - this pawn's job or null; story.report(job, 'done'|'failed'|'progress', note?); story.fetch(job), story.place(job) - a job's fetch list and build cells */
+  /** story.next(s=0) - job or null; .report(job, 'done'|'failed'|'progress', note?); .fetch/.place(job) */
   def('story', Object.freeze({
     next: s => H.storyNext(s == null ? 0 : s),
     report,

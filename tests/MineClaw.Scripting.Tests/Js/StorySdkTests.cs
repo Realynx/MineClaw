@@ -59,7 +59,10 @@ public sealed class StorySdkTests
         Assert.Contains("""withdraw {"at":"5,64,5","count":4,"item":"planks"}""", calls);
         Assert.Contains("""place {"at":"1,64,1","block":"planks"}""", calls);
         Assert.Contains("""deposit {"at":"2,64,2","items":["log"]}""", calls);
-        Assert.Equal(["maid_chan j1 done", "maid_chan j2 done", "maid_chan j3 done", "maid_chan j4 failed too hard", "maid_chan j5 done"], port.Reports);
+        // A job's own message rides along with "done" (a chop's "partial: …" reaches the director).
+        string[] want = ["maid_chan j1 done", "maid_chan j2 done", "maid_chan j3 done", "maid_chan j4 failed too hard", "maid_chan j5 done"];
+        Assert.Equal(want.Length, port.Reports.Count);
+        Assert.All(want.Zip(port.Reports), x => Assert.StartsWith(x.First, x.Second));
     }
 
     [Fact]

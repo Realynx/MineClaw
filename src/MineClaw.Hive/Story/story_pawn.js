@@ -91,7 +91,7 @@ function pawn() {
     // Crafts first (a bench the colony places for a build: craft it, at the table when it needs one, then place it).
     if (ok(r)) r = each(j.craft, c => { if (c.at) { const g = go(c.at, 2); if (!ok(g)) return g } return craft(c.item, c.n) })
     if (ok(r)) r = work(j)
-    if (ok(r)) r = each(j.stash, s => deposit(s.to, s.items))
+    if (ok(r) && j.stash) r = each(j.stash, s => deposit(s.to, s.items))
     story.report(j.id, ok(r) ? 'done' : 'failed', r && r.msg)
   }
   return 'shift over'
