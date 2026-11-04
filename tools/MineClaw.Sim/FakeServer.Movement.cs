@@ -210,12 +210,12 @@ public partial class FakeServer
         _trPeak = ground ? y : _trGround ? Math.Max(y, _trPeak) : Math.Max(_trPeak, y);
         _trGround = ground;
         if (how == null) return;
-        Trampled.Enqueue((under.Item1, under.Item2, under.Item3, how));
         lock (BlockLock)
         {
             SetBlock(under.Item1, under.Item2, under.Item3, MineClaw.Data.Blocks.Dirt);
             if (Blocks.GetValueOrDefault((under.Item1, under.Item2 + 1, under.Item3)) is not 0) SetBlock(under.Item1, under.Item2 + 1, under.Item3, 0);
         }
+        Trampled.Enqueue((under.Item1, under.Item2, under.Item3, how));
     }
 
     /// <summary>The server's blocks as the physics reads them (everything loaded).</summary>
