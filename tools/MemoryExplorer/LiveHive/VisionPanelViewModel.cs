@@ -210,19 +210,35 @@ public sealed partial class VisionPanelViewModel : ObservableObject, IDisposable
     {
         int cap = Math.Max(1, list.Capacity == 0 ? 20 : list.Capacity);
         foreach (var (id, png) in pngs) _pngs[id] = png;
+        UpdatePending(list);
+        foreach (var s in fresh) History.Insert(0, NewRow(s));
+        RefreshAnswers(list);
+        TrimHistory(cap);
+        HistoryNote = list.Note ?? (History.Count == 0 ? "no sheet yet: the AI hasn't looked since the bot started" : $"{History.Count} of the last {cap} sheets");
+        if (History.Count > 0 && (Following || Selected == null)) Selected = History[0];
+    }
+
+    /// <summary>Perception sheets still waiting for their answer (asked for again on the next poll).</summary>
+    private void UpdatePending(VisionListDto list)
+    {
         lock (_pending)
         {
             foreach (var x in list.Sheets) if (x.Mode == "perception" && x.Answer == null && x.Note == null) _pending.Add(x.Id); else _pending.Remove(x.Id);
             // Gone from the server's ring, or waited long enough: stop asking.
             _pending.RemoveWhere(id => list.Sheets.All(x => x.Id != id) && id <= _lastId || History.FirstOrDefault(r => r.Sheet.Id == id) is { } r && DateTimeOffset.UtcNow - r.Sheet.At > TimeSpan.FromMinutes(2));
         }
-        foreach (var s in fresh)
-        {
-            var row = new VisionSheetRow(s);
-            if (_pngs.TryGetValue(s.Id, out var png)) row.Thumb = _decode(png);
-            History.Insert(0, row);
-        }
-        // Answers arrive after the sheet: refresh rows whose perception answer is new.
+    }
+
+    private VisionSheetRow NewRow(VisionSheetDto s)
+    {
+        var row = new VisionSheetRow(s);
+        if (_pngs.TryGetValue(s.Id, out var png)) row.Thumb = _decode(png);
+        return row;
+    }
+
+    /// <summary>Answers arrive after the sheet: refresh rows whose perception answer is new (keeping the selection on them).</summary>
+    private void RefreshAnswers(VisionListDto list)
+    {
         foreach (var s in list.Sheets)
             if (History.FirstOrDefault(r => r.Sheet.Id == s.Id) is { } r && r.Sheet.Answer != s.Answer)
             {
@@ -231,6 +247,10 @@ public sealed partial class VisionPanelViewModel : ObservableObject, IDisposable
                 History[i] = nr;
                 if (ReferenceEquals(Selected, r)) Selected = nr;
             }
+    }
+
+    private void TrimHistory(int cap)
+    {
         while (History.Count > cap)
         {
             var old = History[^1];
@@ -238,20 +258,28 @@ public sealed partial class VisionPanelViewModel : ObservableObject, IDisposable
             _pngs.Remove(old.Sheet.Id);
             old.Thumb?.Dispose();
         }
-        HistoryNote = list.Note ?? (History.Count == 0 ? "no sheet yet: the AI hasn't looked since the bot started" : $"{History.Count} of the last {cap} sheets");
-        if (History.Count > 0 && (Following || Selected == null)) Selected = History[0];
     }
+
+    /// <summary>"views [...] · focus x,y,z rN · Q: ..." plus the see call on its own line.</summary>
+    private static string RequestLine(VisionSheetDto s)
+    {
+        string focus = s.Focus is { Length: 3 } f ? $"focus {f[0]},{f[1]},{f[2]} r{s.Radius}" : "focus: hive";
+        return $"views [{string.Join(", ", s.Views ?? [])}] · {focus}" + (s.Question != null ? $" · Q: {s.Question}" : "") + (s.Call != null ? $"\nsee {s.Call}" : "");
+    }
+
+    /// <summary>The picture's size and token cost, the perception model's tokens and the sheet's note.</summary>
+    private static string CostLine(VisionSheetDto s) =>
+        string.Create(CultureInfo.InvariantCulture,
+            $"{s.Width}x{s.Height}px · ~{s.Tokens} image tokens · {s.Bytes / 1024.0:0.0} KB · sha256 {s.Sha256[..Math.Min(12, s.Sha256.Length)]}")
+        + (s.Model != null ? $" · {s.Model} in {s.ModelInputTokens} / out {s.ModelOutputTokens} tok" : "") + (s.Note != null ? " · " + s.Note : "");
 
     /// <summary>Shows one captured sheet (its bytes, fetched once and kept while it is in the strip).</summary>
     public void ShowSheet(VisionSheetRow row)
     {
         var s = row.Sheet;
         SheetTitle = $"{s.At.ToLocalTime():yyyy-MM-dd HH:mm:ss} · {s.Kind} for the {(s.Mode == "perception" ? "perception tier" : "brain")} · {s.Source}";
-        string focus = s.Focus is { Length: 3 } f ? $"focus {f[0]},{f[1]},{f[2]} r{s.Radius}" : "focus: hive";
-        RequestText = $"views [{string.Join(", ", s.Views ?? [])}] · {focus}" + (s.Question != null ? $" · Q: {s.Question}" : "") + (s.Call != null ? $"\nsee {s.Call}" : "");
-        CostText = string.Create(CultureInfo.InvariantCulture,
-            $"{s.Width}x{s.Height}px · ~{s.Tokens} image tokens · {s.Bytes / 1024.0:0.0} KB · sha256 {s.Sha256[..Math.Min(12, s.Sha256.Length)]}")
-            + (s.Model != null ? $" · {s.Model} in {s.ModelInputTokens} / out {s.ModelOutputTokens} tok" : "") + (s.Note != null ? " · " + s.Note : "");
+        RequestText = RequestLine(s);
+        CostText = CostLine(s);
         AnswerText = s.Answer ?? (s.Mode == "perception" ? "(waiting for the perception answer…)" : "(direct mode: the brain read the picture itself)");
         HasAnswer = s.Answer != null;
         LegendText = s.Legend;
@@ -356,13 +384,17 @@ public sealed partial class VisionPanelViewModel : ObservableObject, IDisposable
         if (UseEye) list.Add(new SeeView("eye"));
         if (UseShoulder) list.Add(new SeeView("shoulder", new CamParams(Dist: Off(ShoulderDist, 3.4))));
         if (UseIso) list.Add(new SeeView("iso", new CamParams(Yaw: Off(IsoYaw, 225), Pitch: Off(IsoPitch, 35), Zoom: Off(IsoZoom, 1))));
-        if (UseOrbit) list.Add(new SeeView("orbit", new CamParams(Yaw: Off(OrbitYaw, 315), Pitch: Off(OrbitPitch, 40), Dist: OrbitDist > 0 ? Math.Round(OrbitDist, 1) : null)));
+        if (UseOrbit) list.Add(new SeeView("orbit", OrbitCam()));
         if (UseHigh) list.Add(new SeeView("high", new CamParams(Yaw: Off(HighYaw, 180), Pitch: Off(HighPitch, 65))));
         if (UseTop) list.Add(new SeeView("top", new CamParams(Zoom: Off(TopZoom, 1), Dx: Off(TopDx, 0), Dz: Off(TopDz, 0))));
-        if (UseSide) list.Add(new SeeView("side", new CamParams(Zoom: Off(SideZoom, 1), Dx: Off(SideDx, 0), Dy: Off(SideDy, 0), Axis: SideAxis is "N" or "E" ? SideAxis : null)));
+        if (UseSide) list.Add(new SeeView("side", SideCam()));
         if (UseLayers) list.Add(new SeeView("layers"));
         return list.Take(ContactSheet.MaxPanels).ToList();
     }
+
+    private CamParams OrbitCam() => new(Yaw: Off(OrbitYaw, 315), Pitch: Off(OrbitPitch, 40), Dist: OrbitDist > 0 ? Math.Round(OrbitDist, 1) : null);
+
+    private CamParams SideCam() => new(Zoom: Off(SideZoom, 1), Dx: Off(SideDx, 0), Dy: Off(SideDy, 0), Axis: SideAxis is "N" or "E" ? SideAxis : null);
 
     /// <summary>The spec of the current compose state; null = no bot data yet or a bad target.</summary>
     public ComposeSpec? Spec(out string? problem)
@@ -532,32 +564,38 @@ public sealed partial class VisionPanelViewModel : ObservableObject, IDisposable
     {
         if (Selected?.Sheet is not { } s) return;
         _suspend = true;
-        try
-        {
-            if (s.Focus is { Length: 3 } f) { Target = Targets[1]; TargetText = $"{f[0]},{f[1]},{f[2]}"; }
-            Radius = Math.Clamp(s.Radius, 3, 12);
-            var views = (s.Views ?? []).Select(v => v.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries)).Where(w => w.Length > 0).ToList();
-            bool Has(string k) => views.Any(w => w[0].Equals(k, StringComparison.OrdinalIgnoreCase));
-            (UseEye, UseShoulder, UseIso, UseOrbit, UseHigh, UseTop, UseSide, UseLayers) =
-                (Has("eye"), Has("shoulder"), Has("iso"), Has("orbit"), Has("high"), Has("top"), Has("side"), Has("layers"));
-            foreach (var w in views)
-            {
-                var p = CamParams.Extract(w.Skip(1).ToList());
-                switch (w[0].ToLowerInvariant())
-                {
-                    case "iso": (IsoYaw, IsoPitch, IsoZoom) = (p.Yaw ?? 225, p.Pitch ?? 35, p.Zoom ?? 1); break;
-                    case "orbit": (OrbitYaw, OrbitPitch, OrbitDist) = (p.Yaw ?? 315, p.Pitch ?? 40, p.Dist ?? 0); break;
-                    case "high": (HighYaw, HighPitch) = (p.Yaw ?? 180, p.Pitch ?? 65); break;
-                    case "top": (TopZoom, TopDx, TopDz) = (p.Zoom ?? 1, p.Dx ?? 0, p.Dz ?? 0); break;
-                    case "side": (SideZoom, SideDx, SideDy, SideAxis) = (p.Zoom ?? 1, p.Dx ?? 0, p.Dy ?? 0, p.Axis ?? "auto"); break;
-                    case "shoulder": ShoulderDist = p.Dist ?? 3.4; break;
-                }
-            }
-        }
+        try { LoadSheetSpec(s); }
         finally { _suspend = false; }
         ComposeMode = true;
         RequestCompose();
     }
+
+    /// <summary>The sheet's focus, radius, panels and each panel's camera (what it leaves out goes back to the default).</summary>
+    private void LoadSheetSpec(VisionSheetDto s)
+    {
+        if (s.Focus is { Length: 3 } f) { Target = Targets[1]; TargetText = $"{f[0]},{f[1]},{f[2]}"; }
+        Radius = Math.Clamp(s.Radius, 3, 12);
+        var views = (s.Views ?? []).Select(v => v.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries)).Where(w => w.Length > 0).ToList();
+        bool Has(string k) => views.Any(w => w[0].Equals(k, StringComparison.OrdinalIgnoreCase));
+        (UseEye, UseShoulder, UseIso, UseOrbit, UseHigh, UseTop, UseSide, UseLayers) =
+            (Has("eye"), Has("shoulder"), Has("iso"), Has("orbit"), Has("high"), Has("top"), Has("side"), Has("layers"));
+        foreach (var w in views)
+        {
+            var p = CamParams.Extract(w.Skip(1).ToList());
+            if (CameraSetters.TryGetValue(w[0].ToLowerInvariant(), out var set)) set(this, p);
+        }
+    }
+
+    /// <summary>Per panel kind: sets its camera sliders from a view's parameters (defaults where it has none).</summary>
+    private static readonly Dictionary<string, Action<VisionPanelViewModel, CamParams>> CameraSetters = new(StringComparer.Ordinal)
+    {
+        ["iso"] = (vm, p) => (vm.IsoYaw, vm.IsoPitch, vm.IsoZoom) = (p.Yaw ?? 225, p.Pitch ?? 35, p.Zoom ?? 1),
+        ["orbit"] = (vm, p) => (vm.OrbitYaw, vm.OrbitPitch, vm.OrbitDist) = (p.Yaw ?? 315, p.Pitch ?? 40, p.Dist ?? 0),
+        ["high"] = (vm, p) => (vm.HighYaw, vm.HighPitch) = (p.Yaw ?? 180, p.Pitch ?? 65),
+        ["top"] = (vm, p) => (vm.TopZoom, vm.TopDx, vm.TopDz) = (p.Zoom ?? 1, p.Dx ?? 0, p.Dz ?? 0),
+        ["side"] = (vm, p) => (vm.SideZoom, vm.SideDx, vm.SideDy, vm.SideAxis) = (p.Zoom ?? 1, p.Dx ?? 0, p.Dy ?? 0, p.Axis ?? "auto"),
+        ["shoulder"] = (vm, p) => vm.ShoulderDist = p.Dist ?? 3.4,
+    };
 
     /// <summary>"Copy as see{...}": compose → the call of the current spec; a captured sheet → its tool input (auto-vision's
     /// looks have none: rebuilt from the views, focus, radius and question).</summary>

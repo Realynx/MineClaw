@@ -355,8 +355,7 @@ public sealed class GlFreecamView : OpenGlControlBase, Avalonia.Rendering.ICusto
         e.Handled = true;
     }
 
-    private static bool Movement(Key k) => k is Key.W or Key.A or Key.S or Key.D or Key.Q or Key.E or Key.Up or Key.Down or Key.Left or Key.Right
-        or Key.Space or Key.LeftShift or Key.RightShift or Key.PageUp or Key.PageDown;
+    private static bool Movement(Key k) => FreecamKeys.IsMovement(k);
 
     protected override void OnKeyDown(KeyEventArgs e)
     {

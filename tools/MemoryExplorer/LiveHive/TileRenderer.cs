@@ -65,6 +65,17 @@ public sealed class FrameSwap : IFrameSource
     }
 }
 
+/// <summary>A CPU frame's size: the target scaled down to at most a pixel budget (same aspect), never under 64×48.</summary>
+public static class FrameFit
+{
+    public static (int W, int H) Fit(int w, int h, double maxPixels)
+    {
+        double px = (double)w * h;
+        if (px > maxPixels) { double f = Math.Sqrt(maxPixels / px); w = (int)(w * f); h = (int)(h * f); }
+        return (Math.Max(64, w), Math.Max(48, h));
+    }
+}
+
 /// <summary>One bot's live eye feed, rendered locally from the cached world at the bot's pose.</summary>
 public sealed class EyeTile(string bot, HiveWorldCache cache)
 {
@@ -141,28 +152,18 @@ public sealed class TileRenderer(HiveWorldCache cache, Func<TextureAtlas?> atlas
 
     internal void Draw(EyeTile t, BotDto b, long nowMs)
     {
-        int w = t.Frames.TargetW, h = t.Frames.TargetH;
-        double px = (double)w * h;
-        if (px > MaxTilePixels) { double f = Math.Sqrt(MaxTilePixels / px); w = (int)(w * f); h = (int)(h * f); }
-        w = Math.Max(64, w); h = Math.Max(48, h);
+        var (w, h) = FrameFit.Fit(t.Frames.TargetW, t.Frames.TargetH, MaxTilePixels);
         var pose = (b.X, b.Y + 1.62, b.Z, b.Yaw ?? 0f, b.Pitch ?? 20f, b.Dim);
         long data = Interlocked.Read(ref DataVersion);
         bool sizeChanged = t.Eye == null || t.Eye.Width != w || t.Eye.Height != h;
-        if (!sizeChanged && pose == t.LastPose && cache.Version == t.LastVersion && nowMs - t.LastDrawMs < 1000) return;
+        if (!sizeChanged && UpToDate(t, pose, nowMs)) return;
         if (sizeChanged) t.Eye = new EyeRenderer { Width = w, Height = h, MaxDistance = MaxDistance, MaxThreads = ThreadsPerTile };
         var eye = t.Eye!;
         t.LastPose = pose; t.LastVersion = cache.Version; t.LastData = data; t.LastDrawMs = nowMs;
         var now = DateTimeOffset.UtcNow;
         var cp = new CamPose(pose.X, pose.Item2, pose.Z, pose.Item4, pose.Item5, b.Dim);
         t.Vox.Prepare(b.Dim, (int)Math.Floor(b.X), (int)Math.Floor(b.Z), eye.MaxDistance / 16 + 1, now);
-        var ents = new List<VisionEntity>();
-        foreach (var o in Bots()) if (o.Dim == b.Dim && o.Name != b.Name) ents.Add(new VisionEntity("hive", o.Key, o.X, o.Y, o.Z) { Yaw = o.Yaw });
-        foreach (var e in Entities()) if (e.Dim == b.Dim && e.Kind is "player" or "mob" or "item") ents.Add(Gpu.FrameScene.Vision(e));
-        var fr = eye.Raster(new EyeScene
-        {
-            World = t.Vox, Atlas = atlas(), EyeX = cp.X, EyeY = cp.Y, EyeZ = cp.Z, Yaw = cp.Yaw, Pitch = cp.Pitch, Time = cache.TimeNow(b.Dim) ?? 6000, Nether = b.Dim == -1,
-            Entities = ents, Viewer = b.Key, Weather = cache.WeatherIn(b.Dim), PrecipTick = Environment.TickCount64 / 50,
-        });
+        var fr = eye.Raster(SceneFor(t, b, cp, TileEntities(b)));
         t.RasterMs = eye.LastMs;
         var cam = new ViewProjector(cp, w, h, eye.FovDegrees);
         var labels = OverlayPainter.Paint(fr, cam, Overlay.Bots, null, Bots().Where(o => o.Name != b.Name).ToList(), Entities(), t.Vox, now, eye.MaxDistance);
@@ -173,6 +174,25 @@ public sealed class TileRenderer(HiveWorldCache cache, Func<TextureAtlas?> atlas
         t.Frames.Publish();
         t.LastFrameAt = DateTime.UtcNow;
     }
+
+    /// <summary>Same pose, same world and drawn under a second ago: nothing to redraw.</summary>
+    private bool UpToDate(EyeTile t, (double, double, double, float, float, int) pose, long nowMs) =>
+        pose == t.LastPose && cache.Version == t.LastVersion && nowMs - t.LastDrawMs < 1000;
+
+    /// <summary>What the tile's bot sees besides blocks: the other bots, players, mobs and drops in its dimension.</summary>
+    private List<VisionEntity> TileEntities(BotDto b)
+    {
+        var ents = new List<VisionEntity>();
+        foreach (var o in Bots()) if (o.Dim == b.Dim && o.Name != b.Name) ents.Add(new VisionEntity("hive", o.Key, o.X, o.Y, o.Z) { Yaw = o.Yaw });
+        foreach (var e in Entities()) if (e.Dim == b.Dim && e.Kind is "player" or "mob" or "item") ents.Add(Gpu.FrameScene.Vision(e));
+        return ents;
+    }
+
+    private EyeScene SceneFor(EyeTile t, BotDto b, CamPose cp, List<VisionEntity> ents) => new()
+    {
+        World = t.Vox, Atlas = atlas(), EyeX = cp.X, EyeY = cp.Y, EyeZ = cp.Z, Yaw = cp.Yaw, Pitch = cp.Pitch, Time = cache.TimeNow(b.Dim) ?? 6000, Nether = b.Dim == -1,
+        Entities = ents, Viewer = b.Key, Weather = cache.WeatherIn(b.Dim), PrecipTick = Environment.TickCount64 / 50,
+    };
 
     public string? LastError { get; private set; }
 

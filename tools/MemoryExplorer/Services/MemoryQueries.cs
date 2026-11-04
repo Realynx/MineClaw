@@ -129,31 +129,30 @@ public sealed class MemoryQueries(AgentDb db)
 
     public IReadOnlyList<MemoryRow> Rows(string kind)
     {
-        try
-        {
-            return kind switch
-            {
-                "facts" => Facts(),
-                "claims" => Claims(null),
-                "beliefs" => Claims("status IN ('verified','provisional')"),
-                "personality" => SelfEntries(null),
-                "structures" => Structures(),
-                "places" => Places(),
-                "chests" => Observations("kind IN ('chest','trapped_chest','furnace','dispenser')"),
-                "gencells" => Observations("kind = 'cobble_generator'"),
-                "observed" => Observations("kind NOT IN ('chest','trapped_chest','furnace','dispenser','cobble_generator')"),
-                "lessons" => Lessons(),
-                "episodes" => Docs("kind = 'episode'", "episodes"),
-                "recipes" => Docs("kind = 'gamedata'", "recipes"),
-                "knowledge" => Docs("kind IN ('knowledge','skill')", "knowledge"),
-                "activity" => Activity(),
-                "chat" => Chat(),
-                "routines" => Routines(),
-                _ => [],
-            };
-        }
+        try { return kind != null && RowSources.TryGetValue(kind, out var rows) ? rows(this) : []; }
         catch (SqliteException) { return []; }
     }
+
+    /// <summary>The query behind each browser kind.</summary>
+    private static readonly Dictionary<string, Func<MemoryQueries, IReadOnlyList<MemoryRow>>> RowSources = new(StringComparer.Ordinal)
+    {
+        ["facts"] = q => q.Facts(),
+        ["claims"] = q => q.Claims(null),
+        ["beliefs"] = q => q.Claims("status IN ('verified','provisional')"),
+        ["personality"] = q => q.SelfEntries(null),
+        ["structures"] = q => q.Structures(),
+        ["places"] = q => q.Places(),
+        ["chests"] = q => q.Observations("kind IN ('chest','trapped_chest','furnace','dispenser')"),
+        ["gencells"] = q => q.Observations("kind = 'cobble_generator'"),
+        ["observed"] = q => q.Observations("kind NOT IN ('chest','trapped_chest','furnace','dispenser','cobble_generator')"),
+        ["lessons"] = q => q.Lessons(),
+        ["episodes"] = q => q.Docs("kind = 'episode'", "episodes"),
+        ["recipes"] = q => q.Docs("kind = 'gamedata'", "recipes"),
+        ["knowledge"] = q => q.Docs("kind IN ('knowledge','skill')", "knowledge"),
+        ["activity"] = q => q.Activity(),
+        ["chat"] = q => q.Chat(),
+        ["routines"] = q => q.Routines(),
+    };
 
     private static List<KeyValuePair<string, string>> P(params (string K, object? V)[] kv) =>
         kv.Where(x => x.V is not null && x.V.ToString() is { Length: > 0 }).Select(x => new KeyValuePair<string, string>(x.K, Convert.ToString(x.V, CultureInfo.InvariantCulture)!)).ToList();
