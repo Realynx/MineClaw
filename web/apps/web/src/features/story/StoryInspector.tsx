@@ -1426,6 +1426,237 @@ function Stepper({
   );
 }
 
+type DraftSet = (p: Partial<BillDraft>) => void;
+type DraftProps = { d: BillDraft; set: DraftSet; recipe: StoryRecipe | undefined };
+
+const MODE_LABEL: Record<string, string> = { count: 'Do X times', until: 'Do until you have X' };
+
+/** The ingredient tree: only the categories and items the recipe can use. */
+function useIngredientTree(recipe: StoryRecipe | undefined, categories: StoryColonyState['categories'] | undefined) {
+  return useMemo(() => {
+    const full = buildTree(categories);
+    const allowed = new Set(
+      (recipe?.inputs ?? []).flatMap((i) => [
+        ...(i.category ? [i.category] : []),
+        ...(i.options ?? []).map(([a, m]) => `${a}:${m}`),
+      ]),
+    );
+    const keep = (n: TreeNode): TreeNode | null => {
+      if (allowed.has(n.id)) return n;
+      const items = n.items.filter((it) => allowed.has(it.key));
+      const children = n.children.map(keep).filter((c): c is TreeNode => !!c);
+      return items.length || children.length ? { ...n, items, children } : null;
+    };
+    return full.map(keep).filter((n): n is TreeNode => !!n);
+  }, [recipe, categories]);
+}
+
+/** Repeat: the mode (Do X times / until you have X / forever) and its target. */
+function BillRepeat({ d, set, recipe }: DraftProps) {
+  return (
+    <fieldset className="space-y-1.5">
+      <legend className="text-xs font-semibold">Repeat</legend>
+      <div className="flex flex-wrap items-center gap-2">
+        <select
+          aria-label="Repeat mode"
+          value={d.mode}
+          onChange={(e) =>
+            set({
+              mode: e.target.value as BillDraft['mode'],
+              target: e.target.value === 'until' && d.target < 2 ? 64 : d.target,
+            })
+          }
+          className="h-7 rounded border border-border bg-surface-2 px-1 text-xs"
+        >
+          {recipeModes(recipe).map((m) => (
+            <option key={m} value={m}>
+              {MODE_LABEL[m] ?? 'Do forever'}
+            </option>
+          ))}
+        </select>
+        {d.mode !== 'forever' ? (
+          <Stepper label="Target" value={d.target} min={1} max={9999} onChange={(v) => set({ target: v })} />
+        ) : null}
+        <span className="text-xs text-muted">{billSummary(d)}</span>
+      </div>
+    </fieldset>
+  );
+}
+
+/** What the recipe needs: a station's requirements, its fuels, a note, a brewing chain. */
+function BillRequires({ recipe, option }: { recipe: StoryRecipe | undefined; option: BillDraft['option'] }) {
+  if (!recipe?.requires && !recipe?.fuels?.length) return null;
+  return (
+    <div className="space-y-1 rounded-md bg-surface-2 px-2 py-1.5 text-xs" data-testid="bill-requires">
+      {recipe.requires ? (
+        <div>
+          <span className="font-semibold">Needs:</span> {requiresLine(recipe, option)}
+        </div>
+      ) : null}
+      {recipe.fuels?.length ? (
+        <div data-testid="bill-fuels">
+          <span className="font-semibold">Fuel:</span> {fuelTable(recipe)}
+        </div>
+      ) : null}
+      <RecipeNotes recipe={recipe} />
+    </div>
+  );
+}
+
+/** The recipe's note and its brewing steps. */
+function RecipeNotes({ recipe }: { recipe: StoryRecipe }) {
+  return (
+    <>
+      {recipe.requires?.note ? <div className="text-muted">{recipe.requires.note}</div> : null}
+      {recipe.chain?.length ? (
+        <ol className="list-decimal pl-4 text-muted" aria-label="Brewing steps">
+          {recipe.chain.map((c) => (
+            <li key={c}>{c}</li>
+          ))}
+        </ol>
+      ) : null}
+    </>
+  );
+}
+
+/** A furnace bill's fuel (the furnace's unless set). */
+function BillFuel({ d, set, recipe }: DraftProps) {
+  if (recipe?.workbench !== 'furnace') return null;
+  return (
+    <label className="flex items-center gap-2 text-xs">
+      <span className="w-28 font-semibold">Fuel</span>
+      <select
+        aria-label="Bill fuel"
+        value={d.fuel ?? ''}
+        onChange={(e) => set({ fuel: e.target.value || null })}
+        className="h-7 rounded border border-border bg-surface-2 px-1"
+      >
+        <option value="">The furnace's</option>
+        {Object.keys(FUEL_CHOICES).map((f) => (
+          <option key={f} value={f}>
+            {fuelLabel(f)}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+/** Enchanting: the offer to take up to, a preferred enchantment (only that one). */
+function BillEnchanting({ d, set, recipe }: DraftProps) {
+  if (recipe?.workbench !== 'enchanting_table') return null;
+  return (
+    <fieldset className="space-y-1.5 text-xs">
+      <legend className="text-xs font-semibold">Enchanting</legend>
+      <div className="flex flex-wrap items-center gap-2">
+        <label className="flex items-center gap-1">
+          Up to offer
+          <select
+            aria-label="Enchant option"
+            value={d.option ?? 3}
+            onChange={(e) => set({ option: Number(e.target.value) })}
+            className="h-7 rounded border border-border bg-surface-2 px-1"
+          >
+            <option value={1}>1 (1 lapis, 1 level)</option>
+            <option value={2}>2 (2 lapis, 2 levels)</option>
+            <option value={3}>3 (3 lapis, 3 levels)</option>
+          </select>
+        </label>
+        <label className="flex items-center gap-1">
+          Prefer
+          <select
+            aria-label="Preferred enchantment"
+            value={d.prefer ?? ''}
+            onChange={(e) => set({ prefer: e.target.value || null, preferOnly: e.target.value ? d.preferOnly : false })}
+            className="h-7 rounded border border-border bg-surface-2 px-1"
+          >
+            <option value="">The highest offer</option>
+            {(recipe.enchantments ?? []).map((e) => (
+              <option key={e} value={e}>
+                {enchantLabel(e)}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="flex items-center gap-1">
+          <input
+            type="checkbox"
+            checked={d.preferOnly}
+            disabled={!d.prefer}
+            onChange={(e) => set({ preferOnly: e.target.checked })}
+          />{' '}
+          Only that one
+        </label>
+      </div>
+      <p className="text-[10.5px] text-muted">
+        The table shows its offers once the item is in; a pawn's offers only change after it enchants something.
+      </p>
+    </fieldset>
+  );
+}
+
+/** A worker choice: the pawn's skill for the recipe's work (and XP level when it takes levels). */
+function workerLabel(p: StoryPawn, recipe: StoryRecipe | undefined): string {
+  const work = recipe?.workType ?? 'craft';
+  return `${p.display} (${work} ${p.skills[work]?.level ?? 0}${recipe?.requires?.xpLevels ? `, XP ${p.xpLevel ?? 0}` : ''})`;
+}
+
+/** Worker: anyone or one pawn, and the minimum skill. */
+function BillWorker({ d, set, recipe, pawns }: DraftProps & { pawns: StoryPawn[] }) {
+  return (
+    <div className="flex flex-wrap items-center gap-2 text-xs">
+      <span className="w-28 font-semibold">Worker</span>
+      <select
+        aria-label="Worker"
+        value={d.pawn}
+        onChange={(e) => set({ pawn: e.target.value })}
+        className="h-7 rounded border border-border bg-surface-2 px-1"
+      >
+        <option value="any">Anyone</option>
+        {pawns.map((p) => (
+          <option key={p.name} value={p.name}>
+            {workerLabel(p, recipe)}
+          </option>
+        ))}
+      </select>
+      <label className="flex items-center gap-1">
+        Min skill
+        <Stepper
+          label="Minimum skill"
+          value={d.minSkill ?? 0}
+          min={0}
+          max={20}
+          onChange={(v) => set({ minSkill: v || null })}
+        />
+      </label>
+    </div>
+  );
+}
+
+/** Store in: the best storage, or a chest picked on the map. */
+function BillStore({ d, set, onPick }: { d: BillDraft; set: DraftSet; onPick: () => void }) {
+  const best = d.store === 'best';
+  return (
+    <div className="flex flex-wrap items-center gap-2 text-xs">
+      <span className="w-28 font-semibold">Store in</span>
+      <select
+        aria-label="Store mode"
+        value={best ? 'best' : 'chest'}
+        onChange={(e) => e.target.value === 'best' && set({ store: 'best' })}
+        className="h-7 rounded border border-border bg-surface-2 px-1"
+      >
+        <option value="best">Best storage</option>
+        <option value="chest" disabled={best}>
+          {d.store === 'best' ? 'A chest (pick on the map)' : `Chest ${d.store.chest.join(', ')}`}
+        </option>
+      </select>
+      <Button size="sm" variant="ghost" onClick={onPick}>
+        Pick a chest…
+      </Button>
+    </div>
+  );
+}
+
 export function BillDialog({
   recipe,
   initial,
@@ -1445,24 +1676,7 @@ export function BillDialog({
 }) {
   const [d, setD] = useState<BillDraft>(initial);
   const set = (p: Partial<BillDraft>) => setD((x) => ({ ...x, ...p }));
-  // The ingredient tree: only the categories and items the recipe can use.
-  const tree = useMemo(() => {
-    const full = buildTree(state?.categories);
-    const allowed = new Set(
-      (recipe?.inputs ?? []).flatMap((i) => [
-        ...(i.category ? [i.category] : []),
-        ...(i.options ?? []).map(([a, m]) => `${a}:${m}`),
-      ]),
-    );
-    const keep = (n: TreeNode): TreeNode | null => {
-      if (allowed.has(n.id)) return n;
-      const items = n.items.filter((it) => allowed.has(it.key));
-      const children = n.children.map(keep).filter((c): c is TreeNode => !!c);
-      return items.length || children.length ? { ...n, items, children } : null;
-    };
-    return full.map(keep).filter((n): n is TreeNode => !!n);
-  }, [recipe, state?.categories]);
-  const pawns = state?.pawns ?? [];
+  const tree = useIngredientTree(recipe, state?.categories);
   return (
     <Dialog
       open
@@ -1482,120 +1696,10 @@ export function BillDialog({
       }
     >
       <div className="space-y-3 text-sm" data-testid="bill-dialog">
-        <fieldset className="space-y-1.5">
-          <legend className="text-xs font-semibold">Repeat</legend>
-          <div className="flex flex-wrap items-center gap-2">
-            <select
-              aria-label="Repeat mode"
-              value={d.mode}
-              onChange={(e) =>
-                set({
-                  mode: e.target.value as BillDraft['mode'],
-                  target: e.target.value === 'until' && d.target < 2 ? 64 : d.target,
-                })
-              }
-              className="h-7 rounded border border-border bg-surface-2 px-1 text-xs"
-            >
-              {recipeModes(recipe).map((m) => (
-                <option key={m} value={m}>
-                  {m === 'count' ? 'Do X times' : m === 'until' ? 'Do until you have X' : 'Do forever'}
-                </option>
-              ))}
-            </select>
-            {d.mode !== 'forever' ? (
-              <Stepper label="Target" value={d.target} min={1} max={9999} onChange={(v) => set({ target: v })} />
-            ) : null}
-            <span className="text-xs text-muted">{billSummary(d)}</span>
-          </div>
-        </fieldset>
-        {recipe?.requires || recipe?.fuels?.length ? (
-          <div className="space-y-1 rounded-md bg-surface-2 px-2 py-1.5 text-xs" data-testid="bill-requires">
-            {recipe.requires ? (
-              <div>
-                <span className="font-semibold">Needs:</span> {requiresLine(recipe, d.option)}
-              </div>
-            ) : null}
-            {recipe.fuels?.length ? (
-              <div data-testid="bill-fuels">
-                <span className="font-semibold">Fuel:</span> {fuelTable(recipe)}
-              </div>
-            ) : null}
-            {recipe.requires?.note ? <div className="text-muted">{recipe.requires.note}</div> : null}
-            {recipe.chain?.length ? (
-              <ol className="list-decimal pl-4 text-muted" aria-label="Brewing steps">
-                {recipe.chain.map((c) => (
-                  <li key={c}>{c}</li>
-                ))}
-              </ol>
-            ) : null}
-          </div>
-        ) : null}
-        {recipe?.workbench === 'furnace' ? (
-          <label className="flex items-center gap-2 text-xs">
-            <span className="w-28 font-semibold">Fuel</span>
-            <select
-              aria-label="Bill fuel"
-              value={d.fuel ?? ''}
-              onChange={(e) => set({ fuel: e.target.value || null })}
-              className="h-7 rounded border border-border bg-surface-2 px-1"
-            >
-              <option value="">The furnace's</option>
-              {Object.keys(FUEL_CHOICES).map((f) => (
-                <option key={f} value={f}>
-                  {fuelLabel(f)}
-                </option>
-              ))}
-            </select>
-          </label>
-        ) : null}
-                {recipe?.workbench === 'enchanting_table' ? (
-          <fieldset className="space-y-1.5 text-xs">
-            <legend className="text-xs font-semibold">Enchanting</legend>
-            <div className="flex flex-wrap items-center gap-2">
-              <label className="flex items-center gap-1">
-                Up to offer
-                <select
-                  aria-label="Enchant option"
-                  value={d.option ?? 3}
-                  onChange={(e) => set({ option: Number(e.target.value) })}
-                  className="h-7 rounded border border-border bg-surface-2 px-1"
-                >
-                  <option value={1}>1 (1 lapis, 1 level)</option>
-                  <option value={2}>2 (2 lapis, 2 levels)</option>
-                  <option value={3}>3 (3 lapis, 3 levels)</option>
-                </select>
-              </label>
-              <label className="flex items-center gap-1">
-                Prefer
-                <select
-                  aria-label="Preferred enchantment"
-                  value={d.prefer ?? ''}
-                  onChange={(e) => set({ prefer: e.target.value || null, preferOnly: e.target.value ? d.preferOnly : false })}
-                  className="h-7 rounded border border-border bg-surface-2 px-1"
-                >
-                  <option value="">The highest offer</option>
-                  {(recipe.enchantments ?? []).map((e) => (
-                    <option key={e} value={e}>
-                      {enchantLabel(e)}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="flex items-center gap-1">
-                <input
-                  type="checkbox"
-                  checked={d.preferOnly}
-                  disabled={!d.prefer}
-                  onChange={(e) => set({ preferOnly: e.target.checked })}
-                />{' '}
-                Only that one
-              </label>
-            </div>
-            <p className="text-[10.5px] text-muted">
-              The table shows its offers once the item is in; a pawn's offers only change after it enchants something.
-            </p>
-          </fieldset>
-        ) : null}
+        <BillRepeat d={d} set={set} recipe={recipe} />
+        <BillRequires recipe={recipe} option={d.option} />
+        <BillFuel d={d} set={set} recipe={recipe} />
+        <BillEnchanting d={d} set={set} recipe={recipe} />
         <fieldset>
           <legend className="mb-1 text-xs font-semibold">Ingredients</legend>
           <FilterTree tree={tree} filter={d.ingredients} onChange={(f) => set({ ingredients: f })} />
@@ -1613,50 +1717,8 @@ export function BillDialog({
           />
           <span className="w-16 text-right tabular-nums">{d.radius} blocks</span>
         </label>
-        <div className="flex flex-wrap items-center gap-2 text-xs">
-          <span className="w-28 font-semibold">Worker</span>
-          <select
-            aria-label="Worker"
-            value={d.pawn}
-            onChange={(e) => set({ pawn: e.target.value })}
-            className="h-7 rounded border border-border bg-surface-2 px-1"
-          >
-            <option value="any">Anyone</option>
-            {pawns.map((p) => (
-              <option key={p.name} value={p.name}>
-                {p.display} ({recipe?.workType ?? 'craft'} {p.skills[recipe?.workType ?? 'craft']?.level ?? 0}
-                {recipe?.requires?.xpLevels ? `, XP ${p.xpLevel ?? 0}` : ''})
-              </option>
-            ))}
-          </select>
-          <label className="flex items-center gap-1">
-            Min skill
-            <Stepper
-              label="Minimum skill"
-              value={d.minSkill ?? 0}
-              min={0}
-              max={20}
-              onChange={(v) => set({ minSkill: v || null })}
-            />
-          </label>
-        </div>
-        <div className="flex flex-wrap items-center gap-2 text-xs">
-          <span className="w-28 font-semibold">Store in</span>
-          <select
-            aria-label="Store mode"
-            value={d.store === 'best' ? 'best' : 'chest'}
-            onChange={(e) => e.target.value === 'best' && set({ store: 'best' })}
-            className="h-7 rounded border border-border bg-surface-2 px-1"
-          >
-            <option value="best">Best storage</option>
-            <option value="chest" disabled={d.store === 'best'}>
-              {d.store === 'best' ? 'A chest (pick on the map)' : `Chest ${d.store.chest.join(', ')}`}
-            </option>
-          </select>
-          <Button size="sm" variant="ghost" onClick={() => onPickChest(d)}>
-            Pick a chest…
-          </Button>
-        </div>
+        <BillWorker d={d} set={set} recipe={recipe} pawns={state?.pawns ?? []} />
+        <BillStore d={d} set={set} onPick={() => onPickChest(d)} />
         <label className="flex items-center gap-2 text-xs">
           <input type="checkbox" checked={d.paused} onChange={(e) => set({ paused: e.target.checked })} /> Paused
         </label>
