@@ -22,13 +22,22 @@ public sealed partial class ChatRouter
         bool named = msg.Kind != ChatKind.Whisper && NamesUs(text);
 
         if (IsOtherBot(player)) return DecideOtherBot(msg, player, named);
-        if (msg.Kind == ChatKind.Whisper) return new(AddressReason.Whisper, "whisper");
-        if (msg.Kind == ChatKind.Emote) return named ? new(AddressReason.Name, "emote names us") : new(AddressReason.No, "emote");
-        if (msg.Kind != ChatKind.Public) return new(AddressReason.No, "not chat");
+        return KindVerdict(msg.Kind, named) ?? NamedVerdict(player, text, named) ?? DecideUnnamed(player, text, AddressStateOf(player));
+    }
 
+    /// <summary>Whispers are ours; an emote only when it names us; anything but public chat isn't for us. Null = public chat.</summary>
+    private static AddressDecision? KindVerdict(ChatKind kind, bool named)
+    {
+        if (kind == ChatKind.Whisper) return new(AddressReason.Whisper, "whisper");
+        if (kind == ChatKind.Emote) return named ? new(AddressReason.Name, "emote names us") : new(AddressReason.No, "emote");
+        return kind != ChatKind.Public ? new(AddressReason.No, "not chat") : null;
+    }
+
+    /// <summary>"I'm not talking to you" (unless it calls someone else), else our name. Null = an unnamed line.</summary>
+    private AddressDecision? NamedVerdict(string player, string text, bool named)
+    {
         if (Rejection.IsMatch(text) && (named || CalledPlayer(text, player) == null)) return new(AddressReason.Rejected, "\"not talking to you\"");
-        if (named) return new(AddressReason.Name, "names us");
-        return DecideUnnamed(player, text, AddressStateOf(player));
+        return named ? new(AddressReason.Name, "names us") : null;
     }
 
     /// <summary>Another (foreign) bot: only when it names us, never its reply to us, at most once per cooldown.</summary>
@@ -46,10 +55,7 @@ public sealed partial class ChatRouter
 
     private AddressDecision DecideUnnamed(string player, string text, AddressState s)
     {
-        if (CalledPlayer(text, player) is { } other) return new(AddressReason.OtherPlayer, $"calls {other}", other);
-        if (s.RejectUntil != null) return new(AddressReason.Rejected, $"said not talking to us ({(int)(s.RejectUntil.Value - Now).TotalSeconds}s left)");
-        if (s.Humans <= _options.SmallGroupSize && _groupRegex.IsMatch(text)) return new(AddressReason.Group, "group word");
-
+        if (CalledOrGroupVerdict(player, text, s) is { } early) return early;
         string? gaze = null;
         try { gaze = LookingAt?.Invoke(player); } catch (Exception) { }
         if (gaze != null && IsSelf(gaze)) return new(AddressReason.Gaze, "looking at us");
@@ -59,6 +65,15 @@ public sealed partial class ChatRouter
         return DecideByThreads(text, s);
     }
 
+    /// <summary>It calls another player, they said they're not talking to us, or a group word in a small group. Null = none.</summary>
+    private AddressDecision? CalledOrGroupVerdict(string player, string text, AddressState s)
+    {
+        if (CalledPlayer(text, player) is { } other) return new(AddressReason.OtherPlayer, $"calls {other}", other);
+        if (s.RejectUntil != null) return new(AddressReason.Rejected, $"said not talking to us ({(int)(s.RejectUntil.Value - Now).TotalSeconds}s left)");
+        if (s.Humans <= _options.SmallGroupSize && _groupRegex.IsMatch(text)) return new(AddressReason.Group, "group word");
+        return null;
+    }
+
     /// <summary>
     /// Live 10-28 15:36: main asked Robin to hop off the blocks, then "I hopped off it" was dropped as unclear because robinchan
     /// had chatted nearby. Recency decides: our open question/instruction to them wins unless their last line went to the
@@ -66,7 +81,7 @@ public sealed partial class ChatRouter
     /// </summary>
     private AddressDecision DecideByThreads(string text, AddressState s)
     {
-        bool ourRequestOpen = s.Request is { } rq1 && !s.LastToForeign && (s.Partner is not { } pr || !s.ForeignPartner || rq1 >= pr.At);
+        bool ourRequestOpen = OurRequestOpen(s);
         if (s.Partner is { } pf && s.ForeignPartner)
         {
             if (ForeignThreadDecision(text, s, pf, ourRequestOpen) is { } foreign) return foreign;
@@ -74,6 +89,9 @@ public sealed partial class ChatRouter
         else if (s.Partner is { } p1 && (s.Ours is not { } o1 || p1.At > o1)) return new(AddressReason.OtherConversation, $"talking with {p1.Other}", p1.Other);
         return DecideFallback(text, s, ourRequestOpen);
     }
+
+    private static bool OurRequestOpen(AddressState s) =>
+        s.Request is { } rq1 && !s.LastToForeign && (s.Partner is not { } pr || !s.ForeignPartner || rq1 >= pr.At);
 
     /// <summary>
     /// The player's last addressed line went to a foreign bot (named it, used its prefix, or it answered): an unnamed follow-up
@@ -95,10 +113,12 @@ public sealed partial class ChatRouter
         if (ourRequestOpen) return new(AddressReason.AnswerToUs, $"answers our request {(int)(Now - s.Request!.Value).TotalSeconds}s ago");
         if (s.BotAround) return new(AddressReason.Unclear, "unclear and another bot is in the conversation");
         if (_options.SoloPlayerAlwaysAddressed && s.Humans <= 1 && !s.BotOnline) return new(AddressReason.Solo, "only player online");
-        if (_options.ImperativesAddressed && !DropBackgroundChat && s.Humans <= _options.SmallGroupSize && AddressingText.IsBotDirected(text))
-            return new(AddressReason.Imperative, "unnamed imperative / you");
+        if (UnnamedImperative(text, s)) return new(AddressReason.Imperative, "unnamed imperative / you");
         return new(AddressReason.No, "not for us");
     }
+
+    private bool UnnamedImperative(string text, AddressState s) =>
+        _options.ImperativesAddressed && !DropBackgroundChat && s.Humans <= _options.SmallGroupSize && AddressingText.IsBotDirected(text);
 
     // ---------------- the state, read once under the lock
 

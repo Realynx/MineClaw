@@ -181,8 +181,7 @@ public sealed partial class ShardImporter
                 return true;
             }
             case ShardKinds.Place:
-                mem.SetWaypoint(r.Get("name")!, Int(r.Get("x")), Int(r.Get("y")), Int(r.Get("z")), r.Get("note"), r.Dimension ?? 0);
-                if (r.Get("note") == null && existing?.Get("note") != null) mem.EditWaypoint(r.Get("name")!, w => w.Note = null);
+                WritePlace(r, existing);
                 return true;
             case ShardKinds.Structure:
                 WriteStructure(r);
@@ -201,6 +200,13 @@ public sealed partial class ShardImporter
         var res = self.Apply(new SelfChange("add", sec, r.Get("text"), r.Get("player") is { Length: > 0 } p ? p : null, Reason: reason), SelfProfile.SourceAdmin);
         if (!res.Ok) throw new InvalidOperationException(res.Message);
         return true;
+    }
+
+    private void WritePlace(ShardRecord r, ShardRecord? existing)
+    {
+        var mem = _ctx.Memory;
+        mem.SetWaypoint(r.Get("name")!, Int(r.Get("x")), Int(r.Get("y")), Int(r.Get("z")), r.Get("note"), r.Dimension ?? 0);
+        if (r.Get("note") == null && existing?.Get("note") != null) mem.EditWaypoint(r.Get("name")!, w => w.Note = null);
     }
 
     private void WriteStructure(ShardRecord r)

@@ -31,10 +31,20 @@ public sealed partial class ChatRouter
             // --- "I'm not talking to you"
             if (Rejection.IsMatch(text) && (namesUs || line.Called == null)) RejectLocked(player, line.Now);
         }
+        RaiseObserved(line);
+        LearnAdvertisedPrefix(player, text);
+    }
+
+    private void RaiseObserved(ObservedLine line)
+    {
         foreach (var (name, why) in line.Detected)
             try { BotDetected?.Invoke(name, why); } catch (Exception) { }
         foreach (var (who, bot, prefix, hits) in line.Prefixes) RaisePrefix(who, bot, prefix, hits, confirmed: false);
-        // A foreign bot advertising its syntax ("say c help for my list", live 13:49) or a trusted player's rule for it.
+    }
+
+    /// <summary>A foreign bot advertising its syntax ("say c help for my list", live 13:49) or a trusted player's rule for it.</summary>
+    private void LearnAdvertisedPrefix(string player, string text)
+    {
         if (IsOtherBot(player))
         {
             if (PrefixAd.Match(text) is { Success: true } ad && NormalizePrefix(ad.Groups["p"].Value) is { } p) ConfirmPrefix(null, player, p);
@@ -65,18 +75,22 @@ public sealed partial class ChatRouter
     /// <summary>Fast long replies to someone else, and template chatter on top of an instant reply.</summary>
     private void DetectChattyBotLocked(ObservedLine line)
     {
-        var (player, text, now) = (line.Player, line.Text, line.Now);
-        if (_lastHeardLine is { } prev && !prev.Player.Equals(player, StringComparison.OrdinalIgnoreCase)
-            && now - prev.At <= TimeSpan.FromSeconds(2) && text.Length >= 25)
-        {
-            int n = _fastReplies[player] = _fastReplies.GetValueOrDefault(player) + 1;
-            if (n >= 2 && _knownBots.Add(player)) line.Detected.Add((player, $"{n} long replies within 2 s"));
-        }
-        if (TemplateMark.Matches(text).Count >= 2)
-        {
-            int n = _templateLines[player] = _templateLines.GetValueOrDefault(player) + 1;
-            if (n >= 3 && _fastReplies.GetValueOrDefault(player) >= 1 && _knownBots.Add(player)) line.Detected.Add((player, "template chatter + instant replies"));
-        }
+        NoteFastReplyLocked(line);
+        if (TemplateMark.Matches(line.Text).Count < 2) return;
+        var player = line.Player;
+        int n = _templateLines[player] = _templateLines.GetValueOrDefault(player) + 1;
+        if (n >= 3 && _fastReplies.GetValueOrDefault(player) >= 1 && _knownBots.Add(player)) line.Detected.Add((player, "template chatter + instant replies"));
+    }
+
+    // caller holds _lock: a long reply within 2 s of someone else's line
+    private void NoteFastReplyLocked(ObservedLine line)
+    {
+        var player = line.Player;
+        if (_lastHeardLine is not { } prev || prev.Player.Equals(player, StringComparison.OrdinalIgnoreCase)
+            || line.Now - prev.At > TimeSpan.FromSeconds(2) || line.Text.Length < 25)
+            return;
+        int n = _fastReplies[player] = _fastReplies.GetValueOrDefault(player) + 1;
+        if (n >= 2 && _knownBots.Add(player)) line.Detected.Add((player, $"{n} long replies within 2 s"));
     }
 
     /// <summary>

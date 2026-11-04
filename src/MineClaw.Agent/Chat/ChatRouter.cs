@@ -250,37 +250,55 @@ public sealed partial class ChatRouter
 
     private void HandleMessage(ChatMessage msg)
     {
+        if (!Heard(msg)) return;
         var player = msg.Player!;
-        if (IsSelf(player) || IsHive(player) || IsEcho(msg.Text) || msg.Text.Length == 0) return;
-        lock (_lock)
-        {
-            _online.Add(player);
-            _recentHeard.Enqueue((player, msg.Text, Now));
-            while (_recentHeard.Count > 24) _recentHeard.Dequeue();
-        }
-
         Observe(msg);
         var decision = Decide(msg);
         var reason = decision.Reason;
         bool addressed = Arbitrate(msg, reason.IsAddressed());
-        try { AddressDecided?.Invoke(msg, decision with { Why = addressed == decision.Addressed ? decision.Why : decision.Why + "; hive: another bot's" }); }
-        catch (Exception) { }
+        RaiseDecided(msg, decision, addressed);
         var missed = NoteAddressing(msg, reason, addressed);
         // A line for a foreign bot (it calls it, uses its prefix, or continues its thread): main stays out, keeps a note.
-        string? foreign = !addressed && decision.To is { } to && IsOtherBot(to) ? to : null;
+        string? foreign = addressed ? null : ForeignBotOf(decision);
         if (msg.Kind == ChatKind.Public && !IsOtherBot(player)) NoteHumanLine(msg, addressed || decision.Addressed, decision.To, foreign);
         if (!addressed && ShouldClassify(msg, reason))
         {
             _ = ClassifyThenDeliverAsync(msg);
             return;
         }
-        // "dump your stuff into a chest" then "maidchan": the bare name points at the line just before it.
-        if (addressed && reason == AddressReason.Name && missed is { } prev && IsNameOnly(msg.Text))
-        {
-            _events.RemovePending(e => e.Kind == EventKind.Chat && !e.Wakes && player.Equals(e.Player, StringComparison.OrdinalIgnoreCase) && e.Text == prev);
-            Deliver(msg with { Text = prev, Raw = prev }, true, AddressReason.Name);
-        }
+        if (addressed && reason == AddressReason.Name) DeliverMissedLine(msg, missed);
         Deliver(msg, addressed, reason, foreign);
+    }
+
+    /// <summary>A player's line we handle (not ours, a hive bot's, an echo or empty): they're online and it joins the recent lines.</summary>
+    private bool Heard(ChatMessage msg)
+    {
+        var player = msg.Player!;
+        if (IsSelf(player) || IsHive(player) || IsEcho(msg.Text) || msg.Text.Length == 0) return false;
+        lock (_lock)
+        {
+            _online.Add(player);
+            _recentHeard.Enqueue((player, msg.Text, Now));
+            while (_recentHeard.Count > 24) _recentHeard.Dequeue();
+        }
+        return true;
+    }
+
+    private void RaiseDecided(ChatMessage msg, AddressDecision decision, bool addressed)
+    {
+        try { AddressDecided?.Invoke(msg, decision with { Why = addressed == decision.Addressed ? decision.Why : decision.Why + "; hive: another bot's" }); }
+        catch (Exception) { }
+    }
+
+    private string? ForeignBotOf(AddressDecision decision) => decision.To is { } to && IsOtherBot(to) ? to : null;
+
+    /// <summary>"dump your stuff into a chest" then "maidchan": the bare name points at the line just before it.</summary>
+    private void DeliverMissedLine(ChatMessage msg, string? missed)
+    {
+        if (missed is not { } prev || !IsNameOnly(msg.Text)) return;
+        var player = msg.Player!;
+        _events.RemovePending(e => e.Kind == EventKind.Chat && !e.Wakes && player.Equals(e.Player, StringComparison.OrdinalIgnoreCase) && e.Text == prev);
+        Deliver(msg with { Text = prev, Raw = prev }, true, AddressReason.Name);
     }
 
     /// <summary>The hive arbiter's verdict (another bot may own the line); its failure falls back to the local decision.</summary>
@@ -310,8 +328,7 @@ public sealed partial class ChatRouter
     {
         var player = msg.Player!;
         double? confidence = addressed ? reason.Confidence() : null;
-        if (addressed) lock (_lock) _startupUntil = DateTimeOffset.MinValue; // a conversation: the startup cap is over
-        if (addressed) Accepted?.Invoke(msg);
+        if (addressed) AcceptConversation(msg);
         ObserveCommands(msg, addressed);
         if (msg.Kind == ChatKind.Emote)
         {
@@ -319,22 +336,42 @@ public sealed partial class ChatRouter
             return;
         }
 
-        // Hive: another bot owns this conversation thread (it asked / is watching a demo), or the player named another bot:
-        // that reply is theirs; never let our own waiter eat it.
-        if (OwnedByAnotherBot(msg) || foreignBot != null) addressed = false;
-        else if (TryCompleteWaiter(player, msg.Text, addressed)) return;
-
-        if (addressed && !AllowIncoming(_remote is { } r ? RemoteBucket(player, r) : player)) addressed = false; // spam: keep as context only
+        if (StillAddressed(msg, addressed, foreignBot) is not { } still) return; // a waiter (ask_player) took it
+        addressed = still;
         if (!addressed && DropBackgroundChat) return;
+        PostLine(msg, addressed, confidence, foreignBot);
+        if (addressed) MarkTalkedWith(player);
+    }
 
+    /// <summary>
+    /// Hive: another bot owns this conversation thread (it asked / is watching a demo), or the player named another bot: that
+    /// reply is theirs; never let our own waiter eat it. Else a waiting ask_player takes it (null). Spam is kept as context only.
+    /// </summary>
+    private bool? StillAddressed(ChatMessage msg, bool addressed, string? foreignBot)
+    {
+        var player = msg.Player!;
+        if (OwnedByAnotherBot(msg) || foreignBot != null) addressed = false;
+        else if (TryCompleteWaiter(player, msg.Text, addressed)) return null;
+        return addressed && AllowIncoming(IncomingBucket(player));
+    }
+
+    private void AcceptConversation(ChatMessage msg)
+    {
+        lock (_lock) _startupUntil = DateTimeOffset.MinValue; // a conversation: the startup cap is over
+        Accepted?.Invoke(msg);
+    }
+
+    private string IncomingBucket(string player) => _remote is { } r ? RemoteBucket(player, r) : player;
+
+    private void PostLine(ChatMessage msg, bool addressed, double? confidence, string? foreignBot)
+    {
+        var player = msg.Player!;
         if (foreignBot != null && !addressed)
             Post(GameEvent.Notice($"{player} is instructing {foreignBot}: {msg.Text}", EventPriority.Background));
         else if (msg.Kind == ChatKind.Whisper && addressed)
             Post(GameEvent.Whisper(player, msg.Text) with { AddressConfidence = confidence });
         else
             Post(GameEvent.Chat(player, msg.Text, addressed) with { AddressConfidence = addressed ? confidence : null });
-
-        if (addressed) MarkTalkedWith(player);
     }
 
     /// <summary>The command gate sees every delivered line (a remote line only as a remote request: no server framing to prove it).</summary>
