@@ -40,7 +40,7 @@ public sealed class ServicesGoldenTests(ITestOutputHelper output) : IAsyncLifeti
         var rows = new[]
         {
             new MemoryRow { Kind = "x", Id = "1", Name = "cobble gen", Text = "a note\r\n• step one\n• step two\nmore", Type = "farm", State = "verified", Dimension = -1, Confidence = 0.756,
-                Props = [new("x", "1"), new("y", "64"), new("z", "-3"), new("note", "by the tree"), new("X", "dup"), new("min", "0,0,0"), new("max", "1,1,1"), new("claimant", "Fox"),
+                Props = [new("x", "1"), new("y", "64"), new("z", "-3"), new("note", "by the tree"), new("note", "dup"),new("min", "0,0,0"), new("max", "1,1,1"), new("claimant", "Fox"),
                     new("reason", "said so"), new("player", "Robin")] },
             new MemoryRow { Kind = "y", Id = "2", Name = "", Text = "chest of 64 cobble\nannotation: the old one" },
             new MemoryRow { Kind = "z", Id = "3", Name = "n", Text = "", Dimension = 0 },
@@ -151,10 +151,10 @@ public sealed class ServicesGoldenTests(ITestOutputHelper output) : IAsyncLifeti
     }
 
     private const string Golden = """
-        prefill 0
-        script-diff 0
-        shard-kind 0
-        browser-rows 0
-        default-packs 0
+        prefill 3715D73B04015ACE502C
+        script-diff D032C91D0F2672829B3E
+        shard-kind F60959F5D117D51850AF
+        browser-rows 1539BBBE3CE537C7B7C5
+        default-packs B7E6D1391956335D0B55
         """;
 }

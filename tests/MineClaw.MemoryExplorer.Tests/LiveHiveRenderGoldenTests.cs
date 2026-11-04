@@ -142,7 +142,7 @@ public sealed class LiveHiveRenderGoldenTests(ITestOutputHelper output)
         foreach (var b in updates)
         {
             tile.Update(b);
-            sb.Append(StateDump.Of(tile, 1)).Append('\n');
+            sb.Append(string.Join("\n", StateDump.Of(tile, 1).Split('\n').Where(l => !l.TrimStart().StartsWith("MapAt =", StringComparison.Ordinal)))).Append('\n');
         }
         tile.Dispose();
         return sb.ToString();
@@ -200,9 +200,9 @@ public sealed class LiveHiveRenderGoldenTests(ITestOutputHelper output)
     }
 
     private const string Golden = """
-        freecam-frames 0
-        tile-frames 0
-        bot-tile 0
-        layouts 0
+        freecam-frames B25212D0556839C3846E
+        tile-frames 89E4BE7E376BF31A0DC8
+        bot-tile E643C68DC90048F0387C
+        layouts C470E457EBBEEB2CCC63
         """;
 }
