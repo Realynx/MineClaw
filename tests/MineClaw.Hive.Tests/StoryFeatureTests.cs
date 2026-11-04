@@ -158,7 +158,7 @@ public sealed class StoryFeatureTests
     }
 
     [Fact]
-    public void The_build_queue_goes_in_order_bottom_up_with_one_pawn_per_block()
+    public void The_build_queue_goes_in_order_bottom_up_with_each_block_to_one_pawn()
     {
         var (c, h, w) = StoryRig.Make(pawns: 4);
         for (int i = 0; i < 4; i++)
@@ -169,15 +169,33 @@ public sealed class StoryFeatureTests
         var a = c.BuildsOp("add", new JsonArray(new JsonObject { ["kind"] = "block", ["area"] = new JsonArray(0, 64, 5, 2, 65, 5), ["material"] = "cobblestone" }), null);
         var b = c.BuildsOp("add", new JsonArray(new JsonObject { ["kind"] = "block", ["blocks"] = new JsonArray(new JsonArray(9, 64, 9)), ["material"] = "cobblestone" }), null);
         string ia = a.Result!["ids"]![0]!.GetValue<string>(), ib = b.Result!["ids"]![0]!.GetValue<string>();
-        var jobs = Enumerable.Range(0, 3).Select(i => c.Next(i)).ToList();
+        // Batches (docs/web/story-mode.md "Building fast"): 6 cells over 4 builders = 2 each; a cell of the upper row only rides
+        // along over a cell its own batch places first.
+        var jobs = Enumerable.Range(0, 2).Select(i => c.Next(i)).ToList();
         Assert.All(jobs, j => Assert.Equal("place", j["kind"]!.GetValue<string>()));
         Assert.All(jobs, j => Assert.EndsWith(",64,5", j["at"]!.GetValue<string>())); // the bottom row first
-        Assert.Equal(3, jobs.Select(j => j["at"]!.GetValue<string>()).Distinct().Count());
-        Assert.Equal("9,64,9", c.Next(3)["at"]!.GetValue<string>()); // the upper row waits for its support: the next build goes on
-        foreach (var (j, i) in jobs.Select((j, i) => (j, i))) { w.Set(int.Parse(j["at"]!.GetValue<string>().Split(',')[0]), 64, 5, 4); c.Report(c.P(i), j["id"]!.GetValue<string>(), "done", null, null); }
+        var cells = jobs.Select(j => j["cells"]!.AsArray().Select(x => x!.GetValue<string>()).ToList()).ToList();
+        Assert.Equal(cells.Sum(x => x.Count), cells.SelectMany(x => x).Distinct().Count()); // one pawn per block
+        Assert.Equal(["0,64,5", "1,64,5", "2,64,5"], cells.SelectMany(x => x).Where(x => x.EndsWith(",64,5")).Order());
+        foreach (var batch in cells)
+            for (int k = 0; k < batch.Count; k++)
+                if (batch[k].EndsWith(",65,5")) Assert.Contains(batch[k].Split(',')[0] + ",64,5", batch.Take(k));
+        Assert.Equal("9,64,9", c.Next(2)["at"]!.GetValue<string>()); // the upper row waits for its support: the next build goes on
+        int placed = 0;
+        foreach (var (j, i) in jobs.Select((j, i) => (j, i)))
+        {
+            foreach (var cell in cells[i])
+            {
+                var xyz = cell.Split(',').Select(int.Parse).ToArray();
+                w.Set(xyz[0], xyz[1], xyz[2], 4);
+                c.Report(c.P(i), j["id"]!.GetValue<string>(), "progress", $"cell {cell} done", null);
+                placed++;
+            }
+            c.Report(c.P(i), j["id"]!.GetValue<string>(), "done", "batch", null);
+        }
         Assert.EndsWith(",65,5", c.Next(0)["at"]!.GetValue<string>());
         var state = c.State()["builds"]!.AsArray();
-        Assert.Equal(3, state.First(x => x!["id"]!.GetValue<string>() == ia)!["blocks_done"]!.GetValue<int>());
+        Assert.Equal(placed, state.First(x => x!["id"]!.GetValue<string>() == ia)!["blocks_done"]!.GetValue<int>());
         Assert.Contains(c.State()["ghosts"]!["blocks"]!.AsArray(), g => g![5]!.GetValue<string>() == ia && g[6]!.GetValue<string>() == "leased");
         // Reorder, pause, remove.
         Assert.Equal([ib, ia], c.BuildsOp("reorder", null, [ib]).Result!["ids"]!.AsArray().Select(x => x!.GetValue<string>()));

@@ -296,7 +296,10 @@ on it" ×6, and the bot at ~70% CPU. Fixed:
 - **The SDK primitive** (module `story`):
   - `story.next(s=0)` returns the pawn's job, or null.
   - `story.report(job, 'done'|'failed'|'progress', note?)` reports on it.
-- **A job** is `{id, type, kind, label, at?:"x,y,z", fetch?:[{from, item, n}], stash?:[{to, items}], ...}`.
+- **A job** is `{id, type, kind, label, at?:"x,y,z", fetch?:[{from, item, n}], stash?:[{to, items}], ...}`; a build job adds
+    `cells`, `want`, `clear` and `stand` (see "Building fast").
+  - `story.fetch(job)` takes the fetch list (a busy chest is waited for), and `story.place(job)` lays a build job's cells and
+    reports each one.
   - Kinds: `go|chop|dig|harvest|collect|place|attack|eat|craft|smelt|collect_furnace|give|blueprint|sleep|idle|hold|end`.
   - The script withdraws the `fetch` items, runs the kind with the existing primitives (`go`, `chop`, `dig`, `collect`, `place`,
     `attack`, `eat`, `craft`, `smelt`, `collect_furnace`, `handTo`, `build`, `wait`), deposits the `stash` items and reports.
@@ -390,18 +393,86 @@ Build: `{id, kind, label, status: queued|active|paused|blocked|done, reason, blo
 Ghosts: `[x,y,z,id,meta,build_id,state]`, with state `todo|leased|done|blocked|unsupported`.
 
 Execution:
-- Every ghost is one job for a pawn with Build on, by the picker and lease rules.
+- A pawn with Build on gets a batch of ghosts as one job (see "Building fast" below), by the picker and lease rules.
 - Order: the first unpaused build in queue order gives out its jobs, only from its lowest unfinished level (support first).
   Blocks touching something solid go first, then the nearest. When all of those are leased, the next build's jobs go out.
   A build that only digs goes top-down instead (a buried cell opens once the one above it is gone). A build of a `group`
   waits while an earlier build of that group still has cells to dig (a dig that keeps failing doesn't hold it).
 - Never a block where a player stands.
-- Material: the pawn uses its own, or fetches it from the nearest storage that holds it. With none anywhere, the build is
+- Material: the pawn uses its own, or fetches it from storage (see "Building fast"). With none anywhere, the build is
   `blocked` with `reason:"need 34 wooden planks"` and an alert. It goes on by itself once some is stored (a Chop, Mine or Haul
   pawn, or a bill, can supply it).
 - A ghost that failed 3 times is `blocked`.
 - Facing uses the place tool's own placement. Scaffolding and pillaring are the place and goto tools' own; there is no extra
   scaffold.
+
+### Building fast (added 2026-11-03, night)
+
+Live 11-03 (`story-1`, 10 pawns): "Building floors and placing blocks seems to go very slowly." The pawns' shifts were
+`wait 256x 1023.8s, dig 40x 44.7s, goto 266x 23.5s`: about 90 % waiting while build cells were queued. The journal had
+`place … failed: busy: maid_chan_102 is using chest 218,64,400` over and over, `can't place at …: its nearest support face is 8.7
+blocks from my eyes`, and `194,63,395 is occupied by planks` raised as a warning for a cell that was already built. Causes:
+
+- **One block per job, a stack per block.** Each ghost was its own job (fetch, walk, place one block, report), and its fetch
+  asked for up to 64 of the item, enough for the whole build. The next builder was sent to the same chest for the same stack,
+  because the director's ledger still listed it until the first job ended.
+- **A busy chest was a failure.** The withdraw refused at once while another body held the chest, so the job failed. Each
+  failure rested the cell (30 s, then 1 min, then 10 min), a pawn whose last three jobs failed rested 15 s, and a cell that failed
+  three times was `blocked` for good. The pawns spent their shift in these holds.
+- **No stand within reach.** A builder first went to a spot just outside the build's footprint at its lowest level. For a floor
+  at ground level that spot is inside the ground, and for a wide floor it is far from the middle. The place tool then had to path
+  in by itself, and when that didn't work the cell failed as if it were impossible.
+- **Built is not a failure.** A cell that already held its block, because the colony's view lagged or a retry came after a
+  placement that had worked, failed with "occupied by planks" and counted toward `blocked`.
+- **A probe leaked cells.** The idle-wake check asked the picker for work, and a build answer marked its cell `leased` with no
+  lease. Nobody was ever handed that cell again, so a build's last cells could hang.
+
+Now:
+
+- **A build job is a batch.** It holds up to 24 cells of one item (and facing) within 3 blocks of its first open cell, all in
+  reach (4.3 blocks from the eyes) of one `stand`. The stand is a cell with feet and head open and solid ground under it, not in,
+  on or under a batch cell, in reach of the first cell and of the most others. Another builder's stand, a still-open cell of the
+  build, or (for a wall or fence) a spot inside the footprint cost extra, so builders never wall themselves in. The cells are
+  ordered so each one has support when its turn comes: bottom-up (a wall's upper cell joins the batch over a cell the batch places
+  first), then touching something solid or an earlier cell, then nearest the last one, along the row.
+- **Fair share.** The batch is the pawn's share of the build's open cells (`ceil(open / builders)`, 1 to 24), no more than it can
+  get items for. Ten builders on a 16×16 floor each get a part, and a seed next to another pawn's batch comes after the rest, so
+  they spread out. Each cell is leased (`g:<build>|x,y,z`) to the pawn until it reports that cell. The cells stay its own while it
+  works: they are renewed with the job's lease by the tick and by progress. A probe claims nothing: cells are leased only when the
+  job is handed out (`ActiveJob.Assign`).
+- **One fetch per batch.** The job's `fetch` covers the batch less what the pawn carries, taken from as few chests as possible.
+  Chests no other job is still fetching from come first, then the nearest. The amount a chest can give is what the ledger lists
+  minus the fetches other jobs haven't made yet. When the items are out of the chests the script reports `fetched`, and the ledger
+  is updated then, not when the batch ends.
+- **A busy chest waits.** A withdraw at a chest another body holds waits its turn, up to 12 s (`ClaimAwareGameClient.WithdrawWait`),
+  then says busy with the holder and the wait. The script waits 2 s, then 4 s, and tries again. A busy chest, a placement out of
+  reach ("couldn't get closer") or someone standing in the cell is a transient refusal, as for designations. The cell rests 15 s
+  with no fail count and no alert, and only the 5th in a row counts.
+- **Per-cell reports.** `story.place(job)` (SDK) goes to the stand, then for each cell:
+  - A cell that already shows the block (`want`) is reported done.
+  - A cell listed in `clear` is dug first.
+  - A cell out of reach makes the pawn step closer first.
+  - A "too far" or "standing in it" refusal makes the pawn step closer, or back to the stand, and try once more.
+  - Each cell is reported as progress `cell x,y,z done` or `cell x,y,z failed: why`.
+  - When the pawn runs out of items, the rest of the batch goes back to the queue.
+
+  The job ends `done` with `batch: n/m placed`. A cell left unreported at the end goes back to the queue with no failure, unless
+  the world shows it built.
+- **Already built is done.** A cell that holds the same block and variant (`DesignFacing.VariantMask`; a facing is the
+  placement's own) is done at pick time, when the pawn reports it, and when a job ends or fails. "Occupied by" anything else is
+  transient: the next pick clears the cell first (`clear`), and only repeated refusals count. A "done" for a cell that shows another
+  block (another variant with the same name) is not taken.
+- A job: `{kind:"place", at, block, want, cells:["x,y,z"…], clear?:["x,y,z"…], stand?, facing?, fetch?:[{from, item, n}…]}`.
+  An older saved pawn script places only `at` and reports the whole job. Its first cell counts as built, and the rest go back.
+
+Measured on the director with a simulated colony (`StoryBuildBenchmarkTests`): 10 pawns with only Build on, a 16×16 planks
+floor and a 4×4×3 cobblestone wall ring, the planks and cobblestone split over two chests. The model: walking at 3.3 blocks/s,
+a 2.5 s chest session with the chest held, 0.6 s per placement, 0.5 s per job to ask and report.
+
+BENCHMARK_TABLE
+
+FakeServer 1.12.2 (`StoryFakeServerTests.Three_pawns_lay_a_6x6_floor_from_one_chest_fast_and_without_failures`): three pawns lay
+a 6×6 floor from one chest with no failed cell, FAKESERVER_RESULT.
 
 ## Storage
 

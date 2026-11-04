@@ -71,12 +71,42 @@ public sealed class ClaimAwareGameClient(IGameClient inner, IClaimBoard claims) 
         }
     }
 
-    private async Task<ActionResult> Chest(BlockPos? p, Func<Task<ActionResult>> action, CancellationToken ct)
+    private async Task<ActionResult> Chest(BlockPos? p, Func<Task<ActionResult>> action, CancellationToken ct, TimeSpan wait = default)
     {
         if (p is not { } pos) return await action().ConfigureAwait(false);
         await ApproachAsync(pos, ct).ConfigureAwait(false);
-        return await Held(ClaimKey.Chest(ChestPairs.Canonical(inner.World, pos), inner.World.Dimension), action, ct).ConfigureAwait(false);
+        var key = ClaimKey.Chest(ChestPairs.Canonical(inner.World, pos), inner.World.Dimension);
+        if (wait <= TimeSpan.Zero) return await Held(key, action, ct).ConfigureAwait(false);
+        // Live 11-03 (Story builders): "busy: maid_chan_102 is using chest 218,64,400" failed a build job outright although the
+        // holder's session is a few seconds. A withdraw waits its turn (bounded), then says busy with the holder and the wait.
+        var start = DateTime.UtcNow;
+        string? holder = null;
+        for (int seen = 0; ; seen++)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (claims.IsFree(key))
+            {
+                var r = await claims.TryClaimAsync(key, Ttl, null, ct).ConfigureAwait(false);
+                if (r.Ok)
+                {
+                    try { return await action().ConfigureAwait(false); }
+                    finally
+                    {
+                        try { await claims.ReleaseAsync(key, CancellationToken.None).ConfigureAwait(false); } catch (Exception) { /* lease expires anyway */ }
+                    }
+                }
+                if (r.Holder == null) return await Refused(key, r).ConfigureAwait(false);
+                holder = r.Holder;
+            }
+            else holder = claims.HolderOf(key) ?? holder;
+            if (DateTime.UtcNow - start >= wait)
+                return ActionResult.Fail($"busy: {holder ?? "another bot"} is using chest {pos.X},{pos.Y},{pos.Z}; waited {(DateTime.UtcNow - start).TotalSeconds:0}s");
+            await Task.Delay(TimeSpan.FromMilliseconds(Math.Min(1000, 150 + 50 * seen)), ct).ConfigureAwait(false);
+        }
     }
+
+    /// <summary>How long a withdraw waits for another body's session at the chest (a few seconds each) before it says busy.</summary>
+    public TimeSpan WithdrawWait { get; init; } = TimeSpan.FromSeconds(12);
 
     private async Task<ActionResult> Furnace(BlockPos? p, Func<Task<ActionResult>> action, CancellationToken ct)
     {
@@ -168,7 +198,7 @@ public sealed class ClaimAwareGameClient(IGameClient inner, IClaimBoard claims) 
     public Task<ActionResult> DepositAllAsync(BlockPos? container = null, Func<ItemStack, bool>? filter = null, CancellationToken ct = default) =>
         container is { } pos ? DepositHeld(pos, () => inner.DepositAllAsync(container, filter, ct), ct) : inner.DepositAllAsync(container, filter, ct);
     public Task<ActionResult> WithdrawAsync(int itemId, int count, BlockPos? container = null, int? damage = null, CancellationToken ct = default) =>
-        Chest(container, () => inner.WithdrawAsync(itemId, count, container, damage, ct), ct);
+        Chest(container, () => inner.WithdrawAsync(itemId, count, container, damage, ct), ct, WithdrawWait);
     public Task<ActionResult> SmeltAsync(int inputItemId, int count, int? fuelItemId = null, bool wait = false, BlockPos? furnace = null, CancellationToken ct = default) =>
         Furnace(furnace, () => inner.SmeltAsync(inputItemId, count, fuelItemId, wait, furnace, ct), ct);
     public Task<ActionResult> CollectFurnaceAsync(BlockPos? furnace = null, CancellationToken ct = default) =>

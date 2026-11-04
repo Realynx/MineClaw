@@ -85,6 +85,58 @@ public sealed class StorySdkTests
         Assert.True(step >= 0 && step < calls.IndexOf("""dig {"at":"2,64,2"}"""), string.Join(" | ", calls));
     }
 
+    /// <summary>
+    /// Building fast: a build job is a batch of cells. The script fetches once (a busy chest is waited for and tried again), goes to the
+    /// stand, counts a cell that is already built as done, tries a "too far" cell once more after stepping closer, reports each cell,
+    /// and ends with "batch: n/m placed".
+    /// </summary>
+    [Fact]
+    public async Task A_build_batch_fetches_once_lays_its_cells_from_the_stand_and_reports_each_one()
+    {
+        var port = new FakeDirector(
+            J("j1", "place", j =>
+            {
+                j["at"] = "1,64,1"; j["block"] = "planks"; j["want"] = "planks"; j["stand"] = "0,64,3";
+                j["cells"] = new JsonArray("1,64,1", "2,64,1", "3,64,1", "4,64,1");
+                j["fetch"] = new JsonArray(new JsonObject { ["from"] = "5,64,5", ["item"] = "planks", ["n"] = 3 });
+            }),
+            J("j2", "end"));
+        using var rig = Rig.Js();
+        rig.Host.Story = port;
+        rig.World.SetBlock(2, 64, 1, 5, 0); // already built
+        int takes = 0, far = 0;
+        rig.On["withdraw"] = (_, _) =>
+        {
+            if (takes++ == 0) return Task.FromResult(ActResult.Fail("busy: maid_chan_102 is using chest 5,64,5; waited 12s"));
+            rig.World.Inventory.SetSlot(0, 36, new MineClaw.Data.ItemStack(5, 3, 0));
+            return Task.FromResult(ActResult.Success("took 3 planks"));
+        };
+        rig.On["place"] = (args, _) =>
+        {
+            var at = args.GetProperty("at").GetString()!;
+            if (at == "4,64,1" && far++ == 0)
+                return Task.FromResult(ActResult.Fail("can't place at 4,64,1: its nearest support face is 5.2 blocks from my eyes at 0.5,64,3.5 (reach 4.5) and I couldn't get closer"));
+            var p = at.Split(',').Select(int.Parse).ToArray();
+            rig.World.SetBlock(p[0], p[1], p[2], 5, 0);
+            return Task.FromResult(ActResult.Success("placed planks at " + at));
+        };
+        var s = await rig.Run(MineClaw.Hive.Story.StoryColonies.PawnCode(), "story_pawn");
+        Assert.True(s.Ok, s.Outcome);
+        var calls = rig.Norm();
+        Assert.Equal(2, calls.Count(c => c.StartsWith("withdraw ")));                    // busy once, then taken
+        Assert.Contains(calls, c => c.StartsWith("goto ") && c.Contains("0,64,3"));       // the stand first
+        Assert.DoesNotContain("""place {"at":"2,64,1","block":"planks"}""", calls);    // already built: not placed again
+        Assert.Equal(2, calls.Count(c => c == """place {"at":"4,64,1","block":"planks"}""")); // too far: closer, then once more
+        Assert.Equal([
+            "maid_chan j1 progress fetched",
+            "maid_chan j1 progress cell 1,64,1 done",
+            "maid_chan j1 progress cell 2,64,1 done",
+            "maid_chan j1 progress cell 3,64,1 done",
+            "maid_chan j1 progress cell 4,64,1 done",
+            "maid_chan j1 done batch: 4/4 placed",
+            "maid_chan j2 done"], port.Reports);
+    }
+
     [Fact]
     public async Task Story_calls_without_a_director_fail_the_script_plainly()
     {
