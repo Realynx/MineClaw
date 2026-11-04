@@ -392,6 +392,16 @@ function plantBills(
   return [{ id: newId(), plant, mode: 'forever' as const, target: 64, done: 0, paused: false }];
 }
 
+/** The state's `ghosts`: every blueprint cell. */
+const ghostsState = (c: Colony) => ({ ghosts: { rev: c.ghostsRev, blocks: [...c.ghostCells.values()].flat() } });
+
+/** A delta's `removed`: what went since `since`, by kind (no key when nothing did). */
+function removedSince(gone: Colony['removed'], since: number) {
+  const removed: Record<string, Array<Key | [number, number, number]>> = {};
+  for (const r of gone) if (r.rev > since) (removed[r.kind] ??= []).push(r.key);
+  return Object.keys(removed).length ? { removed } : {};
+}
+
 type BillRequest = Extract<StoryZoneRequest, { op: `bill_${string}` }>;
 type BillOf<O extends BillRequest['op']> = Extract<BillRequest, { op: O }>;
 
@@ -781,8 +791,6 @@ export class StorySim {
     const s = since ?? 0;
     const full = s === 0;
     const pick = <T>(m: Map<unknown, Fn<T>>) => [...m.values()].filter((f) => full || f.rev > s).map((f) => f.v);
-    const removed: Record<string, Array<Key | [number, number, number]>> = {};
-    if (!full) for (const r of c.removed) if (r.rev > s) (removed[r.kind] ??= []).push(r.key);
     return {
       id: c.id,
       name: c.name,
@@ -800,13 +808,7 @@ export class StorySim {
       home: c.home,
       workTypes: [...STORY_WORK_TYPES],
       pawns: [...c.pawns.values()].filter((p) => full || p.rev > s).map((p) => structuredClone(p.p)),
-      seats: {
-        online: [...c.pawns.values()].filter((p) => p.p.online).length,
-        wanted: Math.max(c.wanted ?? 0, c.pawns.size),
-        capFree: this.seatsOf(c).capFree,
-        keptForRegulars: this.seatsOf(c).kept,
-        pending: Math.max(0, (c.wanted ?? 0) - [...c.pawns.values()].filter((p) => !p.p.leaving).length),
-      },
+      seats: this.seatsState(c),
       zones: pick(c.zones).map((z) => this.growStatus(c, z)),
       ...(full ? { plants: STORY_SIM_PLANTS } : {}),
       designations: pick(c.designations),
@@ -816,12 +818,12 @@ export class StorySim {
         .map((a) => a.v)
         .slice(-40),
       builds: pick(c.builds),
-      ...(full || c.ghostsRev > s ? { ghosts: { rev: c.ghostsRev, blocks: [...c.ghostCells.values()].flat() } } : {}),
+      ...(full || c.ghostsRev > s ? ghostsState(c) : {}),
       ...(full ? { categories: STORY_DEFAULT_CATEGORIES } : {}),
       storages: pick(c.storages),
       workbenches: pick(c.benches),
-      ...(full || c.bedsRev > s ? { beds: this.bedList(c) } : {}),
-      ai: this.opts.world.ai?.() ?? [],
+      ...this.bedsSince(c, full, s),
+      ai: this.aiBodies(),
       directives: pick(c.directives),
       policies: c.gear.policies.map((x) => ({ ...x, tools: [...x.tools] })),
       roles: rolesState(
@@ -830,8 +832,29 @@ export class StorySim {
       ),
       materialRules: c.gear.rules.map((x) => ({ ...x })),
       ...(full ? { materials: SIM_MATERIALS } : {}),
-      ...(Object.keys(removed).length ? { removed } : {}),
+      ...(full ? {} : removedSince(c.removed, s)),
     };
+  }
+
+  /** The colony's seats: online now, wanted, the cap's free seats, those kept for regulars, pawns waiting for one. */
+  private seatsState(c: Colony) {
+    return {
+      online: [...c.pawns.values()].filter((p) => p.p.online).length,
+      wanted: Math.max(c.wanted ?? 0, c.pawns.size),
+      capFree: this.seatsOf(c).capFree,
+      keptForRegulars: this.seatsOf(c).kept,
+      pending: Math.max(0, (c.wanted ?? 0) - [...c.pawns.values()].filter((p) => !p.p.leaving).length),
+    };
+  }
+
+  /** The state's `beds` when they changed since `since` (or a full state). */
+  private bedsSince(c: Colony, full: boolean, since: number) {
+    return full || c.bedsRev > since ? { beds: this.bedList(c) } : {};
+  }
+
+  /** The AI bodies the world shows beside the pawns. */
+  private aiBodies(): StoryAiBody[] {
+    return this.opts.world.ai?.() ?? [];
   }
 
   recipes(workbench?: string) {
@@ -1934,57 +1957,74 @@ export class StorySim {
     body: StoryStorageRequest,
   ): { ok: boolean; count: number; chests?: Array<[number, number, number]>; rev: number } {
     const c = this.colony(id);
-    const find = (p: readonly number[]) =>
-      c.storages.get(keyOf(p)) ??
-      [...c.storages.values()].find((f) => f.v.doubleWith && keyOf(f.v.doubleWith) === keyOf(p));
     switch (body.op) {
       case 'assign_area': {
         const chests = this.discover(c, body.area, body.filter ?? undefined, body.priority ?? 'normal');
         return { ok: true, count: chests.length, chests, rev: c.rev };
       }
-      case 'set': {
-        let n = 0;
-        for (const p of body.chests) {
-          let f = find(p);
-          if (!f) {
-            this.discover(c, [p[0], p[1], p[2], p[0], p[1], p[2]], body.filter, body.priority);
-            f = find(p);
-          }
-          if (!f) continue;
-          if (body.filter) f.v.filter = body.filter;
-          if (body.priority) f.v.priority = body.priority;
-          if (body.label !== undefined) f.v.label = body.label || null;
-          f.rev = this.bump(c);
-          n++;
-        }
-        return { ok: true, count: n, rev: c.rev };
-      }
-      case 'copy': {
-        const src = find(body.from);
-        if (!src) throw Object.assign(new Error('the source chest is not a storage'), { status: 400 });
-        let n = 0;
-        for (const p of body.to) {
-          const f = find(p);
-          if (!f) continue;
-          f.v.filter = structuredClone(src.v.filter);
-          f.v.priority = src.v.priority;
-          f.rev = this.bump(c);
-          n++;
-        }
-        return { ok: true, count: n, rev: c.rev };
-      }
-      case 'remove': {
-        let n = 0;
-        for (const p of body.chests) {
-          const f = find(p);
-          if (!f) continue;
-          c.storages.delete(keyOf(f.v.chest));
-          c.removed.push({ rev: this.bump(c), kind: 'storages', key: f.v.chest });
-          n++;
-        }
-        return { ok: true, count: n, rev: c.rev };
-      }
+      case 'set':
+        return { ok: true, count: this.setStorages(c, body), rev: c.rev };
+      case 'copy':
+        return { ok: true, count: this.copyStorage(c, body), rev: c.rev };
+      case 'remove':
+        return { ok: true, count: this.removeStorages(c, body.chests), rev: c.rev };
     }
+  }
+
+  /** The storage a chest belongs to (either half of a double chest). */
+  private findStorage(c: Colony, p: readonly number[]) {
+    return (
+      c.storages.get(keyOf(p)) ??
+      [...c.storages.values()].find((f) => f.v.doubleWith && keyOf(f.v.doubleWith) === keyOf(p))
+    );
+  }
+
+  /** storage set: each chest's filter / priority / label (a chest not yet storage is discovered first); how many changed. */
+  private setStorages(c: Colony, body: Extract<StoryStorageRequest, { op: 'set' }>): number {
+    let n = 0;
+    for (const p of body.chests) {
+      let f = this.findStorage(c, p);
+      if (!f) {
+        this.discover(c, [p[0], p[1], p[2], p[0], p[1], p[2]], body.filter, body.priority);
+        f = this.findStorage(c, p);
+      }
+      if (!f) continue;
+      if (body.filter) f.v.filter = body.filter;
+      if (body.priority) f.v.priority = body.priority;
+      if (body.label !== undefined) f.v.label = body.label || null;
+      f.rev = this.bump(c);
+      n++;
+    }
+    return n;
+  }
+
+  /** storage copy: the source storage's filter and priority onto each storage listed; how many took them. */
+  private copyStorage(c: Colony, body: Extract<StoryStorageRequest, { op: 'copy' }>): number {
+    const src = this.findStorage(c, body.from);
+    if (!src) throw Object.assign(new Error('the source chest is not a storage'), { status: 400 });
+    let n = 0;
+    for (const p of body.to) {
+      const f = this.findStorage(c, p);
+      if (!f) continue;
+      f.v.filter = structuredClone(src.v.filter);
+      f.v.priority = src.v.priority;
+      f.rev = this.bump(c);
+      n++;
+    }
+    return n;
+  }
+
+  /** storage remove: the chests stop being storage; how many were. */
+  private removeStorages(c: Colony, chests: ReadonlyArray<readonly number[]>): number {
+    let n = 0;
+    for (const p of chests) {
+      const f = this.findStorage(c, p);
+      if (!f) continue;
+      c.storages.delete(keyOf(f.v.chest));
+      c.removed.push({ rev: this.bump(c), kind: 'storages', key: f.v.chest });
+      n++;
+    }
+    return n;
   }
 
   /** A furnace's fuel setting (auto) and the choices the sim's version burns. */
