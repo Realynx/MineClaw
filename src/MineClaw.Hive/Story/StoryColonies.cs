@@ -264,6 +264,7 @@ public sealed class StoryColonies : IDisposable
     public int Release(StoryColony c)
     {
         c.Meta.Active = false;
+        c.ResetSpeed(); // the bodies walk at normal speed again (StoryColony.Speed.cs)
         c.Unbind();
         int n;
         try { n = _host.Release(c.Id); } catch (Exception ex) { _log.LogWarning(ex, "story {Colony}: release failed", c.Id); n = 0; }

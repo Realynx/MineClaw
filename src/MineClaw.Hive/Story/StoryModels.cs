@@ -473,4 +473,8 @@ public sealed class ColonyMeta
     /// <summary>What pawns do with nothing to do, in free hours and while resting: recreation (default: varied pastimes), wander (strolls
     /// only) or stay (hold where they are).</summary>
     public string Idle { get; set; } = "recreation";
+    /// <summary>Movement speed of the colony's pawns: normal | fast (×2) | faster (×3) (StoryColony.Speed.cs).</summary>
+    public string Speed { get; set; } = "normal";
+    /// <summary>On 1.12.2 with an op account, Fast / Faster also ask the server for a Speed effect on the pawns (default on).</summary>
+    public bool SpeedEffect { get; set; } = true;
 }

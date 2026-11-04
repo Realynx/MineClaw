@@ -402,9 +402,37 @@ public sealed class CommandGate
         return true;
     }
 
+    private static readonly Regex ManagedSpeedLine = new(@"^/effect (?<name>[A-Za-z0-9_]{3,16}) minecraft:speed (?:0|\d{1,3} [0-4] true)$",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
+    /// <summary>
+    /// Arms exactly one <c>/effect &lt;name&gt; minecraft:speed &lt;seconds&gt; &lt;amplifier&gt; true</c> (or <c>… minecraft:speed 0</c>, which
+    /// clears it) for Story Mode's Fast / Faster: the colony owner chose the speed on the viewer, so the server gives the colony's pawns a
+    /// Speed effect. Only that shape, only an account <see cref="ManagedAccount"/> accepts (the hive's own bodies: never a player, never
+    /// main), never when the config blocks <c>/effect</c>. C# only; <paramref name="by"/> goes to the audit.
+    /// </summary>
+    public bool ArmManagedSpeed(string line, string by)
+    {
+        var t = (line ?? "").Trim();
+        var m = ManagedSpeedLine.Match(t);
+        if (!m.Success || IsBlocked(t) || ManagedAccount is not { } managed || !managed(m.Groups["name"].Value))
+        {
+            _log.LogWarning("story speed effect refused (not a managed account, wrong shape, or /effect blocked): {Line}", t);
+            return false;
+        }
+        lock (_lock)
+        {
+            var now = _time.GetUtcNow();
+            _tpArmed.RemoveAll(a => a.Until < now);
+            _tpArmed.Add((t, by, now + TimeSpan.FromSeconds(15)));
+        }
+        return true;
+    }
+
     private bool TakeStoryArmed(string line)
     {
-        if (!line.StartsWith("/tp ", StringComparison.OrdinalIgnoreCase) && !line.StartsWith("/time ", StringComparison.OrdinalIgnoreCase)) return false;
+        if (!line.StartsWith("/tp ", StringComparison.OrdinalIgnoreCase) && !line.StartsWith("/time ", StringComparison.OrdinalIgnoreCase)
+            && !line.StartsWith("/effect ", StringComparison.OrdinalIgnoreCase)) return false;
         string by;
         lock (_lock)
         {

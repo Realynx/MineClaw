@@ -414,6 +414,7 @@ public sealed partial class StoryColony : IStoryPort
                 else if (!online) _online.Remove(p.Name);
             }
         }
+        SpeedTick(); // Fast / Faster on the pawn bodies, the Speed effects (StoryColony.Speed.cs)
         foreach (var name in departing) Depart(name); // removed pawns: logged out and their accounts released
         if (joined.Count > 0 && Meta.Active) BringHome("joined", joined);
         foreach (var name in restart)
