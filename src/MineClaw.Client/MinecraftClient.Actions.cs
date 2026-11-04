@@ -20,15 +20,7 @@ public sealed partial class MinecraftClient
     /// signals can cancel. Exceptions become failure results.</summary>
     private async Task<ActionResult> RunActionAsync(string name, CancellationToken ct, Func<CancellationToken, Task<ActionResult>> body)
     {
-        // A reflex fight gives up on its own within a few seconds (CombatOptions.ZeroHitGiveUpTicks): wait it out instead of
-        // failing the job as "busy: fighting ..." (live 10-28: gen jobs, gotos and deposits all failed that way).
-        if (CombatBlocks(name) is not null && _combatInstance is { ReflexEngaged: true } reflex)
-            await WaitForReflexFightAsync(reflex, ct).ConfigureAwait(false);
-        if (CombatBlocks(name) is { } busy) return ActionResult.Fail(busy);
-        if (VoidHoldBlocks(name) is { } stuck) return ActionResult.Fail(stuck);
-        // Surfacing from under water: jobs resume only with the air full again (the reflex owns the body until then).
-        if (_surfacing is not null && name is not ("eat" or "shelter" or "look"))
-            await WaitForAirAsync(TimeSpan.FromSeconds(20), ct).ConfigureAwait(false);
+        if (await ActionGateAsync(name, ct).ConfigureAwait(false) is { } refused) return ActionResult.Fail(refused);
         try
         {
             await _actionLock.WaitAsync(ct).ConfigureAwait(false);
@@ -43,7 +35,8 @@ public sealed partial class MinecraftClient
         Volatile.Write(ref _actionEditsOk, 0);
         CurrentAction = name;
         // The static tables (Recipes, Smelting, Drops, Items…) answer from this body's version for the whole action, even
-        // where the process default differs (tests; P5 facades over GameData.Current). Scoped to this async flow only.
+        // where the process default differs (tests; P5 facades over GameData.Current). Scoped to this async flow only (so it stays
+        // in this frame: an async helper would drop the override when it returns).
         using var data = ReferenceEquals(MineClaw.Data.Versioning.GameData.Current, Options.Profile.Data) ? null
             : MineClaw.Data.Versioning.GameData.Override(Options.Profile.Data);
         try
@@ -53,7 +46,7 @@ public sealed partial class MinecraftClient
         }
         catch (OperationCanceledException)
         {
-            return ActionResult.Fail(_abortReason ?? (ct.IsCancellationRequested ? "cancelled" : "stopped"));
+            return ActionResult.Fail(StoppedReason(ct));
         }
         catch (ActionAbortedException ex)
         {
@@ -66,14 +59,39 @@ public sealed partial class MinecraftClient
         }
         finally
         {
-            var d = _driver;
-            if (d is not null && Interlocked.CompareExchange(ref _driver, null, d) == d) d.Tcs.TrySetCanceled();
-            _idleSneak = false;
-            _actionRisk = null;
-            CurrentAction = null;
-            _actionCts = null;
-            _actionLock.Release();
+            EndAction();
         }
+    }
+
+    /// <summary>Waits out what an action must not start under (a reflex fight that ends on its own, surfacing for air): the reason
+    /// it is refused instead (still fighting, held over the void), or null.</summary>
+    private async Task<string?> ActionGateAsync(string name, CancellationToken ct)
+    {
+        // A reflex fight gives up on its own within a few seconds (CombatOptions.ZeroHitGiveUpTicks): wait it out instead of
+        // failing the job as "busy: fighting ..." (live 10-28: gen jobs, gotos and deposits all failed that way).
+        if (CombatBlocks(name) is not null && _combatInstance is { ReflexEngaged: true } reflex)
+            await WaitForReflexFightAsync(reflex, ct).ConfigureAwait(false);
+        if (CombatBlocks(name) is { } busy) return busy;
+        if (VoidHoldBlocks(name) is { } stuck) return stuck;
+        // Surfacing from under water: jobs resume only with the air full again (the reflex owns the body until then).
+        if (_surfacing is not null && name is not ("eat" or "shelter" or "look"))
+            await WaitForAirAsync(TimeSpan.FromSeconds(20), ct).ConfigureAwait(false);
+        return null;
+    }
+
+    /// <summary>Why a cancelled action stopped: the abort's reason, else the caller's cancel or a stop.</summary>
+    private string StoppedReason(CancellationToken ct) => _abortReason ?? (ct.IsCancellationRequested ? "cancelled" : "stopped");
+
+    /// <summary>Ends the running action: cancels its drive, drops its sneak and risk, and releases the action lock.</summary>
+    private void EndAction()
+    {
+        var d = _driver;
+        if (d is not null && Interlocked.CompareExchange(ref _driver, null, d) == d) d.Tcs.TrySetCanceled();
+        _idleSneak = false;
+        _actionRisk = null;
+        CurrentAction = null;
+        _actionCts = null;
+        _actionLock.Release();
     }
 
     /// <summary>Cancels the running action (if any) and waits for it to wind down.</summary>
@@ -383,16 +401,9 @@ public sealed partial class MinecraftClient
     {
         var shape = RouteStats.Of(start, path.Steps);
         RouteStats.Note(shape, o.Diagnose);
-        if (o.Diagnose is { } label) Log($"goto ({label}): {shape} to {goal}{(shape.IsDetour ? " (detour)" : "")}");
-        else if (shape.IsDetour) Log($"goto: detour: {shape} to {goal}");
-        if (!shape.IsDetour || replans > 0 || !DigThroughDetours || o.AllowBreak || path.Status != PathStatus.Found
-            || MineClaw.Data.Versioning.WorldMode.Current.ScarceTerrain) return path;
-        var dugOpts = popts with
-        {
-            AllowBreak = true,
-            Covered = CoveredByGround, // fewer steps under ground win: the dig is worth it only when it shortens the time down there
-            CanBreak = (id, meta, pos) => NaturalGround(id) && !World.Placed.IsPlaced(pos, World.Dimension, id) && (popts.CanBreak?.Invoke(id, meta, pos) ?? true),
-        };
+        LogRouteShape(shape, goal, o);
+        if (!MayDigThroughDetour(shape, path, o, replans)) return path;
+        var dugOpts = DugDetourOptions(popts);
         PathResult dug;
         try { dug = await PathfindGate.RunAsync(() => Pathfinder.FindPath(World, start, goal, dugOpts, ct), ct).ConfigureAwait(false); }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested) { return path; }
@@ -405,6 +416,27 @@ public sealed partial class MinecraftClient
         RouteStats.NoteDugShort();
         return dug;
     }
+
+    /// <summary>Logs the route's shape (always when diagnosing, else only a detour).</summary>
+    private void LogRouteShape(RouteStats.Shape shape, Goal goal, GotoOptions o)
+    {
+        if (o.Diagnose is { } label) Log($"goto ({label}): {shape} to {goal}{(shape.IsDetour ? " (detour)" : "")}");
+        else if (shape.IsDetour) Log($"goto: detour: {shape} to {goal}");
+    }
+
+    /// <summary>A found detour on the goto's first plan, by a body that may dig through natural ground, without breaking allowed
+    /// already, in a world with terrain to spare.</summary>
+    private bool MayDigThroughDetour(RouteStats.Shape shape, PathResult path, GotoOptions o, int replans) =>
+        shape.IsDetour && replans == 0 && DigThroughDetours && !o.AllowBreak && path.Status == PathStatus.Found
+        && !MineClaw.Data.Versioning.WorldMode.Current.ScarceTerrain;
+
+    /// <summary>The path options for a dug detour: breaking natural ground nobody placed (and the caller's own rule allows).</summary>
+    private PathOptions DugDetourOptions(PathOptions popts) => popts with
+    {
+        AllowBreak = true,
+        Covered = CoveredByGround, // fewer steps under ground win: the dig is worth it only when it shortens the time down there
+        CanBreak = (id, meta, pos) => NaturalGround(id) && !World.Placed.IsPlaced(pos, World.Dimension, id) && (popts.CanBreak?.Invoke(id, meta, pos) ?? true),
+    };
 
     /// <summary>Natural ground over foot cell x,y,z: two or more solid blocks (leaves aside) within 8 above its head (a cave, a tunnel, a
     /// trench's overhang), as opposed to the open sky or a tree's crown.</summary>
@@ -565,6 +597,18 @@ public sealed partial class MinecraftClient
     {
         var start = World.Player.Position;
         var hits = StuckProbe.Obstructions(World, start, step.Target);
+        if (await MineOwnObstructionAsync(hits, ct).ConfigureAwait(false) is { } mined) return mined;
+        var toward = PlayerPhysics.YawPitchTo(start, step.Target with { Y = start.Y }).Yaw;
+        if (hits.Count > 0 && !hits.Any(h => h.Head)
+            && await PushOffAsync(start, toward, jump: true, sneak: false, maxTicks: World.Player.Physics.InWater ? 40 : 14, ct).ConfigureAwait(false))
+            return $"hopped toward {Fmt(step.Pos)}";
+        return await SneakOffAsync(step, start, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>Mines the first block in the way that this body may take (self-placed; never next to lava, never a container,
+    /// never protected, never another player's floor): what it did, or null.</summary>
+    private async Task<string?> MineOwnObstructionAsync(IReadOnlyList<StuckProbe.Obstruction> hits, CancellationToken ct)
+    {
         var support = Safety.OtherPlayersSupport(World);
         foreach (var h in hits)
         {
@@ -574,43 +618,49 @@ public sealed partial class MinecraftClient
             var dug = await DigCoreAsync(h.Pos, ct, allowPathing: false).ConfigureAwait(false);
             if (dug.Ok) return $"mined our {BlockName(id, 0)} at {Fmt(h.Pos)}";
         }
+        return null;
+    }
 
-        double Moved()
-        {
-            var p = World.Player.Position;
-            return Math.Sqrt((p.X - start.X) * (p.X - start.X) + (p.Z - start.Z) * (p.Z - start.Z));
-        }
-        async Task<bool> Push(float yaw, bool jump, bool sneak, int maxTicks)
-        {
-            int ticks = 0;
-            bool left = false;
-            await DriveAsync(phys =>
-            {
-                ticks++;
-                // In water a jump is a swim up (0.04 a tick): held while pushing into the bank, the edge lifts the body out (vanilla's
-                // collided-in-liquid hop). One tap only floats it off the floor (Fox 11-04: pawns stuck in 1-deep water channels).
-                bool water = phys.InWater;
-                if (!phys.OnGround && !water) left = true;
-                bool done = Moved() >= 0.5 || ticks > maxTicks || (jump && left && phys.OnGround);
-                return new DriverStep(new MoveInput(Forward: 1, Jump: jump && (water || !left && phys.OnGround), Sneak: sneak, Yaw: yaw, Pitch: 0), Done: done);
-            }, ct).ConfigureAwait(false);
-            await WaitTicksAsync(2, ct).ConfigureAwait(false);
-            return Moved() >= 0.3;
-        }
-
-        var toward = PlayerPhysics.YawPitchTo(start, step.Target with { Y = start.Y }).Yaw;
-        if (hits.Count > 0 && !hits.Any(h => h.Head) && await Push(toward, jump: true, sneak: false, maxTicks: World.Player.Physics.InWater ? 40 : 14).ConfigureAwait(false))
-            return $"hopped toward {Fmt(step.Pos)}";
-        // Step off any free way but the stuck one (nearest to the step target first: the re-plan continues from there).
+    /// <summary>Steps off any free way but the stuck one (nearest to the step target first: the re-plan continues from there),
+    /// sneaking: what it did, or null when none moved the body.</summary>
+    private async Task<string?> SneakOffAsync(PathStep step, Vec3d start, CancellationToken ct)
+    {
         double sdx = step.Target.X - start.X, sdz = step.Target.Z - start.Z, slen = Math.Sqrt(sdx * sdx + sdz * sdz);
         foreach (var (dx, dz) in StuckProbe.FreeDirections(World, start, step.Target))
         {
             if (slen > 1e-6 && dx * sdx + dz * sdz > 0.7 * slen) continue; // that is the blocked move itself
             var yaw = PlayerPhysics.YawPitchTo(start, new Vec3d(start.X + dx, start.Y, start.Z + dz)).Yaw;
-            if (await Push(yaw, jump: false, sneak: true, maxTicks: 30).ConfigureAwait(false))
+            if (await PushOffAsync(start, yaw, jump: false, sneak: true, maxTicks: 30, ct).ConfigureAwait(false))
                 return "sneaked off " + (dx, dz) switch { (1, 0) => "east", (-1, 0) => "west", (0, 1) => "south", _ => "north" };
         }
         return null;
+    }
+
+    /// <summary>How far (horizontally) the body is from <paramref name="start"/>.</summary>
+    private double MovedFrom(Vec3d start)
+    {
+        var p = World.Player.Position;
+        return Math.Sqrt((p.X - start.X) * (p.X - start.X) + (p.Z - start.Z) * (p.Z - start.Z));
+    }
+
+    /// <summary>Walks toward <paramref name="yaw"/> (jumping or sneaking) until half a block from <paramref name="start"/>, a hop
+    /// lands, or <paramref name="maxTicks"/>: true when it got 0.3 away.</summary>
+    private async Task<bool> PushOffAsync(Vec3d start, float yaw, bool jump, bool sneak, int maxTicks, CancellationToken ct)
+    {
+        int ticks = 0;
+        bool left = false;
+        await DriveAsync(phys =>
+        {
+            ticks++;
+            // In water a jump is a swim up (0.04 a tick): held while pushing into the bank, the edge lifts the body out (vanilla's
+            // collided-in-liquid hop). One tap only floats it off the floor (Fox 11-04: pawns stuck in 1-deep water channels).
+            bool water = phys.InWater;
+            if (!phys.OnGround && !water) left = true;
+            bool done = MovedFrom(start) >= 0.5 || ticks > maxTicks || (jump && left && phys.OnGround);
+            return new DriverStep(new MoveInput(Forward: 1, Jump: jump && (water || !left && phys.OnGround), Sneak: sneak, Yaw: yaw, Pitch: 0), Done: done);
+        }, ct).ConfigureAwait(false);
+        await WaitTicksAsync(2, ct).ConfigureAwait(false);
+        return MovedFrom(start) >= 0.3;
     }
 
     /// <summary>
@@ -643,12 +693,7 @@ public sealed partial class MinecraftClient
     /// </summary>
     private string NoRouteHint(Goal goal, GotoOptions o, Vec3d start, CancellationToken ct)
     {
-        BlockPos? target = goal switch
-        {
-            GoalBlock b => b.Target, GoalNear n => n.Target, GoalFiltered { Inner: GoalNear fn } => fn.Target,
-            GoalNearPosition np => np.Position.ToBlockPos(), _ => null,
-        };
-        if (target is not { } t) return "";
+        if (RouteTarget(goal) is not { } t) return "";
         int dy = t.Y - (int)Math.Floor(start.Y + 1e-6);
         int have = ScaffoldCount();
         int logs = ReservedItems.Contains(MineClaw.Data.Blocks.Log) ? 0 : World.Inventory.CountItem(MineClaw.Data.Blocks.Log);
@@ -663,8 +708,21 @@ public sealed partial class MinecraftClient
         string up = dy >= 2 ? $"; it's {dy} blocks up" : "";
         if (!r.Success)
             return $"{up}; unreachable even by pillaring/bridging" + (_protectedRegion is not null ? " (no edits inside spawn protection)" : "");
-        int need = Math.Max(1, r.ScaffoldUsed);
-        if (o.AllowPlace && have >= need) return up;
+        return BuildingHint(up, Math.Max(1, r.ScaffoldUsed), have, logs, o.AllowPlace);
+    }
+
+    /// <summary>The block a goal is about (for the climb hint), or null.</summary>
+    private static BlockPos? RouteTarget(Goal goal) => goal switch
+    {
+        GoalBlock b => b.Target, GoalNear n => n.Target, GoalFiltered { Inner: GoalNear fn } => fn.Target,
+        GoalNearPosition np => np.Position.ToBlockPos(), _ => null,
+    };
+
+    /// <summary>The hint for a route only building reaches: retry in build mode (with the blocks held, or with logs crafted into
+    /// planks), or how many blocks are missing.</summary>
+    private string BuildingHint(string up, int need, int have, int logs, bool allowPlace)
+    {
+        if (allowPlace && have >= need) return up;
         string using_ = have > 0 ? $" ({ScaffoldMix()})" : "";
         if (have >= need)
             return $"{up}; reachable by building: need {need} blocks to pillar/bridge, have {have}{using_} - retry with build mode (allow_place)";

@@ -98,37 +98,51 @@ public sealed partial class MinecraftClient
     /// armor, food and <see cref="ReservedItems"/>) into a chest. With <paramref name="container"/> the chest is
     /// opened first and closed afterwards; otherwise the open window is used.</summary>
     public Task<ActionResult> DepositAllAsync(BlockPos? container = null, Func<ItemStack, bool>? filter = null, CancellationToken ct = default) =>
-        RunActionAsync("deposit", ct, async c =>
+        RunActionAsync("deposit", ct, c => DepositAllCoreAsync(container, filter, c));
+
+    private async Task<ActionResult> DepositAllCoreAsync(BlockPos? container, Func<ItemStack, bool>? filter, CancellationToken c)
+    {
+        if (container is { } p)
         {
-            if (container is { } p)
+            var o = await OpenCoreAsync(p, c).ConfigureAwait(false);
+            if (!o.Ok) return o;
+        }
+        var w = World.Inventory.OpenWindow;
+        if (w is null || w.Type is not (WindowType.Chest or WindowType.Dispenser)) return ActionResult.Fail("no chest open");
+        var before = InventoryCounts();
+        bool full = await DepositStacksAsync(w, filter ?? DefaultDepositFilter, c).ConfigureAwait(false);
+        var summary = DiffSummary(before, InventoryCounts(), out int moved);
+        if (container is not null) await EnsureNoWindowAsync(c).ConfigureAwait(false);
+        return DepositResult(summary, moved, full);
+    }
+
+    /// <summary>Shift-clicks every stack of the window's inventory part that <paramref name="filter"/> lets go (never reserved
+    /// items): true when one didn't fit.</summary>
+    private async Task<bool> DepositStacksAsync(Window w, Func<ItemStack, bool> filter, CancellationToken c)
+    {
+        bool full = false;
+        // A stack that didn't fit only means no room for THAT item (no empty slot, its partial stacks full): other items may
+        // still top up their own partial stacks, so go on with them (live 10-27: one leftover ended the whole deposit).
+        var noRoom = new HashSet<(int, int)>();
+        for (int slot = w.MainStart; slot < w.SlotCount; slot++)
+        {
+            var s = w.Get(slot);
+            if (s.IsEmpty || !filter(s) || ReservedItems.Contains(s.Id) || noRoom.Contains((s.Id, s.Damage))) continue;
+            await ClickCoreAsync(slot, false, true, c).ConfigureAwait(false);
+            if (!w.Get(slot).IsEmpty)
             {
-                var o = await OpenCoreAsync(p, c).ConfigureAwait(false);
-                if (!o.Ok) return o;
+                full = true;
+                noRoom.Add((s.Id, s.Damage));
             }
-            var w = World.Inventory.OpenWindow;
-            if (w is null || w.Type is not (WindowType.Chest or WindowType.Dispenser)) return ActionResult.Fail("no chest open");
-            filter ??= DefaultDepositFilter;
-            var before = InventoryCounts();
-            bool full = false;
-            // A stack that didn't fit only means no room for THAT item (no empty slot, its partial stacks full): other items may
-            // still top up their own partial stacks, so go on with them (live 10-27: one leftover ended the whole deposit).
-            var noRoom = new HashSet<(int, int)>();
-            for (int slot = w.MainStart; slot < w.SlotCount; slot++)
-            {
-                var s = w.Get(slot);
-                if (s.IsEmpty || !filter(s) || ReservedItems.Contains(s.Id) || noRoom.Contains((s.Id, s.Damage))) continue;
-                await ClickCoreAsync(slot, false, true, c).ConfigureAwait(false);
-                if (!w.Get(slot).IsEmpty)
-                {
-                    full = true;
-                    noRoom.Add((s.Id, s.Damage));
-                }
-            }
-            var summary = DiffSummary(before, InventoryCounts(), out int moved);
-            if (container is not null) await EnsureNoWindowAsync(c).ConfigureAwait(false);
-            if (moved == 0) return ActionResult.Fail(full ? "chest is full" : "nothing to deposit");
-            return ActionResult.Success($"deposited {summary}{(full ? " (chest full)" : "")}", moved);
-        });
+        }
+        return full;
+    }
+
+    private static ActionResult DepositResult(string summary, int moved, bool full)
+    {
+        if (moved == 0) return ActionResult.Fail(full ? "chest is full" : "nothing to deposit");
+        return ActionResult.Success($"deposited {summary}{(full ? " (chest full)" : "")}", moved);
+    }
 
     /// <summary>Takes up to <paramref name="count"/> of an item out of a chest (opened first when <paramref name="container"/> is given).</summary>
     public Task<ActionResult> WithdrawAsync(int itemId, int count, BlockPos? container = null, int? damage = null, CancellationToken ct = default) =>
@@ -245,19 +259,35 @@ public sealed partial class MinecraftClient
     {
         Interlocked.Exchange(ref _lastSlotPacketMs, Environment.TickCount64);
         if (_clickInFlight is not { Pending: true } f) return;
-        // A slot update that agrees with the prediction can't hurt it, whenever it was generated. 1.12.2's server sends the
-        // crafting output (slotChangedCraftingGrid → SPacketSetSlot slot 0) during the click, ahead of its confirm.
-        if (!fullWindow && item is { } got && f.Changed is not null && SlotNow(windowId, slot) is { } now && now.Equals(got)) return;
-        if (f.Changed is null || fullWindow) { if (f.Changed is null || windowId == f.Window || windowId == 0) f.Raced = true; return; }
-        if (windowId == -1 && slot == -1) { if (f.CursorChanged) f.Raced = true; return; }
+        if (SlotPacketRaces(f, windowId, slot, fullWindow, item)) f.Raced = true;
+    }
+
+    /// <summary>Whether a slot packet races the click in flight: any packet before the click is predicted, a full window of the
+    /// clicked one (or the player's), the cursor when the click moved it, or a slot the click changed.</summary>
+    private bool SlotPacketRaces(ClickInFlight f, int windowId, int slot, bool fullWindow, ItemStack? item)
+    {
+        if (AgreesWithPrediction(f, windowId, slot, fullWindow, item)) return false;
+        if (f.Changed is null || fullWindow) return f.Changed is null || windowId == f.Window || windowId == 0;
+        if (windowId == -1 && slot == -1) return f.CursorChanged;
+        return ChangedSlotHit(f, windowId, slot);
+    }
+
+    /// <summary>A slot update that agrees with the prediction can't hurt it, whenever it was generated. 1.12.2's server sends the
+    /// crafting output (slotChangedCraftingGrid → SPacketSetSlot slot 0) during the click, ahead of its confirm.</summary>
+    private bool AgreesWithPrediction(ClickInFlight f, int windowId, int slot, bool fullWindow, ItemStack? item) =>
+        !fullWindow && item is { } got && f.Changed is not null && SlotNow(windowId, slot) is { } now && now.Equals(got);
+
+    /// <summary>The slot (a window-0 slot mapped into the clicked window while a container is open) is one the click changed.</summary>
+    private bool ChangedSlotHit(ClickInFlight f, int windowId, int slot)
+    {
         int s = slot;
         if (windowId != f.Window)
         {
             // A window-0 slot while a container is open: map the player slot into the clicked window.
-            if (windowId != 0 || World.Inventory.GetWindow(f.Window) is not { } w) return;
+            if (windowId != 0 || World.Inventory.GetWindow(f.Window) is not { } w) return false;
             s = w.FromPlayerSlot(slot);
         }
-        if (s >= 0 && f.Changed.Contains(s)) f.Raced = true;
+        return s >= 0 && f.Changed!.Contains(s);
     }
 
     private ItemStack? SlotNow(int windowId, int slot)
@@ -287,8 +317,7 @@ public sealed partial class MinecraftClient
     private async Task<bool> ClickCoreAsync(int slot, ClickMode mode, int button, CancellationToken ct)
     {
         bool right = button == 1 && (mode is ClickMode.Pickup or ClickMode.QuickMove), shift = mode == ClickMode.QuickMove;
-        if (!World.Inventory.Model.ModernClicks && mode is not (ClickMode.Pickup or ClickMode.QuickMove))
-            throw new ActionAbortedException($"{mode} clicks are not supported on {Options.Profile.Version.Id}");
+        ThrowIfClickUnsupported(mode);
         int version = Volatile.Read(ref _windowItemsVersion);
         var marker = new ClickInFlight(World.Inventory.ActiveWindow.Id, -1, null, true);
         _clickInFlight = marker; // a slot packet between here and the real marker counts as a race (conservative)
@@ -315,18 +344,32 @@ public sealed partial class MinecraftClient
         _txResults.TryRemove(key, out bool accepted);
         _txRaced.TryRemove(key, out bool raced);
         if (accepted && !raced) return true;
+        await ResyncAfterClickAsync(r.WindowId, r.ActionNumber, accepted, version, ct).ConfigureAwait(false);
+        return false;
+    }
+
+    /// <summary>Mode-2+ clicks (number keys, drops, drags...) exist only where the version's model has them.</summary>
+    private void ThrowIfClickUnsupported(ClickMode mode)
+    {
+        if (!World.Inventory.Model.ModernClicks && mode is not (ClickMode.Pickup or ClickMode.QuickMove))
+            throw new ActionAbortedException($"{mode} clicks are not supported on {Options.Profile.Version.Id}");
+    }
+
+    /// <summary>After a click the local model lost: a raced one probes the server's contents; a rejected one waits for the server's
+    /// window and its per-slot echoes.</summary>
+    private async Task ResyncAfterClickAsync(int windowId, short actionNumber, bool accepted, int version, CancellationToken ct)
+    {
         Interlocked.Increment(ref _windowResyncs);
         if (accepted)
         {
-            Log($"a slot update raced click {r.ActionNumber} in window {r.WindowId}; resyncing");
+            Log($"a slot update raced click {actionNumber} in window {windowId}; resyncing");
             await ProbeCoreAsync(ct).ConfigureAwait(false);
-            return false;
+            return;
         }
         // Rejected: the server applied the click its own way and sends 0x68 + the cursor. Its per-slot copies stay stale
         // until its next tick, which echoes them as 0x67s: let those land before the next click so they can't race it.
         await WaitUntilAsync(() => Volatile.Read(ref _windowItemsVersion) > version, TimeSpan.FromSeconds(1.5), ct).ConfigureAwait(false);
         await SettleSlotsAsync(ct).ConfigureAwait(false);
-        return false;
     }
 
     private enum ProbeOutcome { NoReply, Confirmed, Resynced, NoContents }
@@ -365,25 +408,31 @@ public sealed partial class MinecraftClient
     /// -1 = none.</summary>
     public static int ProbeSlot(Window w)
     {
-        bool Empty(int i) => w.Get(i).IsEmpty;
-        switch (w.Type)
+        int slot = w.Type switch
         {
-            case WindowType.Player:
-                if (Enumerable.Range(0, 5).All(Empty)) return 0;
-                foreach (int i in Enumerable.Range(5, 4)) if (Empty(i)) return i;
-                break;
-            case WindowType.Workbench:
-                if (Enumerable.Range(0, 10).All(Empty)) return 0;
-                foreach (int i in Enumerable.Range(1, 9)) if (Empty(i)) return i;
-                break;
-            case WindowType.Furnace:
-                if (Empty(2)) return 2;
-                break;
-            default:
-                for (int i = 0; i < w.ContainerSlots; i++) if (Empty(i)) return i;
-                break;
-        }
-        for (int i = w.MainStart; i < w.SlotCount; i++) if (Empty(i)) return i;
+            WindowType.Player => GridProbeSlot(w, 5, 5, 9), // output + 2×2 grid, then the armour slots
+            WindowType.Workbench => GridProbeSlot(w, 10, 1, 10), // output + 3×3 grid, then a grid cell
+            WindowType.Furnace => w.Get(2).IsEmpty ? 2 : -1,
+            _ => FirstEmptySlot(w, 0, w.ContainerSlots),
+        };
+        return slot >= 0 ? slot : FirstEmptySlot(w, w.MainStart, w.SlotCount);
+    }
+
+    /// <summary>The crafting output (0) when it and the grid (slots below <paramref name="gridEnd"/>) are empty, else the first empty
+    /// slot in <paramref name="from"/>..<paramref name="to"/> (exclusive), or -1.</summary>
+    private static int GridProbeSlot(Window w, int gridEnd, int from, int to) =>
+        FirstNonEmptySlot(w, 0, gridEnd) < 0 ? 0 : FirstEmptySlot(w, from, to);
+
+    /// <summary>The first empty slot in <paramref name="from"/>..<paramref name="to"/> (exclusive), or -1.</summary>
+    private static int FirstEmptySlot(Window w, int from, int to)
+    {
+        for (int i = from; i < to; i++) if (w.Get(i).IsEmpty) return i;
+        return -1;
+    }
+
+    private static int FirstNonEmptySlot(Window w, int from, int to)
+    {
+        for (int i = from; i < to; i++) if (!w.Get(i).IsEmpty) return i;
         return -1;
     }
 
@@ -402,16 +451,27 @@ public sealed partial class MinecraftClient
         for (int guard = 0; guard < 8 && !World.Inventory.Cursor.IsEmpty; guard++)
         {
             var w = World.Inventory.ActiveWindow;
-            var cur = World.Inventory.Cursor;
-            int target = -1;
-            for (int slot = w.HotbarStart; slot < w.SlotCount && target < 0; slot++) target = Fits(w, slot, cur, partialOnly: true) ? slot : -1;
-            for (int slot = w.MainStart; slot < w.HotbarStart && target < 0; slot++) target = Fits(w, slot, cur, partialOnly: true) ? slot : -1;
-            for (int slot = w.HotbarStart; slot < w.SlotCount && target < 0; slot++) target = w.Get(slot).IsEmpty ? slot : -1;
-            for (int slot = w.MainStart; slot < w.HotbarStart && target < 0; slot++) target = w.Get(slot).IsEmpty ? slot : -1;
+            int target = StashTarget(w, World.Inventory.Cursor);
             if (target < 0) return false;
             await ClickCoreAsync(target, false, false, ct).ConfigureAwait(false);
         }
         return World.Inventory.Cursor.IsEmpty;
+    }
+
+    /// <summary>Where the cursor stack goes: a partial matching stack (hotbar first, then the main inventory), else an empty slot
+    /// (same order); -1 = no room.</summary>
+    private int StashTarget(Window w, ItemStack cur)
+    {
+        int target = FirstPartialFit(w, w.HotbarStart, w.SlotCount, cur);
+        if (target < 0) target = FirstPartialFit(w, w.MainStart, w.HotbarStart, cur);
+        if (target < 0) target = FirstEmptySlot(w, w.HotbarStart, w.SlotCount);
+        return target >= 0 ? target : FirstEmptySlot(w, w.MainStart, w.HotbarStart);
+    }
+
+    private int FirstPartialFit(Window w, int from, int to, ItemStack cur)
+    {
+        for (int slot = from; slot < to; slot++) if (Fits(w, slot, cur, partialOnly: true)) return slot;
+        return -1;
     }
 
     private bool Fits(Window w, int slot, ItemStack item, bool partialOnly)
@@ -454,36 +514,50 @@ public sealed partial class MinecraftClient
     private async Task<int> TransferCoreAsync(Window w, Func<ItemStack, bool> match, int count, bool toContainer, CancellationToken ct)
     {
         int containerEnd = w.Type == WindowType.Workbench ? 10 : w.ContainerSlots;
-        int srcStart = toContainer ? w.MainStart : 0, srcEnd = toContainer ? w.SlotCount : containerEnd;
-        var dests = toContainer
-            ? Enumerable.Range(0, containerEnd).Where(i => w.KindOf(i) is SlotKind.Container or SlotKind.FurnaceInput).ToList()
-            : Enumerable.Range(w.HotbarStart, 9).Concat(Enumerable.Range(w.MainStart, 27)).ToList();
-        bool canShift = w.Type is WindowType.Chest or WindowType.Dispenser || !toContainer;
+        var (srcStart, srcEnd) = toContainer ? (w.MainStart, w.SlotCount) : (0, containerEnd);
+        var dests = TransferDestinations(w, containerEnd, toContainer);
+        bool canShift = CanShiftTransfer(w, toContainer);
         int moved = 0;
         for (int guard = 0; guard < 64 && moved < count; guard++)
         {
-            int src = -1;
-            for (int i = srcStart; i < srcEnd; i++)
-            {
-                var s = w.Get(i);
-                if (!s.IsEmpty && match(s)) { src = i; break; }
-            }
+            int src = FirstMatchingSlot(w, srcStart, srcEnd, match);
             if (src < 0) break;
-            var stack = w.Get(src);
-            int need = count - moved;
-            int n;
-            if (canShift && stack.Count <= need)
-            {
-                await ClickCoreAsync(src, false, true, ct).ConfigureAwait(false);
-                var after = w.Get(src);
-                n = stack.Count - (after.IsEmpty || after.Id != stack.Id ? 0 : after.Count);
-            }
-            else n = await MoveManualAsync(w, src, dests, need, ct).ConfigureAwait(false);
+            int n = await MoveStackAsync(w, src, dests, count - moved, canShift, ct).ConfigureAwait(false);
             if (n <= 0) break;
             moved += n;
         }
         if (!World.Inventory.Cursor.IsEmpty) await StashCursorAsync(ct).ConfigureAwait(false);
         return moved;
+    }
+
+    /// <summary>Where a manual move may drop items: the container's storage (or furnace input) slots, else the hotbar then the main
+    /// inventory.</summary>
+    private static List<int> TransferDestinations(Window w, int containerEnd, bool toContainer) => toContainer
+        ? Enumerable.Range(0, containerEnd).Where(i => w.KindOf(i) is SlotKind.Container or SlotKind.FurnaceInput).ToList()
+        : Enumerable.Range(w.HotbarStart, 9).Concat(Enumerable.Range(w.MainStart, 27)).ToList();
+
+    /// <summary>A shift-click lands where it should: out of any window, or into a chest/dispenser.</summary>
+    private static bool CanShiftTransfer(Window w, bool toContainer) => w.Type is WindowType.Chest or WindowType.Dispenser || !toContainer;
+
+    private static int FirstMatchingSlot(Window w, int from, int to, Func<ItemStack, bool> match)
+    {
+        for (int i = from; i < to; i++)
+        {
+            var s = w.Get(i);
+            if (!s.IsEmpty && match(s)) return i;
+        }
+        return -1;
+    }
+
+    /// <summary>Moves up to <paramref name="need"/> of the stack at <paramref name="src"/>: shift-clicked whole when it may and fits the
+    /// need, else by hand. The number moved.</summary>
+    private async Task<int> MoveStackAsync(Window w, int src, IReadOnlyList<int> dests, int need, bool canShift, CancellationToken ct)
+    {
+        var stack = w.Get(src);
+        if (!canShift || stack.Count > need) return await MoveManualAsync(w, src, dests, need, ct).ConfigureAwait(false);
+        await ClickCoreAsync(src, false, true, ct).ConfigureAwait(false);
+        var after = w.Get(src);
+        return stack.Count - (after.IsEmpty || after.Id != stack.Id ? 0 : after.Count);
     }
 
     /// <summary>Picks up <paramref name="src"/>, drops exactly up to <paramref name="count"/> items into the destination
@@ -497,11 +571,7 @@ public sealed partial class MinecraftClient
         {
             var cur = World.Inventory.Cursor;
             if (cur.IsEmpty || placed >= count) break;
-            if (d == src) continue;
-            var ds = w.Get(d);
-            if (!ds.IsEmpty && !(rules.SameItem(ds, cur) && rules.IsStackable(ds))) continue;
-            int room = rules.MaxStack(cur.Id) - (ds.IsEmpty ? 0 : ds.Count);
-            int k = Math.Min(Math.Min(room, count - placed), cur.Count);
+            int k = ManualDropAmount(rules, w, d, src, cur, count - placed);
             if (k <= 0) continue;
             if (k == cur.Count)
             {
@@ -519,6 +589,17 @@ public sealed partial class MinecraftClient
             if (!World.Inventory.Cursor.IsEmpty) await StashCursorAsync(ct).ConfigureAwait(false);
         }
         return placed;
+    }
+
+    /// <summary>How many of the cursor stack go into <paramref name="d"/>: none into the source itself or a slot holding something
+    /// else, else what fits (and is still wanted).</summary>
+    private static int ManualDropAmount(ItemRules rules, Window w, int d, int src, ItemStack cur, int wanted)
+    {
+        if (d == src) return 0;
+        var ds = w.Get(d);
+        if (!ds.IsEmpty && !(rules.SameItem(ds, cur) && rules.IsStackable(ds))) return 0;
+        int room = rules.MaxStack(cur.Id) - (ds.IsEmpty ? 0 : ds.Count);
+        return Math.Min(Math.Min(room, wanted), cur.Count);
     }
 
     /// <summary>Default deposit filter: keep tools, weapons, armor, food, saplings, buckets, seeds.</summary>

@@ -335,37 +335,52 @@ public sealed partial class MinecraftClient
 
     private void CheckDangers(PhysicsState phys)
     {
-        // Falling with nothing below.
+        CheckVoidFall(phys);
+        CheckLava(phys);
+        CheckHostilesNearby(phys);
+    }
+
+    /// <summary>Falling with nothing below: one alert per fall.</summary>
+    private void CheckVoidFall(PhysicsState phys)
+    {
         if (phys.OnGround || phys.InWater || phys.OnLadder) _voidAlerted = false;
         // A committed gap jump over the void whose re-simulated landing still holds is not a fall.
         else if ((_lastGuardActions & GuardActions.ParkourExempt) != 0) { }
-        else if (!_voidAlerted && !_voidEpisode && phys.Velocity.Y < -0.3 && World.IsPlayerOverVoid(phys.Position) && !InWaterHold(phys))
+        else if (!_voidAlerted && FallingFastOverVoid(phys))
         {
             _voidAlerted = true;
             var msg = $"falling into the void at {Fmt(phys.Position)}";
             Log(msg);
             RaiseDanger(DangerKind.FallingIntoVoid, msg, abort: true, critical: true);
         }
+    }
 
-        if (phys.InLava)
-        {
-            if (!_lavaAlerted)
-            {
-                _lavaAlerted = true;
-                RaiseDanger(DangerKind.Lava, "in lava!", abort: true);
-            }
-        }
-        else _lavaAlerted = false;
+    /// <summary>Falling fast over the void, outside a void episode and a planned water column.</summary>
+    private bool FallingFastOverVoid(PhysicsState phys) =>
+        !_voidEpisode && phys.Velocity.Y < -0.3 && World.IsPlayerOverVoid(phys.Position) && !InWaterHold(phys);
 
-        if (TickCount % 20 == 0 && Options.HostileAlertRadius > 0)
+    private void CheckLava(PhysicsState phys)
+    {
+        if (!phys.InLava)
         {
-            var near = World.Entities.Nearby(phys.Position, Options.HostileAlertRadius, e => e.IsHostileMob);
-            _hostileAlerted.IntersectWith(near.Select(e => e.Id));
-            foreach (var e in near)
-                if (_hostileAlerted.Add(e.Id) && !(Combat.DefendSelf && CombatRules.IsThreat(e) && e.TypeId != MobTypes.Enderman))
-                    RaiseDanger(DangerKind.HostileNearby,
-                        $"{e.DisplayName} {phys.Position.DistanceTo(e.Position):0} blocks away at {Fmt(e.Position)}", abort: false);
+            _lavaAlerted = false;
+            return;
         }
+        if (_lavaAlerted) return;
+        _lavaAlerted = true;
+        RaiseDanger(DangerKind.Lava, "in lava!", abort: true);
+    }
+
+    /// <summary>Once a second: a hostile newly within the alert radius is reported (not one the combat reflex will fight).</summary>
+    private void CheckHostilesNearby(PhysicsState phys)
+    {
+        if (TickCount % 20 != 0 || Options.HostileAlertRadius <= 0) return;
+        var near = World.Entities.Nearby(phys.Position, Options.HostileAlertRadius, e => e.IsHostileMob);
+        _hostileAlerted.IntersectWith(near.Select(e => e.Id));
+        foreach (var e in near)
+            if (_hostileAlerted.Add(e.Id) && !(Combat.DefendSelf && CombatRules.IsThreat(e) && e.TypeId != MobTypes.Enderman))
+                RaiseDanger(DangerKind.HostileNearby,
+                    $"{e.DisplayName} {phys.Position.DistanceTo(e.Position):0} blocks away at {Fmt(e.Position)}", abort: false);
     }
 
     private void RaiseDanger(DangerKind kind, string message, bool abort, bool critical = false)

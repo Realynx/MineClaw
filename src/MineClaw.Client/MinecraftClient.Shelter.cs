@@ -354,24 +354,40 @@ public sealed partial class MinecraftClient
     /// <summary>The spawn check itself (public for tests): null = safe as it is, else what it did.</summary>
     public async Task<string?> SecureAfterSpawnAsync(CancellationToken ct)
     {
-        // The chunks under the body arrive just after the login.
-        var until = DateTime.UtcNow + TimeSpan.FromSeconds(8);
-        while (DateTime.UtcNow < until && !(IsPlaying && Pathfinder.StartCellFor(World, World.Player.Position) is not null))
-            await Task.Delay(100, ct).ConfigureAwait(false);
+        await WaitForSpawnGroundAsync(ct).ConfigureAwait(false);
         if (!IsPlaying || World.Dimension != 0 || HomeLevel is not { } home) return null;
         var feet = FeetCell();
         bool exposed = World.IsNight || NearestThreat(16) is not null;
         if (!exposed || WayHome.AtHome(feet, home)) return null;
-        if (WayHome.WalkDown(World, feet, home) is { } down)
-        {
-            var g = await GotoAsync(new GoalBlock(down), null, ct).ConfigureAwait(false);
-            var line = g.Ok ? $"woke up at {Fmt(feet)} ({(World.IsNight ? "night" : "mobs near")}): walked down to {Fmt(down)} first"
-                : $"woke up at {Fmt(feet)} ({(World.IsNight ? "night" : "mobs near")}): couldn't walk down ({g.Message})";
-            Log("survival: " + line);
-            if (g.Ok) return line;
-        }
+        if (await WalkDownAfterSpawnAsync(feet, home, ct).ConfigureAwait(false) is { } walked) return walked;
+        return await BoxInAfterSpawnAsync(feet, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>The chunks under the body arrive just after the login: waits (at most 8 s) for a start cell.</summary>
+    private async Task WaitForSpawnGroundAsync(CancellationToken ct)
+    {
+        var until = DateTime.UtcNow + TimeSpan.FromSeconds(8);
+        while (DateTime.UtcNow < until && !(IsPlaying && Pathfinder.StartCellFor(World, World.Player.Position) is not null))
+            await Task.Delay(100, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>Walks down toward home when there is a way: the line when it got there, else null (logged either way).</summary>
+    private async Task<string?> WalkDownAfterSpawnAsync(BlockPos feet, BlockPos home, CancellationToken ct)
+    {
+        if (WayHome.WalkDown(World, feet, home) is not { } down) return null;
+        var g = await GotoAsync(new GoalBlock(down), null, ct).ConfigureAwait(false);
+        string why = World.IsNight ? "night" : "mobs near";
+        var line = g.Ok ? $"woke up at {Fmt(feet)} ({why}): walked down to {Fmt(down)} first"
+            : $"woke up at {Fmt(feet)} ({why}): couldn't walk down ({g.Message})";
+        Log("survival: " + line);
+        return g.Ok ? line : null;
+    }
+
+    /// <summary>No way down: boxes in where the body woke up (the answer is due once the box is up; the wait inside it goes on
+    /// holding the body), or says it is stranded without blocks.</summary>
+    private async Task<string> BoxInAfterSpawnAsync(BlockPos feet, CancellationToken ct)
+    {
         if (ShelterBlocksTotal() == 0) return $"woke up stranded at {Fmt(feet)} at {(World.IsNight ? "night" : "with mobs near")}: no way down and no blocks to box in with";
-        // The answer is due once the box is up (the wait inside it goes on holding the body).
         var up = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
         var run = ShelterAsync("spawned exposed with no way home", ct, boxed: l => up.TrySetResult(l));
         var first = await Task.WhenAny(up.Task, run).ConfigureAwait(false);
