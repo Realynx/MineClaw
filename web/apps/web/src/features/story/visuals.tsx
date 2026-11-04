@@ -29,6 +29,9 @@ import {
   Square,
   SquareDashed,
   Wheat,
+  Droplet,
+  Droplets,
+  Waves,
   X,
   type LucideIcon,
 } from 'lucide-react';
@@ -229,6 +232,10 @@ export const TOOL_ICONS: Record<string, IconC> = {
   storage: Archive,
   zone: SquareDashed,
   home: House,
+  water: Droplet,
+  water_channel: Waves,
+  infinite_water: Droplets,
+  lava: Flame,
 };
 
 export function ToolIcon({ id, className }: { id: string; className?: string }) {

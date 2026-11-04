@@ -8,6 +8,7 @@ import {
   CHEST_IDS,
   countTrees,
   expandBuildItem,
+  isWaterTool,
   LOG_IDS,
   materialKey,
   matchesTool,
@@ -23,6 +24,9 @@ import {
   type StoryOrderSpec,
   type StoryRoofStyle,
   type StoryZoneKind,
+  waterItems,
+  waterToolCells,
+  type WaterToolId,
 } from '@mineclaw/contracts';
 
 type V3 = [number, number, number];
@@ -403,7 +407,7 @@ export const ZONE_TOOLS: ReadonlyArray<{ id: StoryZoneKind; label: string; hint:
   { id: 'home', label: 'Home area', hint: 'Where pawns rest and keep things tidy', color: '#4f9cf0' },
   { id: 'farm', label: 'Growing zone', hint: 'Pawns plant, tend and harvest here', color: '#7cc35b' },
   { id: 'chop', label: 'Woodlot', hint: 'Trees here are cut and replanted', color: '#b98a4e' },
-  { id: 'mine', label: 'Quarry', hint: 'Pawns mine here when idle', color: '#9aa3ad' },
+  { id: 'mine', label: 'Quarry', hint: 'Pawns dig everything down to bedrock (a spiral stair), or only the ores', color: '#9aa3ad' },
   { id: 'fish', label: 'Fishing zone', hint: 'Pawns fish here with rods (still water only)', color: '#3fb8d9' },
   { id: 'forbidden', label: 'Keep out', hint: 'Pawns never walk here', color: '#e0525a' },
   { id: 'dump', label: 'Drop spot', hint: 'Loot goes here while the colony has no storage', color: '#c8a46a' },
@@ -417,7 +421,7 @@ export function zoneColor(kind: string): string {
 
 export type StructureId = 'wall' | 'floor' | 'roof' | 'door' | 'window' | 'stairs' | 'fence' | 'block' | 'remove';
 export type FurnitureId = 'crafting_table' | 'furnace' | 'chest' | 'bed' | 'torch';
-export type BuildToolId = StructureId | `furniture:${FurnitureId}`;
+export type BuildToolId = StructureId | `furniture:${FurnitureId}` | WaterToolId;
 
 export const STRUCTURE_TOOLS: ReadonlyArray<{ id: StructureId; label: string; hint: string; drag: 'rect' | 'line' | 'fill' | 'point' | 'box' }> = [
   { id: 'wall', label: 'Wall', hint: 'Drag a rectangle (Alt: a straight line)', drag: 'rect' },
@@ -430,6 +434,20 @@ export const STRUCTURE_TOOLS: ReadonlyArray<{ id: StructureId; label: string; hi
   { id: 'block', label: 'Single block', hint: 'Click, or drag a box', drag: 'box' },
   { id: 'remove', label: 'Deconstruct', hint: 'Drag a box to clear', drag: 'box' },
 ];
+
+/** The Architect's Water tab (docs/web/story-mode.md "Water"): pawns pour sources from buckets. Lava only while the colony allows it. */
+export const WATER_TOOLS: ReadonlyArray<{ id: WaterToolId; label: string; hint: string; drag: 'point' | 'fill' }> = [
+  { id: 'water', label: 'Water source', hint: 'Click a cell: one still water source (indoors too)', drag: 'point' },
+  { id: 'water_channel', label: 'Water channel', hint: 'Drag a line or an area: every cell a source (a canal, a hydroponic tray)', drag: 'fill' },
+  { id: 'infinite_water', label: 'Infinite source', hint: 'Click a corner: a 2×2 pool that refills (pawns fill their buckets there)', drag: 'point' },
+  { id: 'lava', label: 'Lava source', hint: 'Click a cell: one lava source (never at home or beside wood)', drag: 'point' },
+];
+
+/** Whether a water tool digs its cells into the ground first (a trench, a sunken pool): the option, else on for the channel and
+ * the infinite source, off for a single source. */
+export function waterDig(tool: WaterToolId, o: Pick<BuildOpts, 'dig'>): boolean {
+  return o.dig ?? (tool === 'water_channel' || tool === 'infinite_water');
+}
 
 export const FURNITURE_TOOLS: ReadonlyArray<{ id: FurnitureId; label: string }> = [
   { id: 'crafting_table', label: 'Crafting table' },
@@ -448,6 +466,8 @@ export interface BuildOpts {
   roofMaterial?: StoryMaterial;
   /** Alt held: a wall becomes a straight line along the longer axis. */
   line?: boolean;
+  /** Water tools: dig the cells into the ground first (one block lower, a remove item of the same group); unset = the tool's default. */
+  dig?: boolean;
 }
 
 export const FACINGS: readonly StoryFacing[] = ['n', 'e', 's', 'w'];
@@ -472,6 +492,8 @@ export function lineEnd(a: V3, b: V3): V3 {
  * height (`a.y + height`); a floor goes one below the first layer (on the level's floor).
  */
 export function buildItem(tool: BuildToolId, a: V3, b: V3, o: BuildOpts): StoryBuildItem {
+  // Water: the water item alone (the preview); buildItems adds the dig that goes first.
+  if (isWaterTool(tool)) return waterItems(tool, waterToolCells(tool, a, b, waterDig(tool, o)), { dig: false })[0]!;
   if (tool.startsWith('furniture:')) return { kind: tool.slice('furniture:'.length) as FurnitureId, blocks: [a], facing: o.facing };
   const t = tool as StructureId;
   const spec = STRUCTURE_TOOLS.find((s) => s.id === t)!;
@@ -503,6 +525,13 @@ export function buildItem(tool: BuildToolId, a: V3, b: V3, o: BuildOpts): StoryB
     case 'remove':
       return { kind: 'remove', area: [a[0], a[1], a[2], b[0], b[1], b[2]], material: 'stone' };
   }
+}
+
+/** Every item a placement queues: a water tool's dig item (same group) before its water; one item otherwise. */
+export function buildItems(tool: BuildToolId, a: V3, b: V3, o: BuildOpts): StoryBuildItem[] {
+  if (!isWaterTool(tool)) return [buildItem(tool, a, b, o)];
+  const dig = waterDig(tool, o);
+  return waterItems(tool, waterToolCells(tool, a, b, dig), { dig });
 }
 
 export interface BuildPreview {

@@ -226,6 +226,13 @@ public sealed class ZoneState
     public bool Harvest { get; set; } = true;
     /// <summary>A fishing zone: the fish caught there so far.</summary>
     public int Catches { get; set; }
+    /// <summary>A mine zone: <c>quarry</c> (dig everything to bedrock, a perimeter stair; StoryColony.Quarry.cs) or <c>ores</c> (only its
+    /// ores); null = ores (zones from before quarries).</summary>
+    public string? Mode { get; set; }
+    /// <summary>A quarry: the y its digging starts at (its highest ground when first seen; the stair's first step).</summary>
+    public int? QuarryTop { get; set; }
+    /// <summary>A quarry: the layer it has reached (0 = the top), a hint its scan starts from.</summary>
+    public int QuarryLayer { get; set; }
 
     private Area _area;
     private List<int[]>? _rows;
@@ -253,7 +260,7 @@ public sealed class ZoneState
     /// <summary>A new zone with these settings (kind, name, growing settings and bills, fresh bill ids kept) and no cells.</summary>
     public ZoneState CopySettings(string id) => new()
     {
-        Id = id, Kind = Kind, Name = Name, Plant = Plant, Sow = Sow, Harvest = Harvest,
+        Id = id, Kind = Kind, Name = Name, Plant = Plant, Sow = Sow, Harvest = Harvest, Mode = Mode, QuarryTop = QuarryTop, QuarryLayer = QuarryLayer,
         Bills = Bills?.Select(b => new GrowBill { Id = b.Id, Plant = b.Plant, Mode = b.Mode, Target = b.Target, Done = b.Done, Paused = b.Paused }).ToList(),
     };
 }
@@ -480,4 +487,7 @@ public sealed class ColonyMeta
     public string Speed { get; set; } = "normal";
     /// <summary>On 1.12.2 with an op account, Fast / Faster also ask the server for a Speed effect on the pawns (default on).</summary>
     public bool SpeedEffect { get; set; } = true;
+    /// <summary>Pawns may pour lava from buckets (Architect "Lava source"; docs/web/story-mode.md "Water"). Off by default; never in a
+    /// home zone or beside something that burns.</summary>
+    public bool AllowLava { get; set; }
 }

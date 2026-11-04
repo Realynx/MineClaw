@@ -101,6 +101,7 @@ export function GrowingZonesPanel({
   onExtend,
   onSeek,
   onShow,
+  onIrrigate,
 }: {
   state: StoryColonyState | undefined;
   canWrite: boolean;
@@ -109,6 +110,8 @@ export function GrowingZonesPanel({
   onExtend: (z: StoryZone) => void;
   onSeek: (z: StoryZone) => void;
   onShow: (z: StoryZone) => void;
+  /** "Add irrigation": the water channels the zone wants, pre-filled for the owner to queue (docs/web/story-mode.md "Water"). */
+  onIrrigate?: (z: StoryZone) => void;
 }) {
   const zones = (state?.zones ?? []).filter((z) => z.kind === 'farm');
   if (!zones.length) return null;
@@ -134,11 +137,23 @@ export function GrowingZonesPanel({
             onExtend={onExtend}
             onSeek={onSeek}
             onShow={onShow}
+            onIrrigate={onIrrigate}
           />
         ))}
       </ul>
     </section>
   );
+}
+
+/** A growing zone short of water: cells too far from it to till ("N too far from water"), or sugar cane with none beside it. */
+export function needsWater(z: StoryZone): boolean {
+  return /too far from water|no water within/i.test(z.status ?? '') || (z.activePlant === 'sugar_cane' && /no water|beside water/i.test(z.status ?? ''));
+}
+
+/** The warning line: how many cells are dry. */
+export function dryText(z: StoryZone): string {
+  const m = /(\d+) too far from water/.exec(z.status ?? '');
+  return m ? `${m[1]} cell${m[1] === '1' ? '' : 's'} have no water within 4 blocks` : 'No water within 4 blocks of the zone';
 }
 
 function GrowingZone({
@@ -150,6 +165,7 @@ function GrowingZone({
   onExtend,
   onSeek,
   onShow,
+  onIrrigate,
 }: {
   z: StoryZone;
   plants: readonly StoryPlant[];
@@ -159,6 +175,7 @@ function GrowingZone({
   onExtend: (z: StoryZone) => void;
   onSeek: (z: StoryZone) => void;
   onShow: (z: StoryZone) => void;
+  onIrrigate?: (z: StoryZone) => void;
 }) {
   const [adding, setAdding] = useState(false);
   const [dragging, setDragging] = useState<number | null>(null);
@@ -202,6 +219,16 @@ function GrowingZone({
         <div className="text-muted">Ripe crops and bare farmland only: add a planting bill to choose what is sown.</div>
       )}
       {z.status ? <div className="text-muted">{z.status}</div> : null}
+      {needsWater(z) ? (
+        <div className="flex flex-wrap items-center gap-2 text-warn" data-testid="zone-dry">
+          {dryText(z)}
+          {onIrrigate && canWrite ? (
+            <Button size="sm" variant="subtle" className="h-6" onClick={() => onIrrigate(z)} data-testid="zone-irrigate">
+              Add irrigation
+            </Button>
+          ) : null}
+        </div>
+      ) : null}
       {bills.length ? (
         <ol className="space-y-1" aria-label="Planting bills" data-testid="grow-bills">
           {bills.map((b, i) => {

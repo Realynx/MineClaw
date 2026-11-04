@@ -13,7 +13,7 @@ import { applyLiveEvent } from '@/lib/live/dispatch';
  * merged, pushed to the viewer (`WorldSource.onEntities`) and read once (numbered frames).
  */
 describe('entity frames reach the viewer at the stream pace', () => {
-  const bot = (x: number) => ({ name: 'maid_chan_101', short: '101', main: false, dim: 0, x, y: 64, z: 0, hp: 20, food: 20 });
+  const bot = (x: number) => ({ name: 'maid_chan_101', short: '101', main: false, dim: 0, x, y: 64, z: 0, hp: 20, food: 20, claims: [] as string[], live: true, ageSeconds: 0 });
 
   it('a bot that walks while every mob stands still moves on every frame', async () => {
     const qc = new QueryClient();

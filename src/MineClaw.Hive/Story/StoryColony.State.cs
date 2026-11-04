@@ -37,7 +37,7 @@ public sealed partial class StoryColony
                 ["pawns"] = new JsonArray(Pawns.Values.Select(p => (JsonNode)PawnJson(p)).ToArray()),
                 ["seats"] = SeatsJson(),
                 ["unstored_kinds"] = UnstoredKinds(), // a condition: drops and loot with nowhere to go (StoryColony.Hauling.cs)
-                ["zones"] = new JsonArray(Zones.Where(z => New(z.Rev) || z.Plant != null || z.Bills != null || z.Kind == "fish").Select(z => (JsonNode)ZoneJson(z)).ToArray()),
+                ["zones"] = new JsonArray(Zones.Where(z => New(z.Rev) || z.Plant != null || z.Bills != null || z.Kind == "fish" || IsQuarry(z)).Select(z => (JsonNode)ZoneJson(z)).ToArray()),
                 ["beds"] = BedsJson(),
                 ["designations"] = new JsonArray(Designations.Where(d => New(d.Rev)).Select(d => (JsonNode)DesignationJson(d)).ToArray()),
                 ["orders"] = new JsonArray(Pawns.Values.Where(p => New(p.Rev)).SelectMany(p => p.Queue.Select(q => (JsonNode)OrderJson(q, p.Name))).ToArray()),
@@ -52,13 +52,14 @@ public sealed partial class StoryColony
                     ["materials"] = new JsonArray(b.Materials.Select(m => (JsonNode)m.Json()).ToArray()),
                     ["no_craft"] = new JsonArray(b.NoCraft.Select(n => (JsonNode)n!).ToArray()),
                     ["station"] = _station is { } st && st.Build == b.Id ? new JsonObject { ["kind"] = st.Kind, ["pos"] = st.Spot.Json() } : null,
+                    ["liquid"] = LiquidOfBuild(b), ["renewable"] = LiquidOfBuild(b) == "water" ? Renewable(b) : null,
                 }).ToArray()),
                 ["ghosts"] = new JsonObject
                 {
                     ["rev"] = _rev,
                     ["blocks"] = new JsonArray(Builds.SelectMany(b => b.Ghosts.Where(g => New(g.Rev)).Select(g => (JsonNode)new JsonArray(
                         // The 8th element: dig (Id/Meta = the block expected there: the live world's when queued) or place.
-                        g.At.X, g.At.Y, g.At.Z, g.Id, g.Meta, b.Id, g.State, g.Remove ? "dig" : "place"))).ToArray()),
+                        g.At.X, g.At.Y, g.At.Z, g.Id, g.Meta, b.Id, g.State, g.Remove ? "dig" : StoryConstruction.IsLiquid(g) ? "pour" : "place"))).ToArray()),
                 },
                 ["storages"] = new JsonArray(Storages.Where(st => New(st.Rev)).Select(st => (JsonNode)new JsonObject
                 {

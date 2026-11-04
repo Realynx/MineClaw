@@ -16,7 +16,18 @@ public sealed partial class StoryColony
     public (JsonNode? Result, string? Error) ZoneOp(string op, string? kind, Area? area, string? id = null, string? name = null, JsonObject? grow = null)
     {
         if (name is { Length: > 40 }) return (null, "name: at most 40 characters");
+        if (op == "update" && grow?["mode"] != null)
+        {
+            // A mine zone's mode: ores | quarry (StoryColony.Quarry.cs).
+            lock (_lock)
+            {
+                if (Zones.FirstOrDefault(z => z.Id == id) is not { } mz) return (null, "id: no such zone");
+                if (mz.Kind != "mine") return (null, "only mine zones take a mode (ores | quarry)");
+                return MineModeOp(mz, grow["mode"] is JsonValue mv && mv.TryGetValue<string>(out var ms) ? ms : null);
+            }
+        }
         if (op is "update" or "seek_seeds") return GrowZoneOp(op, id, grow); // growing zones (StoryColony.Farming.cs)
+        if (op == "irrigation") return Irrigation(id); // water channels the zone wants (StoryColony.Water.cs)
         if (op.StartsWith("bill_", StringComparison.Ordinal)) return GrowBillOp(op, id, grow);
         if (kind == "grow" || kind == null && op == "add" && grow?["plant"] != null) kind = "farm";
         if (kind == "any") kind = null;
@@ -67,6 +78,15 @@ public sealed partial class StoryColony
             if (into == null && kind == null) return (null, $"kind must be {string.Join("|", ZoneKinds)}");
             var template = new ZoneState { Kind = into?.Kind ?? kind! };
             var warnings = new List<string>();
+            if (template.Kind == "mine" && into == null)
+            {
+                // A new mine zone is a quarry unless asked for ores only; a 1-wide quarry is refused (a trench, not a quarry).
+                var mode = grow?["mode"] is JsonValue mv && mv.TryGetValue<string>(out var ms) ? ms : "quarry";
+                if (mode is not ("ores" or "quarry")) return (null, "mode must be ores|quarry");
+                template.Mode = mode;
+                if (mode == "quarry" && (a.X1 == a.X2 || a.Z1 == a.Z2)
+                    && !Zones.Any(z => IsQuarry(z) && z.Cells.Touches(cells))) return (null, QuarryTooNarrow);
+            }
             if (into == null && grow != null && (grow["plant"] != null || grow["sow"] != null || grow["harvest"] != null))
             {
                 if (template.Kind != "farm") return (null, "only farm (growing) zones take plant, sow and harvest");

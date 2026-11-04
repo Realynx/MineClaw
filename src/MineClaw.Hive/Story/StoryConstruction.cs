@@ -16,7 +16,7 @@ public sealed record Material(int Id, int Meta, string Item, string Name);
 public static class StoryConstruction
 {
     public static readonly IReadOnlyList<string> Kinds =
-        ["wall", "floor", "roof", "door", "window", "stairs", "fence", "block", "remove", "mine", "crafting_table", "furnace", "chest", "bed", "torch"];
+        ["wall", "floor", "roof", "door", "window", "stairs", "fence", "block", "remove", "mine", "water", "crafting_table", "furnace", "chest", "bed", "torch"];
 
     public static readonly IReadOnlyList<string> Furniture = ["crafting_table", "furnace", "chest", "bed", "torch"];
 
@@ -135,6 +135,12 @@ public static class StoryConstruction
         int height = Math.Clamp(item["height"]?.GetValue<int>() ?? (kind == "wall" ? 3 : 1), 1, 12);
         string facing = (item["facing"]?.GetValue<string>() ?? "").Trim().ToLowerInvariant() is { Length: 1 } f && "nesw".Contains(f) ? f : "";
         int? level = item["level"]?.GetValue<int>();
+        // Liquid sources poured from a bucket (docs/web/story-mode.md "Water"): each cell a still source of the item's liquid.
+        if (kind == "water") return Liquid(item, blocks ?? area!.Value.Blocks());
+        // A design's water (or lava) source cells: poured like a water item (a flowing cell stays an unsupported ghost).
+        if (kind == "block" && item["material"] is JsonArray la && la.Count >= 1 && la[0] is JsonValue lv && lv.TryGetValue<int>(out var lid)
+            && lid is >= 8 and <= 11 && (la.Count < 2 || la[1] is JsonValue lm && lm.TryGetValue<int>(out var lmeta) && lmeta == 0))
+            return Liquid(item, blocks ?? area!.Value.Blocks());
         var mat = item["material"] is { } mn ? Resolve(d, mn) : null;
         if (item["material"] != null && mat == null && kind != "remove") return ([], null, "unknown material");
         mat ??= kind switch
@@ -251,6 +257,43 @@ public static class StoryConstruction
         }
         foreach (var gh in g.Where(x => x.Item == null && !x.Remove)) gh.Item = d.ItemExists(gh.Id) ? d.Item(gh.Id).Name : d.Block(gh.Id).Name;
         return (g, mat, g.Count == 0 ? "nothing to build there" : null);
+    }
+
+    /// <summary>The liquid a water item pours: its <c>material</c> "water" (default) or "lava" (also by block id 8–11); null = neither.</summary>
+    public static string? LiquidOf(JsonObject item)
+    {
+        var m = item["material"];
+        if (m == null) return "water";
+        if (m is JsonArray a && a.Count >= 1 && a[0] is JsonValue av && av.TryGetValue<int>(out var id))
+            return id is 8 or 9 ? "water" : id is 10 or 11 ? "lava" : null;
+        if (m is JsonValue v && v.TryGetValue<string>(out var s))
+            return s.Trim().ToLowerInvariant() switch
+            {
+                "water" or "still_water" or "flowing_water" or "water_bucket" => "water",
+                "lava" or "still_lava" or "flowing_lava" or "lava_bucket" => "lava",
+                _ => null,
+            };
+        return null;
+    }
+
+    /// <summary>Is this ghost a liquid source to pour (water 8/9, lava 10/11)?</summary>
+    public static bool IsLiquid(GhostState g) => !g.Remove && g.Id is >= 8 and <= 11;
+
+    /// <summary>A water item: each cell a still source (water 9 / lava 11, meta 0) poured from a full bucket (its item).</summary>
+    private static (List<GhostState>, Material?, string?) Liquid(JsonObject item, IEnumerable<P3> cells)
+    {
+        var liquid = LiquidOf(item);
+        if (liquid == null) return ([], null, "a water item's material is water|lava");
+        int id = liquid == "lava" ? 11 : 9;
+        string bucket = liquid + "_bucket";
+        var g = new List<GhostState>();
+        var seen = new HashSet<P3>();
+        foreach (var p in cells)
+        {
+            if (p.Y < 1) return ([], null, $"{p} is below y 1");
+            if (seen.Add(p)) g.Add(new GhostState { At = p, Id = id, Meta = 0, Item = bucket });
+        }
+        return (g, new Material(id, 0, bucket, liquid), g.Count == 0 ? "nothing to pour there" : null);
     }
 
     /// <summary>

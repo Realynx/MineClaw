@@ -293,6 +293,60 @@ export function eraseZones<Z extends ZoneLike>(
   return { zones, result: r, removedCells: removed };
 }
 
+const CLOCKWISE = [
+  [1, 0],
+  [0, 1],
+  [-1, 0],
+  [0, -1],
+] as const;
+
+/**
+ * A quarry's stair ring (the bot's `StoryQuarry.Ring`): the zone's edge cells clockwise from its north-west-most one; layer k
+ * leaves ring cell k mod n standing as a step (a 2×2 zone's ring is its 4 cells). Null = no closed ring of 4+ (a 1-wide zone).
+ */
+export function quarryRing(cells: ReadonlySet<number>): Array<[number, number]> | null {
+  const edge = new Set<number>();
+  for (const k of cells) {
+    const x = cellX(k),
+      z = cellZ(k);
+    if (CLOCKWISE.some(([dx, dz]) => !cells.has(cellKey(x + dx, z + dz)))) edge.add(k);
+  }
+  if (edge.size < 4) return null;
+  const start = [...edge].sort((a, b) => cellZ(a) - cellZ(b) || cellX(a) - cellX(b))[0]!;
+  const ring = [start];
+  const seen = new Set([start]);
+  let heading = 0;
+  let cur = start;
+  for (;;) {
+    let moved = false;
+    for (const turn of [-1, 0, 1, 2]) {
+      const d = (heading + turn + 4) % 4;
+      const n = cellKey(cellX(cur) + CLOCKWISE[d]![0], cellZ(cur) + CLOCKWISE[d]![1]);
+      if (!edge.has(n) || seen.has(n)) continue;
+      seen.add(n);
+      ring.push(n);
+      cur = n;
+      heading = d;
+      moved = true;
+      break;
+    }
+    if (!moved) break;
+  }
+  const last = ring[ring.length - 1]!;
+  const closed = Math.abs(cellX(last) - cellX(start)) + Math.abs(cellZ(last) - cellZ(start)) === 1;
+  return ring.length >= 4 && closed ? ring.map((k) => [cellX(k), cellZ(k)]) : null;
+}
+
+/** Layer k's step: ring cell k mod n at y = top − k. */
+export function quarryStep(
+  ring: ReadonlyArray<readonly [number, number]>,
+  top: number,
+  k: number,
+): [number, number, number] {
+  const [x, z] = ring[k % ring.length]!;
+  return [x, top - k, z];
+}
+
 /**
  * The still-water columns of a block scan (flat `[x, y, z, id, meta, below]` records of ids 8/9): a column counts when its top
  * water block is a source (meta 0). What a fishing zone keeps of a painted area (the bot also wants open air above).
