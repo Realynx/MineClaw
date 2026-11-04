@@ -29,6 +29,13 @@ type KeyboardLock = { lock?: (keys: string[]) => Promise<void>; unlock?: () => v
 const keyboardOf = () => (navigator as Navigator & { keyboard?: KeyboardLock }).keyboard;
 
 type Entities = ReturnType<typeof useEntities>['data'];
+type Host = ReturnType<typeof useWorldHost>;
+
+/** The viewer module and its source have loaded. */
+const loaded = (h: Host): h is Host & { mod: NonNullable<Host['mod']>; source: NonNullable<Host['source']> } => h.ready && !!h.mod && !!h.source;
+
+/** Following a bot starts in the follow camera; else free cam. */
+const initialMode = (follow: string | undefined): CameraMode => (follow ? 'follow' : 'fly');
 
 /** The followed bot (by name or short name) and its dimension (the overworld when none). */
 function followed(data: Entities, follow: string | undefined) {
@@ -87,14 +94,14 @@ export function WorldPane({
   onBodyClick?: (name: string) => void;
   overlay?: ReactNode;
 }) {
-  const { mod, source, ready } = useWorldHost();
+  const host = useWorldHost();
   const bodyClick = useRef(onBodyClick);
   useEffect(() => {
     bodyClick.current = onBodyClick;
   }, [onBodyClick]);
   const { devDetails } = usePrefs();
   const viewer = useRef<WorldViewerHandle>(null);
-  const [mode, setMode] = useState<CameraMode>(follow ? 'follow' : 'fly');
+  const [mode, setMode] = useState<CameraMode>(initialMode(follow));
   const [xray, setXray] = useState<XRayMode>('auto');
   // The draw distance is the device's viewer setting (Settings → Viewer quality): this slider edits it for every view.
   const viewerSettings = useViewerSettings();
@@ -227,7 +234,7 @@ export function WorldPane({
     };
     el.addEventListener('pointerdown', onDown, true);
     return () => el.removeEventListener('pointerdown', onDown, true);
-  }, [closeChat, ready]);
+  }, [closeChat, host.ready]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) =>
@@ -290,7 +297,8 @@ export function WorldPane({
     viewer.current?.setCameraMode(m);
   };
 
-  if (!ready || !mod || !source) return <WorldFallback follow={follow} ready={ready} className={className} />;
+  if (!loaded(host)) return <WorldFallback follow={follow} ready={host.ready} className={className} />;
+  const { mod, source } = host;
 
   return (
     <div className={cn('flex size-full min-h-0 flex-col', className)}>
@@ -339,9 +347,7 @@ export function WorldPane({
           className="absolute inset-0"
         />
         <FreeCamOverlay mode={mode} locked={locked} chatOpen={chatOpen} aim={aim} bots={entities.data?.bots} />
-        {fullscreen ? (
-          <FullscreenBar mode={mode} onMode={onMode} barShown={!!(selected.length || marker)} escToPage={escToPage} toggleFullscreen={toggleFullscreen} />
-        ) : null}
+        <FullscreenBar shown={fullscreen} mode={mode} onMode={onMode} selected={selected} marker={marker} escToPage={escToPage} toggleFullscreen={toggleFullscreen} />
         {hud ? <SelectionBar selected={selected} marker={marker} onClear={() => setSelected([])} onClearMarker={() => setMarker(null)} /> : null}
         <ChatOverlay
           open={chatOpen}
@@ -352,11 +358,11 @@ export function WorldPane({
           onClose={closeChat}
           results={sent}
         />
-        {hud ? <PositionHud me={me} picked={picked} /> : null}
-        {drops ? <DropsPanel me={me} drops={nearbyDrops} onFocus={(e) => viewer.current?.focus(e.x, e.y, e.z)} /> : null}
+        <PositionHud shown={hud} me={me} picked={picked} />
+        <DropsPanel shown={drops} me={me} drops={nearbyDrops} onFocus={(e) => viewer.current?.focus(e.x, e.y, e.z)} />
         {overlay}
         <ContainerLayer container={container} stageEl={stageEl} onClose={closeContainer} />
-        {devDetails ? <StatsHud stats={stats} /> : null}
+        <StatsHud stats={devDetails ? stats : null} />
       </div>
     </div>
   );

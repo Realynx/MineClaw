@@ -173,9 +173,18 @@ export function WorldToolbar(
 }
 
 /** In full screen: the camera switch and the way out (lowered under the selection bar when that shows). */
-export function FullscreenBar(p: { mode: CameraMode; onMode: (m: CameraMode) => void; barShown: boolean; escToPage: boolean; toggleFullscreen: () => void }) {
+export function FullscreenBar(p: {
+  shown: boolean;
+  mode: CameraMode;
+  onMode: (m: CameraMode) => void;
+  selected: readonly string[];
+  marker: unknown;
+  escToPage: boolean;
+  toggleFullscreen: () => void;
+}) {
+  if (!p.shown) return null;
   return (
-    <div className="absolute top-3 right-3 z-10 flex gap-1.5" style={{ marginTop: p.barShown ? 32 : 0 }}>
+    <div className="absolute top-3 right-3 z-10 flex gap-1.5" style={{ marginTop: p.selected.length || p.marker ? 32 : 0 }}>
       <Segmented<CameraMode>
         label="Camera"
         size="sm"
@@ -201,7 +210,8 @@ function pickedLine(picked: PickedBlock | null): string {
 }
 
 /** The F3-style HUD: the followed bot's name, dimension, position and facing, and the last picked block. */
-export function PositionHud({ me, picked }: { me: Bot | undefined; picked: PickedBlock | null }) {
+export function PositionHud({ shown, me, picked }: { shown: boolean; me: Bot | undefined; picked: PickedBlock | null }) {
+  if (!shown) return null;
   return (
     <div className="pointer-events-none absolute top-3 left-3 space-y-0.5 rounded-md bg-black/55 px-2.5 py-2 font-mono text-[11px] leading-snug text-white">
       {me ? (
@@ -225,7 +235,8 @@ export function PositionHud({ me, picked }: { me: Bot | undefined; picked: Picke
 }
 
 /** The drops near the followed bot, nearest first; a click flies the camera to one. */
-export function DropsPanel({ me, drops, onFocus }: { me: Bot | undefined; drops: readonly NearbyDrop[]; onFocus: (e: Entity) => void }) {
+export function DropsPanel({ shown, me, drops, onFocus }: { shown: boolean; me: Bot | undefined; drops: readonly NearbyDrop[]; onFocus: (e: Entity) => void }) {
+  if (!shown) return null;
   return (
     <div className="absolute top-3 right-3 bottom-3 flex w-64 flex-col overflow-hidden rounded-lg border border-border bg-surface shadow-pop">
       <div className="border-b border-border px-3 py-2 text-xs font-medium text-fg">Drops near {me?.name ?? 'the bot'}</div>
@@ -246,7 +257,7 @@ export function DropsPanel({ me, drops, onFocus }: { me: Bot | undefined; drops:
   );
 }
 
-/** The renderer's stats (developer details; nothing before the first). */
+/** The renderer's stats (developer details; nothing before the first, or with them off). */
 export function StatsHud({ stats }: { stats: ViewerStats | null }) {
   if (!stats) return null;
   return (
