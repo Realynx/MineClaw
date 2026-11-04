@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import * as C from '../src/index.js';
-import { memoryCloudMock, type CloudMockNode } from '../src/testing.js';
+import { cloudMockDistance, memoryCloudMock, type CloudMockNode } from '../src/testing.js';
 
 /** 2 roots → 8 L2 → 32 L1 → 320 leaves. */
 function tree(): CloudMockNode[] {
@@ -47,5 +47,34 @@ describe('memoryCloudMock', () => {
 
   it('is deterministic', () => {
     expect(memoryCloudMock(tree(), { extraLeaves: 50 })).toEqual(memoryCloudMock(tree(), { extraLeaves: 50 }));
+  });
+
+  it('fakes every arrangement over the same points, with fidelity and the arrangement list', () => {
+    const mds = memoryCloudMock(tree());
+    expect(mds.arrangement).toBe('mds');
+    expect(mds.fidelity?.pearson).toBeGreaterThan(0.8);
+    expect(mds.arrangements.map((a) => a.id)).toEqual(['mds', 'umap', 'pca', 'tree']);
+    for (const a of ['umap', 'pca', 'tree'] as const) {
+      const c = memoryCloudMock(tree(), { arrangement: a });
+      expect(() => C.MemoryCloudResponse.parse(c)).not.toThrow();
+      expect(c.arrangement).toBe(a);
+      expect(c.points.id).toEqual(mds.points.id);
+      expect(c.points.xy).not.toEqual(mds.points.xy);
+      expect(c.clusters.map((x) => x.node)).toEqual(mds.clusters.map((x) => x.node));
+    }
+    expect(memoryCloudMock(tree(), { arrangement: 'pca' }).fidelity?.varianceExplained).toHaveLength(2);
+  });
+
+  it('answers a symmetric mock distance near the drawn one', () => {
+    const mds = memoryCloudMock(tree());
+    const [a, b] = [mds.points.id[3]!, mds.points.id[200]!];
+    const d = cloudMockDistance(mds, a, b)!;
+    expect(() => C.CloudDistanceResponse.parse(d)).not.toThrow();
+    expect(cloudMockDistance(mds, b, a)!.distance).toBe(d.distance);
+    expect(cloudMockDistance(mds, a, a)!.distance).toBe(0);
+    expect(cloudMockDistance(mds, a, 99_999)).toBeNull();
+    const drawn = Math.hypot(mds.points.xy[6]! - mds.points.xy[400]!, mds.points.xy[7]! - mds.points.xy[401]!) * 1.35;
+    expect(d.distance).toBeGreaterThan(drawn * 0.84);
+    expect(d.distance).toBeLessThan(drawn * 1.16);
   });
 });

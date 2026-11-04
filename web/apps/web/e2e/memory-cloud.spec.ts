@@ -130,18 +130,136 @@ test('cloud: hover shows a tooltip, click opens detail, the hive filter changes 
   await expect(page.getByText(/\d+ match/)).toBeVisible();
 });
 
+/** Screen position of point `i` of `xy` in pane `pane` of `count` side-by-side panes (the canvas's paneRects / paneFrame). */
+async function pointInPane(page: Page, xy: number[], i: number, pane: number, count: number): Promise<[number, number]> {
+  const box = (await page.getByRole('application', { name: 'Memory cloud' }).boundingBox())!;
+  const left = box.width >= 720 ? 290 : 0;
+  const roomW = box.width - left;
+  // Two panes sit side by side when the room is wider than tall, else stacked.
+  const across = count === 1 || roomW >= box.height;
+  const pw = count === 1 || !across ? roomW : (roomW - 8) / 2;
+  const ph = count === 1 || across ? box.height : (box.height - 8) / 2;
+  const px = left + (across ? pane * (pw + 8) : 0);
+  const py = across ? 0 : pane * (ph + 8);
+  const base = Math.min(pw, ph) * 0.94;
+  return [box.x + px + (pw - base) / 2 + xy[2 * i]! * base, box.y + py + (ph - base) / 2 + xy[2 * i + 1]! * base];
+}
+
+/** Opaque pixels of the overlay canvas (rings, labels) in a box around a page position. */
+async function overlayInk(page: Page, x: number, y: number, r = 12): Promise<number> {
+  return page.evaluate(
+    ({ x, y, r }) => {
+      const app = document.querySelector('[aria-roledescription="memory cloud"]')!;
+      const c = app.querySelectorAll('canvas')[2] as HTMLCanvasElement;
+      const b = c.getBoundingClientRect();
+      const dpr = c.width / b.width;
+      const d = c
+        .getContext('2d')!
+        .getImageData(Math.round((x - b.left - r) * dpr), Math.round((y - b.top - r) * dpr), Math.round(2 * r * dpr), Math.round(2 * r * dpr)).data;
+      let n = 0;
+      for (let k = 3; k < d.length; k += 4) if (d[k]! > 40) n++;
+      return n;
+    },
+    { x, y, r },
+  );
+}
+
+test('cloud: distances by default with fidelity and a scale bar; every arrangement; compare links hover across panes', async ({
+  page,
+}) => {
+  await signIn(page);
+  const cloud = await openCloud(page);
+  const app = page.getByRole('application', { name: 'Memory cloud' });
+
+  // Default: Distances (MDS), its fidelity badge, a scale bar in cosine distance, links on.
+  await expect(page.getByRole('radio', { name: 'Distances' })).toHaveAttribute('aria-checked', 'true');
+  await expect(page.getByTestId('cloud-fidelity')).toHaveText(/Distances: true to embeddings \(r = 0\.\d\d, stress 0\.\d\d\)/);
+  await expect(app).toHaveAttribute('data-scale0', /cosine distance\|\d/);
+  await expect(page.getByRole('switch', { name: 'Links' })).toHaveAttribute('aria-checked', 'true');
+  if (shots) await page.screenshot({ path: `${shots}/memory-cloud-distances.png` });
+
+  // Hovering a memory while another is selected shows their embedding distance and the drawn one.
+  const i = centralPoint(cloud);
+  const j = (i + 7) % cloud.ids.length;
+  const [sx, sy] = await pointOnScreen(page, cloud, i);
+  await page.mouse.click(sx, sy);
+  await page.waitForURL(/node=\d+/);
+  const selected = Number(new URL(page.url()).searchParams.get('node'));
+  const si = cloud.ids.indexOf(selected);
+  const other = si === j ? (j + 1) % cloud.ids.length : j;
+  const [ox, oy] = await pointOnScreen(page, cloud, other);
+  await page.mouse.move(ox, oy);
+  await expect(page.getByTestId('cloud-distance')).toContainText(/embedding distance \d\.\d\d · drawn \d\.\d\d/);
+  await page.keyboard.press('Escape');
+
+  // Each arrangement: the URL keeps it, the badge follows; UMAP and the tree draw no scale bar.
+  for (const [name, id, scale] of [
+    ['Neighbourhoods', 'umap', false],
+    ['PCA', 'pca', true],
+    ['Tree', 'tree', false],
+    ['Distances', null, true],
+  ] as const) {
+    await page.getByRole('radio', { name }).click();
+    if (id) await page.waitForURL(new RegExp(`arr=${id}`));
+    else await expect.poll(() => new URL(page.url()).searchParams.get('arr')).toBeNull();
+    await expect(page.getByRole('radio', { name })).toHaveAttribute('aria-checked', 'true');
+    await expect(page.getByTestId('cloud-fidelity')).toBeVisible();
+    await expect(app).toHaveAttribute('data-scale0', scale ? /cosine distance/ : '');
+  }
+
+  // Compare: two panes in one canvas; hovering a memory in the first rings it in the second too.
+  await page.getByRole('button', { name: 'Compare' }).click();
+  await page.waitForURL(/cmp=mds%2Cumap|cmp=mds,umap/);
+  await expect(app).toHaveAttribute('data-panes', '2');
+  await expect(page.getByTestId('cloud-pane-title')).toHaveCount(2);
+  await expect(page.getByTestId('cloud-pane-title').nth(1)).toContainText('Neighbourhoods (UMAP)');
+  const umap = await page.evaluate(async () => {
+    const r = await fetch('/api/memory-activity/cloud?arrangement=umap');
+    return ((await r.json()) as { points: { xy: number[] } }).points.xy;
+  });
+  await page.waitForTimeout(900); // the switch animation settles
+  const [ax, ay] = await pointInPane(page, cloud.xy, i, 0, 2);
+  const [bx, by] = await pointInPane(page, umap, i, 1, 2);
+  await page.mouse.move(ax + 300, ay + 300);
+  await page.mouse.move(10, 10);
+  await page.waitForTimeout(200);
+  const before = await overlayInk(page, bx, by);
+  await page.mouse.move(ax, ay);
+  await expect(page.getByRole('tooltip')).toBeVisible();
+  await expect.poll(() => overlayInk(page, bx, by)).toBeGreaterThan(before + 10);
+  if (shots) await page.screenshot({ path: `${shots}/memory-cloud-compare.png` });
+
+  // Back to one pane.
+  await page.getByRole('button', { name: 'Compare' }).click();
+  await expect(app).toHaveAttribute('data-panes', '1');
+  await expect.poll(() => new URL(page.url()).searchParams.get('cmp')).toBeNull();
+});
+
 test('cloud frame rate on software WebGL', async ({ page }) => {
   test.skip(!process.env.CLOUD_PERF, 'set CLOUD_PERF=1 to measure');
   test.setTimeout(240_000);
   await signIn(page);
   const out: Record<string, unknown> = {};
+  const setLinks = async (on: boolean) => {
+    const sw = page.getByRole('switch', { name: 'Links' });
+    if ((await sw.getAttribute('aria-checked')) !== String(on)) await sw.click();
+    await expect(sw).toHaveAttribute('aria-checked', String(on));
+  };
   for (const extra of [2520, 19_520]) {
     await page.evaluate((n) => localStorage.setItem('mcx-mock-cloud-extra', String(n)), extra);
-    await page.reload();
+    await page.goto('/memory-activity?layout=cloud');
     await openCloud(page);
     const box = (await page.getByRole('application', { name: 'Memory cloud' }).boundingBox())!;
-    const run = async (label: string, links: boolean) => {
-      if (links) await page.getByText('Links').click();
+    const run = async (label: string, links: boolean, compare?: string) => {
+      if (compare) {
+        await page.goto(`/memory-activity?layout=cloud&cmp=${compare}`);
+        await expect(page.getByRole('application', { name: 'Memory cloud' })).toHaveAttribute(
+          'data-panes',
+          String(compare.split(',').length),
+        );
+        await page.waitForTimeout(1500);
+      }
+      await setLinks(links);
       await page.evaluate(() => {
         const w = window as unknown as {
           __frames: number[];
@@ -192,12 +310,21 @@ test('cloud frame rate on software WebGL', async ({ page }) => {
           drawMsAvg: +(s.drawMs / Math.max(1, s.frames)).toFixed(2),
         };
       });
-      if (links) await page.getByText('Links').click();
     };
-    await run(`${extra + 480} points`, false);
-    await run(`${extra + 480} points + links`, true);
+    const pts = extra + 480;
+    await run(`${pts} points + links (default)`, true);
+    await run(`${pts} points, links off`, false);
+    await run(`${pts} points + links, compare 2 panes`, true, 'mds,umap');
+    if (extra < 10_000) await run(`${pts} points + links, compare 4 panes`, true, 'mds,umap,pca,tree');
+    await page.goto('/memory-activity?layout=cloud');
+    await setLinks(true);
   }
-  await page.evaluate(() => localStorage.removeItem('mcx-mock-cloud-extra'));
+  await page.evaluate(() => {
+    localStorage.removeItem('mcx-mock-cloud-extra');
+    localStorage.removeItem('mcx-cloud-links');
+  });
   console.warn(`[cloud-perf] ${JSON.stringify(out, null, 1)}`);
-  for (const v of Object.values(out)) expect((v as { fps: number }).fps).toBeGreaterThanOrEqual(30);
+  // ≥ 40 fps at the live db's size with links on (one pane or compared); the 20k stress case keeps ≥ 30.
+  for (const [k, v] of Object.entries(out))
+    expect((v as { fps: number }).fps, k).toBeGreaterThanOrEqual(k.startsWith('3000') ? 40 : 30);
 });

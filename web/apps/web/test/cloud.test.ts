@@ -1,7 +1,20 @@
 import { describe, expect, it } from 'vitest';
 import {
+  ARRANGEMENTS,
   CLUSTER_PALETTE,
+  DEFAULT_ARRANGEMENT,
   OTHER_COLOR,
+  alignXy,
+  drawnDistance,
+  easeInOut,
+  fidelityBadge,
+  isArrangement,
+  linkAlpha,
+  niceScale,
+  paneFrame,
+  paneRects,
+  parseCompare,
+  zoomSizeFactor,
   buildGrid,
   cloudBrightness,
   cloudParents,
@@ -110,5 +123,96 @@ describe('cloud geometry and search', () => {
     const p = cloudParents(memoryCloud());
     expect(p.get(0)?.length).toBeGreaterThan(0);
     expect(p.size).toBeGreaterThan(3000);
+  });
+});
+
+describe('cloud arrangements, fidelity and scale', () => {
+  it('parses the picked arrangement and the compared ones from the URL', () => {
+    expect(isArrangement('mds')).toBe(true);
+    expect(isArrangement('tsne')).toBe(false);
+    expect(DEFAULT_ARRANGEMENT).toBe('mds');
+    expect(parseCompare('mds,umap')).toEqual(['mds', 'umap']);
+    expect(parseCompare('umap,umap,pca,x,tree,mds')).toEqual(['umap', 'pca', 'tree', 'mds']);
+    expect(parseCompare('mds')).toBeNull();
+    expect(parseCompare(null)).toBeNull();
+    expect(ARRANGEMENTS.map((a) => a.id)).toEqual(['mds', 'umap', 'pca', 'tree']);
+  });
+
+  it('badges distances true to embeddings only when correlation is strong and stress low', () => {
+    const f = (pearson: number, stress: number) =>
+      ({ metric: 'cosine', pearson, spearman: pearson, stress, unitDistance: 1.3, pairs: 20_000 }) as const;
+    const good = fidelityBadge('mds', f(0.86, 0.12))!;
+    expect(good.text).toBe('Distances: true to embeddings');
+    expect(good.detail).toBe('r = 0.86, stress 0.12');
+    expect(good.tone).toBe('ok');
+    expect(good.tooltip).toMatch(/1024-number embedding/);
+    expect(good.tooltip).toMatch(/20,000 memory pairs/);
+    expect(fidelityBadge('umap', f(0.66, 0.35))!.text).toBe('Distances: roughly to scale');
+    expect(fidelityBadge('umap', f(0.66, 0.35))!.tooltip).toMatch(/read neighbours, not gaps/);
+    expect(fidelityBadge('umap', f(0.4, 0.6))!.text).toBe('Distances: not to scale');
+    expect(fidelityBadge('mds', null)).toBeNull();
+    const pca = fidelityBadge('pca', { ...f(0.67, 0.38), varianceExplained: [0.17, 0.07] })!;
+    expect(pca.tooltip).toMatch(/17 % and 7 %/);
+  });
+
+  it('picks a round scale bar near the target length in cosine distance', () => {
+    // 1 unit = 1.35 cosine distance drawn 600 px wide: 110 px ≈ 0.2475 → 0.2
+    const s = niceScale(1.35, 600)!;
+    expect(s.value).toBe(0.2);
+    expect(s.label).toBe('0.2 cosine distance');
+    expect(s.px).toBeCloseTo((0.2 / 1.35) * 600);
+    // zoomed in 10×: 0.02
+    expect(niceScale(1.35, 6000)!.value).toBe(0.02);
+    expect(niceScale(1.35, 6000)!.label).toBe('0.02 cosine distance');
+    expect(niceScale(0, 600)).toBeNull();
+    // drawn distance on the arrangement's scale
+    expect(drawnDistance([0, 0, 0.3, 0.4], 0, 1, 2)).toBeCloseTo(1);
+  });
+
+  it('fades links when zoomed out or dense, a little stronger zoomed in, never loud', () => {
+    const at1 = linkAlpha(1, 3000, 'dark');
+    expect(at1).toBeGreaterThan(0.05);
+    expect(at1).toBeLessThan(0.1);
+    expect(linkAlpha(0.5, 3000, 'dark')).toBeLessThan(at1 / 2);
+    expect(linkAlpha(1, 24_000, 'dark')).toBeLessThan(at1);
+    expect(linkAlpha(8, 3000, 'dark')).toBeGreaterThan(at1);
+    expect(linkAlpha(60, 100, 'light')).toBeLessThanOrEqual(0.16);
+  });
+
+  it('splits the canvas into panes right of the legend and fits the unit square in each', () => {
+    const one = paneRects(1200, 800, 1, 290, 720);
+    expect(one).toEqual([{ x: 290, y: 0, w: 910, h: 800 }]);
+    expect(paneFrame(one[0]!)).toEqual({ base: 752, ox: 290 + (910 - 752) / 2, oy: 24 });
+    const two = paneRects(1200, 800, 2, 290, 720);
+    expect(two).toHaveLength(2);
+    expect(two[1]!.x).toBeGreaterThan(two[0]!.x + two[0]!.w);
+    expect(paneRects(600, 900, 2, 290, 720)[1]!.y).toBeGreaterThan(0); // narrow: stacked, no legend room
+    const four = paneRects(1200, 800, 4, 290, 720);
+    expect(four.map((r) => [r.x > 290 + 400, r.y > 0])).toEqual([
+      [false, false],
+      [true, false],
+      [false, true],
+      [true, true],
+    ]);
+  });
+
+  it('aligns another arrangement to the primary point order and eases calmly', () => {
+    expect(alignXy([1, 2], [1, 2], [0.1, 0.2, 0.3, 0.4])).toEqual([0.1, 0.2, 0.3, 0.4]);
+    expect(alignXy([1, 2, 3], [2, 1], [0.3, 0.4, 0.1, 0.2])).toEqual([0.1, 0.2, 0.3, 0.4, -9, -9]);
+    expect(easeInOut(0)).toBe(0);
+    expect(easeInOut(0.5)).toBeCloseTo(0.5);
+    expect(easeInOut(1)).toBe(1);
+    expect(easeInOut(0.1)).toBeLessThan(0.1);
+    expect(zoomSizeFactor(1)).toBe(1);
+    expect(zoomSizeFactor(4)).toBeGreaterThan(1);
+    expect(pointLook(0, 4).size / pointLook(0, 1).size).toBeCloseTo(zoomSizeFactor(4));
+  });
+
+  it('mock arrangements share the points and the default is the distance layout', () => {
+    const mds = memoryCloud();
+    const umap = memoryCloud('umap');
+    expect(mds.arrangement).toBe('mds');
+    expect(umap.points.id).toEqual(mds.points.id);
+    expect(umap.points.xy).not.toEqual(mds.points.xy);
   });
 });
