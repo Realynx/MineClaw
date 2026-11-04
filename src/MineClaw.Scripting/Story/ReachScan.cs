@@ -22,89 +22,105 @@ public static class ReachScan
     public const double Reach = 4.0;
 
     private static readonly int[] PillarIds = [3, 4, 87, 5, 1, 24];
-    private static readonly HashSet<int> Falling = [12, 13, 122, 145, 252];
+
+    private const string LiquidGround = "only liquid to stand on under it";
+
+    private readonly record struct Column(BlockPos Stand, int Steps, double Score);
 
     public static JsonObject Scan(WorldState w, IGameData data, Vec3d pos, BlockPos target)
     {
-        int H = w.WorldHeight;
-        bool Liquid(int x, int y, int z) => w.GetBlock(x, y, z) is >= 8 and <= 11;
-        bool Lava(int x, int y, int z) => w.GetBlock(x, y, z) is 10 or 11;
-        bool Solid(int x, int y, int z) => y >= 0 && y < H && BlockShapes.HasCollision(w, x, y, z);
-        bool Free(int x, int y, int z) => y >= 0 && y < H && !Solid(x, y, z) && !Liquid(x, y, z) && w.GetBlock(x, y, z) is not (51 or 81 or 30);
+        var g = new ScanGround(w, data);
         var center = new Vec3d(target.X + 0.5, target.Y + 0.5, target.Z + 0.5);
-        double Eye(double x, double feetY, double z) => new Vec3d(x, feetY + 1.62, z).DistanceTo(center);
-        var o = new JsonObject { ["within"] = Eye(pos.X, pos.Y, pos.Z) <= Reach };
-        int blocks = 0;
-        string? block = null;
-        foreach (int id in PillarIds)
-        {
-            if (!data.ItemExists(id)) continue;
-            int n = w.Inventory.CountItem(id);
-            if (n <= 0) continue;
-            blocks += n;
-            block ??= data.Item(id).Name;
-        }
+        var o = new JsonObject { ["within"] = Eye(pos.X, pos.Y, pos.Z, center) <= Reach };
+        var (block, blocks) = g.Stock(PillarIds);
         o["block"] = block;
         o["blocks"] = blocks;
         if (o["within"]!.GetValue<bool>()) return o;
+        if (Best(g, target, center, out var why) is not { } pick)
+        {
+            o["why"] = why;
+            return o;
+        }
+        o["stand"] = ScanGround.Fmt(pick.Stand);
+        o["steps"] = pick.Steps;
+        o["gather"] = Gather(g, pos, pick.Stand);
+        return o;
+    }
 
-        (BlockPos Stand, int Steps, double Score)? best = null;
-        string why = "no ground to stand on below or beside it within " + MaxPillar + " blocks";
+    private static double Eye(double x, double feetY, double z, Vec3d center) => new Vec3d(x, feetY + 1.62, z).DistanceTo(center);
+
+    /// <summary>The cheapest column, under the target first then rings 1 and 2 around it; else why none will do (the last reason seen).</summary>
+    private static Column? Best(ScanGround g, BlockPos target, Vec3d center, out string why)
+    {
+        Column? best = null;
+        why = "no ground to stand on below or beside it within " + MaxPillar + " blocks";
         for (int r = 0; r <= 2; r++)
             for (int dx = -r; dx <= r; dx++)
                 for (int dz = -r; dz <= r; dz++)
                 {
                     if (Math.Max(Math.Abs(dx), Math.Abs(dz)) != r) continue;
-                    int cx = target.X + dx, cz = target.Z + dz;
-                    if (!w.IsLoaded(cx, cz)) continue;
-                    bool under = r == 0;
-                    if (under && Falling.Contains(w.GetBlock(target.X, target.Y + 1, target.Z))) { why = "sand or gravel over it would fall on me"; continue; }
-                    // Ground: the first standable cell going down from just below the target's height.
-                    int gy = -1;
-                    for (int y = target.Y - 1; y >= Math.Max(1, target.Y - MaxPillar - 4); y--)
-                    {
-                        if (!Free(cx, y, cz)) { if (Liquid(cx, y, cz)) { why = "only liquid to stand on under it"; } break; }
-                        if (Solid(cx, y - 1, cz)) { if (Free(cx, y + 1, cz)) gy = y; break; }
-                        if (Liquid(cx, y - 1, cz)) { why = "only liquid to stand on under it"; break; }
-                    }
-                    if (gy < 0) continue;
-                    int feet = gy;
-                    while (feet - gy <= MaxPillar && Eye(cx + 0.5, feet, cz + 0.5) > Reach) feet++;
-                    if (feet - gy > MaxPillar) { why = "more than " + MaxPillar + " blocks up"; continue; }
-                    if (feet + 1 >= H - 1) { why = "above the build height"; continue; }
-                    bool clear = true;
-                    for (int y = gy; y <= feet + 1 && clear; y++)
-                    {
-                        if (!Free(cx, y, cz)) clear = false;
-                        foreach (var (ax, az) in new[] { (1, 0), (-1, 0), (0, 1), (0, -1) })
-                            if (Lava(cx + ax, y, cz + az)) clear = false;
-                    }
-                    if (!clear) { why = "no free column to pillar up beside it"; continue; }
-                    double score = (feet - gy) + 0.3 * r;
-                    if (best is not { } b || score < b.Score) best = (new BlockPos(cx, gy, cz), feet - gy, score);
+                    if (TryColumn(g, target, center, r, target.X + dx, target.Z + dz, ref why) is { } col && (best is not { } b || col.Score < b.Score)) best = col;
                 }
-        if (best is not { } pick)
+        return best;
+    }
+
+    /// <summary>The column at cx,cz: its ground, how many blocks up until the target is in reach, and a free shaft to get there.</summary>
+    private static Column? TryColumn(ScanGround g, BlockPos target, Vec3d center, int r, int cx, int cz, ref string why)
+    {
+        if (!g.World.IsLoaded(cx, cz)) return null;
+        if (r == 0 && ScanGround.Falling.Contains(g.World.GetBlock(target.X, target.Y + 1, target.Z))) { why = "sand or gravel over it would fall on me"; return null; }
+        int gy = GroundUnder(g, cx, cz, target.Y, ref why);
+        if (gy < 0) return null;
+        int feet = gy;
+        while (feet - gy <= MaxPillar && Eye(cx + 0.5, feet, cz + 0.5, center) > Reach) feet++;
+        if (feet - gy > MaxPillar) { why = "more than " + MaxPillar + " blocks up"; return null; }
+        if (feet + 1 >= g.Height - 1) { why = "above the build height"; return null; }
+        if (!ClearShaft(g, cx, cz, gy, feet)) { why = "no free column to pillar up beside it"; return null; }
+        return new Column(new BlockPos(cx, gy, cz), feet - gy, (feet - gy) + 0.3 * r);
+    }
+
+    /// <summary>Ground: the first standable cell going down from just below the target's height (-1: none, or only liquid).</summary>
+    private static int GroundUnder(ScanGround g, int cx, int cz, int targetY, ref string why)
+    {
+        for (int y = targetY - 1; y >= Math.Max(1, targetY - MaxPillar - 4); y--)
         {
-            o["why"] = why;
-            return o;
+            if (!g.Free(cx, y, cz))
+            {
+                if (g.Liquid(cx, y, cz)) why = LiquidGround;
+                return -1;
+            }
+            if (g.Solid(cx, y - 1, cz)) return g.Free(cx, y + 1, cz) ? y : -1;
+            if (g.Liquid(cx, y - 1, cz)) { why = LiquidGround; return -1; }
         }
-        o["stand"] = Fmt(pick.Stand);
-        o["steps"] = pick.Steps;
-        // Dirt around the stand to dig for blocks when it carries too few (the surface it walks on; never the stand's own floor).
+        return -1;
+    }
+
+    /// <summary>Free from the ground to a head over the pillar's top, with no lava beside it.</summary>
+    private static bool ClearShaft(ScanGround g, int cx, int cz, int gy, int feet)
+    {
+        for (int y = gy; y <= feet + 1; y++)
+            if (!g.Free(cx, y, cz) || LavaBeside(g, cx, y, cz)) return false;
+        return true;
+    }
+
+    private static bool LavaBeside(ScanGround g, int x, int y, int z) =>
+        g.Lava(x + 1, y, z) || g.Lava(x - 1, y, z) || g.Lava(x, y, z + 1) || g.Lava(x, y, z - 1);
+
+    /// <summary>Dirt around the stand to dig for blocks when it carries too few (the surface it walks on; never the stand's own floor).</summary>
+    private static JsonArray Gather(ScanGround g, Vec3d pos, BlockPos stand)
+    {
         var gather = new JsonArray();
         var floor = new BlockPos((int)Math.Floor(pos.X), (int)Math.Floor(pos.Y + 1e-6) - 1, (int)Math.Floor(pos.Z));
         for (int dx = -3; dx <= 3 && gather.Count < 32; dx++)
             for (int dz = -3; dz <= 3 && gather.Count < 32; dz++)
             {
-                if (dx == 0 && dz == 0) continue;
-                int x = pick.Stand.X + dx, z = pick.Stand.Z + dz, y = pick.Stand.Y - 1;
-                if (new BlockPos(x, y, z) == floor) continue; // never the ground under its own feet
-                if (w.GetBlock(x, y, z) is not (2 or 3) || Liquid(x, y + 1, z) || Liquid(x + 1, y, z) || Liquid(x - 1, y, z) || Liquid(x, y, z + 1) || Liquid(x, y, z - 1)) continue;
-                gather.Add(Fmt(new BlockPos(x, y, z)));
+                var c = new BlockPos(stand.X + dx, stand.Y - 1, stand.Z + dz);
+                if (dx == 0 && dz == 0 || c == floor) continue; // never the ground under its own feet
+                if (Diggable(g, c)) gather.Add(ScanGround.Fmt(c));
             }
-        o["gather"] = gather;
-        return o;
+        return gather;
     }
 
-    private static string Fmt(BlockPos p) => $"{p.X},{p.Y},{p.Z}";
+    /// <summary>Grass or dirt with no liquid beside or over it.</summary>
+    private static bool Diggable(ScanGround g, BlockPos c) => g.World.GetBlock(c.X, c.Y, c.Z) is 2 or 3 && !g.LiquidAround(c.X, c.Y, c.Z);
 }
