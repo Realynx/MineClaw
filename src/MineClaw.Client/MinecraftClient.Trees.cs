@@ -978,12 +978,27 @@ public sealed partial class MinecraftClient
     /// <summary>Digs one dirt block for the pillar, books its hole for the refill and picks the drop up.</summary>
     private async Task DigPillarDirtAsync(ChopState st, BlockPos p, CancellationToken ct)
     {
+        int before = World.Inventory.CountItem(Blocks.Dirt);
+        var since = DateTime.UtcNow;
         var r = await DigCoreAsync(p, ct).ConfigureAwait(false);
         if (!r.Ok) { Log($"chop: couldn't dig dirt for a pillar: {r.Message}"); return; }
         st.Holes.Add(p);
         st.DirtDug++;
+        await WaitUntilAsync(() => DugDropArrived(p, before, since), DugDropWait, ct).ConfigureAwait(false);
         await CollectDropsCoreAsync(4, 6, ct, p.Center, st.LostIds, st.StuckIds).ConfigureAwait(false);
     }
+
+    /// <summary>
+    /// How long a pillar hole waits for its dirt's drop before the pickup looks. The server sends the block change first and spawns the
+    /// item after it (the entity tracker's next tick), so a pickup that looked at once found nothing when the drop lagged, the bag stayed a
+    /// block short and one more hole was dug (a full Client.Tests run, 11-04 19:28: a 12th hole, refilled at the end; live: a laggy server).
+    /// </summary>
+    private static readonly TimeSpan DugDropWait = TimeSpan.FromSeconds(1);
+
+    /// <summary>The dug dirt's drop is in: an item that appeared since the dig lies by the hole, or the dirt is already in the bag.</summary>
+    private bool DugDropArrived(BlockPos hole, int dirtBefore, DateTime since) =>
+        World.Inventory.CountItem(Blocks.Dirt) > dirtBefore
+        || World.Entities.Nearby(hole.Center, 1.5, e => e.Kind == EntityKind.Item && e.SpawnedAt >= since, 1).Count > 0;
 
     /// <summary>Dirt or grass 2 to 5 out from the trunk, from 4 below its ground to 1 above, that may be dug for a pillar.</summary>
     private List<BlockPos> PillarDirtCandidates(ChopState st)
@@ -1023,7 +1038,8 @@ public sealed partial class MinecraftClient
     /// <summary>Fills the holes <see cref="GatherPillarDirtAsync"/> dug, with the dirt the pillar gave back (best effort).</summary>
     private async Task RefillHolesAsync(ChopState st, CancellationToken ct)
     {
-        foreach (var h in st.Holes.OrderBy(h => h.Center.DistanceSquaredTo(World.Player.Position)).ToList())
+        await PickUpPillarDirtAsync(st, ct).ConfigureAwait(false);
+        foreach (var h in RefillOrder(st.Holes, World.Player.Position))
         {
             if (World.Inventory.CountItem(Blocks.Dirt) <= 0 || ReservedItems.Contains(Blocks.Dirt)) break;
             if (!Aiming.IsReplaceable(World, World.GetBlock(h)) || BlockShapes.IsLiquid(World.GetBlock(h))) continue;
@@ -1032,6 +1048,32 @@ public sealed partial class MinecraftClient
             if (!r.Ok) Log($"chop: couldn't fill the hole at {Fmt(h)}: {r.Message}");
         }
         st.Holes.Clear();
+    }
+
+    /// <summary>
+    /// Before the refill, while the bag holds less dirt than there are holes: the pillar's last block, dug from under my feet, drops after
+    /// its block change (<see cref="DugDropWait"/>), so a refill that set off at once walked away from it and left the last hole open when
+    /// the drop lagged. Waits for that drop by me and picks it up (best effort: once the wait runs out the refill fills what the bag holds).
+    /// </summary>
+    private async Task PickUpPillarDirtAsync(ChopState st, CancellationToken ct)
+    {
+        bool Enough() => World.Inventory.CountItem(Blocks.Dirt) >= st.Holes.Count;
+        if (st.Holes.Count == 0 || Enough()) return;
+        var me = World.Player.Position;
+        bool DirtBy() => World.Entities.Nearby(me, 3, e => e.Kind == EntityKind.Item && e.Item.Id == Blocks.Dirt, 1).Count > 0;
+        await WaitUntilAsync(() => Enough() || DirtBy(), DugDropWait, ct).ConfigureAwait(false);
+        if (!Enough()) await CollectDropsCoreAsync(3, 4, ct, me, st.LostIds, st.StuckIds).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// The holes nearest first, measured from the floor center of the cell I stand in, equally near ones in the order they were dug.
+    /// Measured from my exact position, holes mirrored about my cell (4,63,7 and 4,63,9 from 8.5,64,8.5) swapped places on the sub-block
+    /// drift tick timing leaves in where the pillar set me down (a full Client.Tests run, 11-04: the refill order flipped pair by pair).
+    /// </summary>
+    public static List<BlockPos> RefillOrder(IEnumerable<BlockPos> holes, Vec3d me)
+    {
+        var at = new BlockPos((int)Math.Floor(me.X), (int)Math.Floor(me.Y + 1e-6), (int)Math.Floor(me.Z)).BottomCenter;
+        return holes.OrderBy(h => h.Center.DistanceSquaredTo(at)).ToList();
     }
 
     // ------------------------------------------------------------------ saplings

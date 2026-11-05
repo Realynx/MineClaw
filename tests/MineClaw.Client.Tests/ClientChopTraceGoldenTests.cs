@@ -109,11 +109,11 @@ public class ClientChopTraceGoldenTests
         _ => throw new ArgumentException(name),
     };
 
-    internal static async Task<string> RunAsync(string name)
+    internal static async Task<string> RunAsync(string name, Action<FakeServer>? tweak = null)
     {
         var sc = Scenario(name);
         using var mode = sc.Normal ? WorldMode.Override(WorldMode.Normal) : null;
-        var (c, s) = await Harness.StartAsync(sc.Setup, release1122: sc.Modern);
+        var (c, s) = await Harness.StartAsync(srv => { sc.Setup(srv); tweak?.Invoke(srv); }, release1122: sc.Modern);
         await using var _ = c;
         using var __ = s;
         var r = await c.ChopTreeAsync(at: sc.At, wood: sc.Wood, options: TreeWorld.Fast with { Timeout = TimeSpan.FromSeconds(90) });
@@ -141,70 +141,39 @@ public class ClientChopTraceGoldenTests
         return string.Join("\n", lines);
     }
 
-    /// <summary>
-    /// The pinned trace exactly, except for the one step tick timing still decides: the pillar's dirt is gathered hole by hole until
-    /// the bag holds what the pillar needs (GatherPillarDirtAsync), and each hole's pickup runs right after its dig. When the client
-    /// lags (a full test run), the last hole's drop can reach it only after that pickup looked, so it digs one more hole, from the
-    /// same candidate order, picks both up and fills every hole again at the end (live: the same on a laggy server). Allowed: extra
-    /// "dug 2|3 at C" lines straight after the pinned holes, each with its "place 3:0 at C" refill, and nothing else; with them taken
-    /// out the trace must be the pinned one line for line (the result line, every log dug, the pillar, the pinned holes and their refills, in order).
-    /// </summary>
-    internal static bool SameChop(string expected, string actual)
-    {
-        if (expected == actual) return true;
-        var exp = expected.Split('\n');
-        var act = actual.Split('\n');
-        var extra = new List<int>();
-        int j = 0;
-        for (int i = 0; i < act.Length; i++)
-            if (j < exp.Length && act[i] == exp[j]) j++;
-            else extra.Add(i);
-        return j == exp.Length && ExtraHolesOnly(exp, act, extra);
-    }
-
-    private static readonly System.Text.RegularExpressions.Regex HoleDig = new(@"^dug [23] at (-?\d+,-?\d+,-?\d+)$");
-
-    private static bool ExtraHolesOnly(string[] exp, string[] act, List<int> extra)
-    {
-        var digs = extra.Where(i => HoleDig.IsMatch(act[i])).ToList();
-        if (digs.Count == 0 || digs.Count * 2 != extra.Count) return false;
-        // The extra digs come as one run straight after a pinned hole (a dug cell the pinned trace fills again)…
-        if (digs[^1] - digs[0] != digs.Count - 1 || digs[0] == 0 || !IsPinnedHole(exp, act[digs[0] - 1])) return false;
-        // …and every one of them is filled again (the other extra lines are exactly their refills).
-        var cells = digs.Select(i => HoleDig.Match(act[i]).Groups[1].Value).ToHashSet();
-        var refills = extra.Except(digs).Select(i => act[i]).ToList();
-        return refills.Count == cells.Count && refills.All(l => l.StartsWith("place 3:0 at ", StringComparison.Ordinal) && cells.Remove(l["place 3:0 at ".Length..]));
-    }
-
-    private static bool IsPinnedHole(string[] exp, string line) =>
-        HoleDig.Match(line) is { Success: true } m && exp.Contains("place 3:0 at " + m.Groups[1].Value);
-
+    /// <summary>The first drift full runs produced (11-04 19:28, remnant-dirt): a 12th hole at 5,63,9 after the pinned 11, filled again
+    /// at the end. The pickup after the last pillar hole looked before that hole's drop had arrived (the server spawns it after the block
+    /// change), so the bag stayed a block short and one more hole was dug. Here that drop lags the block change by 300 ms.</summary>
     [Fact]
-    public void A_lagging_pickup_may_add_refilled_holes_and_nothing_else()
+    public async Task The_last_pillar_hole_waits_for_its_drop()
     {
-        const string pinned = "ok: chopped\n----\ndug 2 at 3,63,7\ndug 2 at 5,63,7\ndug 17 at 8,72,8\nplace 3:0 at 5,63,7\nplace 3:0 at 3,63,7\nplace 6:0 at 8,64,8";
-        Assert.True(SameChop(pinned, pinned));
-        // One more hole, filled again: the lagging pickup.
-        Assert.True(SameChop(pinned, "ok: chopped\n----\ndug 2 at 3,63,7\ndug 2 at 5,63,7\ndug 2 at 5,63,9\ndug 17 at 8,72,8\nplace 3:0 at 5,63,7\nplace 3:0 at 5,63,9\nplace 3:0 at 3,63,7\nplace 6:0 at 8,64,8"));
-        // A hole left open, a hole dug somewhere else in the order, a missing or moved line, another result: all drift.
-        Assert.False(SameChop(pinned, "ok: chopped\n----\ndug 2 at 3,63,7\ndug 2 at 5,63,7\ndug 2 at 5,63,9\ndug 17 at 8,72,8\nplace 3:0 at 5,63,7\nplace 3:0 at 3,63,7\nplace 6:0 at 8,64,8"));
-        Assert.False(SameChop(pinned, "ok: chopped\n----\ndug 2 at 3,63,7\ndug 2 at 5,63,7\ndug 17 at 8,72,8\ndug 2 at 5,63,9\nplace 3:0 at 5,63,7\nplace 3:0 at 5,63,9\nplace 3:0 at 3,63,7\nplace 6:0 at 8,64,8"));
-        Assert.False(SameChop(pinned, "ok: chopped\n----\ndug 2 at 3,63,7\ndug 17 at 8,72,8\nplace 3:0 at 5,63,7\nplace 3:0 at 3,63,7\nplace 6:0 at 8,64,8"));
-        Assert.False(SameChop(pinned, "fail: chopped\n----\ndug 2 at 3,63,7\ndug 2 at 5,63,7\ndug 17 at 8,72,8\nplace 3:0 at 5,63,7\nplace 3:0 at 3,63,7\nplace 6:0 at 8,64,8"));
-        Assert.False(SameChop(pinned, "ok: chopped\n----\ndug 2 at 3,63,7\ndug 2 at 5,63,7\ndug 17 at 8,72,8\ndug 17 at 8,73,8\nplace 3:0 at 5,63,7\nplace 3:0 at 3,63,7\nplace 6:0 at 8,64,8"));
+        var trace = await RunAsync("remnant-dirt", s => s.DropDelayMs = c => c == (5, 63, 7) ? 300 : 0);
+        AssertPinned("remnant-dirt", trace, "lagging-hole");
     }
 
-    /// <summary>The drift a full Client.Tests run on main produced (11-04 19:28, remnant-dirt): a 12th hole at 5,63,9 after the pinned 11,
-    /// filled again in its nearest-first place among the refills. Everything else was the pinned trace.</summary>
+    /// <summary>The same lag on the pillar's last block, dug from under my feet: the refill set off before its drop arrived, walked away
+    /// from it and left the last hole (3,63,10) open. Here that drop lags 300 ms, and, like a real server, a player standing still picks
+    /// up what lies in reach.</summary>
     [Fact]
-    public void The_remnant_dirt_drift_seen_under_load_is_the_lagging_pickup()
+    public async Task The_refill_waits_for_the_pillars_last_drop()
     {
-        var pinned = ClientChopTraceGoldenData.Traces["remnant-dirt"].ReplaceLineEndings("\n");
-        var lagged = pinned.Replace("dug 2 at 5,63,7\n", "dug 2 at 5,63,7\ndug 2 at 5,63,9\n")
-            .Replace("place 3:0 at 5,63,7\n", "place 3:0 at 5,63,7\nplace 3:0 at 5,63,9\n");
-        Assert.NotEqual(pinned, lagged);
-        Assert.True(SameChop(pinned, lagged));
-        Assert.False(SameChop(pinned, lagged.Replace("place 3:0 at 5,63,9\n", ""))); // that hole left open would be drift
+        var trace = await RunAsync("remnant-dirt", s => { s.DropDelayMs = c => c == (8, 64, 8) ? 300 : 0; s.StationaryPickup = true; });
+        AssertPinned("remnant-dirt", trace, "lagging-pillar");
+    }
+
+    /// <summary>The second drift full runs produced (11-04 20:02 and 22:08, remnant-dirt): every pair of refills mirrored about the
+    /// pillar cell (4,63,7 / 4,63,9, 4,63,6 / 4,63,10, 3,63,7 / 3,63,9, 3,63,6 / 3,63,10) swapped, because the order was measured from
+    /// my exact position and the pillar set me down a hair past z 8.5. Measured from my cell, the drift no longer moves it.</summary>
+    [Fact]
+    public void Refill_order_does_not_follow_sub_block_drift()
+    {
+        BlockPos[] dug = [new(3, 63, 7), new(3, 63, 9), new(4, 63, 8), new(4, 63, 7), new(4, 63, 9), new(3, 63, 6), new(3, 63, 10), new(5, 63, 8), new(4, 63, 6), new(4, 63, 10), new(5, 63, 7)];
+        BlockPos[] pinned = [new(5, 63, 8), new(5, 63, 7), new(4, 63, 8), new(4, 63, 7), new(4, 63, 9), new(4, 63, 6), new(4, 63, 10), new(3, 63, 7), new(3, 63, 9), new(3, 63, 6), new(3, 63, 10)];
+        foreach (var z in new[] { 8.5, 8.52, 8.48, 8.01, 8.99 })
+            foreach (var x in new[] { 8.5, 8.3, 8.7 })
+                Assert.Equal(pinned, MinecraftClient.RefillOrder(dug, new Vec3d(x, 64, z)));
+        // Still nearest first: from the next cell over the order is that cell's.
+        Assert.Equal(new BlockPos(5, 63, 7), MinecraftClient.RefillOrder(dug, new Vec3d(6.5, 64, 6.5))[0]);
     }
 
     [Theory]
@@ -218,13 +187,17 @@ public class ClientChopTraceGoldenTests
     [InlineData("jungle-2x2")]
     public async Task Chop_sends_the_pinned_packets(string name)
     {
-        var trace = await RunAsync(name);
+        AssertPinned(name, await RunAsync(name));
+    }
+
+    /// <summary>The trace is the pinned one line for line; on drift the actual trace goes to %TEMP%\mineclaw-golden-chop-&lt;scenario&gt;.txt
+    /// for a diff.</summary>
+    private static void AssertPinned(string name, string trace, string? variant = null)
+    {
         ClientChopTraceGoldenData.Traces.TryGetValue(name, out var expected);
-        if (expected is null || !SameChop(expected.ReplaceLineEndings("\n"), trace))
-        {
-            var path = Path.Combine(Path.GetTempPath(), $"mineclaw-chop-{name}-{DateTime.UtcNow:HHmmssfff}.txt");
-            File.WriteAllText(path, trace);
-            Assert.Fail($"chop trace drifted (actual: {path})");
-        }
+        if (expected is not null && expected.ReplaceLineEndings("\n") == trace) return;
+        var path = Path.Combine(Path.GetTempPath(), $"mineclaw-golden-chop-{name}{(variant is null ? "" : "-" + variant)}.txt");
+        File.WriteAllText(path, trace);
+        Assert.Fail($"chop trace drifted (actual: {path})");
     }
 }

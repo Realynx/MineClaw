@@ -121,6 +121,9 @@ public partial class FakeServer : IDisposable
     public ConcurrentDictionary<int, (double X, double Y, double Z, ItemStack Item)> Drops { get; } = new();
     /// <summary>Drop an item entity here whenever a block is dug.</summary>
     public bool DropOnDig { get; set; }
+    /// <summary>With <see cref="DropOnDig"/>: how many ms after the block change the drop of the dug cell spawns (a lagging server's
+    /// entity tracker); null or 0 = right after it.</summary>
+    public Func<(int X, int Y, int Z), int>? DropDelayMs { get; set; }
     /// <summary>A player standing still also picks up drops in reach (every on-ground/look tick, like a real server's entity tick).
     /// Off by default: the client fixtures spawn drops beside the player and expect them to stay until they walk.</summary>
     public bool StationaryPickup { get; set; }
@@ -433,8 +436,14 @@ public partial class FakeServer : IDisposable
         Send(new BlockChangePacket { X = x, Y = y, Z = z, BlockId = 0, Metadata = 0 });
         Mirror?.Invoke(x, y, z, 0, 0);
         if (DigDrop is not null) SettleDrops(x, y, z);
-        if (DropOnDig && was != 0) DropDugBlock(x, y, z, was, wasMeta);
+        if (DropOnDig && was != 0) DropDugBlockAfter(DropDelayMs?.Invoke((x, y, z)) ?? 0, x, y, z, was, wasMeta);
         if (Regenerate.TryGetValue((x, y, z), out int regenId)) RegenerateLater((x, y, z), regenId);
+    }
+
+    private void DropDugBlockAfter(int delayMs, int x, int y, int z, int was, int wasMeta)
+    {
+        if (delayMs <= 0) DropDugBlock(x, y, z, was, wasMeta);
+        else _ = Task.Delay(delayMs).ContinueWith(_ => DropDugBlock(x, y, z, was, wasMeta));
     }
 
     private void DropDugBlock(int x, int y, int z, int was, int wasMeta)
