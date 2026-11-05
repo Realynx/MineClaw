@@ -45,7 +45,7 @@ public sealed partial class StoryColony
     /// <summary>A drop collect that found nothing: each of its drops still in view counts a miss at its spot.</summary>
     private void NoteDropMiss(PawnState p, ActiveJob j, string why)
     {
-        if (!NoDropReached(j, why) || World is not { } w) return;
+        if (!NoDropReached(j, why) || NoRoomInBag(why) || World is not { } w) return; // a full bag is the pawn's trouble, not the spot's
         _dropSpots.RemoveAll(s => s.Until <= Now && Now - s.Last > DropSpotForget);
         var ents = w.Entities();
         bool writtenOff = why.Contains(';'); // its own safety checks wrote them off: no use trying again soon

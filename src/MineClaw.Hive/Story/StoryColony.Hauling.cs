@@ -235,7 +235,7 @@ public sealed partial class StoryColony
     /// <summary>A drop a pawn may go for now (see the class summary), with where it goes.</summary>
     private (StorageState? Chest, P3? Dump, bool Fallback)? Haulable(StoryEntity e, PawnState p, P3 from, IReadOnlyList<StoryEntity> ents)
     {
-        if (!HaulReach(e, p, from) || DropGuarded(e, ents)) return null;
+        if (!HaulReach(e, p, from) || DropGuarded(e, p, ents)) return null;
         if (HaulDest(e.ItemId, e.ItemMeta, e.Block) is not { } dest)
         {
             Unstored(e.ItemId, e.ItemMeta);
@@ -264,13 +264,29 @@ public sealed partial class StoryColony
         return false;
     }
 
-    /// <summary>A fresh monster beside the drop, or a player who just dropped it at their feet.</summary>
-    private bool DropGuarded(StoryEntity e, IReadOnlyList<StoryEntity> ents)
+    /// <summary>A fresh monster beside the drop, a player who just dropped it at their feet, or another pawn working right there.</summary>
+    private bool DropGuarded(StoryEntity e, PawnState p, IReadOnlyList<StoryEntity> ents)
     {
         foreach (var o in ents)
-            if (MobBeside(o, e) || PlayerJustDropped(o, e)) return true;
+            if (MobBeside(o, e) || PlayerJustDropped(o, e) || PawnAtFreshDrop(o, e, p)) return true;
         return false;
     }
+
+    /// <summary>How long a fresh drop is left to another pawn working within <see cref="PawnDropReach"/> of it.</summary>
+    public static readonly TimeSpan PawnDropGrace = TimeSpan.FromSeconds(12);
+    /// <summary>Within this (x and z, 2 up or down) of a fresh drop, another pawn takes it as it works on.</summary>
+    public const double PawnDropReach = 3;
+
+    /// <summary>
+    /// Another pawn within <see cref="PawnDropReach"/> of a drop younger than <see cref="PawnDropGrace"/>: the harvest it just made at its
+    /// side, which it picks up walking to its next crop (a body takes every drop within 1.4 of it). Live 11-04 (releases 20261104-2005 and
+    /// -201512): "collect … failed: no reachable drops nearby (none in sight within 3 with room for it)" ×1050 in 75 minutes over the farm,
+    /// each target a different spot, 83% of them a cell over the farmland (a drop still in the air, a second old): the hauler walked over
+    /// and the farmer beside it had picked it up. Later it is offered as usual.
+    /// </summary>
+    private bool PawnAtFreshDrop(StoryEntity o, StoryEntity e, PawnState p) =>
+        o.Kind == "player" && !string.Equals(o.Name, p.Name, StringComparison.OrdinalIgnoreCase) && Pawns.ContainsKey(o.Name)
+        && Within(o, e, PawnDropReach, 2) && Age(e) < PawnDropGrace;
 
     private bool MobBeside(StoryEntity o, StoryEntity e) => o.Kind == "mob" && o.Hostile && Fresh(o) && Within(o, e, 4, 3);
 
@@ -329,7 +345,7 @@ public sealed partial class StoryColony
     /// place.</summary>
     private ActiveJob? DropHaul(IStoryWorld w, PawnState p, PawnLive live, List<StoryEntity> items, IReadOnlyList<StoryEntity> ents, P3 from, bool riskOnly)
     {
-        var cands = HaulCandidates(p, items, ents, from, riskOnly);
+        var cands = HaulCandidates(p, items.Where(e => HasRoom(live, e)).ToList(), ents, from, riskOnly);
         if (cands.Count == 0) return null;
         var first = cands.OrderBy(c => c.Risk ? 0 : 1).ThenBy(c => c.E.Block.Dist(from)).First();
         var key0 = HaulDestKey(first.Dest);
@@ -360,6 +376,15 @@ public sealed partial class StoryColony
         }
         return cands;
     }
+
+    /// <summary>The pawn's bag can take some of the drop: a free slot, or a part stack of that item (totals that aren't whole stacks).
+    /// A full bag's collect finds "none in sight … with room for it" and walks for nothing.</summary>
+    private bool HasRoom(PawnLive live, StoryEntity e) =>
+        live.FreeSlots > 0 || live.Inventory.Any(s => s.Id == e.ItemId && s.Meta == e.ItemMeta && s.Count % MaxStack(e.ItemId) != 0);
+
+    /// <summary>The collect found drops in sight but no room for them in the pawn's bag (": 2 in sight with no room in my bag"): the
+    /// pawn's own trouble (it unloads), never a miss at the drops' spot.</summary>
+    internal static bool NoRoomInBag(string why) => why.Contains("no room in my bag", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>Where a drop goes, as one comparable key: its chest, else its dump spot.</summary>
     private static object HaulDestKey((StorageState? Chest, P3? Dump, bool Fallback) d) => d.Chest?.Chest ?? d.Dump ?? default;

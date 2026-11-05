@@ -1406,7 +1406,16 @@ limit the types of items allowed in a chest, pawns … should rearrange … Othe
   blocks, and farmland, path, soul sand, slabs, snow, beds, chests… at their real top), room for the body, the head out of water, and a
   pickup box that touches it. A drop on a deep pond, in a wall or over the void is never offered. Live 11-04: seeds inside the farm were
   offered and the client wrote them off "; 1 drop(s) left near the void": 1.12.2 farmland is 15/16 high and the client only stood on
-  full blocks; both now ask the same rule. The idle audit says it: `waiting: drops at
+  full blocks; both now ask the same rule.
+- **Fresh drops beside a working pawn are its own (added 2026-11-04, late).** Live 11-04 (releases 20261104-2005 and -201512): "collect …
+  failed: no reachable drops nearby (none in sight within 3 with room for it)" ×1050 in 75 minutes over the farm, every target a different
+  spot, 83% a cell over the farmland (a drop still in the air, a second after its harvest): a hauler was sent to each fresh harvest drop
+  and the farmer beside it picked it up first. Now a drop younger than 12 s with another pawn within 3 blocks of it is left to that pawn;
+  later it is offered as usual. A collect whose drops nobody sees any more is logged as "its drops were gone when it got there (picked up
+  by someone else): no failure", not "failed", and nothing rests. A pawn whose bag has no room for a drop (no free slot, no part stack of
+  it) isn't sent for it; the collect says a full bag apart (": 2 in sight with no room in my bag"), and that never counts as a miss at
+  the drops' spot. The colony reads collect failures by their stable parts only: the "no reachable drops" prefix, a ";" for drops the
+  pawn wrote off, "no room in my bag". The idle audit says it: `waiting: drops at
   6,64,6 unreachable`, or for a haul mark `no reachable target: haul …: drops there unreachable (…)`. The collect's failure now says what
   it saw: "no reachable drops nearby (none in sight within 4 with room for it)", "(2 seen: 1 with no way to a pickup spot, 1 not picked up)".
 - **Re-sorting** (background, after drops): a stack a chest's filter no longer allows goes to a chest that takes it. A stack a

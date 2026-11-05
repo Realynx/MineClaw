@@ -13,7 +13,7 @@ public class FarmDropTests
     private const int Farmland = 60;
 
     /// <summary>A dirt yard (0..20 × 0..16, surface at 63) with a 9×9 tilled field at x 10..18, z 4..12; the bot spawns on the dirt.</summary>
-    private static Task<(MinecraftClient C, FakeServer S)> Farm(bool release1122) =>
+    private static Task<(MinecraftClient C, FakeServer S)> Farm(bool release1122, Action<FakeServer>? more = null) =>
         Harness.StartAsync(srv =>
         {
             for (int x = 0; x <= 20; x++)
@@ -23,6 +23,7 @@ public class FarmDropTests
                 srv.Blocks[(x, 63, z)] = x is >= 10 and <= 18 && z is >= 4 and <= 12 ? Farmland : Blocks.Dirt;
             }
             srv.StrictPickup = true;
+            more?.Invoke(srv);
         }, release1122: release1122);
 
     [Theory]
@@ -47,6 +48,25 @@ public class FarmDropTests
         Assert.Equal(rest, p.Y, 2);                                                        // standing on the field
         Assert.Equal(Farmland, c.World.GetBlock((int)Math.Floor(p.X), 63, (int)Math.Floor(p.Z)));
         Assert.True(Math.Abs(p.X - 14.5) < 1.5 && Math.Abs(p.Z - 8.5) < 1.5, $"picked up from {p}");
+    }
+
+    /// <summary>A full bag says so: "none in sight … with room for it: 1 in sight with no room in my bag" (the colony then doesn't count a
+    /// miss at the drop's spot; live 11-04 the bare "none in sight" couldn't tell a full bag from a drop someone else took).</summary>
+    [Fact]
+    public async Task A_full_bag_says_the_drop_is_in_sight_with_no_room_for_it()
+    {
+        var (c, s) = await Farm(true, srv => { for (int i = 9; i < 45; i++) srv.Inventory[i] = Harness.Stack(Blocks.Stone, 64); });
+        await using var _ = c;
+        using var __ = s;
+        Assert.True(await Harness.WaitAsync(() => c.World.Inventory.RoomFor(new ItemStack(Items.Seeds, 1, 0)) == 0));
+        s.SpawnDrop(9.5, 64, 8.5, new ItemStack(Items.Seeds, 1, 0));
+        Assert.True(await Harness.WaitAsync(() => c.World.Entities.Count > 0));
+
+        var r = await c.CollectDropsAsync(3);
+
+        Assert.False(r.Ok);
+        Assert.Contains("(none in sight within 3 with room for it: 1 in sight with no room in my bag)", r.Message);
+        Assert.DoesNotContain(";", r.Message);
     }
 
     [Theory]
