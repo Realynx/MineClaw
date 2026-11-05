@@ -89,4 +89,64 @@ public class QuarryDigTests(Xunit.Abstractions.ITestOutputHelper log)
             Assert.Equal(Blocks.Stone, s.Blocks.GetValueOrDefault((Step(k).X, Step(k).Y, Step(k).Z)));
         Assert.True(c.World.Player.Position.Y >= t.Y - 1e-6, $"fell below the layer: {c.World.Player.Position}");
     }
+
+    /// <summary>The edge cell beside the pit, on the quarry's top layer (dirt under the grass line), west of its middle.</summary>
+    private static BlockPos EdgeCell => new(X1 - 1, Top, Z1 + 2);
+
+    /// <summary>Bedrock at y 50, stone 51..63; the 5×5 pit dug from the top to the bedrock (13 deep, no stair: only its edge matters).
+    /// <paramref name="openToVoid"/>: no bedrock under the pit either (a skyblock island's cut edge: the void).</summary>
+    private static void PitWorld(FakeServer s, bool openToVoid)
+    {
+        s.Blocks.Clear();
+        for (int x = -4; x <= 14; x++)
+            for (int z = -4; z <= 14; z++)
+            {
+                s.Blocks[(x, 50, z)] = Blocks.Bedrock;
+                for (int y = 51; y <= Top; y++) s.Blocks[(x, y, z)] = Blocks.Stone;
+            }
+        for (int x = X1; x < X1 + Size; x++)
+            for (int z = Z1; z < Z1 + Size; z++)
+                for (int y = openToVoid ? 50 : 51; y <= Top; y++) s.Blocks.Remove((x, y, z));
+        s.Blocks[(EdgeCell.X, EdgeCell.Y, EdgeCell.Z)] = Blocks.Dirt;
+        s.Inventory[36] = Harness.Stack(Items.StonePickaxe, 1);
+        s.SpawnAt = (EdgeCell.X - 2 + 0.5, Top + 1.0, EdgeCell.Z + 0.5);
+    }
+
+    /// <summary>
+    /// Live 11-05 (bot 20261105-011140): "dig 195,63,367 failed: won't dig dirt …: it's the floor of a walkway with the void 1 away (dig only
+    /// the taught cell)" ×3 for each of 9 top-layer cells beside the quarry's pit, dug to bedrock: the quarry stalled on that layer. The
+    /// walkway veto counted any drop over 3 as "the void"; a pit with a floor is not one (Safety.FatalEdgeDistance).
+    /// </summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task A_quarry_edge_cell_beside_its_pit_dug_to_bedrock_is_dug(bool release1122)
+    {
+        using var mode = WorldMode.Override(WorldMode.Normal);
+        var (c, s) = await Harness.StartAsync(srv => PitWorld(srv, openToVoid: false), Logged, release1122);
+        await using var _ = c;
+        using var __ = s;
+        var t = EdgeCell;
+        var r = await c.DigBlockAsync(t.X, t.Y, t.Z);
+        Assert.True(r.Ok, r.Message);
+        Assert.False(s.Blocks.ContainsKey((t.X, t.Y, t.Z)), "the edge cell is dug");
+        Assert.True(c.World.Player.Position.Y >= Top + 1 - 1e-6, $"fell into the pit: {c.World.Player.Position}");
+    }
+
+    /// <summary>The same edge over the real void (a skyblock island's cut edge): still the floor of a walkway, never dug.</summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task A_walkway_floor_beside_the_real_void_on_skyblock_is_still_refused(bool release1122)
+    {
+        using var mode = WorldMode.Override(WorldMode.SkyblockWorld);
+        var (c, s) = await Harness.StartAsync(srv => PitWorld(srv, openToVoid: true), Logged, release1122);
+        await using var _ = c;
+        using var __ = s;
+        var t = EdgeCell;
+        var r = await c.DigBlockAsync(t.X, t.Y, t.Z);
+        Assert.False(r.Ok);
+        Assert.Contains("floor of a walkway with the void 1 away", r.Message);
+        Assert.Equal(Blocks.Dirt, s.Blocks.GetValueOrDefault((t.X, t.Y, t.Z)));
+    }
 }

@@ -103,4 +103,16 @@ public class QuarryStairWalkTests
         var pit = Quarry(4);
         Assert.False(Safety.IsFatalColumn(pit, 4, 64, 4)); // a pit with a floor
     }
+
+    [Fact]
+    public void The_pits_rim_has_a_deadly_drop_beside_it_but_no_fatal_edge_the_void_has_both()
+    {
+        // Live 11-05: the client's walkway-floor veto took the quarry's rim (y 63, beside the pit) for a walkway at the void.
+        var pit = Quarry(4);
+        Assert.Equal(1, Safety.EdgeDistance(pit, X1 - 1, Top + 1, Z1 + 2));
+        Assert.Equal(4, Safety.FatalEdgeDistance(pit, X1 - 1, Top + 1, Z1 + 2));
+        var w = TestWorld.Create();
+        w.Fill(0, 63, 0, 8, 63, 0, Dirt); // a 1-wide walkway over the void
+        Assert.Equal(1, Safety.FatalEdgeDistance(w, 4, 64, 0));
+    }
 }
