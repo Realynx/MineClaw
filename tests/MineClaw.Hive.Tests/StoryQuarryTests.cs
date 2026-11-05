@@ -179,7 +179,7 @@ public sealed class StoryQuarryTests
         w.Set(X0 + 4, 40, zz, 11);
         Work(c, w);
         Assert.Equal(1, w.Block(X0 + 3, 40, zz).Id); // the seal stays
-        Assert.Contains(c.Alerts, a => a.Text.Contains("beside lava or water"));
+        Assert.Single(c.Alerts, a => a.Text.Contains("left standing beside lava")); // said once, not once a look
         Assert.True(c.Zones.Single(x => x.Id == id).QuarryLayer > 60); // the quarry still went down to the bottom
     }
 

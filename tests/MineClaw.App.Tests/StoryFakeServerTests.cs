@@ -939,6 +939,62 @@ public sealed class StoryFakeServerTests(ITestOutputHelper output)
         s.Inventory[37] = new ItemStack((short)Items.StoneShovel, 1, 0);
     });
 
+    /// <summary>
+    /// Fox 11-05: "the quarry will also need to take into consideration natural caves that it can come into, and lava and other dangerous
+    /// things" (docs/web/story-mode.md "Quarry hazards"). The 5×5 quarry dug 10 layers deep; its layer 10 (y 53) is whole. Beside its
+    /// east edge a cave tunnel runs at y 53..54 (already open to the dug layer 9) and still lava sits at y 53. The pawn walls the cave's
+    /// opening on layer 9 with a block, digs layer 10 but for the cell beside the lava and the cell between the pit and the cave, and
+    /// never steps into either; the quarry moves on.
+    /// </summary>
+    [Theory]
+    [InlineData("b1.8.1")]
+    [InlineData("1.12.2")]
+    public Task A_quarry_walls_off_a_breached_cave_and_leaves_a_seal_by_lava_and_moves_on(string version) => Colony(version, 1, async x =>
+    {
+        var c = x.C;
+        var srv = x.Servers[x.Pawns[0]];
+        Only(x, WorkTypes.Mine);
+        var (res, err) = c.ZoneOp("add", "mine", Area.Of(QuarryX, 63, QuarryZ, QuarryX + QuarrySize - 1, 63, QuarryZ + QuarrySize - 1));
+        Assert.True(err == null, err);
+        var zone = c.Zones.Single(z => z.Id == res!["id"]!.GetValue<string>());
+        string Failures() { lock (x.Log) return string.Join(" | ", x.Log.Where(l => l.Contains(" failed: ")).TakeLast(6)); }
+        Assert.True(await Until(() => zone.QuarryLayer > QuarryLayer, 120_000), "layer 10 is dug and the quarry moves on: " + Failures() + " | " + x.Diag());
+        int Id(P3 p) => srv.Blocks.GetValueOrDefault((p.X, p.Y, p.Z));
+        Assert.NotEqual(0, Id(HazardSeal)); // the cave's opening on layer 9, walled
+        Assert.NotEqual(0, Id(HazardLava.Add(-1, 0, 0))); // the seal by the lava
+        Assert.NotEqual(0, Id(HazardCave.Add(-1, 0, 0))); // the wall to the cave
+        Assert.Equal(Blocks.Lava, Id(HazardLava));
+        for (int qx = QuarryX; qx < QuarryX + QuarrySize; qx++) // the rest of layer 10 is dug
+            for (int qz = QuarryZ; qz < QuarryZ + QuarrySize; qz++)
+            {
+                var at = new P3(qx, 63 - QuarryLayer, qz);
+                if (at != QuarryStep(QuarryLayer) && at != HazardLava.Add(-1, 0, 0) && at != HazardCave.Add(-1, 0, 0))
+                    Assert.True(Id(at) == 0, $"{at} not dug");
+            }
+        Assert.DoesNotContain(srv.Accepted, m => m.X >= QuarryX + QuarrySize && m.Y < 58); // never into the cave or the lava
+        Assert.DoesNotContain(srv.Dug, d => (d.X, d.Y, d.Z) == (HazardLava.X - 1, HazardLava.Y, HazardLava.Z) || (d.X, d.Y, d.Z) == (HazardCave.X - 1, HazardCave.Y, HazardCave.Z));
+        Assert.Contains(c.Alerts, a => a.Text.Contains("breached a cave"));
+        Assert.Contains(c.Alerts, a => a.Text.Contains("beside lava"));
+    }, s =>
+    {
+        for (int qx = -4; qx <= 22; qx++)
+            for (int qz = -4; qz <= 22; qz++)
+                for (int y = 40; y < 58; y++) s.Blocks[(qx, y, qz)] = Blocks.Stone;
+        for (int k = 0; k < QuarryLayer; k++)
+            for (int qx = QuarryX; qx < QuarryX + QuarrySize; qx++)
+                for (int qz = QuarryZ; qz < QuarryZ + QuarrySize; qz++)
+                    if (new P3(qx, 63 - k, qz) != QuarryStep(k)) s.Blocks.Remove((qx, 63 - k, qz));
+        for (int cx = HazardCave.X; cx <= HazardCave.X + 2; cx++)
+            for (int y = HazardCave.Y; y <= HazardCave.Y + 1; y++) s.Blocks.Remove((cx, y, HazardCave.Z));
+        s.Blocks[(HazardLava.X, HazardLava.Y, HazardLava.Z)] = Blocks.Lava;
+        s.Inventory[36] = new ItemStack((short)Items.StonePickaxe, 1, 0);
+    });
+
+    /// <summary>The cave tunnel's first cell beside the quarry's east edge (y 53..54), the lava beside it, the opening walled on layer 9.</summary>
+    private static readonly P3 HazardCave = new(QuarryX + QuarrySize, 63 - QuarryLayer, QuarryZ + 3);
+    private static readonly P3 HazardLava = new(QuarryX + QuarrySize, 63 - QuarryLayer, QuarryZ + 1);
+    private static readonly P3 HazardSeal = new(QuarryX + QuarrySize - 1, 64 - QuarryLayer, QuarryZ + 3);
+
     /// <summary>The quarry's west column on its top layer (y 63) but for step 0: grass left on the pit's rim.</summary>
     private static IEnumerable<P3> QuarryEdge() =>
         Enumerable.Range(QuarryZ, QuarrySize).Select(z => new P3(QuarryX, 63, z)).Where(p => p != QuarryStep(0));
