@@ -1306,13 +1306,14 @@ test('the Architect palette: tiers unlock with designated benches; builds list t
   await expect(queue.locator('[data-material="fence"] [data-crafting]')).toBeVisible();
   if (shots) await page.screenshot({ path: `${shots}/story-materials.png` });
 
-  // The table's inspector: the fence's auto bill, cancel-only; release the bench, then designate it again.
+  // The table's inspector: the fence is the colony's craft task, never one of the owner's bills (docs "Craft tasks"): one
+  // "Also crafting" line; release the bench, then designate it again.
   await page.keyboard.press('Escape');
   const table = await pageAt(page, -3.5, -1.5);
   await page.mouse.click(table.x, table.y);
   const bills = page.getByTestId('bills-inspector');
-  await expect(bills.locator('[data-auto-bill]')).toHaveCount(1);
-  await expect(bills.locator('[data-auto-bill]')).toContainText(/for build #/);
+  await expect(bills.locator('[data-auto-bill]')).toHaveCount(0);
+  await expect(bills.getByTestId('bench-tasks')).toContainText(/^Also crafting: \d+ fence for build /);
   const release = post(page, /\/workbenches$/);
   await bills.getByRole('button', { name: 'Release' }).click();
   expect(body(await release)).toMatchObject({ op: 'release' });
