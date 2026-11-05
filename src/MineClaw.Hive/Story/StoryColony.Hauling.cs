@@ -251,9 +251,14 @@ public sealed partial class StoryColony
         if (ForbiddenEntity(e.Id) || Forbidden(e.Block) || !Open("e:" + e.Id, p.Name, null)) return false;
         if (!InHaulArea(e.Block)) return false;
         if (Math.Abs(e.Block.Y - from.Y) > 12 && Math.Abs(e.Block.Y - (Home()?.Y ?? from.Y)) > 12) return false;
-        if (World is not { } w) return true;
+        return World is not { } w || ReachableDrop(w, e);
+    }
+
+    /// <summary>Not under ground, its spot not resting after pawns missed drops there, somewhere to stand by it (StoryColony.DropSpots.cs:
+    /// the idle audit hears why not).</summary>
+    private bool ReachableDrop(IStoryWorld w, StoryEntity e)
+    {
         if (StoryWander.Underground(w, e.Block)) return false;
-        // Its spot rests after pawns missed drops there, or there is nowhere to stand by it (StoryColony.DropSpots.cs).
         if (DropUnreachable(w, e) is not { } why) return true;
         Blocked(why);
         return false;

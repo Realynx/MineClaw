@@ -18,7 +18,7 @@ public class SmeltFuelFirstTests
         srv.Blocks[(At.X, At.Y, At.Z)] = Blocks.Furnace;
         srv.Furnaces[(At.X, At.Y, At.Z)] = furnace;
         foreach (var (slot, stack) in inv) srv.Inventory[slot] = stack;
-    });
+    }, release1122: true); // the 1.12.2 fake server keeps the furnace's slots in step with its window
 
     private static ItemStack[] Empty() => [ItemStack.Empty, ItemStack.Empty, ItemStack.Empty];
 
