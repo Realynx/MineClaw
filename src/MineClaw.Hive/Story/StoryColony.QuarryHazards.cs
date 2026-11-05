@@ -66,15 +66,20 @@ public sealed partial class StoryColony
     private QuarryCell SolidQuarryCell(IStoryWorld w, ZoneState z, QuarryScan q, P3 at)
     {
         if (LiquidBeside(w, at) is { } l) return Standing(q, at, LiquidKind(w.Block(l.X, l.Y, l.Z).Id), l);
-        if (StoryQuarry.Falls(w.Block(at.X, at.Y + 1, at.Z).Id)) return Standing(q, at, "sand", at.Add(0, 1, 0));
+        if (UnderFalling(w, q, at)) return Standing(q, at, "sand", at.Add(0, 1, 0));
         if (_quarryDanger.Contains(at)) return Standing(q, at, "danger", at);
         if (!Headroom(q, at) && CaveOutside(w, z, at) is { } n) return Standing(q, at, "cave", n);
         return QuarryCell.Dig;
     }
 
-    private static QuarryCell Standing(QuarryScan q, P3 at, string kind, P3 source)
+    private static QuarryCell Standing(QuarryScan q, P3 at, string kind, P3 source) => NoteHazard(q, at, kind, source);
+
+    /// <summary>Sand or gravel left standing over the cell (a step of it is the stair repair's: replaced, the cell under it held).</summary>
+    private static bool UnderFalling(IStoryWorld w, QuarryScan q, P3 at)
     {
-        return NoteHazard(q, at, kind, source);
+        var over = at.Add(0, 1, 0);
+        if (!StoryQuarry.Falls(w.Block(over.X, over.Y, over.Z).Id)) return false;
+        return q.Ring is not { } ring || q.Top - over.Y is var k && (k < 0 || StoryQuarry.Step(ring, q.Top, k) != over);
     }
 
     /// <summary>The stair's head room: one of the 3 cells over a step (the walk onto it and the jump), never left standing.</summary>
