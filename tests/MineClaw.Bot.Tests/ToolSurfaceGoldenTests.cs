@@ -52,7 +52,8 @@ public class ToolSurfaceGoldenTests
     }
 
     /// <summary>Generated from the pre-refactor code (WP03).</summary>
-    private static readonly string[
+    private static readonly string[] Expected =
+    [
         "fake all: stop,remember_waypoint,mark_structure,describe_structure,remember_note,recall,recall_detail,forget,list_memory,where_is,identity,save_routine,run_routine,ask_player,standing_order,reflect_self,run_command,delegate,amend_task,ask_memory,say,activity,status,inventory,look,window,goto,follow,mine,harvest_generator,collect_drops,craft,smelt,collect_furnace,deposit,withdraw,organize_chest,place,dig,use_block,eat,chop_tree,fish,place_turned,acquire,equip,face,escape_dig,clear_dig,ask_stand,watch_demo,act,find_skill,skill,design,build,blueprint,script,see,do",
         "fake acquire 4B46011A8047BAAF",
         "fake act 1BA285CCCBFEF603",
