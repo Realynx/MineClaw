@@ -1254,10 +1254,20 @@ Now:
   first, else beside it; never a build cell), places the cell against it, and digs the scaffold again. The fetch takes one block more.
   "Nothing solid on any side" from a pawn whose view lagged a neighbour's placement is a "not now" refusal, not a failure.
 
+- **Natural drift is not a mismatch** (live 11-05, the first hour: dirt floors reopened ×22 in 7 minutes as grass spread over them
+  and pawns tilled them, and the clears of the farmland were refused as a farm). A small table per version (`StoryDrift`) counts as
+  the design's block: the ground family (dirt, grass, farmland; on 1.12.2 also coarse dirt, podzol, mycelium and grass path), and a
+  block's runtime twin (a lit furnace, a lit redstone lamp, glowing redstone ore, an unlit redstone torch, a powered repeater or
+  comparator: their facing still compared). Such a cell is done and never cleared. A decayed leaf, a broken or swapped block stays a
+  real mismatch.
+- **Reopening is said at most once per build every 10 minutes**; the cells reopened between are counted and said with the next alert
+  ("… (14 more reopened since the last alert)"), and each pass is logged.
+
 Tests: `StoryReconcileTests` (the director, both versions: a stair turned wrong in a finished build is found, shown, cleared and placed
 again; stone in a wall's cells is cleared and a refused clear is blocked and said once; a cell over a pane, a slab or stairs is offered
 and one over a torch isn't; a cell over another build's unplaced footing waits and a floating one gets a scaffold; a finished build whose
-blocks were broken or swapped reopens and closes again when they are put back), `StorySdkTests` (the script: a refused clear is
+blocks were broken or swapped reopens and closes again when they are put back; a dirt floor that grew grass or was tilled stays done
+while a stone in it still reopens and is cleared; a lit furnace is the furnace; reopening alerts once per window), `StorySdkTests` (the script: a refused clear is
 reported as such and never placed into, a scaffold goes in before its cell and is dug after), `ProtectionReworkClientTests` (the
 client: the ordered clear digs natural ground through soft protection, never planks, a chest or a never-break mark; a plain dig still
 refuses), and `StoryFakeServerTests.A_pawn_fixes_a_wrong_stair_clears_a_stone_and_places_against_a_slab` (a pawn, both versions).
