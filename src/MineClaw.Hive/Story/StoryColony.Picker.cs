@@ -753,13 +753,16 @@ public sealed partial class StoryColony
 
     private void Failed(PawnState p, ActiveJob j, string? note)
     {
-        var why = FailureText(p, j, note);
+        var why = Reason(note);
+        // Someone else picked its drops up on the way: nothing failed (StoryColony.Hauling.cs), and the log says so, not "failed".
+        bool gone = DropsGone(j, why);
+        if (gone) DropsTakenLog(p, j, why); else LogFailure(p, j, why);
         GearOrNeedFailed(p, j, why);
+        if (gone) return;
         // The chest's record was wrong (corrected), or the tool's trouble (none, broke, couldn't hold): re-planned at once, never a
         // target failure, back-off or rest (StoryColony.Ledger.cs).
         // A furnace with nothing to collect yet, or a load left without fuel (a refuel follows): no failure (StoryColony.Refuel.cs).
         if (StaleFetch(p, j, note) || ToolFailure(note) || ContainerUnreachable(p, note) || FurnaceNotReady(j, why)) return;
-        if (DropsGone(j, why)) return; // someone else picked them up: nothing failed (StoryColony.Hauling.cs)
         NoteDropMiss(p, j, why); // the spot it missed them at: several misses there and its drops rest, whatever their ids (StoryColony.DropSpots.cs)
         MarkFullChests(j, why);
         // Unreachable from where this pawn stands, a stuck pawn, a monster it couldn't find: its own rest, not the target's failure
@@ -792,14 +795,20 @@ public sealed partial class StoryColony
         }
     }
 
-    /// <summary>The failure's reason as kept and shown (trimmed, at most 120 characters), logged.</summary>
-    private string FailureText(PawnState p, ActiveJob j, string? note)
+    /// <summary>The failure's reason as kept and shown (trimmed, at most 120 characters).</summary>
+    private static string Reason(string? note)
     {
         var why = string.IsNullOrWhiteSpace(note) ? "failed" : note.Trim();
-        if (why.Length > 120) why = why[..119] + "…";
-        _log.LogInformation("story {Colony}: {Pawn} {Kind} {At} failed: {Why}", Id, p.Name, j.Kind, j.At?.ToString() ?? "", why);
-        return why;
+        return why.Length > 120 ? why[..119] + "…" : why;
     }
+
+    private void LogFailure(PawnState p, ActiveJob j, string why) =>
+        _log.LogInformation("story {Colony}: {Pawn} {Kind} {At} failed: {Why}", Id, p.Name, j.Kind, j.At?.ToString() ?? "", why);
+
+    /// <summary>"collect 203,64,391: its drops were gone when it got there (picked up by someone else): no failure (…)".</summary>
+    private void DropsTakenLog(PawnState p, ActiveJob j, string why) =>
+        _log.LogInformation("story {Colony}: {Pawn} {Kind} {At}: its drops were gone when it got there (picked up by someone else): no failure ({Why})",
+            Id, p.Name, j.Kind, j.At?.ToString() ?? "", why);
 
     private void GearOrNeedFailed(PawnState p, ActiveJob j, string why)
     {

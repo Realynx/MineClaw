@@ -26,13 +26,13 @@ public sealed partial class MinecraftClient
     /// <param name="Seen">Drops it looked at; <paramref name="NoWay"/> of them with no way to a pickup spot, <paramref name="NotTaken"/>
     /// reached but not picked up.</param>
     private readonly record struct CollectResult(int Entities, int Items, int Lost, int LostItems, int Stuck = 0, int Hazard = 0, int Water = 0,
-        int Seen = 0, int NoWay = 0, int NotTaken = 0);
+        int Seen = 0, int NoWay = 0, int NotTaken = 0, int NoRoom = 0);
 
     /// <summary>Why a collect took nothing (no ';': Story Mode reads a ';' as drops the safety checks wrote off): " (none in sight within
-    /// 4 with room for it)", " (2 seen: 1 with no way to a pickup spot, 1 not picked up)". Live 11-04: ×63 bare "no reachable drops
-    /// nearby" said nothing.</summary>
+    /// 4 with room for it)", " (none in sight within 3 with room for it: 2 in sight with no room in my bag)", " (2 seen: 1 with no way to a
+    /// pickup spot, 1 not picked up)". Live 11-04: ×63 bare "no reachable drops nearby" said nothing.</summary>
     private static string MissText(CollectResult r, double radius) =>
-        r.Seen == 0 ? $" (none in sight within {radius:0.#} with room for it)"
+        r.Seen == 0 ? $" (none in sight within {radius:0.#} with room for it" + (r.NoRoom > 0 ? $": {r.NoRoom} in sight with no room in my bag)" : ")")
             : r.NoWay + r.NotTaken == 0 ? "" : $" ({r.Seen} seen: {r.NoWay} with no way to a pickup spot, {r.NotTaken} not picked up)";
 
     /// <summary>"; 2 drop(s) left near the void (2 item(s) lost); 3 drop(s) left in lava/water (hazard, not chased)".</summary>
@@ -171,8 +171,12 @@ public sealed partial class MinecraftClient
             else { run.Skip.Add(drop.Id); run.NotTaken++; }
         }
         return new CollectResult(run.Picked, Math.Max(0, TotalItems() - startCount), run.Lost, run.LostItems, run.Stuck, run.Hazard, run.Water,
-            run.Seen.Count, run.NoWay, run.NotTaken);
+            run.Seen.Count, run.NoWay, run.NotTaken, run.Seen.Count == 0 ? NoRoomNear(origin, radius) : 0);
     }
+
+    /// <summary>Drops within <paramref name="radius"/> the bag has no room for (none of that item can go in).</summary>
+    private int NoRoomNear(Vec3d origin, double radius) =>
+        World.Entities.Nearby(origin, radius, e => e.Kind == EntityKind.Item && World.Inventory.RoomFor(e.Item) == 0).Count();
 
     /// <summary>One collect pass: the drops passed over and settled once, the counts, and the callers' report sets.</summary>
     private sealed class DropRun(ISet<int>? lostIds, ISet<int>? stuckIds, bool dryOnly)
