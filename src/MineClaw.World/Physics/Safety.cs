@@ -177,6 +177,41 @@ public static class Safety
         return !IsHazard(w, w.GetBlock(x, y, z)) && !IsHazard(w, w.GetBlock(x, y + 1, z)) && !IsHazard(w, w.GetBlock(x, y - 1, z));
     }
 
+    /// <summary>
+    /// Feet height of a player centred in foot cell (x,y,z), or null when nobody stands there. Ground with a full top below
+    /// (<see cref="IsStandable"/>: feet at y), else a block lower than a full cube under the feet, from the version's own collision boxes:
+    /// one in the cell itself (feet at y + its top: the pathfinder's foot cell for it) or in the cell below (feet at y − 1 + its top: the
+    /// same spot one cell up, where a drop lying on it is). Farmland (1.12.2: 15/16), soul sand, path, slabs, snow layers, beds, chests,
+    /// cake, enchanting tables, daylight sensors… all hold a player up. The body (1.8) needs every cell above that block clear of
+    /// collision and hazards. Live 11-04: a drop on farmland was written off "near the void" because only a full top counted.
+    /// </summary>
+    public static double? StandFeet(IBlockAccess w, int x, int y, int z)
+    {
+        if (IsStandable(w, x, y, z)) return y;
+        if (PartialSupport(w, x, y, z) is not { } s || IsHazard(w, w.GetBlock(x, s.Cell, z))) return null;
+        return BodyClearAbove(w, x, s.Cell, s.Feet, z) ? s.Feet : null;
+    }
+
+    /// <summary>No collision and no hazard in the cells over <paramref name="cell"/> that a body standing at <paramref name="feet"/> fills.</summary>
+    private static bool BodyClearAbove(IBlockAccess w, int x, int cell, double feet, int z)
+    {
+        int top = (int)Math.Floor(feet + PlayerPhysics.Height - 1e-9);
+        for (int yy = cell + 1; yy <= top; yy++)
+            if (BlockShapes.HasCollision(w, x, yy, z) || IsHazard(w, w.GetBlock(x, yy, z))) return false;
+        return true;
+    }
+
+    /// <summary>A block lower than a full cube holding the feet of foot cell y: in the cell (any height under 1) or, the cell being free
+    /// of collision, in the one below (a positive height under 1). Null = none.</summary>
+    private static (double Feet, int Cell)? PartialSupport(IBlockAccess w, int x, int y, int z)
+    {
+        if (!w.IsLoaded(x, z) || y < 1 || y + 2 >= w.WorldHeight) return null;
+        if (BlockShapes.HasCollision(w, x, y, z))
+            return BlockShapes.CollisionTop(w, x, y, z) is var t && t < 1 - 1e-9 ? (y + t, y) : null;
+        double b = BlockShapes.CollisionTop(w, x, y - 1, z);
+        return b > 1e-9 && b < 1 - 1e-9 ? (y - 1 + b, y - 1) : null;
+    }
+
     /// <summary>The box overlaps a cell holding lava, fire or cactus (contact = damage).</summary>
     public static bool TouchesHazard(IBlockAccess w, AABB box)
     {

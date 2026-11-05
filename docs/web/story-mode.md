@@ -1401,8 +1401,12 @@ limit the types of items allowed in a chest, pawns … should rearrange … Othe
   rested. Now (`StoryColony.DropSpots.cs`) each collect that found nothing counts a miss at the spot of every drop of it still in view
   (any drop within a block counts there). 3 misses there (1 when the pawn wrote them off) and the spot rests for everyone, whatever lies
   there: 5 min, then 15, then 30; after a rest one more miss rests it again. Before a drop is offered at all there must be somewhere to
-  stand by it: a cell beside it (its level, one under, one over when it lies high in its cell) with ground under it, room for the body
-  and the head out of water. A drop on a deep pond, in a wall or over the void is never offered. The idle audit says it: `waiting: drops at
+  stand by it, by the pawn client's own rule (`ItemEntityRules.HasPickupSpot`, World package): a cell within 2 of it (its level, one
+  under, one over) where the body stands on anything that holds a player up in the version's collision boxes (`Safety.StandFeet`: full
+  blocks, and farmland, path, soul sand, slabs, snow, beds, chests… at their real top), room for the body, the head out of water, and a
+  pickup box that touches it. A drop on a deep pond, in a wall or over the void is never offered. Live 11-04: seeds inside the farm were
+  offered and the client wrote them off "; 1 drop(s) left near the void": 1.12.2 farmland is 15/16 high and the client only stood on
+  full blocks; both now ask the same rule. The idle audit says it: `waiting: drops at
   6,64,6 unreachable`, or for a haul mark `no reachable target: haul …: drops there unreachable (…)`. The collect's failure now says what
   it saw: "no reachable drops nearby (none in sight within 4 with room for it)", "(2 seen: 1 with no way to a pickup spot, 1 not picked up)".
 - **Re-sorting** (background, after drops): a stack a chest's filter no longer allows goes to a chest that takes it. A stack a

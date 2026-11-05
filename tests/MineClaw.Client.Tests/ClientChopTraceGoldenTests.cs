@@ -141,6 +141,72 @@ public class ClientChopTraceGoldenTests
         return string.Join("\n", lines);
     }
 
+    /// <summary>
+    /// The pinned trace exactly, except for the one step tick timing still decides: the pillar's dirt is gathered hole by hole until
+    /// the bag holds what the pillar needs (GatherPillarDirtAsync), and each hole's pickup runs right after its dig. When the client
+    /// lags (a full test run), the last hole's drop can reach it only after that pickup looked, so it digs one more hole, from the
+    /// same candidate order, picks both up and fills every hole again at the end (live: the same on a laggy server). Allowed: extra
+    /// "dug 2|3 at C" lines straight after the pinned holes, each with its "place 3:0 at C" refill, and nothing else; with them taken
+    /// out the trace must be the pinned one line for line (the result line, every log dug, the pillar, the pinned holes and their refills, in order).
+    /// </summary>
+    internal static bool SameChop(string expected, string actual)
+    {
+        if (expected == actual) return true;
+        var exp = expected.Split('\n');
+        var act = actual.Split('\n');
+        var extra = new List<int>();
+        int j = 0;
+        for (int i = 0; i < act.Length; i++)
+            if (j < exp.Length && act[i] == exp[j]) j++;
+            else extra.Add(i);
+        return j == exp.Length && ExtraHolesOnly(exp, act, extra);
+    }
+
+    private static readonly System.Text.RegularExpressions.Regex HoleDig = new(@"^dug [23] at (-?\d+,-?\d+,-?\d+)$");
+
+    private static bool ExtraHolesOnly(string[] exp, string[] act, List<int> extra)
+    {
+        var digs = extra.Where(i => HoleDig.IsMatch(act[i])).ToList();
+        if (digs.Count == 0 || digs.Count * 2 != extra.Count) return false;
+        // The extra digs come as one run straight after a pinned hole (a dug cell the pinned trace fills again)…
+        if (digs[^1] - digs[0] != digs.Count - 1 || digs[0] == 0 || !IsPinnedHole(exp, act[digs[0] - 1])) return false;
+        // …and every one of them is filled again (the other extra lines are exactly their refills).
+        var cells = digs.Select(i => HoleDig.Match(act[i]).Groups[1].Value).ToHashSet();
+        var refills = extra.Except(digs).Select(i => act[i]).ToList();
+        return refills.Count == cells.Count && refills.All(l => l.StartsWith("place 3:0 at ", StringComparison.Ordinal) && cells.Remove(l["place 3:0 at ".Length..]));
+    }
+
+    private static bool IsPinnedHole(string[] exp, string line) =>
+        HoleDig.Match(line) is { Success: true } m && exp.Contains("place 3:0 at " + m.Groups[1].Value);
+
+    [Fact]
+    public void A_lagging_pickup_may_add_refilled_holes_and_nothing_else()
+    {
+        const string pinned = "ok: chopped\n----\ndug 2 at 3,63,7\ndug 2 at 5,63,7\ndug 17 at 8,72,8\nplace 3:0 at 5,63,7\nplace 3:0 at 3,63,7\nplace 6:0 at 8,64,8";
+        Assert.True(SameChop(pinned, pinned));
+        // One more hole, filled again: the lagging pickup.
+        Assert.True(SameChop(pinned, "ok: chopped\n----\ndug 2 at 3,63,7\ndug 2 at 5,63,7\ndug 2 at 5,63,9\ndug 17 at 8,72,8\nplace 3:0 at 5,63,7\nplace 3:0 at 5,63,9\nplace 3:0 at 3,63,7\nplace 6:0 at 8,64,8"));
+        // A hole left open, a hole dug somewhere else in the order, a missing or moved line, another result: all drift.
+        Assert.False(SameChop(pinned, "ok: chopped\n----\ndug 2 at 3,63,7\ndug 2 at 5,63,7\ndug 2 at 5,63,9\ndug 17 at 8,72,8\nplace 3:0 at 5,63,7\nplace 3:0 at 3,63,7\nplace 6:0 at 8,64,8"));
+        Assert.False(SameChop(pinned, "ok: chopped\n----\ndug 2 at 3,63,7\ndug 2 at 5,63,7\ndug 17 at 8,72,8\ndug 2 at 5,63,9\nplace 3:0 at 5,63,7\nplace 3:0 at 5,63,9\nplace 3:0 at 3,63,7\nplace 6:0 at 8,64,8"));
+        Assert.False(SameChop(pinned, "ok: chopped\n----\ndug 2 at 3,63,7\ndug 17 at 8,72,8\nplace 3:0 at 5,63,7\nplace 3:0 at 3,63,7\nplace 6:0 at 8,64,8"));
+        Assert.False(SameChop(pinned, "fail: chopped\n----\ndug 2 at 3,63,7\ndug 2 at 5,63,7\ndug 17 at 8,72,8\nplace 3:0 at 5,63,7\nplace 3:0 at 3,63,7\nplace 6:0 at 8,64,8"));
+        Assert.False(SameChop(pinned, "ok: chopped\n----\ndug 2 at 3,63,7\ndug 2 at 5,63,7\ndug 17 at 8,72,8\ndug 17 at 8,73,8\nplace 3:0 at 5,63,7\nplace 3:0 at 3,63,7\nplace 6:0 at 8,64,8"));
+    }
+
+    /// <summary>The drift a full Client.Tests run on main produced (11-04 19:28, remnant-dirt): a 12th hole at 5,63,9 after the pinned 11,
+    /// filled again in its nearest-first place among the refills. Everything else was the pinned trace.</summary>
+    [Fact]
+    public void The_remnant_dirt_drift_seen_under_load_is_the_lagging_pickup()
+    {
+        var pinned = ClientChopTraceGoldenData.Traces["remnant-dirt"].ReplaceLineEndings("\n");
+        var lagged = pinned.Replace("dug 2 at 5,63,7\n", "dug 2 at 5,63,7\ndug 2 at 5,63,9\n")
+            .Replace("place 3:0 at 5,63,7\n", "place 3:0 at 5,63,7\nplace 3:0 at 5,63,9\n");
+        Assert.NotEqual(pinned, lagged);
+        Assert.True(SameChop(pinned, lagged));
+        Assert.False(SameChop(pinned, lagged.Replace("place 3:0 at 5,63,9\n", ""))); // that hole left open would be drift
+    }
+
     [Theory]
     [InlineData("rim-oak")]
     [InlineData("birch")]
@@ -154,7 +220,7 @@ public class ClientChopTraceGoldenTests
     {
         var trace = await RunAsync(name);
         ClientChopTraceGoldenData.Traces.TryGetValue(name, out var expected);
-        if (expected?.ReplaceLineEndings("\n") != trace)
+        if (expected is null || !SameChop(expected.ReplaceLineEndings("\n"), trace))
         {
             var path = Path.Combine(Path.GetTempPath(), $"mineclaw-chop-{name}-{DateTime.UtcNow:HHmmssfff}.txt");
             File.WriteAllText(path, trace);
