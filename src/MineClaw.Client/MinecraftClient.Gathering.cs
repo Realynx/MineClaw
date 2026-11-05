@@ -66,7 +66,7 @@ public sealed partial class MinecraftClient
     /// </summary>
     private Goal SafePickupGoal(Vec3d item, bool dryOnly = false)
     {
-        var cell = new BlockPos((int)Math.Floor(item.X), (int)Math.Floor(item.Y + 0.1), (int)Math.Floor(item.Z));
+        var cell = ItemEntityRules.PickupCell(item);
         return new GoalFiltered(new GoalNear(cell, 2), (x, y, z) =>
                 PickupPoint(x, y, z, item) is not null
                 && (!dryOnly || !BlockShapes.IsWater(World.GetBlock(x, y, z)) && !BlockShapes.IsWater(World.GetBlock(x, y + 1, z)))
@@ -75,21 +75,9 @@ public sealed partial class MinecraftClient
             "safe pickup spot");
     }
 
-    /// <summary>
-    /// Where in foot cell (x,y,z) the body touches the drop at <paramref name="item"/> (mc-dev pickup box), the cell centre
-    /// first, else the point of the cell nearest the item (the box stays inside the cell); null = not from this cell.
-    /// </summary>
-    private Vec3d? PickupPoint(int x, int y, int z, Vec3d item)
-    {
-        if (StandFeet(x, y, z) is not { } feet) return null;
-        // Wading is fine, but never with the head under the gen's falling water (it pushes the body about next to the cells).
-        if (BlockShapes.IsWater(World.GetBlock(x, (int)Math.Floor(feet + PlayerPhysics.EyeHeight), z))) return null;
-        var centre = new Vec3d(x + 0.5, feet, z + 0.5);
-        if (ItemEntityRules.InPickupRange(centre, item)) return centre;
-        const double Inset = PlayerPhysics.Width / 2 + 0.02;
-        var edge = new Vec3d(Math.Clamp(item.X, x + Inset, x + 1 - Inset), feet, Math.Clamp(item.Z, z + Inset, z + 1 - Inset));
-        return ItemEntityRules.InPickupRange(edge, item) ? edge : null;
-    }
+    /// <summary>Where in foot cell (x,y,z) the body touches the drop at <paramref name="item"/> (<see cref="ItemEntityRules.PickupPoint"/>,
+    /// shared with the colony's "somewhere to stand by it"); null = not from this cell.</summary>
+    private Vec3d? PickupPoint(int x, int y, int z, Vec3d item) => ItemEntityRules.PickupPoint(World, x, y, z, item);
 
     /// <summary>
     /// Arrived on a pickup spot but the drop is still a little out of the pickup box (it lies off the cell centre): sneak toward
@@ -122,7 +110,7 @@ public sealed partial class MinecraftClient
     /// </summary>
     private string? LostDropReason(Vec3d item, bool dryOnly = false)
     {
-        int cx = (int)Math.Floor(item.X), cy = (int)Math.Floor(item.Y + 0.1), cz = (int)Math.Floor(item.Z);
+        var (cx, cy, cz) = ItemEntityRules.PickupCell(item);
         if (World.IsOverVoid(cx, cy, cz)) return "over the void";
         var goal = SafePickupGoal(item, dryOnly);
         for (int x = cx - 2; x <= cx + 2; x++)
@@ -137,47 +125,15 @@ public sealed partial class MinecraftClient
     public TimeSpan DropSettleTime { get; set; } = TimeSpan.FromSeconds(2);
 
     /// <summary>
-    /// A foot cell a drop can be fetched from: plain ground (<see cref="Safety.IsStandable"/>), or ON a bottom slab in that
-    /// cell (feet at y + 0.5; the pathfinder walks these). Live 10-27 21:13: the gen's drops lay on the slab beside the cell
-    /// (4.1,63.6,5.7) and were written off as "in lava/water" because a slab never counted as somewhere to stand.
+    /// A foot cell a drop can be fetched from: anything that holds a player up (<see cref="Safety.StandFeet"/>: full ground, or a block
+    /// lower than a full cube in the cell or under it: slabs, 1.12.2 farmland, soul sand, path, snow, beds, chests…). Live 10-27 21:13:
+    /// the gen's drops lay on the slab beside the cell and were written off as "in lava/water" because a slab never counted; live 11-04:
+    /// seeds on 1.12.2 farmland (15/16 high) were written off "near the void" because only a full top counted.
     /// </summary>
     private bool PickupStandable(int x, int y, int z) => StandFeet(x, y, z) is not null;
 
-    /// <summary>Feet height of a player standing in foot cell (x,y,z): full ground below (y), a bottom slab in the cell (y + 0.5),
-    /// or a bottom slab in the cell below (y - 0.5, the pathfinder's view of the same spot); null = nobody stands there.</summary>
-    private double? StandFeet(int x, int y, int z)
-    {
-        if (Safety.IsStandable(World, x, y, z)) return y;
-        if (!World.IsLoaded(x, z) || y < 2 || y + 2 >= World.WorldHeight) return null;
-        if (SlabFeet(x, y, z) is not { } feet) return null;
-        // The slab's own cell is floor(feet); the body (1.8 tall) fills the cells above it.
-        int y0 = (int)Math.Floor(feet);
-        if (!BodyFitsAbove(x, y0, (int)Math.Floor(feet + 1.8), z)) return null;
-        return World.IsOverVoid(x, y0, z) ? null : feet;
-    }
-
-    private static bool IsHalfTop(double top) => top > 0 && top <= 0.5 + 1e-9;
-
-    /// <summary>Feet on a bottom slab in the cell (y + 0.5) or in the cell below (y - 0.5), else null.</summary>
-    private double? SlabFeet(int x, int y, int z)
-    {
-        if (BlockShapes.HasCollision(World, x, y, z))
-        {
-            double top = BlockShapes.CollisionTop(World, x, y, z);
-            return IsHalfTop(top) ? y + top : null;
-        }
-        if (BlockShapes.HasCollision(World, x, y - 1, z) && IsHalfTop(BlockShapes.CollisionTop(World, x, y - 1, z)))
-            return y - 1 + BlockShapes.CollisionTop(World, x, y - 1, z);
-        return null;
-    }
-
-    /// <summary>Nothing solid or hazardous in the cells above <paramref name="y0"/> up to <paramref name="y1"/>.</summary>
-    private bool BodyFitsAbove(int x, int y0, int y1, int z)
-    {
-        for (int yy = y0 + 1; yy <= y1; yy++)
-            if (BlockShapes.HasCollision(World, x, yy, z) || Safety.IsHazard(World, World.GetBlock(x, yy, z))) return false;
-        return true;
-    }
+    /// <summary>Feet height of a player standing in foot cell (x,y,z) (<see cref="Safety.StandFeet"/>); null = nobody stands there.</summary>
+    private double? StandFeet(int x, int y, int z) => Safety.StandFeet(World, x, y, z);
 
     /// <summary>Lava or water in the drop's cell or right next to it (a generator's channel).</summary>
     private bool HazardAround(int x, int y, int z)

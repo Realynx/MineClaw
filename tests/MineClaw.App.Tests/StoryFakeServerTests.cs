@@ -524,6 +524,35 @@ public sealed class StoryFakeServerTests(ITestOutputHelper output)
         s.Blocks[(7, 64, 4)] = Blocks.Planks;                 // a built block to deconstruct
     });
 
+    /// <summary>
+    /// Live 11-04: seeds inside the farm after a harvest were offered by the colony and written off by the pawn's client ("1 drop(s) left
+    /// near the void"): 1.12.2 farmland is 15/16 high and the client stood only on full blocks. Now the pawn walks onto the field, picks
+    /// them up and stores them; no spot is rested as unreachable.
+    /// </summary>
+    [Theory]
+    [InlineData("b1.8.1")]
+    [InlineData("1.12.2")]
+    public Task A_seed_inside_a_tilled_field_is_hauled_from_the_farmland(string version) => Colony(version, 1, async x =>
+    {
+        var c = x.C;
+        var srv = x.Servers[x.Pawns[0]];
+        Assert.Null(c.StorageOp("set", [WoodChest], null, "normal", "Everything").Error);
+        Only(x, WorkTypes.Haul);
+        double rest = x.Modern ? 63.9375 : 64.0; // on 1.12.2 farmland's 15/16 top; b1.8.1 BlockSoil collides as a full cube
+        srv.SpawnDrop(18.5, rest, 4.5, new ItemStack((short)Items.Seeds, 2, 0));
+        Assert.True(await Until(() => c.Host.World!.Entities().Any(e => e.Kind == "item" && e.ItemId == Items.Seeds), 5000), "the drop is seen");
+        Assert.True(await Until(() => c.StorageAt(WoodChest)!.Contents.Any(s => s.Id == Items.Seeds), 60_000), "seeds stored: " + x.Diag());
+        lock (x.Log)
+        {
+            Assert.DoesNotContain(x.Log, l => l.Contains("unreachable") || l.Contains("near the void"));
+        }
+    }, s =>
+    {
+        EmptyHanded(s);
+        for (int fx = 14; fx <= 22; fx++)
+            for (int fz = 0; fz <= 8; fz++) s.Blocks[(fx, 63, fz)] = 60; // a 9×9 tilled field east of spawn
+    });
+
     /// <summary>Live 11-04: pawns in a ravine under home "looks stuck … 3 targets out of reach in a row" ×6 and kept cycling tasks.
     /// Now: stuck after three, only escape work, a staircase cut up the ravine wall toward home, then back to its work.</summary>
     [Fact]
