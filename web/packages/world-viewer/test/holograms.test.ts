@@ -38,6 +38,7 @@ describe('hologram states', () => {
     expect(holoState('todo', 'done')).toBeNull();
     expect(holoState('misrotated', 'active')).toBe('blocked'); // placed turned the wrong way: shown over it
     expect(holoState('misrotated', 'done')).toBe('blocked'); // even once its build is done
+    expect(holoState('clear', 'active')).toBe('blocked'); // another block in the cell: dug out first
   });
 
   it('gives each state its own calm look', () => {

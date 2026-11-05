@@ -21,17 +21,45 @@
   };
   const isBuilt = (j, c) => j.want && H.block(c) == j.want;
   const BUILT = Object.freeze({ ok: true });
-  // One placing (dug first when it is to be cleared, walked to when far), tried once more after stepping closer (or back to the stand).
-  const placeCell = (j, c, m, clear) => {
-    const put = () => (m == null ? call('place', j.block, c) : call('place_turned', j.block, c, m));
-    if (clear.includes(c)) call('dig', c);
-    if (eyes(c) > 4) call('go', c, 2);
+  const ON_IT = /I'm standing on/i;
+  // A dig of a build's own cell: clear_dig (the owner's order: soft protection on natural ground yields; a chest, a never-break mark
+  // or a player's block still refuses), plain dig on an older runtime.
+  const clearDig = c => (typeof globalThis.clear_dig === 'function' ? call('clear_dig', c) : call('dig', c));
+  // A cell to clear (j.clear: another block in it, or its own block turned wrong) -> null once it is out, else why not ("can't clear
+  // the cell …: protected …"): never "occupied by" for a dig that was refused. Standing on it, the pawn steps to the stand first.
+  const clearOut = (j, c) => {
+    let r = clearDig(c);
+    if (!good(r) && ON_IT.test(why(r)) && j.stand) { call('go', j.stand, 0); r = clearDig(c); }
+    return good(r) ? null : { ok: false, msg: "can't clear the cell " + c + ': ' + why(r) };
+  };
+  // A floating cell's scaffold (j.scaffold {cell: spot}: nothing to click against there yet): one of the batch's blocks at the spot,
+  // dug back once the cell is in -> the spot, null (none), or the failure.
+  const scaffoldUp = (j, c) => {
+    const s = j.scaffold && j.scaffold[c];
+    if (!s) return null;
+    const r = call('place', j.block, s);
+    return good(r) ? s : { ok: false, msg: 'no scaffold at ' + s + ' for ' + c + ': ' + why(r) };
+  };
+  // The placing, tried once more after stepping closer (or back to the stand).
+  const putCell = (j, c, put) => {
     const r = put(), w = why(r);
     if (good(r)) return r;
     if (!TURN.test(w) && isBuilt(j, c)) return { ok: true };
     if (!FAR.test(w) && !IN_WAY.test(w)) return r;
     if (IN_WAY.test(w) && j.stand) call('go', j.stand, 0); else call('go', c, 2);
     return put();
+  };
+  // One placing: dug first when it is to be cleared, walked to when far, on a scaffold when it floats.
+  const placeCell = (j, c, m, clear) => {
+    const put = () => (m == null ? call('place', j.block, c) : call('place_turned', j.block, c, m));
+    const no = clear.includes(c) ? clearOut(j, c) : null;
+    if (no) return no;
+    if (eyes(c) > 4) call('go', c, 2);
+    const s = scaffoldUp(j, c);
+    if (s && s.ok === false) return s;
+    const r = putCell(j, c, put);
+    if (s) clearDig(s);
+    return r;
   };
   // A cell of place(): already built -> BUILT; a batch out of items -> null (the rest go back); else the placing's result.
   const placeOne = (j, c, m, clear) => {

@@ -110,6 +110,15 @@ public sealed partial class MinecraftClient
     public static bool NaturalTerrain(int id) =>
         id is Blocks.Stone or Blocks.Cobblestone or Blocks.Dirt or Blocks.Grass or Blocks.Sandstone;
 
+    /// <summary>A build's ordered clear (<see cref="DigForBuildAsync"/>) digs through soft protection on natural ground only: never a
+    /// never-break mark, never a block that opens (a chest, a door, a furnace), never another block someone placed.</summary>
+    internal bool OrderedClearYields(BlockPos p, int id) =>
+        NeverBreak?.Invoke(p) != true && !World.Info(id).Interactable && UnbuiltGround(id);
+
+    /// <summary>Ground nobody built: resources and wild plants anywhere, and a normal world's terrain (on skyblock all of it was placed).</summary>
+    private bool UnbuiltGround(int id) =>
+        NaturalResource(id, World.Dimension) || NaturalPlant(id) || !WorldMode.Current.GeneratorStone && (NaturalTerrain(id) || NaturalGround(id));
+
     internal bool OverridesSoft(BlockPos p, int id) =>
         SoftOverride?.Invoke(p, id) ?? World.Placed.IsPlaced(p, World.Dimension, id);
 

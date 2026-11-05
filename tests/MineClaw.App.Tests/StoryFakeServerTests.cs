@@ -396,6 +396,57 @@ public sealed class StoryFakeServerTests(ITestOutputHelper output)
     });
 
     /// <summary>
+    /// Builds reconcile with the world (docs/web/story-mode.md; Fox 11-05: wrongly turned stairs not detected, "no way to place" where
+    /// there was one, blocks in the way). A stair already in its cell turned east where the design rises south is taken back and placed
+    /// again turned right; a stone in a wall cell is dug out (the pawn has a pickaxe) and the planks go in; a cell whose only neighbour
+    /// is a slab is placed against it. No cell ends blocked or misrotated, and nothing says "occupied by" or "nothing solid".
+    /// </summary>
+    [Theory]
+    [InlineData("1.12.2")]
+    [InlineData("b1.8.1")]
+    public Task A_pawn_fixes_a_wrong_stair_clears_a_stone_and_places_against_a_slab(string version) => Colony(version, 1, async x =>
+    {
+        var c = x.C;
+        Only(x, WorkTypes.Build);
+        Assert.Null(c.StorageOp("set", [WoodChest], null, "normal", "Wood").Error);
+        var chest = c.StorageAt(WoodChest)!;
+        c.AddContents(chest, new Stack(Blocks.Planks, 0, 8));
+        c.AddContents(chest, new Stack(Blocks.WoodenStairs, 0, 2));
+        var want = new List<(int X, int Y, int Z, int Id, int Meta)>
+        {
+            (15, 64, 15, Blocks.Planks, 0), (16, 64, 15, Blocks.Planks, 0), // 15,64,15 holds stone
+            (18, 64, 15, Blocks.WoodenStairs, 2),                           // there already, rising east
+            (20, 65, 15, Blocks.Planks, 0),                                 // over a slab, nothing else beside it
+        };
+        var items = new JsonArray(want.Select(w => (JsonNode)new JsonObject
+        {
+            ["kind"] = "block", ["blocks"] = new JsonArray(new JsonArray(w.X, w.Y, w.Z)), ["material"] = new JsonArray(w.Id, w.Meta), ["name"] = "house",
+        }).ToArray());
+        Assert.Null(c.BuildsOp("add", items, null).Error);
+        Assert.True(await Until(() => c.Builds.All(b => b.Status == "done"), 180_000),
+            string.Join("; ", c.Builds.Select(b => $"{b.Label} {b.Status} {b.Reason}")) + " | " + x.Diag());
+        var srv = x.Servers[x.Pawns[0]];
+        foreach (var w in want)
+        {
+            Assert.Equal(w.Id, srv.Blocks.GetValueOrDefault((w.X, w.Y, w.Z)));
+            Assert.True(srv.Metas.GetValueOrDefault((w.X, w.Y, w.Z)) == w.Meta, $"{w}: meta {srv.Metas.GetValueOrDefault((w.X, w.Y, w.Z))}");
+        }
+        Assert.DoesNotContain(c.Builds.SelectMany(b => b.Ghosts), g => g.State is "misrotated" or "blocked");
+        lock (x.Log) Assert.DoesNotContain(x.Log, l => l.Contains("is occupied by") || l.Contains("nothing solid on any side"));
+    }, s =>
+    {
+        s.OrientBlocks = true;
+        s.Blocks[(15, 64, 15)] = Blocks.Stone;
+        s.Blocks[(18, 64, 15)] = Blocks.WoodenStairs;
+        s.Metas[(18, 64, 15)] = 0;
+        s.Blocks[(20, 64, 15)] = Blocks.Slab;
+        s.Inventory[38] = new ItemStack((short)Items.StonePickaxe, 1, 0);
+        var box = s.Chests[(WoodChest.X, WoodChest.Y, WoodChest.Z)];
+        box[0] = new ItemStack((short)Blocks.Planks, 8, 0);
+        box[1] = new ItemStack((short)Blocks.WoodenStairs, 2, 0);
+    });
+
+    /// <summary>
     /// Water (docs/web/story-mode.md "Water"; live 11-04 "the pawns have a really difficult time pouring water in the canals"). The
     /// pawn, holding two full buckets, digs and pours a 2×2 infinite pool (two corners: the fake server's water settles the other two),
     /// then digs a 4-long canal and pours it every other cell, filling its buckets at the colony's own pool (which refills). The

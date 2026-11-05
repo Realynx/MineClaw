@@ -54,7 +54,7 @@ public class ToolSurfaceGoldenTests
     /// <summary>Generated from the pre-refactor code (WP03).</summary>
     private static readonly string[] Expected =
     [
-        "fake all: stop,remember_waypoint,mark_structure,describe_structure,remember_note,recall,recall_detail,forget,list_memory,where_is,identity,save_routine,run_routine,ask_player,standing_order,reflect_self,run_command,delegate,amend_task,ask_memory,say,activity,status,inventory,look,window,goto,follow,mine,harvest_generator,collect_drops,craft,smelt,collect_furnace,deposit,withdraw,organize_chest,place,dig,use_block,eat,chop_tree,fish,place_turned,acquire,equip,face,escape_dig,ask_stand,watch_demo,act,find_skill,skill,design,build,blueprint,script,see,do",
+        "fake all: stop,remember_waypoint,mark_structure,describe_structure,remember_note,recall,recall_detail,forget,list_memory,where_is,identity,save_routine,run_routine,ask_player,standing_order,reflect_self,run_command,delegate,amend_task,ask_memory,say,activity,status,inventory,look,window,goto,follow,mine,harvest_generator,collect_drops,craft,smelt,collect_furnace,deposit,withdraw,organize_chest,place,dig,use_block,eat,chop_tree,fish,place_turned,acquire,equip,face,escape_dig,clear_dig,ask_stand,watch_demo,act,find_skill,skill,design,build,blueprint,script,see,do",
         "fake acquire 4B46011A8047BAAF",
         "fake act 1BA285CCCBFEF603",
         "fake activity 18EE0AA639868F61",
@@ -65,6 +65,7 @@ public class ToolSurfaceGoldenTests
         "fake blueprint C03FB94D335FFA41",
         "fake build 04A92DD69D86ADF5",
         "fake chop_tree EFAC330C669F8EF1",
+        "fake clear_dig F6D8B35B537F6BDC",
         "fake collect_drops B86180B1A068B8E7",
         "fake collect_furnace 4CA7F287AA901331",
         "fake craft E9B7296EB5195028",
@@ -117,7 +118,7 @@ public class ToolSurfaceGoldenTests
         "fake Main: stop,remember_waypoint,mark_structure,describe_structure,remember_note,recall_detail,forget,list_memory,where_is,identity,run_routine,ask_player,standing_order,reflect_self,run_command,delegate,amend_task,ask_memory,say,status,inventory,look,ask_stand,watch_demo,design,script,see,do",
         "fake Worker: remember_waypoint,recall,where_is,save_routine,run_routine,status,inventory,look,window,goto,mine,harvest_generator,collect_drops,craft,smelt,collect_furnace,deposit,withdraw,organize_chest,place,dig,use_block,eat,chop_tree,find_skill,skill,build,script,see",
         "fake Cheap: stop,remember_waypoint,remember_note,recall,recall_detail,list_memory,where_is,identity,reflect_self,activity,status,inventory,look",
-        "real all: stop,remember_waypoint,mark_structure,describe_structure,remember_note,recall,recall_detail,forget,list_memory,where_is,identity,save_routine,run_routine,ask_player,standing_order,reflect_self,run_command,delegate,amend_task,ask_memory,say,activity,status,inventory,look,window,goto,follow,mine,harvest_generator,collect_drops,craft,smelt,collect_furnace,deposit,withdraw,organize_chest,place,dig,use_block,eat,chop_tree,fish,place_turned,acquire,equip,face,escape_dig,ask_stand,watch_demo,spar,stop_spar,defend,guard,attack,combat_status,act,find_skill,skill,design,build,blueprint,script,see,do",
+        "real all: stop,remember_waypoint,mark_structure,describe_structure,remember_note,recall,recall_detail,forget,list_memory,where_is,identity,save_routine,run_routine,ask_player,standing_order,reflect_self,run_command,delegate,amend_task,ask_memory,say,activity,status,inventory,look,window,goto,follow,mine,harvest_generator,collect_drops,craft,smelt,collect_furnace,deposit,withdraw,organize_chest,place,dig,use_block,eat,chop_tree,fish,place_turned,acquire,equip,face,escape_dig,clear_dig,ask_stand,watch_demo,spar,stop_spar,defend,guard,attack,combat_status,act,find_skill,skill,design,build,blueprint,script,see,do",
         "real acquire 4B46011A8047BAAF",
         "real act 1BA285CCCBFEF603",
         "real activity 18EE0AA639868F61",
@@ -129,6 +130,7 @@ public class ToolSurfaceGoldenTests
         "real blueprint C03FB94D335FFA41",
         "real build 04A92DD69D86ADF5",
         "real chop_tree EFAC330C669F8EF1",
+        "real clear_dig F6D8B35B537F6BDC",
         "real collect_drops B86180B1A068B8E7",
         "real collect_furnace 4CA7F287AA901331",
         "real combat_status F0B22334B3F58643",

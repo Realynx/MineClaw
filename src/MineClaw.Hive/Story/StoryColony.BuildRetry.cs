@@ -18,8 +18,10 @@ public sealed partial class StoryColony
     private static JsonNode GhostJson(BuildState b, GhostState g)
     {
         // The 8th element: dig (Id/Meta = the block expected there: the live world's when queued), place, or pour (a liquid source).
-        var a = new JsonArray(g.At.X, g.At.Y, g.At.Z, g.Id, g.Meta, b.Id, g.State, g.Remove ? "dig" : StoryConstruction.IsLiquid(g) ? "pour" : "place");
-        if (g.Reason != null && g.State != "done") a.Add(g.Reason);
+        // An open cell that holds another block shows as "clear", one holding its block turned wrong as "misrotated" (the reconcile pass).
+        bool holds = g.State == "todo" && g.Holds != null;
+        var a = new JsonArray(g.At.X, g.At.Y, g.At.Z, g.Id, g.Meta, b.Id, holds ? g.Holds : g.State, g.Remove ? "dig" : StoryConstruction.IsLiquid(g) ? "pour" : "place");
+        if ((holds ? g.HoldsWords : g.Reason) is { } why && g.State != "done") a.Add(why);
         return a;
     }
 
@@ -75,6 +77,7 @@ public sealed partial class StoryColony
         if (b.Status == "done" && b.Ghosts.Any(g => g.Job && g.State == "todo")) b.Status = "queued"; // a misrotated cell reopened
         b.Rev = Touch();
         _buildAlerted.Remove(b.Id);
+        _cellAlerted.RemoveWhere(k => k.StartsWith(b.Id + "|", StringComparison.Ordinal));
         if (RetryCheck(b, targets) is { } why)
         {
             b.Status = "blocked";

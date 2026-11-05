@@ -61,6 +61,40 @@ public class ProtectionReworkClientTests
         Assert.Contains("say 'you can break it'", r.Message);
     }
 
+    /// <summary>
+    /// A Story build's ordered clear (clear_dig; docs/web/story-mode.md "Builds reconcile with the world"): live 11-05 natural stone and
+    /// dirt in a house's cells were refused as "a placed stone (someone's floor, wall or path)" 581 times an hour, and each refusal
+    /// became an "occupied by stone" placement. The owner ordered those cells built: soft protection on natural ground yields to the
+    /// ordered dig; a block someone placed (planks), a container and a never-break mark still refuse, and a plain dig still refuses.
+    /// </summary>
+    [Fact]
+    public async Task A_builds_ordered_clear_digs_natural_ground_through_soft_protection_but_never_a_placed_block_or_a_mark()
+    {
+        using var mode = MineClaw.Data.Versioning.WorldMode.Override(MineClaw.Data.Versioning.WorldMode.Normal);
+        var (c, s) = await Harness.StartAsync(srv =>
+        {
+            srv.Blocks[(9, 64, 8)] = Blocks.Dirt;
+            srv.Blocks[(9, 64, 9)] = Blocks.Planks;
+            srv.Blocks[(9, 64, 7)] = Blocks.Dirt;
+            srv.Blocks[(7, 64, 8)] = Blocks.Chest;
+        });
+        await using var _ = c;
+        using var __ = s;
+        c.IsProtected = (p, _) => p.Y == 64; // the "someone's floor" guess over the whole spot
+        c.ExplainProtection = (_, _) => new ProtectionVerdict(ProtectionLevel.Soft, "floor", "a placed stone (someone's floor, wall or path)");
+        c.NeverBreak = p => p == new BlockPos(9, 64, 7);
+        var plain = await c.DigBlockAsync(9, 64, 8);
+        Assert.False(plain.Ok); // the bot's own dig keeps every protection
+        Assert.Contains("someone's floor", plain.Message);
+        var r = await c.DigForBuildAsync(new BlockPos(9, 64, 8));
+        Assert.True(r.Ok, r.Message);
+        Assert.True(await Until(() => c.World.GetBlock(9, 64, 8) == 0));
+        Assert.False((await c.DigForBuildAsync(new BlockPos(9, 64, 9))).Ok); // planks: someone placed them
+        Assert.False((await c.DigForBuildAsync(new BlockPos(9, 64, 7))).Ok); // a never-break mark
+        Assert.False((await c.DigForBuildAsync(new BlockPos(7, 64, 8))).Ok); // a chest
+        Assert.Equal(Blocks.Planks, c.World.GetBlock(9, 64, 9));
+    }
+
     // ------------------------------------------------------------------ hard safety
 
     [Fact]
