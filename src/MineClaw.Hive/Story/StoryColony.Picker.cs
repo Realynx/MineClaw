@@ -757,6 +757,7 @@ public sealed partial class StoryColony
         // Someone else picked its drops up on the way: nothing failed (StoryColony.Hauling.cs), and the log says so, not "failed".
         bool gone = DropsGone(j, why);
         if (gone) DropsTakenLog(p, j, why); else LogFailure(p, j, why);
+        NoteQuarryMiss(j, why);
         GearOrNeedFailed(p, j, why);
         if (gone) return;
         // The chest's record was wrong (corrected), or the tool's trouble (none, broke, couldn't hold): re-planned at once, never a

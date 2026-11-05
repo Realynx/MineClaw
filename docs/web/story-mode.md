@@ -935,6 +935,18 @@ pathfinder keeps its edge costs, so routes don't change; fields and growing zone
 stops sprint only beside a fatal drop (the void, lava, water over the void: `Safety.IsFatalColumn`). Beside a quarry's pit the stair is walked normally (live 11-04: "they crouch-walk when the stairs get high on the
 outside wall"); the guard's per-tick simulation still never lets the body step off, and drops into the pit stay limited to safe ones.
 
+**Digging from where a face is in view.** Live 11-04 (Fox: "the pawns refuse to go into it. They get the idea to do it, they go to do
+it, they get almost down the stairs and then cancel that idea"; "dig 181,57,366 failed: can't reach stone" ×14 from as many pawns, the
+layer held for it): the last cell of a layer was the one under a stair step: the step on top of it, the next step beside it, its open
+faces toward the pit floor. The walk "within 3" ended on the step over it, and a dig's reach walk (distance only: eyes within reach of
+the block's centre) was met right there, with the step in between; the dig gave up without a face in view. Now a dig that arrives
+within reach without a face in view walks on to a spot that sees one (the same goal as using a chest: eyes in reach and a ray to a face,
+never in the block's own column), here down the last step onto the layer's floor, and aims again; only when no spot it can walk to sees
+a face does it fail ("can't reach stone at …: none of its faces is in view from a spot I can walk to"). Every dig gets this (client,
+`MinecraftClient.DigAimFromViewAsync`); a dig that worked before walks exactly as before. A quarry cell resting after failures is named
+with its last failure in the status and in the idle audit of a pawn that found nothing there ("waiting: quarry z1: 181,57,366 resting
+after failures (can't reach stone)"; several: "3 cell(s) on y 57 resting after failures (e.g. 181,57,366: can't reach stone)").
+
 **State.** A mine zone has `mode`; a quarry adds `quarry: {top, bottom, depth, layer, y, cells_left, stair_fixes, sealed, done,
 stair: [[x,y,z], …] (top first), status}` ("layer 3 of 61 (y 61), 34 cell(s) left", "done: down to bedrock").
 

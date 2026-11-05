@@ -11,7 +11,7 @@ internal static class ClientGatherTraceGoldenData
 
             """,
         ["mine-dirt-normal"] = """
-            fail: mined 0 dirt, +0 dirt (have 0); too many failures, last: can't reach dirt at 3,62,5
+            fail: mined 0 dirt, +0 dirt (have 0); too many failures, last: can't reach dirt at 3,62,5: none of its faces is in view from a spot I can walk to
             ----
 
             """,

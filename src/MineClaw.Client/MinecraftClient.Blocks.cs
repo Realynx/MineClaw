@@ -114,7 +114,25 @@ public sealed partial class MinecraftClient
         var g = await GotoReachSafelyAsync(d.Pos, d.Generator, ct).ConfigureAwait(false);
         aim = Aiming.FindDigAim(World, World.Player.EyePosition, d.Pos, Options.Reach);
         if (aim is not null) return (aim, null);
-        return (null, ActionResult.Fail($"can't reach {d.Name} at {Fmt(d.Pos)}" + (g.Ok ? "" : $" ({g.Message})")));
+        if (!g.Ok) return (null, ActionResult.Fail($"can't reach {d.Name} at {Fmt(d.Pos)} ({g.Message})"));
+        return await DigAimFromViewAsync(d, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Arrived within reach distance but no face of the block is in view from there: walks to a spot that sees one (<see cref="GoalUseBlock"/>)
+    /// and aims again. Live 11-04 story-1 quarry: a cell under a stair step ("dig 181,57,366 failed: can't reach stone" ×14 from as many
+    /// pawns, the layer held for it): the pawn stood on the step over it, "within reach" with the step between, and gave up there, almost
+    /// down the stair; the cell's open faces were toward the pit floor, one step further down.
+    /// </summary>
+    private async Task<(DigAim? Aim, ActionResult? Unreachable)> DigAimFromViewAsync(DigJob d, CancellationToken ct)
+    {
+        Goal view = new GoalFiltered(new GoalUseBlock(World, d.Pos, Options.Reach - 0.6), (x, y, z) => ReachSpotOk(d.Pos, d.Generator, x, y, z),
+            "sees a face, no lava");
+        var g = await GotoCoreAsync(view, GotoOptions.Default with { Timeout = TimeSpan.FromSeconds(30) }, ct).ConfigureAwait(false);
+        var aim = Aiming.FindDigAim(World, World.Player.EyePosition, d.Pos, Options.Reach);
+        if (aim is not null) return (aim, null);
+        Log($"dig: {d.Name} at {Fmt(d.Pos)}: no face in view from {Fmt(World.Player.Position)} ({g.Message})");
+        return (null, ActionResult.Fail($"can't reach {d.Name} at {Fmt(d.Pos)}: none of its faces is in view from a spot I can walk to"));
     }
 
     /// <summary>Edge blocks are dug from the inward side; generators from a spot released lava can't reach.</summary>

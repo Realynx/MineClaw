@@ -192,7 +192,7 @@ public sealed partial class StoryColony
             if (st.Asked) Alert("info", $"{p.Display} is out (was stuck at {st.At})", p.Name);
             if (st.Attempts > 0) _log.LogInformation("story {Colony}: {Pawn} is out (stuck at {At} after {N} escape attempt(s))", Id, p.Name, st.At, st.Attempts);
         }
-        if (j.Lease != null) { _unreachBy.Remove(j.Lease); _pawnFails.Remove(PawnKey(j.Lease, p.Name)); }
+        if (j.Lease != null) { _unreachBy.Remove(j.Lease); _pawnFails.Remove(PawnKey(j.Lease, p.Name)); _quarryMiss.Remove(j.Lease); }
         if (j.Source == "rescue" && j.SourceId is { } who && _stuck.TryGetValue(who, out var s)) s.Delivered = true;
     }
 
