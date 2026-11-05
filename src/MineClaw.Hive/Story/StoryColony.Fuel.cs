@@ -18,45 +18,87 @@ public sealed partial class StoryColony
     /// The fuel for <paramref name="items"/> smelts at <paramref name="bench"/>: the fuel, the units the job loads (0 = the furnace still
     /// holds enough), where the rest comes from (a chest, or null = the pawn's own), or why there is none.
     /// </summary>
-    internal (StoryFuel? Fuel, int Units, (P3 Chest, Stack Stack)? From, string? Missing) PickFuel(WorkbenchState bench, BillState bill, int items, PawnLive? live)
+    /// <param name="ownInputs">What the batch's input takes from the pawn's own pockets: never counted as its fuel too (charcoal from logs
+    /// burning logs: live 11-04, the one log it carried was both, and the furnace got a log and no fuel).</param>
+    internal (StoryFuel? Fuel, int Units, (P3 Chest, Stack Stack)? From, string? Missing) PickFuel(WorkbenchState bench, BillState bill, int items, PawnLive? live,
+        IReadOnlyList<Stack>? ownInputs = null)
     {
         var d = World!.Data;
         var choice = FuelChoice(bench, bill);
         var fuels = StoryFuels.For(d, choice);
         if (fuels.Count == 0) return (null, 0, null, $"needs fuel: {d.VersionId} has no {StoryFuels.Describe(choice)}");
-        int net = items - (int)Math.Floor(bench.FuelCredit + 1e-9);
+        int net = items - (int)Math.Floor(FuelCreditNow(bench) + 1e-9);
         if (net <= 0) return (fuels[0], 0, null, null);
         // Auto (and any) leave the builds' and bills' reserved stock alone unless nothing else is there; a named fuel is what was asked.
         bool guard = bill.ForBuild == null && choice is StoryFuels.Auto or "any" && _reserved.Count > 0;
+        var need = new FuelNeed(net, bench, bill, live, ownInputs);
         for (int pass = guard ? 0 : 1; pass < 2; pass++)
-            if (FuelPass(fuels, net, bench, bill, live, unreservedOnly: pass == 0) is { } got) return got;
+            if (FuelPass(fuels, need, unreservedOnly: pass == 0) is { } got) return got;
         return (null, 0, null, $"needs fuel: no {StoryFuels.Describe(choice)} within {bill.Radius} blocks");
     }
 
+    /// <summary>What a fuel pass looks for: the items to cover, at which furnace, for which bill (its radius), the pawn and what its batch
+    /// already takes from its pockets.</summary>
+    private sealed record FuelNeed(int Net, WorkbenchState Bench, BillState Bill, PawnLive? Live, IReadOnlyList<Stack>? OwnInputs);
+
     /// <summary>The first fuel the pawn carries enough of, or a chest within the bill's radius holds the rest of (with
     /// <paramref name="unreservedOnly"/>: only from what the builds and bills haven't reserved).</summary>
-    private (StoryFuel? Fuel, int Units, (P3 Chest, Stack Stack)? From, string? Missing)? FuelPass(IReadOnlyList<StoryFuel> fuels, int net, WorkbenchState bench,
-        BillState bill, PawnLive? live, bool unreservedOnly)
+    private (StoryFuel? Fuel, int Units, (P3 Chest, Stack Stack)? From, string? Missing)? FuelPass(IReadOnlyList<StoryFuel> fuels, FuelNeed need, bool unreservedOnly)
     {
         foreach (var f in fuels)
         {
-            int units = f.Units(net);
+            int units = f.Units(need.Net);
             bool Ok(Stack s) => f.Item.Matches(s.Id, s.Meta);
-            int own = live?.Inventory.Where(Ok).Sum(s => s.Count) ?? 0;
+            int own = Math.Max(0, (need.Live?.Inventory.Where(Ok).Sum(s => s.Count) ?? 0) - (need.OwnInputs?.Where(Ok).Sum(s => s.Count) ?? 0));
             if (own >= units) return (f, units, null, null);
-            if (FindStored(s => Ok(s) && s.Count >= units - own, bench.Pos, bill.Radius) is not { } fs) continue;
+            if (FindStored(s => Ok(s) && s.Count >= units - own, need.Bench.Pos, need.Bill.Radius) is not { } fs) continue;
             if (unreservedOnly && Unreserved((id, meta) => f.Item.Matches(id, meta)) < units - own) continue;
             return (f, units, (fs.Store.Chest, fs.Stack with { Count = units - own }), null);
         }
         return null;
     }
 
-    /// <summary>A furnace load done: what the fuel it brought leaves over for the next batch.</summary>
-    private static void FuelLoaded(WorkbenchState bench, ActiveJob j)
+    /// <summary>
+    /// Items the furnace can still smelt on fuel the colony knows of: the whole fuel items left in its slot, plus what is left of a lit one
+    /// past its queued items while it still burns. A lit fuel burns on with nothing to smelt (live 11-04 story-1: the leftovers of lit logs
+    /// added up as if they kept, a batch came with no fuel, and a log stood in the furnace with nothing to burn).
+    /// </summary>
+    internal double FuelCreditNow(WorkbenchState bench)
+    {
+        if (bench.BurnUntil is not { } until) return bench.FuelCredit;
+        var from = bench.ReadyAt is { } r && r > Now ? r : Now;
+        return bench.FuelCredit + Math.Max(0, (until - from).TotalSeconds / StoryRecipes.SmeltSeconds);
+    }
+
+    /// <summary>Items' worth of burn time the lit fuel still has now.</summary>
+    private double BurningLeft(WorkbenchState bench) =>
+        bench.BurnUntil is { } u && u > Now ? (u - Now).TotalSeconds / StoryRecipes.SmeltSeconds : 0;
+
+    /// <summary>
+    /// A furnace load (or a refuel) done: the fuel it brought joins the slot; what is still burning smelts first, then as many fuel items
+    /// light as the items need. Those burn out at <see cref="WorkbenchState.BurnUntil"/>; the rest stays in the slot.
+    /// </summary>
+    private void FuelLoaded(WorkbenchState bench, ActiveJob j)
     {
         double per = j.Json["fuel_per"]?.GetValue<double>() ?? 0;
-        int units = j.Json["fuel_units"]?.GetValue<int>() ?? 0, items = j.Json["n"]?.GetValue<int>() ?? 0;
-        bench.FuelCredit = Math.Max(0, bench.FuelCredit + units * per - items);
+        int units = j.Json["fuel_units"]?.GetValue<int>() ?? 0, items = j.Json["refuel"]?.GetValue<int>() ?? j.Json["n"]?.GetValue<int>() ?? 0;
+        double burning = BurningLeft(bench), need = items - burning;
+        if (need <= 0 || per <= 0)
+        {
+            bench.FuelCredit = Math.Max(0, bench.FuelCredit + units * per - Math.Max(0, need));
+            return;
+        }
+        int inSlot = (int)Math.Floor(bench.FuelCredit / per + 1e-9) + units;
+        int lit = Math.Min(inSlot, (int)Math.Ceiling(need / per - 1e-9));
+        bench.BurnUntil = Now + TimeSpan.FromSeconds((burning + lit * per) * StoryRecipes.SmeltSeconds);
+        bench.FuelCredit = (inSlot - lit) * per;
+    }
+
+    /// <summary>The furnace is short of fuel after all: nothing the colony thought it held is there.</summary>
+    private static void NoFuelLeft(WorkbenchState bench)
+    {
+        bench.FuelCredit = 0;
+        bench.BurnUntil = null;
     }
 
     /// <summary>
@@ -92,7 +134,7 @@ public sealed partial class StoryColony
         var fuels = StoryFuels.For(w.Data, choice);
         var (fuel, units, _, missing) = PickFuel(bench, bill, items, null);
         var shown = fuel ?? fuels.FirstOrDefault();
-        int net = Math.Max(0, items - (int)Math.Floor(bench.FuelCredit + 1e-9));
+        int net = Math.Max(0, items - (int)Math.Floor(FuelCreditNow(bench) + 1e-9));
         return new JsonObject
         {
             ["choice"] = choice, ["item"] = shown?.Item.Json(), ["name"] = shown?.Name,

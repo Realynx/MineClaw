@@ -456,8 +456,16 @@ public sealed class WorkbenchState
     public int? Fuel { get; set; }
     /// <summary>A furnace's fuel choice (StoryFuels.Choices); null = auto.</summary>
     public string? FuelSetting { get; set; }
-    /// <summary>Items a furnace can still smelt on the fuel the colony loaded (burn time and fuel-slot leftovers), as last left.</summary>
+    /// <summary>Items a furnace can still smelt on the fuel the colony left in its fuel slot (whole fuel items, not yet lit).</summary>
     public double FuelCredit { get; set; }
+    /// <summary>When the fuel a furnace lit burns out (it burns on with nothing to smelt): until then what is left of it counts too
+    /// (<c>StoryColony.FuelCreditNow</c>); null = nothing burning that the colony knows of.</summary>
+    public DateTimeOffset? BurnUntil { get; set; }
+    /// <summary>A loaded furnace found with its input and no fuel (a collect that found nothing to collect): that many items wait for a
+    /// refuel job (0 = none).</summary>
+    public int RefuelCount { get; set; }
+    /// <summary>The waiting input as the furnace showed it ("oak wood"), for the refuel's label.</summary>
+    public string? RefuelItem { get; set; }
     public long Rev { get; set; }
 }
 

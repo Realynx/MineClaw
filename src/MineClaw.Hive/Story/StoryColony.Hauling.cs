@@ -251,7 +251,17 @@ public sealed partial class StoryColony
         if (ForbiddenEntity(e.Id) || Forbidden(e.Block) || !Open("e:" + e.Id, p.Name, null)) return false;
         if (!InHaulArea(e.Block)) return false;
         if (Math.Abs(e.Block.Y - from.Y) > 12 && Math.Abs(e.Block.Y - (Home()?.Y ?? from.Y)) > 12) return false;
-        return World is not { } w || !StoryWander.Underground(w, e.Block);
+        return World is not { } w || ReachableDrop(w, e);
+    }
+
+    /// <summary>Not under ground, its spot not resting after pawns missed drops there, somewhere to stand by it (StoryColony.DropSpots.cs:
+    /// the idle audit hears why not).</summary>
+    private bool ReachableDrop(IStoryWorld w, StoryEntity e)
+    {
+        if (StoryWander.Underground(w, e.Block)) return false;
+        if (DropUnreachable(w, e) is not { } why) return true;
+        Blocked(why);
+        return false;
     }
 
     /// <summary>A fresh monster beside the drop, or a player who just dropped it at their feet.</summary>
@@ -290,12 +300,12 @@ public sealed partial class StoryColony
     private ActiveJob? DesignatedHaul(IStoryWorld w, PawnState p, PawnLive live, List<StoryEntity> items, P3 from)
     {
         var byId = items.Where(e => !ForbiddenEntity(e.Id)).ToDictionary(e => e.Id);
-        var d = Designations.Where(x => x.Kind == "haul" && x.Entity is { } id && byId.ContainsKey(id) && Open("e:" + id, p.Name, null))
+        var d = Designations.Where(x => HaulMarkOpen(w, x, byId, p))
             .OrderBy(x => byId[x.Entity!.Value].Block.Dist(from)).FirstOrDefault();
         if (d == null) { PassedEntityMarks("haul", byId); return null; }
         var de = byId[d.Entity!.Value];
         int slots = Math.Max(1, live.FreeSlots - 1);
-        var more = Designations.Where(x => x != d && x.Kind == "haul" && x.Entity is { } mid && byId.ContainsKey(mid) && Open("e:" + mid, p.Name, null))
+        var more = Designations.Where(x => x != d && HaulMarkOpen(w, x, byId, p))
             .Select(x => byId[x.Entity!.Value])
             .Where(m => Math.Abs(m.X - de.X) <= BatchRadius && Math.Abs(m.Z - de.Z) <= BatchRadius && Math.Abs(m.Y - de.Y) <= 3)
             .OrderBy(m => m.Block.Dist(de.X, de.Y, de.Z)).Take(slots - 1).ToList();
@@ -304,6 +314,15 @@ public sealed partial class StoryColony
             de.Block, "e:" + de.Id, "designation", d.Id, "working", j => j["r"] = Math.Clamp((int)Math.Ceiling(far) + 2, 3, 8), xp: 5);
         foreach (var m in more) dj.MoreLeases.Add("e:" + m.Id);
         return dj;
+    }
+
+    /// <summary>A haul mark on a drop in view, free for this pawn and not resting, that can be reached (else the idle audit hears why).</summary>
+    private bool HaulMarkOpen(IStoryWorld w, DesignationState x, Dictionary<int, StoryEntity> byId, PawnState p)
+    {
+        if (x.Kind != "haul" || x.Entity is not { } id || !byId.TryGetValue(id, out var e) || !Open("e:" + id, p.Name, null)) return false;
+        if (DropUnreachable(w, e) == null) return true;
+        PassedMark(MarkPass.DropUnreachable, "haul", x.At);
+        return false;
     }
 
     /// <summary>The standing task: the drop at despawn risk first, then the nearest, batched with the drops near it that go to the same
