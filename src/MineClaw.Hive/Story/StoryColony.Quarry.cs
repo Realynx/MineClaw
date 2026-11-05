@@ -294,7 +294,11 @@ public sealed partial class StoryColony
         _quarryScan.Remove(z.Id);
         _zoneScan.Remove(z.Id);
         WakeIdle();
-        return (new JsonObject { ["id"] = z.Id, ["mode"] = mode }, null);
+        var o = new JsonObject { ["id"] = z.Id, ["mode"] = mode };
+        var warnings = new List<string>();
+        QuarryOverBuilds(z, warnings); // over builds' cells: the overlap is said (StoryColony.QuarryConflicts.cs)
+        AddWarnings(o, warnings);
+        return (o, null);
     }
 
     internal const string QuarryTooNarrow = "a quarry needs at least 2×2 (a 1-wide strip is a trench: paint it as Ores only, or designate Mine)";

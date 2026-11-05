@@ -955,6 +955,22 @@ every top-layer cell on its rim a void walkway and the quarry never got past tha
 void, lava, water over the void: `Safety.FatalEdgeDistance`, built on `Safety.IsFatalColumn`, like the edge guard's sneak); a pit,
 a ravine or a cliff with a floor is not one. On a skyblock island the floor beside the real void is refused exactly as before.
 
+**Quarries win over builds.** Live 11-05 (Fox: "The pawns are broken at the quarry. They keep placing and deleting blocks on the top
+level"): a dirt floor build (b11401, 432 blocks at y 63) covered the top layer of quarry z17860. The quarry dug its cells, the 5-second
+reconcile saw them missing and reopened the build ("Build b11401 (floor (432 blocks, dirt)): 3 blocks no longer match the design (3
+missing): reopened", every few seconds), builders placed the dirt back, and the quarry's full look from the top found its first layer
+refilled and called every pawn up out of the pit to dig it again (a pawn at y 46 was handed rim placements: "its nearest support face is
+18.7 blocks from my eyes"). Now a cell is never both to dig and to place (`StoryColony.QuarryConflicts.cs`):
+- A build's placed cell in a quarry's columns, at or under its top, is **blocked** with the reason "conflicts with quarry z…: the quarry
+  digs this cell" (the map's failed-cell marker): never offered, never reopened by the reconcile, never support another build waits for.
+  One alert per build and quarry ("Build b7 (floor …): 38 blocks lie in quarry z3, which digs them out: left unbuilt. Move or remove the
+  build or the quarry"). A build with nothing else left is `blocked`. Queuing such a build answers it in `warnings`; painting a quarry
+  (or switching a mine zone to quarry) over a build's cells answers "overlaps build b7 (…): the quarry digs N of its blocks". Erasing
+  the quarry (or moving the build) frees the cells on the next pass. The quarry's stair steps are its own: placed where the stair needs
+  them, never dug.
+- A pawn down in a quarry pit (feet in its columns, more than 2 under its top) is offered no build cell more than 3 above it while a
+  builder up top (not in a pit, not under ground, idle or building) can take it; a lone builder still gets it and walks up the stair.
+
 **State.** A mine zone has `mode`; a quarry adds `quarry: {top, bottom, depth, layer, y, cells_left, stair_fixes, sealed, done,
 stair: [[x,y,z], …] (top first), status}` ("layer 3 of 61 (y 61), 34 cell(s) left", "done: down to bedrock").
 

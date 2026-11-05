@@ -55,7 +55,8 @@ public sealed partial class StoryColony
     {
         var drift = new Drift();
         foreach (var g in b.Ghosts)
-            if (Reconcilable(g) && w.Loaded(g.At.X, g.At.Z)) ReconcileCell(w, b, g, seen, ref drift);
+            if (Reconcilable(g) && w.Loaded(g.At.X, g.At.Z) && !QuarryHeld(b, g)) ReconcileCell(w, b, g, seen, ref drift);
+        ConflictStatus(b); // a quarry digs what is left (StoryColony.QuarryConflicts.cs)
         if (drift.Total > 0) Reopened(b, drift);
         else if (b.Status is not ("done" or "paused") && AllBuilt(b)) { b.Status = "done"; b.Reason = null; b.Rev = Touch(); }
     }
@@ -203,7 +204,7 @@ public sealed partial class StoryColony
         {
             if (o.Status is "done") continue;
             foreach (var g in o.Ghosts)
-                if (g.Job && !g.Remove && (o == b ? g.State == "leased" : g.State is "todo" or "leased" or "blocked")) set.Add(g.At);
+                if (g.Job && !g.Remove && !Conflicted(g) && (o == b ? g.State == "leased" : g.State is "todo" or "leased" or "blocked")) set.Add(g.At);
         }
         return set;
     }
