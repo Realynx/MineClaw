@@ -88,17 +88,20 @@ public sealed class StoryGearTests
         c.Designate("add", "mine", null, [new P3(3, 64, 3)], null);
         Assert.NotEqual("dig", Kind(c.Next(0)));
         c.State(); // the materials pass
-        var bill = c.Benches.Single().Bills.Single();
+        var bill = c.Benches.Single().Tasks.Single();
         Assert.Equal(StoryColony.ToolsTag, bill.ForBuild);
         Assert.Equal(Name(w, 274), bill.ForItem);
         Assert.Equal("craft:" + Name(w, 274), bill.Recipe);
-        Assert.Equal("tools", S(c.State()["workbenches"]![0]!["bills"]![0]!["for_build"]));
+        var st = c.State();
+        Assert.Empty(st["workbenches"]![0]!["bills"]!.AsArray()); // a craft task, not a bill in the bench's list
+        Assert.Equal("tools", S(st["craft_tasks"]![0]!["for"]));
+        Assert.Equal("immediate", S(st["craft_tasks"]![0]!["priority"])); // a pawn waits on it
         var craft = c.Next(1);
         Assert.Equal("craft", Kind(craft));
         // Cancelled by the owner: that tool isn't made by itself again.
         Assert.Null(c.BillsOp("remove", new JsonObject { ["id"] = bill.Id }).Error);
         c.State();
-        Assert.Empty(c.Benches.Single().Bills);
+        Assert.Empty(c.Benches.Single().Tasks);
         Assert.Contains(Name(w, 274), c.Meta.Gear.NoCraft);
     }
 

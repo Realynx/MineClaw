@@ -73,7 +73,7 @@ public sealed class StoryGearStockTests
         var next = c.Next(0);
         Assert.NotEqual("till", Kind(next)); // nothing to till with: it waits, no loop
         Assert.Null(next["fetch"]);
-        Assert.Contains(c.Benches.Single().Bills, b => b.Recipe.Contains("hoe")); // and a hoe is made
+        Assert.Contains(c.Benches.Single().Tasks, b => b.Recipe.Contains("hoe")); // and a hoe is made
         Assert.DoesNotContain(c.Alerts, a => a.Text.Contains("failed"));
     }
 
@@ -126,7 +126,7 @@ public sealed class StoryGearStockTests
     }
 
     [Fact]
-    public void A_tool_bills_product_goes_to_storage_and_the_spare_target_counts_pockets()
+    public void A_tool_bills_product_goes_to_storage_and_the_spare_target_counts_pocket_extras_not_the_one_in_use()
     {
         var (c, h, w) = StoryRig.Make(2);
         Only(c, 0, WorkTypes.Craft);
@@ -134,15 +134,16 @@ public sealed class StoryGearStockTests
         w.Set(Table.X, Table.Y, Table.Z, 58);
         Assert.Null(c.WorkbenchOp("designate", Table).Error);
         h.Lives[c.P(0)] = FakeStoryHost.Bare(0, 64, 0);
-        h.Lives[c.P(1)] = FakeStoryHost.Bare(1, 64, 0, new Stack(274, 0, 2)); // two stone pickaxes in a pocket
+        h.Lives[c.P(1)] = FakeStoryHost.Bare(1, 64, 0, new Stack(274, 0, 3)); // three stone pickaxes in a miner's pocket: one it uses, two extra
         Store(c, new Stack(4, 0, 9), new Stack(280, 0, 6));
         Assert.Null(c.SetGearOptions(true, new JsonObject { ["count"] = 2, ["kinds"] = new JsonArray("pickaxe") }));
         c.State();
-        Assert.Empty(c.Benches.Single().Bills); // the pocketed ones count: no over-crafting
-        h.Lives[c.P(1)] = FakeStoryHost.Bare(1, 64, 0);
+        Assert.Empty(c.Benches.Single().Tasks); // the two extras are stock (they go back to storage): no over-crafting
+        h.Lives[c.P(1)] = FakeStoryHost.Bare(1, 64, 0, new Stack(274, 0, 1)); // only the one it works with
         Assert.Null(c.SetGearOptions(null, null)); // plan again
         c.State();
-        var bill = c.Benches.Single().Bills.Single();
+        var bill = c.Benches.Single().Tasks.Single(); // the pickaxe in use is no spare (live 11-05: all twelve wore out, none stored)
+        Assert.Equal(2, bill.Target);
         Assert.Equal(StoryColony.ToolsTag, bill.ForBuild);
         var job = c.Next(0);
         Assert.Equal("craft", Kind(job));

@@ -49,6 +49,7 @@ import { Button, Input } from '@/components/ui/primitives';
 import { cn } from '@/lib/utils';
 import { ContainerContents } from '@/features/world/ContainerPanel';
 import { InventorySection } from '@/features/live/inventory/InventoryPanel';
+import { benchTaskLine } from './CraftNeeds';
 import { retryIn, shortReason } from './failedLabels';
 import { BillRow } from './inspector/BillRow';
 import { WORK_LABELS, WORK_TYPES } from './model';
@@ -1159,6 +1160,17 @@ function AutoBillRow({
   );
 }
 
+/** The colony's craft tasks at this bench, as one line (they are never bills: docs "Craft tasks"). */
+function BenchTasks({ tasks, pos }: { tasks: StoryColonyState['craftTasks']; pos: readonly number[] }) {
+  const line = benchTaskLine(tasks, pos);
+  if (!line) return null;
+  return (
+    <div className="rounded-md bg-surface-2 px-1.5 py-1 text-[10.5px] text-muted" data-testid="bench-tasks" title="The colony crafts these itself, before or after your bills: immediate needs first, build ingredients last">
+      {line}
+    </div>
+  );
+}
+
 /** A crafting table / furnace the colony doesn't use yet (another player's, or not designated): designate it here. */
 export function UndesignatedBench({
   pos,
@@ -1412,6 +1424,7 @@ export function BillsInspector({
             Release
           </Button>
         </div>
+        <BenchTasks tasks={state?.craftTasks} pos={pos} />
         <ReservationList
           reservations={state?.reservations}
           items={billInputs(recipes.data ?? [], bench.bills)}

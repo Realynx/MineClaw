@@ -101,7 +101,7 @@ public sealed partial class StoryColony
         if (World is not { } w || !w.Loaded(bench.Pos.X, bench.Pos.Z)) return false;
         if (StoryRecipes.BenchOf(w.Block(bench.Pos.X, bench.Pos.Y, bench.Pos.Z).Id) == bench.Kind) return false;
         var why = $"the {Pretty(bench.Kind)} at {bench.Pos} is gone" + (bench.Kind == "anvil" ? " (worn through): place a new one and designate it" : "");
-        foreach (var b in bench.Bills.Where(b => b.SuspendedReason != why)) { b.SuspendedReason = why; bench.Rev = Touch(); }
+        foreach (var b in BillsAndTasks(bench).Where(b => b.SuspendedReason != why)) { b.SuspendedReason = why; bench.Rev = Touch(); }
         if (_billAlerted.GetValueOrDefault("bench:" + bench.Pos) != why) { _billAlerted["bench:" + bench.Pos] = why; Alert("warn", char.ToUpperInvariant(why[0]) + why[1..]); }
         return true;
     }

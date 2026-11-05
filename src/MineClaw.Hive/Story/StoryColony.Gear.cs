@@ -114,7 +114,21 @@ public sealed partial class StoryColony
     /// <summary>A waiting job's tool want stays this long (its auto bill with it) after the last pawn that needed it asked.</summary>
     public static readonly TimeSpan ToolWantTtl = TimeSpan.FromMinutes(3);
 
-    private readonly Dictionary<(ToolType Kind, int Level), DateTimeOffset> _toolWants = new();
+    /// <summary>One wanted tool (kind, level): the pawns that need one and have no fresh one (waiting, or working on with a worn one),
+    /// each with when it last asked, and when anyone last asked (the want's spare lasts that long).</summary>
+    private sealed class ToolWant
+    {
+        public DateTimeOffset Last;
+        public readonly Dictionary<string, DateTimeOffset> Pawns = new(StringComparer.OrdinalIgnoreCase);
+    }
+
+    /// <summary>Spares a tool want keeps on top of the pawns that need one (live 11-05: twelve stone pickaxes, crafted together, wore out
+    /// within two minutes of each other mid-quarry and nothing was in storage): the next one that breaks is replaced from storage at once.</summary>
+    public const int ToolWantSpare = 1;
+
+    private readonly Dictionary<(ToolType Kind, int Level), ToolWant> _toolWants = new();
+    /// <summary>Tool items whose auto bill a pawn is waiting on: a crafter makes them before its other work (they hold work up).</summary>
+    private readonly HashSet<string> _urgentTools = new(StringComparer.Ordinal);
     private readonly Dictionary<int, ToolPlan?> _toolPlans = new();
     private readonly Dictionary<string, DateTimeOffset> _policyAt = new(StringComparer.OrdinalIgnoreCase);
 
@@ -557,11 +571,21 @@ public sealed partial class StoryColony
         int min = Math.Max(Math.Max(need.Floor, StoryTools.Level(rule?.Tier)), 0);
         string? ench = d.VersionId == "b1.8.1" ? null : rule?.Enchant;
         var t = new ToolPick(this, live, d, blockId, need, kind, min);
-        if (ench != null && t.Enchanted(ench, rule!) is { } enchanted) return enchanted;
-        if (t.Plain(ench) is { } plain) return plain;
+        if (ench != null && t.Enchanted(ench, rule!) is { } enchanted) return ToolHad(p.Name, kind, min, enchanted, worn: false);
+        if (t.Plain(ench) is { } plain) return ToolHad(p.Name, kind, min, plain, t.WornOnly);
         if (need.Hand && rule?.Fallback != "wait") return null; // a rule's wish only: the hand will do
-        NoteToolWant(kind, min);
+        NoteToolWant(p.Name, kind, min);
         return new ToolPlan(t.Label, null, null, null, null, $"needs {t.Label}");
+    }
+
+    /// <summary>The pawn has a tool for the dig: its want is met, unless all it has is a worn one (then its replacement is made before
+    /// that one breaks; the dig goes on with it meanwhile).</summary>
+    private ToolPlan ToolHad(string pawn, ToolType kind, int min, ToolPlan plan, bool worn)
+    {
+        if (plan.Wait != null) return plan;
+        if (worn) NoteToolWant(pawn, kind, min);
+        else ToolWantMet(pawn, kind, min);
+        return plan;
     }
 
     /// <summary>The tool kind a dig takes: the owner's rule's, else the block's (none when the hand drops it).</summary>
@@ -579,6 +603,8 @@ public sealed partial class StoryColony
         private readonly ToolType _kind;
         private readonly List<GearSlot> _carried;
         public readonly string Label;
+        /// <summary>The plain plan holds a worn tool carried: there was no fresh one anywhere.</summary>
+        public bool WornOnly { get; private set; }
 
         public ToolPick(StoryColony c, PawnLive live, IGameData d, int blockId, StoryTools.Need need, ToolType kind, int min)
         {
@@ -613,8 +639,9 @@ public sealed partial class StoryColony
                     .FirstOrDefault() is { } pg && (!pg.Enchanted || ench != null || StoredBest(u => u.Ench == null) == null))
                 return HoldIt(pg, pg.Enchanted ? "any" : "none");
             if (StoredBest(u => u.Ench == null) is { } su) return FetchPlain(su);
-            if (_carried.OrderBy(g => g.Meta).FirstOrDefault() is { } wg) return HoldIt(wg, null); // only worn ones: still better than losing the drop
-            return null;
+            if (_carried.OrderBy(g => g.Meta).FirstOrDefault() is not { } wg) return null;
+            WornOnly = true;
+            return HoldIt(wg, null); // only worn ones: still better than losing the drop
         }
 
         /// <summary>The plain tools of that kind it carries and the new one replaces (a wooden pickaxe for iron, a worn one) go back at once.</summary>
@@ -626,11 +653,25 @@ public sealed partial class StoryColony
         }
     }
 
-    private void NoteToolWant(ToolType kind, int level)
+    /// <summary>A pawn needs a tool of a kind and level (none fresh anywhere it can take one): the materials pass makes one for each such
+    /// pawn, and a spare.</summary>
+    private void NoteToolWant(string pawn, ToolType kind, int level)
     {
-        bool fresh = !_toolWants.ContainsKey((kind, level));
-        _toolWants[(kind, level)] = Now;
+        if (!_toolWants.TryGetValue((kind, level), out var want)) _toolWants[(kind, level)] = want = new ToolWant();
+        bool fresh = !want.Pawns.ContainsKey(pawn);
+        want.Pawns[pawn] = Now;
+        want.Last = Now;
         if (fresh) MaterialsChanged();
+    }
+
+    /// <summary>The pawn has a fresh tool of that kind and level: it no longer counts toward the wants it meets (that level and below).</summary>
+    private void ToolWantMet(string pawn, ToolType kind, int level)
+    {
+        if (_toolWants.Count == 0) return;
+        bool any = false;
+        foreach (var ((k, l), want) in _toolWants)
+            if (k == kind && l <= level) any |= want.Pawns.Remove(pawn);
+        if (any) MaterialsChanged();
     }
 
     /// <summary>The block a dig job will find at a cell (the world's; a build's own expected material when the view can't tell).</summary>
@@ -727,20 +768,30 @@ public sealed partial class StoryColony
     // ---------------------------------------------------------------- auto bills "for tools"
 
     /// <summary>
-    /// The materials pass's tool step (before the builds: a missing tool holds work up): each tool a waiting job needs, and the spare
-    /// tools kept in storage, become auto bills "for tools" on the colony's crafting table when the unreserved stock makes them (a
-    /// wooden pickaxe asked for is made of stone when there is cobblestone; spares are iron only from stored ingots, else stone, else
-    /// wood; never smelted for). Returns the pool after their reservations.
+    /// The materials pass's tool step (before the builds: a missing tool holds work up, so a build's reservation never starves it): each
+    /// tool pawns wait on becomes an auto bill "for tools" on the colony's crafting table, one for each pawn that needs one plus
+    /// <see cref="ToolWantSpare"/> (or the owner's spare count, the larger), and the spare tools kept in storage likewise; as many as the
+    /// stock makes (a wooden pickaxe asked for is made of stone when there is cobblestone, the rest of wood; spares are iron only from
+    /// stored ingots, else stone, else wood; never smelted for). Returns the pool after their reservations.
     /// </summary>
     private Dictionary<(int Id, int Meta), int> ToolCrafts(IStoryWorld w, Dictionary<(int Id, int Meta), int> pool, Dictionary<(int Id, int Meta), int> reserved,
         List<Want> wants, bool hasTable)
     {
-        foreach (var k in _toolWants.Where(kv => Now - kv.Value >= ToolWantTtl).Select(kv => kv.Key).ToList()) _toolWants.Remove(k);
+        ExpireToolWants();
+        _urgentTools.Clear();
         var g = Meta.Gear;
         NoteToolWants(g, hasTable);
         if (!g.AutoCraftTools || !hasTable) return pool;
         foreach (var ask in ToolAsks(g)) pool = CraftToolAsk(w.Data, g, ask, pool, reserved, wants);
         return pool;
+    }
+
+    /// <summary>A pawn that hasn't asked for <see cref="ToolWantTtl"/> no longer counts; a want nobody asked for that long goes.</summary>
+    private void ExpireToolWants()
+    {
+        foreach (var want in _toolWants.Values)
+            foreach (var pn in want.Pawns.Where(kv => Now - kv.Value >= ToolWantTtl).Select(kv => kv.Key).ToList()) want.Pawns.Remove(pn);
+        foreach (var k in _toolWants.Where(kv => Now - kv.Value.Last >= ToolWantTtl).Select(kv => kv.Key).ToList()) _toolWants.Remove(k);
     }
 
     /// <summary>Each wanted tool's wait says, to begin with, why nothing is made for it (the craft step below says better).</summary>
@@ -751,43 +802,80 @@ public sealed partial class StoryColony
             _toolWantNote[$"needs {StoryTools.Describe(kind, lvl)}"] = !g.AutoCraftTools ? "auto-crafting tools is off" : !hasTable ? "no crafting table for it" : "no materials for it";
     }
 
-    /// <summary>The tools to have: one of each a waiting job needs, then the spares kept per kind.</summary>
-    private List<(ToolType Kind, int Level, int N, bool Spare)> ToolAsks(GearSettings g)
+    /// <summary>One tool the colony should have <paramref name="N"/> of (in storage or a pocket that doesn't use it). Urgent: pawns are
+    /// waiting on it.</summary>
+    private readonly record struct ToolAsk(ToolType Kind, int Level, int N, bool Spare, bool Urgent);
+
+    /// <summary>The tools to have: per wanted tool, one for each pawn that needs one plus the spare (the lowest wanted level of a kind
+    /// keeps it); then the owner's spares per kind no want already covers.</summary>
+    private List<ToolAsk> ToolAsks(GearSettings g)
     {
-        var asks = new List<(ToolType Kind, int Level, int N, bool Spare)>();
-        foreach (var ((kind, lvl), _) in _toolWants) asks.Add((kind, lvl, 1, false));
+        var asks = new List<ToolAsk>();
+        foreach (var ((kind, lvl), want) in _toolWants)
+        {
+            bool lowest = !_toolWants.Keys.Any(o => o.Kind == kind && o.Level < lvl);
+            asks.Add(new ToolAsk(kind, lvl, want.Pawns.Count + (lowest ? Math.Max(ToolWantSpare, SpareFor(g, kind)) : 0), false, want.Pawns.Count > 0));
+        }
         if (g.SpareCount > 0)
             foreach (var k in g.SpareKinds)
-                if (StoryTools.Kind(k) is { } kk) asks.Add((kk, 0, g.SpareCount, true));
+                if (StoryTools.Kind(k) is { } kk && !_toolWants.Keys.Any(o => o.Kind == kk)) asks.Add(new ToolAsk(kk, 0, g.SpareCount, true, false));
         return asks;
     }
 
-    /// <summary>One asked-for tool the colony lacks: an auto bill for it at the lowest level the stock makes (the pool after it).</summary>
-    private Dictionary<(int Id, int Meta), int> CraftToolAsk(IGameData d, GearSettings g, (ToolType Kind, int Level, int N, bool Spare) ask,
-        Dictionary<(int Id, int Meta), int> pool, Dictionary<(int Id, int Meta), int> reserved, List<Want> wants)
+    private static int SpareFor(GearSettings g, ToolType kind) => g.SpareKinds.Any(k => StoryTools.Kind(k) == kind) ? g.SpareCount : 0;
+
+    /// <summary>One asked-for tool the colony lacks: auto bills for as many as the stock makes, the lowest level first that makes any
+    /// and the next level for the rest (the pool after them).</summary>
+    private Dictionary<(int Id, int Meta), int> CraftToolAsk(IGameData d, GearSettings g, ToolAsk ask, Dictionary<(int Id, int Meta), int> pool,
+        Dictionary<(int Id, int Meta), int> reserved, List<Want> wants)
     {
-        var (kind, lvl, n, spare) = ask;
-        int missing = n - ToolStock(d, kind, lvl);
-        var noteKey = $"needs {StoryTools.Describe(kind, lvl)}";
-        if (missing <= 0) return pool;
-        int[] levels = spare ? [2, 1, 0] : lvl == 0 ? [1, 0] : [lvl];
-        if (!spare) NoteToolShort(d, g, kind, levels[^1], noteKey, pool);
-        foreach (var level in levels)
+        int missing = ask.N - ToolStock(d, ask.Kind, ask.Level);
+        var noteKey = $"needs {StoryTools.Describe(ask.Kind, ask.Level)}";
+        if (missing <= 0)
         {
-            if (ToolBill(d, g, kind, level, missing, pool, reserved, wants) is not { } after) continue;
-            if (!spare) _toolWantNote[noteKey] = "crafting one";
-            return after;
+            if (!ask.Spare) _toolWantNote[noteKey] = "one is in stock"; // never "no materials" for a tool that is there
+            return pool;
         }
-        return pool;
+        var levels = ToolLevels(ask);
+        if (!ask.Spare) NoteToolShort(d, g, ask.Kind, levels[^1], noteKey, pool);
+        var (after, made) = MakeTools(d, g, ask, levels, missing, pool, reserved, wants);
+        if (made > 0 && !ask.Spare) _toolWantNote[noteKey] = "crafting one";
+        return after;
     }
 
-    /// <summary>All the colony's fresh tools of a kind at a level or better: storage and every pawn's pocket (a pocketed pickaxe counts;
-    /// live 11-04: one pawn held 13).</summary>
+    /// <summary>The levels a tool is made at, cheapest first that the stock decides: spares iron (from ingots), stone, wood; a wooden
+    /// tool asked for stone first (when there is cobblestone), then wood; any other level just that.</summary>
+    private static int[] ToolLevels(ToolAsk ask) => ask.Spare ? [2, 1, 0] : ask.Level == 0 ? [1, 0] : [ask.Level];
+
+    /// <summary>Craft tasks for <paramref name="missing"/> of a tool over its levels (what one level can't make, the next makes); the
+    /// pool after them and how many.</summary>
+    private (Dictionary<(int Id, int Meta), int> Pool, int Made) MakeTools(IGameData d, GearSettings g, ToolAsk ask, int[] levels, int missing,
+        Dictionary<(int Id, int Meta), int> pool, Dictionary<(int Id, int Meta), int> reserved, List<Want> wants)
+    {
+        int made = 0;
+        var reason = ToolReason(ask, missing);
+        foreach (var level in levels)
+        {
+            if (made >= missing || ToolBill(d, g, ask.Kind, level, missing - made, pool, reserved, wants, reason) is not { } bill) continue;
+            made += bill.N;
+            pool = bill.After;
+            if (ask.Urgent) _urgentTools.Add(bill.Item);
+        }
+        return (pool, made);
+    }
+
+    /// <summary>The colony's fresh tools of a kind at a level or better that a pawn could take: storage, plus what a pocket holds beyond
+    /// the one its pawn's work uses (a hoard is stock: live 11-04, one pawn held 13 stone pickaxes). A pickaxe a miner works with is not
+    /// a spare (live 11-05: twelve miners' pickaxes counted as stock, so the spare was never made and all twelve wore out together).</summary>
     private int ToolStock(IGameData d, ToolType kind, int lvl)
     {
-        int have = Storages.Sum(s => s.Contents.Where(c => StoryTools.ToolOf(d, c.Id) == kind && StoryTools.LevelOf(d, c.Id) >= lvl && !StoryTools.Worn(d, c.Id, c.Meta)).Sum(c => c.Count));
-        foreach (var pn in Pawns.Keys)
-            have += GearOf(Host.Live(pn)).Count(x => x.Slot >= 9 && StoryTools.ToolOf(d, x.Id) == kind && StoryTools.LevelOf(d, x.Id) >= lvl && !StoryTools.Worn(d, x.Id, x.Meta));
+        bool Fits(int id, int meta) => StoryTools.ToolOf(d, id) == kind && StoryTools.LevelOf(d, id) >= lvl && !StoryTools.Worn(d, id, meta);
+        int have = Storages.Sum(s => s.Contents.Where(c => Fits(c.Id, c.Meta)).Sum(c => c.Count));
+        foreach (var p in Pawns.Values)
+        {
+            int n = GearOf(Host.Live(p.Name)).Where(x => x.Slot >= 9 && Fits(x.Id, x.Meta)).Sum(x => x.Count);
+            if (n > 0) have += Math.Max(0, n - (KindsFor(p).Contains(kind) ? 1 : 0));
+        }
         return have;
     }
 
@@ -795,26 +883,57 @@ public sealed partial class StoryColony
     private void NoteToolShort(IGameData d, GearSettings g, ToolType kind, int level, string noteKey, Dictionary<(int Id, int Meta), int> pool)
     {
         if (StoryTools.ItemFor(kind, level) is not { } want || !d.ItemExists(want)) return;
-        var plan = PlanFor((want, 0), 1, pool);
+        var plan = PlanFor((want, 0), 1, WithoutItem(pool, want).Pool);
         _toolWantNote[noteKey] = g.NoCraft.Contains(d.Item(want).Name) ? "its auto bill was cancelled"
             : plan.Missing.Count > 0 ? $"no {string.Join(", ", plan.Missing.Select(m => d.DisplayName(m.Id, Math.Max(0, m.Damage)).ToLowerInvariant()))} for it"
             : "no materials for it";
     }
 
-    /// <summary>The tool's auto bills when the pool makes <paramref name="missing"/> of it with no smelting (iron only from ingots):
-    /// their materials reserved, the pool after them returned; null = not this level.</summary>
-    private Dictionary<(int Id, int Meta), int>? ToolBill(IGameData d, GearSettings g, ToolType kind, int level, int missing, Dictionary<(int Id, int Meta), int> pool,
-        Dictionary<(int Id, int Meta), int> reserved, List<Want> wants)
+    /// <summary>The pool without any of an item (every meta), and what was taken out. The planner reads a worn tool in storage as the
+    /// tool itself and plans nothing (live 11-05: "needs a wooden pickaxe — no materials for it" with planks and sticks in storage): a
+    /// tool's stock is <see cref="ToolStock"/>'s to count, so its bill plans from the materials alone.</summary>
+    private static (Dictionary<(int Id, int Meta), int> Pool, List<KeyValuePair<(int Id, int Meta), int>> Out) WithoutItem(Dictionary<(int Id, int Meta), int> pool, int id)
+    {
+        var taken = pool.Where(kv => kv.Key.Id == id).ToList();
+        if (taken.Count == 0) return (pool, taken);
+        var bare = new Dictionary<(int Id, int Meta), int>(pool);
+        foreach (var kv in taken) bare.Remove(kv.Key);
+        return (bare, taken);
+    }
+
+    /// <summary>The tool's auto bills for as many as the pool makes (up to <paramref name="missing"/>) with no smelting (iron only from
+    /// ingots): their materials reserved, the pool after them returned with how many; null = none at this level.</summary>
+    private (Dictionary<(int Id, int Meta), int> After, int N, string Item)? ToolBill(IGameData d, GearSettings g, ToolType kind, int level, int missing,
+        Dictionary<(int Id, int Meta), int> pool, Dictionary<(int Id, int Meta), int> reserved, List<Want> wants, string reason)
     {
         if (StoryTools.ItemFor(kind, level) is not { } id || !d.ItemExists(id)) return null;
         var name = d.Item(id).Name;
         if (g.NoCraft.Contains(name)) return null;
-        if (Feasible((id, 0), missing, pool) is not { } f || f.Plan.Steps.Any(s => s.IsSmelt)) return null; // never smelted for (iron only from ingots)
+        var (bare, kept) = WithoutItem(pool, id);
+        if (MostTools((id, 0), missing, bare) is not { } f) return null;
         foreach (var u in f.Plan.Used) Reserve(reserved, (u.Id, u.Damage), u.Count);
+        ToolWants(d, f.Plan, id, name, reason, wants);
+        foreach (var kv in kept) f.After[kv.Key] = kv.Value;
+        return (f.After, f.N, name);
+    }
+
+    /// <summary>A tool plan's steps as craft-task wants, ingredients first (an intermediate step takes any variant: planks for sticks).</summary>
+    private static void ToolWants(IGameData d, CraftPlan plan, int id, string name, string reason, List<Want> wants)
+    {
         int step = 0;
-        foreach (var s in f.Plan.Steps)
-            if (RecipeOf(d, s, intermediate: (s.Recipe?.OutputId ?? -1) != id) is { } r) wants.Add(new Want(ToolsTag, -1, name, r, s.OutputCount, step++, "crafting_table"));
-        return f.After;
+        foreach (var s in plan.Steps)
+            if (RecipeOf(d, s, intermediate: (s.Recipe?.OutputId ?? -1) != id) is { } r) wants.Add(new Want(ToolsTag, -1, name, r, s.OutputCount, step++, "crafting_table", reason));
+    }
+
+    /// <summary>The most of a tool (up to <paramref name="max"/>, at most 16) the pool makes without smelting, with that plan; null when
+    /// not even one.</summary>
+    private static (CraftPlan Plan, Dictionary<(int Id, int Meta), int> After, int N)? MostTools((int Id, int Meta) key, int max, Dictionary<(int Id, int Meta), int> pool)
+    {
+        static bool Ok((CraftPlan Plan, Dictionary<(int Id, int Meta), int> After, (int Id, int Count) Fuel)? f) => f is { } x && !x.Plan.Steps.Any(s => s.IsSmelt);
+        if (!Ok(Feasible(key, 1, pool))) return null; // never smelted for (iron only from ingots)
+        for (int n = Math.Min(max, 16); n >= 1; n--)
+            if (Feasible(key, n, pool) is { } f && Ok(f)) return (f.Plan, f.After, n);
+        return null;
     }
 
     /// <summary>The owner cancelled a tool's auto bill: that tool isn't made by itself again (until the owner turns it back on by
@@ -822,7 +941,7 @@ public sealed partial class StoryColony
     internal void ToolCraftCancelled(string item)
     {
         if (!Meta.Gear.NoCraft.Contains(item)) Meta.Gear.NoCraft.Add(item);
-        foreach (var b in Benches) b.Bills.RemoveAll(x => x.ForBuild == ToolsTag && x.ForItem == item && b.LoadedBill != x.Id);
+        foreach (var b in Benches) b.Tasks.RemoveAll(x => x.ForBuild == ToolsTag && x.ForItem == item && b.LoadedBill != x.Id);
         Touch();
     }
 

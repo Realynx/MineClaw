@@ -6,12 +6,13 @@
  * dashed cells); clicking one of them detaches the pawn to Custom with the same values plus that change, with an Undo. Rows can be
  * ticked to give several pawns a role at once, and the Roles section below edits the roles themselves.
  */
-import type { StoryAiBody, StoryPawn, StoryRole, StoryRolesRequest } from '@mineclaw/contracts';
+import type { StoryAiBody, StoryCraftTask, StoryPawn, StoryRole, StoryRolesRequest } from '@mineclaw/contracts';
 import { Flame, Undo2, Users } from 'lucide-react';
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { Button } from '@/components/ui/primitives';
 import { cn } from '@/lib/utils';
 import { cyclePriority, nextSort, skillTint, sortPawns, WORK_LABELS, WORK_TYPES, type SortKey } from '../model';
+import { CraftNeeds } from '../CraftNeeds';
 import { panel } from '../StoryHud';
 import { AiMark, Avatar } from '../visuals';
 import { RoleIcon } from './roleIcons';
@@ -30,6 +31,9 @@ type WorkProps = {
   selected?: ReadonlyArray<string>;
   onRole?: (pawns: string[], role: string | null) => void;
   onRoleOp?: (body: StoryRolesRequest) => void;
+  /** The colony's craft tasks ("Crafting needs" under the grid) and their cancel. */
+  craftTasks?: ReadonlyArray<StoryCraftTask> | null;
+  onCancelTask?: (t: StoryCraftTask) => void;
 };
 
 /**
@@ -228,6 +232,7 @@ export function WorkPanel(props: WorkProps) {
         onToggleRoles={() => setShowRoles((s) => !s)}
       />
       {showRoles && onRoleOp ? <RolesEditor roles={roles} canWrite={canWrite} onOp={g.roleOp} /> : null}
+      <CraftNeeds tasks={props.craftTasks} canWrite={canWrite} onCancel={props.onCancelTask} />
     </section>
   );
 }

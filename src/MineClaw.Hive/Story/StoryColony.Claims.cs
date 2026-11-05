@@ -72,7 +72,7 @@ public sealed partial class StoryColony
         {
             if (!b.NoCraft.Contains(forItem)) b.NoCraft.Add(forItem);
             foreach (var bench in Benches)
-                if (bench.Bills.RemoveAll(x => x.ForBuild == build && x.ForItem == forItem && bench.LoadedBill != x.Id) > 0) bench.Rev = Touch();
+                if (bench.Tasks.RemoveAll(x => x.ForBuild == build && x.ForItem == forItem && bench.LoadedBill != x.Id) > 0) bench.Rev = Touch();
             done = "crafting cancelled";
         }
         else

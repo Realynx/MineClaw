@@ -879,7 +879,7 @@ route: `bill_add {id, plant, mode?, target?, paused?}`, `bill_update {id, bill, 
 `bill_remove | bill_pause | bill_resume {id, bill}`, `bill_reorder {id, ids}` (16 bills at most). A bill's plant is validated like
 a zone's (this version, the zone's soil). State: `bills: [{id, plant, label, mode, target, done, stored?, paused, met, active,
 seeds: {item, have, needed_for_empty, source_hint, missing, action}}]`, `active_bill`, `active_plant`; `seeds` and `status` are the
-active plant's. The chain stays automatic: till (a hoe, else a hoe bill) → sow → harvest → replant or the next bill.
+active plant's. The chain stays automatic: till (a hoe, else a hoe craft task) → sow → harvest → replant or the next bill.
 
 **Web.** The Zones tool's Growing zone shows a plant picker (icons from the item atlas): the new zone's first bill. The Colony tab
 opens a Growing zones window beside it: each zone's cells, Extend, what it sows now ("Sowing: Carrots"), its planting bills (Add bill
@@ -969,7 +969,7 @@ dragged rectangle for water (ids 8/9) and shows only the still-water cells; the 
 **Work.** A work type `fish` (the Work grid's Fish column, after Hunt; new pawns draw its skill from its own seed so every other
 draw stays as it was; older pawns start with it off). A pawn with Fish work picks the nearest fishing zone that wants fish, a shore
 cell at least 2 blocks from anyone already fishing (lease `fish:x,y,z`), and the nearest water cell to it. It needs a fishing rod:
-carried, else fetched from storage (the job's `fetch`), else a count bill for one at the colony's crafting table (3 sticks, 2
+carried, else fetched from storage (the job's `fetch`), else a craft task for one at the colony's crafting table (3 sticks, 2
 string; with no string in storage the colony hears "spiders drop it" instead, at most every 10 minutes). The job is
 `{kind: "fish", at: shore, water, s: 150, max}`: the pawn script walks to the shore cell and calls `fish(water, s, max)`. The
 catch is delivered to storage like any gathering (raw fish counts as raw food: it is stored, and cooking bills turn it into cooked
@@ -1505,7 +1505,7 @@ Workbenches (designated, added 2026-11-03):
 - The colony uses only the benches it was given. A bench becomes the colony's when the owner designates it (the bench
   inspector's "Use as colony workbench" → `POST …/workbenches {op:"designate", pos:[x,y,z]}`), when the owner adds its first
   bill, or when the colony places one for a build (below). `{op:"release", pos}` gives it back: its bills go with it, the
-  builds' auto bills move to another bench or wait. Answer `{pos, kind, designated}`; 400 for no bench at `pos`, or releasing one
+  colony's craft tasks move to another bench or wait. Answer `{pos, kind, designated}`; 400 for no bench at `pos`, or releasing one
   that isn't the colony's. Another player's table near home is never used.
 - Detection is a colony option: with `detect_benches` on, crafting tables and furnaces in the home zones (or 12 blocks around
   home) join by themselves every 30 s, as before. Off by default (`POST …/options {detect_benches}`); colonies saved before keep
@@ -1548,6 +1548,34 @@ Execution:
 - Missing ingredients or fuel set `suspended_reason` and raise an alert. Resume clears it.
 - An owner's bill leaves what the builds reserved: when the stored ingredient is only there for a build, the bill is suspended
   with "the … in storage is reserved for builds".
+
+### Craft tasks (added 2026-11-05)
+
+Fox: "Separate having bills and having personal crafting tasks. Bills are something I configure for crafting tables, but it's
+over-inundating having each personal crafting task as a bill", and "Immediate requirements like that should always be at the top
+of the list for crafting." (Live 11-05: one table listed 20 finished "wooden hoe 1/1" bills the colony had added for its farms.)
+- **Bills are the owner's.** A bench's `bills` are only what the owner configured, in the owner's order. The colony's own crafts are
+  **craft tasks** (`WorkbenchState.Tasks`, `StoryColony.CraftTasks.cs`): a build's chain ("Builds craft what they need"), the
+  tools pawns need and the spares ("Tools and gear"), a water build's bucket, a growing zone's hoe or seeds, a fishing zone's rod.
+  One task per need and recipe with a count, never one per unit or pawn; it carries its reason ("for mining: Cleo Z., Dov U. (+1
+  spare)", "for the fence of build b4", "growing zone 'East' needs a hoe to till"), is taken by pawns with the recipe's work type
+  (Craft, or Cook for a furnace's food), and goes when it is made or no longer needed. A one-off need (hoe, rod, seeds) stays until
+  its count is made, then goes.
+- **Order on a bench:** immediate tasks, then the owner's bills top to bottom, then the other tasks (a build's ingredients, by build
+  order then step). **Immediate** = work waits on it right now: a tool a pawn is waiting for (or works on with a worn one), a
+  need's one-off (hoe, rod, seeds), a water build's bucket chain. A pawn with Craft (or Cook) work takes an immediate task before
+  any other work, whatever its priorities (live 11-05: the pickaxe bill sat "crafting one" for 30 minutes while every crafter
+  hauled at priority 2).
+- **State:** `craft_tasks: [{id, item, label, count, reason, for, for_item, priority: immediate|normal, bench:[x,y,z]|null, status:
+  queued|crafting|waiting|paused, blocked}]` (every state, full or delta), `count` what is still to make, `blocked` what held it up
+  at its last try ("no sticks: checked 2 chests …"). Hand crafts (a 2×2 recipe while there is no table) are listed with `bench:
+  null`. A task is cancelled with `bills {op:"remove", id}` (as an auto bill was: the build waits for that item, a tool isn't made
+  by itself again); the other bill ops answer 400 for it.
+- **Web:** the Colony panel's Work tab shows "Crafting needs" (each task: count, item, reason, immediate first, its status, cancel);
+  the bench inspector's bill list is the owner's bills only, with one line for the tasks there ("Also crafting: 7 wooden pickaxes
+  for mining").
+- **Older saves:** on load the auto bills move from the bills to the tasks, and finished one-off bills the colony had added itself
+  (a count bill for a hoe, a rod or seeds, done, with the defaults the colony gave it) are dropped.
 
 ### Reservations (added 2026-11-04)
 
@@ -1708,11 +1736,13 @@ materials pass runs whenever storage, the queue, benches or bills change (and ev
   unreserved: logs → planks → sticks → fence, cobblestone → stairs, sand → glass (fuel: coal or charcoal 1 per 8, planks or logs
   1 per 1.5) → panes. What the stock covers (the most, by a binary search; fuel included) is crafted; its ingredients are
   reserved too, so two builds or an owner's bill never take the same planks.
-- **Auto bills.** Each step is a `count` bill "for build #N" (`for_build`, `for_item`, `step`) on the colony's crafting table or
-  furnace nearest home, listed first on the bench (build order, then step: ingredients before products), radius 256. Its target
-  is `done` + what is still to make, so it follows the build and goes when nothing is left to make (a loaded furnace's bill stays
-  until collected). A step whose ingredient isn't there yet waits quietly (an earlier step makes it). The owner can only cancel an
-  auto bill (`update`, `pause`, `resume`, `reorder` answer 400): the build then waits for that item (`no_craft`).
+- **Craft tasks, not bills.** Each step is a craft task "for build #N" (`for_build`, `for_item`, `step`, a `reason` such as "for the
+  fence of build b4") on the colony's crafting table or furnace nearest home, radius 256: one task per build and recipe with a
+  count, in the bench's task list, never in its bill list (see "Craft tasks" below). Its target is `done` + what is still to make,
+  so it follows the build and goes when nothing is left to make (a loaded furnace's task stays until collected). A step whose
+  ingredient isn't there yet waits quietly (an earlier step makes it; the task's `blocked` says what). The owner can only cancel a
+  task (`bills` `remove` with its id; `update`, `pause`, `resume`, `reorder` answer 400): the build then waits for that item
+  (`no_craft`).
 - **2×2 recipes** run in a pawn's own grid while the colony has no crafting table (a `craft` job with no bench, Craft work).
 - **No bench.** A chain that needs a crafting table (or a furnace, which is made at a table) the colony hasn't got: with
   `auto_place_benches` (a colony option, default on) a pawn with Craft on fetches the materials, crafts the bench and places it
@@ -1726,7 +1756,8 @@ materials pass runs whenever storage, the queue, benches or bills change (and ev
 
 Build state gains `materials: [{item, label, need, have, crafting, short, via: craft|smelt|none, chain:[step], raw:[missing]}]`,
 `no_craft: [item]` and `station: {kind, pos}|null`. The web's build queue shows have/need, crafting and short per item, the
-recipe chain and the raw shortfall on hover; the bench inspector lists the auto bills tagged "for build #N", cancel only.
+recipe chain and the raw shortfall on hover; the bench inspector's bill list is the owner's bills only, with one line for the
+colony's tasks there ("Also crafting: 16 sticks for the fence of build b4") and the Colony panel's "Crafting needs" lists them all.
 
 `POST …/options` `{auto_place_benches?, detect_benches?, idle?: recreation|wander|stay, speed?: normal|fast|faster, speed_effect?, allow_lava?}` → the options (see "Idle behaviour" for `idle`, "Speed" for `speed`, "Water" for `allow_lava`); the colony state carries `options`.
 
@@ -1806,12 +1837,25 @@ tool its material needs to drop anything, from the version's own data (`StoryToo
 - **Choosing.** The lowest tier that does (good tools stay good), fresh before worn: a tool under 10 % durability is swapped for a
   fresh one carried or stored, and a worn one is used only when there is nothing else (never a lost drop). Never another pawn's
   pocket: storage only.
-- **Auto bills "for tools".** A tool a waiting job needs becomes an auto bill on the colony's crafting table, the builds' mechanism
-  (`for_build: "tools"`, `for_item` the tool; listed first on the bench; reserved before the builds' materials): a wooden pickaxe asked
-  for is made of stone when there is cobblestone. It goes when the tool exists (stored or carried). Cancelling one stops that tool
-  being made by itself (`no_craft`). `options.auto_craft_tools` (default on) turns it off. **Spare tools:**
-  `options.spare_tools: {count 0..8, kinds}` keeps that many of each kind in storage: iron from stored ingots (never smelted for),
-  else stone, else wood.
+- **Craft tasks "for tools" (reworked 2026-11-05).** Live 11-05 (Fox: "I'm seeing pawns idle during work hours, and they have active
+  tasks, like the quarry"): twelve stone pickaxes crafted together wore out within two minutes mid-quarry, nothing was in storage,
+  the wooden pickaxe asked for was one bill for one pickaxe, "no materials for it" with planks and sticks stored (a worn wooden
+  pickaxe in storage read as the tool itself), then "crafting one" for half an hour while every crafter hauled at priority 2. Now:
+  - **Per pawn.** Every pawn that needs a tool and has no fresh one (waiting, or working on with a worn one: its replacement is made
+    before it breaks) counts. A tool's craft task (`for_build: "tools"`, `for_item` the tool, a `reason` "for mining: Cleo Z., Dov U.
+    (+1 spare)") is for all of them plus `ToolWantSpare` (1; the owner's spare count when larger), less the stock: storage plus what
+    pockets hold beyond the one their pawn's work uses (a pickaxe a miner works with is no spare; a hoard of 13 is). A pawn that gets
+    a fresh one stops counting; a want nobody repeats goes after 3 minutes (its spare with it).
+  - **As many as the stock makes:** a wooden pickaxe asked for is made of stone while there is cobblestone, the rest of wood; planned
+    from the materials alone (a worn tool in storage never counts as the tool). It runs before the builds, so a build's reservation
+    never starves it. The wait says what the colony does: "crafting one", "no sticks for it", "one is in stock" (never "no materials"
+    for a tool that is there).
+  - **Immediate.** While a pawn waits on it, the task is immediate: any pawn with Craft work takes it before its other work, at any
+    priority (see "Craft tasks"). Meanwhile the waiting pawns take their next work type; the idle audit names the tool only for a pawn
+    with nothing else to do.
+  - Cancelling one stops that tool being made by itself (`no_craft`). `options.auto_craft_tools` (default on) turns it off.
+  **Spare tools:** `options.spare_tools: {count 0..8, kinds}` keeps that many of each kind in stock (storage, and pocket extras):
+  iron from stored ingots (never smelted for), else stone, else wood.
 
 ### Material rules
 
@@ -1854,13 +1898,15 @@ pocket (a pawn's tools were always "its own" and never stored) the colony kept c
   same chest (a wooden pickaxe for iron, a worn one).
 - **Crafted tools are stock:** a tool bill's product goes into storage like any bill's; a crafter that needs one fetches it back by
   its policy.
-- **Targets count every pocket:** spare-tool and auto-tool bills count storage plus every pawn's pocket, so they stop at the target.
+- **Targets count stock:** spare-tool and tool tasks count storage plus what pockets hold beyond the one each pawn's work uses, so a
+  hoard stops them, and a pickaxe in a miner's hand is never taken for a spare (changed 2026-11-05: counting every pocket left the
+  colony with no spare when all its pickaxes wore out together).
 - **A record that lies is corrected (StoryColony.Ledger.cs).** Live 11-04: "no wooden pickaxe in the chest at 218,64,400" and "no
   stone hoe in the chest at 223,64,400 (it had: dirt x333, …)" over and over: the colony's record said the item was there, someone had
   taken it, and every pick planned the same fetch. A fetch that finds its item missing now corrects that chest's record from what the
   pawn saw (the item gone; "it is empty" empties it; a full "it had:" listing replaces it), the job is not counted as failed, one
   alert says so, and the next pick plans from real stock: another chest, a pawn with one to spare, else the target waits ("needs a
-  wooden pickaxe") and an auto bill makes one (a farm's hoe: farming's own wooden-hoe bill). The same fetch is never planned again
+  wooden pickaxe") and a craft task makes one (a farm's hoe: farming's own wooden-hoe task). The same fetch is never planned again
   until a deposit puts the item back on the record.
 
 ### Any-variant recipes and bill planning (added 2026-11-04)

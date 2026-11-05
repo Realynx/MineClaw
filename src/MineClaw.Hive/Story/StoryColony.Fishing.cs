@@ -6,7 +6,7 @@ namespace MineClaw.Hive.Story;
 /// <summary>
 /// Fishing zones (docs/web/story-mode.md "Fishing"). Fox 11-03: "Make me a fishing zone where pawns can fish using fishing poles;
 /// it must be over water blocks." A zone of kind <c>fish</c> (a work zone) holds only still-water cells (source blocks under open
-/// air); a pawn with Fish work and a rod (carried, fetched from storage, else a bill for one) walks to a free shore cell beside it,
+/// air); a pawn with Fish work and a rod (carried, fetched from storage, else a craft task for one) walks to a free shore cell beside it,
 /// casts at the nearest water cell and fishes for a session (the <c>fish</c> primitive: cast, wait for a bite, reel in, repeat);
 /// its catch is delivered to storage like any gathering. Optional bills: fish forever, until N raw fish in storage, or N catches.
 /// </summary>
@@ -164,7 +164,7 @@ public sealed partial class StoryColony
         return null;
     }
 
-    /// <summary>No rod anywhere: a bill for one at the crafting table (3 sticks, 2 string); no string: the colony hears where from.</summary>
+    /// <summary>No rod anywhere: a craft task for one at the crafting table (3 sticks, 2 string); no string: the colony hears where from.</summary>
     private void NeedRod(IStoryWorld w, ZoneState z)
     {
         if (CountItem(StringItem, -1) < 2)
@@ -174,10 +174,10 @@ public sealed partial class StoryColony
             Alert("warn", $"Fishing zone {ZoneName(z)} needs a fishing rod: no string for one (spiders drop it; cobwebs too)");
             return;
         }
-        if (AutoBill(w, FishingRod, 1, $"fishing zone {ZoneName(z)} needs a rod")) return;
+        if (NeedTask(w, FishingRod, 1, $"fishing zone {ZoneName(z)} needs a rod")) return; // a craft task (StoryColony.CraftTasks.cs)
         if (_fishAlert.TryGetValue("rod", out var t) && Now - t < TimeSpan.FromMinutes(10)) return;
         _fishAlert["rod"] = Now;
-        Alert("warn", $"Fishing zone {ZoneName(z)} needs a fishing rod: store one, or add a crafting table for a rod bill");
+        Alert("warn", $"Fishing zone {ZoneName(z)} needs a fishing rod: store one, or add a crafting table to craft one");
     }
 
     /// <summary>A session ended: its catch counts toward the zone (and its first unmet count bill).</summary>

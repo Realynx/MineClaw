@@ -61,12 +61,12 @@ public class StoryClaimsTests
         // The water build's bucket: 3 iron ore claimed as its chain's input, an auto smelt bill for it.
         var ore = c.State()["reservations"]!.AsArray().Single(r => r!["item"]![0]!.GetValue<int>() == 15)!;
         Assert.Equal((3, build, "bucket", true), (ore["count"]!.GetValue<int>(), ore["build"]!.GetValue<string>(), ore["for_item"]!.GetValue<string>(), ore["chain"]!.GetValue<bool>()));
-        Assert.Contains(Fur(c).Bills, b => b.ForBuild == build);
+        Assert.Contains(Fur(c).Tasks, b => b.ForBuild == build);
 
         // The owner smelts iron: not "reserved for builds" — it is exactly the chain's step. The automatic one goes.
         var id = Bill(c, new JsonObject { ["recipe"] = "smelt:iron_ore", ["target"] = 3 });
         c.EnsureMaterials();
-        Assert.DoesNotContain(Fur(c).Bills, b => b.ForBuild == build);
+        Assert.DoesNotContain(Fur(c).Tasks, b => b.ForBuild == build);
         var j = c.Next();
         Assert.Equal("smelt", j["kind"]!.GetValue<string>());
         Assert.Null(Fur(c).Bills.Single(b => b.Id == id).SuspendedReason);
@@ -75,8 +75,8 @@ public class StoryClaimsTests
         // Loaded: the ingots on their way count for the build (its next step is the bucket at the table).
         c.Report(c.P(), j["id"]!.GetValue<string>(), "done", null, null);
         c.EnsureMaterials();
-        Assert.Contains(c.Benches.Single(b => b.Kind == "crafting_table").Bills, b => b.ForBuild == build && b.Recipe.Contains("bucket"));
-        Assert.DoesNotContain(Fur(c).Bills, b => b.ForBuild == build);
+        Assert.Contains(c.Benches.Single(b => b.Kind == "crafting_table").Tasks, b => b.ForBuild == build && b.Recipe.Contains("bucket"));
+        Assert.DoesNotContain(Fur(c).Tasks, b => b.ForBuild == build);
     }
 
     [Fact]

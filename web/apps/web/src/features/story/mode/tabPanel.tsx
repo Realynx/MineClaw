@@ -82,6 +82,8 @@ function workPanel(c: Story) {
       selected={c.selection.bodies}
       onRole={(names, role) => void c.write('story.priorities', { pawns: names, role }).catch(warnOn(c))}
       onRoleOp={(body) => void c.write('story.roles', body).catch(warnOn(c))}
+      craftTasks={c.state?.craftTasks}
+      onCancelTask={(t) => void c.write('story.bills', { op: 'remove', id: t.id } as never).catch(warnOn(c))}
     />
   );
 }
@@ -229,7 +231,7 @@ function growingZones(c: Story) {
           .then(
             (out) =>
               c.say(
-                out.kind === 'bill' ? 'A bill for seeds was added' : `${out.count ?? 0} tall grass designated to cut`,
+                out.kind === 'bill' ? 'Seeds are queued for crafting' : `${out.count ?? 0} tall grass designated to cut`,
               ),
             warnOn(c),
           )

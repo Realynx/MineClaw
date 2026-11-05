@@ -50,6 +50,7 @@ import {
   type StoryBed,
   type StoryBedsRequest,
   type StoryBill,
+  type StoryCraftTask,
   type StoryBillsRequest,
   type StoryArchitectEntry,
   type StoryArchitectResponse,
@@ -935,7 +936,8 @@ export class StorySim {
       ...(full || c.ghostsRev > s ? ghostsState(c) : {}),
       ...(full ? { categories: STORY_DEFAULT_CATEGORIES } : {}),
       storages: pick(c.storages),
-      workbenches: pick(c.benches),
+      workbenches: pick(c.benches).map((b) => ({ ...b, bills: b.bills.filter((x) => (x.forBuild ?? null) === null) })),
+      craftTasks: craftTasksOf(c),
       ...this.bedsSince(c, full, s),
       ai: this.aiBodies(),
       directives: pick(c.directives),
@@ -2486,7 +2488,8 @@ export class StorySim {
     }
     for (let i = wants.length - 1; i >= 0; i--) if (wants[i]!.bench === f.v.kind) wants.splice(i, 1);
     if (!changed) return;
-    f.v.bills = [...kept.filter((x) => (x.forBuild ?? null) !== null), ...kept.filter((x) => (x.forBuild ?? null) === null)];
+    // The owner's bills run first, then the build's craft tasks (docs "Craft tasks"; the sim has no immediate tasks).
+    f.v.bills = [...kept.filter((x) => (x.forBuild ?? null) === null), ...kept.filter((x) => (x.forBuild ?? null) !== null)];
     f.rev = this.bump(c);
   }
 
@@ -3373,6 +3376,27 @@ function planReason(short0: number, crafting: number, label: string): string | n
   return crafting > 0
     ? `waiting for ${crafting} ${label.toLowerCase()} (being crafted)`
     : `need ${short0} ${label.toLowerCase()}`;
+}
+
+/** The colony's craft tasks as the state lists them (the sim keeps them among a bench's bills, tagged `forBuild`). */
+function craftTasksOf(c: Colony): StoryCraftTask[] {
+  return [...c.benches.values()].flatMap((f) =>
+    f.v.bills
+      .filter((b) => (b.forBuild ?? null) !== null)
+      .map((b) => ({
+        id: b.id,
+        item: b.recipe,
+        label: null,
+        count: Math.max(0, (b.target ?? 0) - (b.done ?? 0)),
+        reason: `for build ${String(b.forBuild)}`,
+        for: b.forBuild ?? null,
+        forItem: b.forItem ?? null,
+        priority: 'normal' as const,
+        bench: f.v.pos,
+        status: 'queued' as const,
+        blocked: null,
+      })),
+  );
 }
 
 /** Keeps a bench's bill in a materials pass (its want taken from `wants`); true when that changed it (dropped or retargeted). */

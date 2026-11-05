@@ -191,7 +191,7 @@ public sealed class StoryWaterTests
         Assert.Contains("bucket", b.Reason);
         var mat = b.Materials.Single();
         Assert.Equal(("bucket", 1, 1), (mat.Item, mat.Need, mat.Crafting)); // one bucket for the channel, not one per cell
-        var bill = c2.Benches.SelectMany(x => x.Bills).Single(x => x.ForBuild == b.Id);
+        var bill = c2.Benches.SelectMany(x => x.Tasks).Single(x => x.ForBuild == b.Id);
         Assert.Equal("craft:bucket", bill.Recipe);
         // Nothing to make one from: blocked, said once.
         var (c3, _, w3) = Rig(Release1122GameData.Instance);
@@ -586,7 +586,7 @@ public sealed class StoryWaterTests
         var job = c.Next();
         var mat = c.Builds.Single().Materials.Single();
         Assert.Equal(("bucket", 1, 1, 0), (mat.Item, mat.Need, mat.Have, mat.Short));
-        Assert.Empty(c.Benches.SelectMany(x => x.Bills).Where(x => x.ForBuild != null)); // no "Make Bucket" for it
+        Assert.Empty(c.Benches.SelectMany(x => x.Tasks).Where(x => x.ForBuild != null)); // no "Make Bucket" for it
         Assert.DoesNotContain(c.Alerts, a => a.Text.Contains("short of materials"));
         // No water to fill from anywhere: the full bucket is fetched and poured straight away (one cell), no source needed.
         Assert.Equal("pour", job["kind"]!.GetValue<string>());

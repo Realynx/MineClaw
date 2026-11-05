@@ -95,7 +95,7 @@ public sealed partial class StoryColony
 
     /// <summary>The recipe of what a furnace is smelting, by its loaded bill (or the recipe kept when the bill went).</summary>
     private static StoryRecipe? LoadedOutput(IStoryWorld w, WorkbenchState bench) =>
-        bench.LoadedBill is { } lb && (bench.LoadedRecipe ?? bench.Bills.FirstOrDefault(x => x.Id == lb)?.Recipe) is { } rid ? StoryRecipes.Get(w.Data, rid) : null;
+        bench.LoadedBill is { } lb && (bench.LoadedRecipe ?? BillById(bench, lb)?.Recipe) is { } rid ? StoryRecipes.Get(w.Data, rid) : null;
 
     private static IEnumerable<ItemStack> Stacks(Dictionary<(int Id, int Meta), int> pool)
     {
@@ -202,7 +202,8 @@ public sealed partial class StoryColony
     private WorkbenchState? BenchFor(string kind, P3 near) =>
         Benches.Where(b => b.Kind == kind).OrderBy(b => b.Pos.Dist(near)).FirstOrDefault();
 
-    private sealed record Want(string Build, int Order, string ForItem, StoryRecipe Recipe, int Outputs, int Step, string Bench);
+    /// <param name="Reason">The craft task's reason in words (a tool's: who waits on it); null = said from the build.</param>
+    private sealed record Want(string Build, int Order, string ForItem, StoryRecipe Recipe, int Outputs, int Step, string Bench, string? Reason = null);
 
     /// <summary>The materials pass (see the type's summary). Callers hold the lock.</summary>
     internal void RefreshMaterials()
@@ -461,22 +462,25 @@ public sealed partial class StoryColony
         public int Crafting;
     }
 
-    /// <summary>The auto bills on the benches match <paramref name="wants"/>: targets follow the shortfall, unwanted ones go (never a
-    /// furnace's loaded one), new ones are added; each bench lists its auto bills first, by build order then step.</summary>
+    /// <summary>The craft tasks on the benches (StoryColony.CraftTasks.cs) match <paramref name="wants"/>: one task per need and recipe,
+    /// counts follow the shortfall, unwanted ones go (never a furnace's loaded one), new ones are added; each bench keeps its tasks by
+    /// build order (tools first) then step. A need's one-off task stays until it is made.</summary>
     private void ReconcileAutoBills(List<Want> wants, P3 near)
     {
         var merged = wants.GroupBy(x => (x.Build, x.Recipe.Id))
             .Select(g => g.First() with { Outputs = g.Sum(x => x.Outputs), Step = g.Min(x => x.Step) }).ToList();
+        foreach (var bench in Benches)
+            if (DropFinishedNeeds(bench)) bench.Rev = Touch();
         var placed = new HashSet<(string, string)>();
         foreach (var bench in Benches)
             if (KeepAutoBills(bench, merged, placed)) bench.Rev = Touch();
         foreach (var want in merged.Where(x => !placed.Contains((x.Build, x.Recipe.Id))))
         {
             if (BenchFor(want.Bench, near) is not { } bench) continue;
-            bench.Bills.Add(new BillState
+            bench.Tasks.Add(new BillState
             {
                 Id = NextId("bill"), Recipe = want.Recipe.Id, Mode = "count", Target = want.Outputs, ForBuild = want.Build, ForItem = want.ForItem,
-                Step = want.Step, Radius = 256,
+                Step = want.Step, Radius = 256, Reason = TaskReason(want),
             });
             bench.Rev = Touch();
         }
@@ -488,7 +492,7 @@ public sealed partial class StoryColony
     private bool KeepAutoBills(WorkbenchState bench, List<Want> merged, HashSet<(string, string)> placed)
     {
         bool changed = false;
-        foreach (var bill in bench.Bills.Where(x => x.ForBuild != null).ToList())
+        foreach (var bill in bench.Tasks.Where(x => x.ForBuild != NeedTag).ToList())
         {
             var want = merged.FirstOrDefault(x => x.Build == bill.ForBuild && x.Recipe.Id.Equals(bill.Recipe, StringComparison.OrdinalIgnoreCase) && x.Bench == bench.Kind);
             if (want != null && placed.Add((want.Build, want.Recipe.Id)))
@@ -500,31 +504,33 @@ public sealed partial class StoryColony
             // A pawn is on it (it fetched the ore, so the shortfall seems gone): it stays until that job ends, or its furnace load
             // would have no bill to land on (live 11-04: three ingots smelted, never collected).
             if (_current.Values.Any(c => c.SourceId == bill.Id)) continue;
-            bench.Bills.Remove(bill);
+            bench.Tasks.Remove(bill);
             changed = true;
         }
         return changed;
     }
 
-    private static bool RetargetBill(BillState bill, Want want)
+    private bool RetargetBill(BillState bill, Want want)
     {
         int target = bill.Done + want.Outputs;
-        if (bill.Target == target && bill.Step == want.Step) return false;
+        var reason = TaskReason(want);
+        if (bill.Target == target && bill.Step == want.Step && bill.Reason == reason) return false;
         bill.Target = target;
         bill.Step = want.Step;
+        bill.Reason = reason;
         return true;
     }
 
-    /// <summary>Each bench lists its auto bills first, by build order (a missing tool's first: it holds work up) then step.</summary>
+    /// <summary>Each bench keeps its craft tasks by build order (a need's and a missing tool's first: they hold work up) then step.</summary>
     private void SortAutoBills()
     {
         var order = Builds.ToDictionary(b => b.Id, b => b.Order);
-        order[ToolsTag] = int.MinValue; // a missing tool holds work up: its bills first
-        foreach (var bench in Benches.Where(b => b.Bills.Any(x => x.ForBuild != null)))
+        order[NeedTag] = int.MinValue;
+        order[ToolsTag] = int.MinValue + 1; // a missing tool holds work up: its tasks first
+        foreach (var bench in Benches.Where(b => b.Tasks.Count > 1))
         {
-            var sorted = bench.Bills.Where(x => x.ForBuild != null).OrderBy(x => order.GetValueOrDefault(x.ForBuild!, int.MaxValue)).ThenBy(x => x.Step)
-                .Concat(bench.Bills.Where(x => x.ForBuild == null)).ToList();
-            if (!sorted.SequenceEqual(bench.Bills)) { bench.Bills = sorted; bench.Rev = Touch(); }
+            var sorted = bench.Tasks.OrderBy(x => order.GetValueOrDefault(x.ForBuild!, int.MaxValue)).ThenBy(x => x.Step).ToList();
+            if (!sorted.SequenceEqual(bench.Tasks)) { bench.Tasks = sorted; bench.Rev = Touch(); }
         }
     }
 

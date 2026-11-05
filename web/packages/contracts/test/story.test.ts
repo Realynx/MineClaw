@@ -499,12 +499,13 @@ describe('the mock director', () => {
     let b = sim.state(id).builds!.find((x) => x.id === built.ids![0])!;
     expect(b.materials[0]).toMatchObject({ need: 3, have: 0, crafting: 3, short: 0, via: 'craft' });
     expect(b.station?.kind).toBe('crafting_table');
-    // Designated: the tier unlocks and the build's auto bill lands on the bench.
+    // Designated: the tier unlocks and the build's craft task lands on the bench (a task, never one of the bench's bills).
     expect(sim.workbenches(id, { op: 'designate', pos: [-2, 64, -2] }).designated).toBe(true);
     expect(fence().unlocked).toBe(true);
-    const bench = sim.state(id).workbenches!.find((x) => x.pos[0] === -2)!;
-    const auto = bench.bills.find((x) => x.forBuild === built.ids![0])!;
-    expect(auto).toMatchObject({ recipe: 'fence', mode: 'count', target: 3, forItem: 'fence' });
+    const st = sim.state(id);
+    expect(st.workbenches!.find((x) => x.pos[0] === -2)!.bills).toEqual([]);
+    const auto = st.craftTasks!.find((x) => x.for === built.ids![0])!;
+    expect(auto).toMatchObject({ item: 'fence', count: 3, forItem: 'fence', bench: [-2, 64, -2], priority: 'normal' });
     expect(() => sim.bills(id, { op: 'pause', id: auto.id })).toThrow(/only be cancelled/);
     sim.bills(id, { op: 'remove', id: auto.id });
     b = sim.state(id).builds!.find((x) => x.id === built.ids![0])!;

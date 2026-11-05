@@ -4,10 +4,10 @@ namespace MineClaw.Hive.Story;
 
 /// <summary>
 /// Growing zones (docs/web/story-mode.md "Farming"): a farm zone with a chosen plant (<see cref="ZoneState.Plant"/>). Pawns with Farm
-/// work on till dirt and grass into farmland (a hoe: carried, fetched, or a bill for one at a crafting table), sow the plant's seed item
+/// work on till dirt and grass into farmland (a hoe: carried, fetched, or a craft task for one at a crafting table), sow the plant's seed item
 /// on every empty cell that suits it, harvest what is ripe and sow again, cut sugar cane and cactus above the bottom block, break
 /// pumpkins and melons and leave their stems, and chop grown saplings. The zone's state says what it has (sown, ripe, empty), where its
-/// seeds come from and what is missing; "seek seeds" designates tall grass to cut (wheat) or queues a bill (pumpkin, melon seeds).
+/// seeds come from and what is missing; "seek seeds" designates tall grass to cut (wheat) or queues a craft task (pumpkin, melon seeds).
 /// </summary>
 public sealed partial class StoryColony
 {
@@ -226,7 +226,7 @@ public sealed partial class StoryColony
         return j;
     }
 
-    /// <summary>Tilling a cell with a hoe carried or fetched; none to be had: a hoe bill or an alert (<see cref="NeedHoe"/>) and null.</summary>
+    /// <summary>Tilling a cell with a hoe carried or fetched; none to be had: a hoe craft task or an alert (<see cref="NeedHoe"/>) and null.</summary>
     private ActiveJob? TillJob(PawnLive live, ZoneState z, GrowCell till)
     {
         var hoe = live.Inventory.FirstOrDefault(s => Hoes.Contains(s.Id));
@@ -248,7 +248,7 @@ public sealed partial class StoryColony
         if (plant.Harvest == "fruit" && World is { } w)
         {
             int fruit = plant.Fruit == 103 ? 360 : plant.Fruit; // a melon slice crafts melon seeds
-            if (CountItem(fruit, -1) > 0) AutoBill(w, plant.SeedId, 4, $"growing zone {ZoneName(z)} needs {StoryPlants.SeedName(w.Data, plant)}");
+            if (CountItem(fruit, -1) > 0) NeedTask(w, plant.SeedId, 4, $"growing zone {ZoneName(z)} needs {StoryPlants.SeedName(w.Data, plant)}");
         }
         if (_growAlert.TryGetValue("seeds:" + z.Id, out var last) && Now - last < TimeSpan.FromMinutes(10)) return;
         _growAlert["seeds:" + z.Id] = Now;
@@ -257,10 +257,10 @@ public sealed partial class StoryColony
 
     private void NeedHoe(ZoneState z)
     {
-        if (World is { } w && AutoBill(w, 290, 1, $"growing zone {ZoneName(z)} needs a hoe to till")) return;
+        if (World is { } w && NeedTask(w, 290, 1, $"growing zone {ZoneName(z)} needs a hoe to till")) return; // a craft task (StoryColony.CraftTasks.cs)
         if (_growAlert.TryGetValue("hoe:" + z.Id, out var last) && Now - last < TimeSpan.FromMinutes(10)) return;
         _growAlert["hoe:" + z.Id] = Now;
-        Alert("warn", $"Growing zone {ZoneName(z)} needs a hoe to till: store one, or add a crafting table for a hoe bill");
+        Alert("warn", $"Growing zone {ZoneName(z)} needs a hoe to till: store one, or add a crafting table to craft one");
     }
 
     private static string ZoneName(ZoneState z) => z.Name is { Length: > 0 } n ? $"'{n}'" : z.Id;
@@ -275,22 +275,6 @@ public sealed partial class StoryColony
         "melon" => "No melon seeds — store a melon slice and a crafting table makes them",
         _ => $"No {p.Label.ToLowerInvariant()} to sow — {p.Source}",
     };
-
-    /// <summary>
-    /// A count bill for <paramref name="outputId"/> at the colony's crafting table, unless one is still open. False when there is no
-    /// crafting table or no such recipe in this version.
-    /// </summary>
-    private bool AutoBill(IStoryWorld w, int outputId, int target, string why)
-    {
-        var recipe = StoryRecipes.For(w.Data, "crafting_table").FirstOrDefault(r => r.Output.Id == outputId);
-        var bench = Benches.Where(b => b.Kind == "crafting_table").OrderBy(b => Home() is { } h ? b.Pos.Dist(h) : 0).FirstOrDefault();
-        if (recipe == null || bench == null) return false;
-        if (Benches.Any(b => b.Bills.Any(x => x.Recipe == recipe.Id && !x.Paused && (x.Mode != "count" || x.Done < x.Target)))) return true;
-        bench.Bills.Add(new BillState { Id = NextId("bill"), Recipe = recipe.Id, Mode = "count", Target = target });
-        bench.Rev = Touch();
-        Alert("info", $"Added a bill for {target} {recipe.Label} at the crafting table {bench.Pos}: {why}");
-        return true;
-    }
 
     // ---------------------------------------------------------------- zone ops and state
 
@@ -390,7 +374,7 @@ public sealed partial class StoryColony
     {
         int fruit = plant.Fruit == 103 ? 360 : plant.Fruit;
         if (CountItem(fruit, -1) == 0) return (null, $"store a {(fruit == 360 ? "melon slice" : "pumpkin")} first: the seeds are crafted from it");
-        if (!AutoBill(w, plant.SeedId, 4, $"growing zone {ZoneName(zone)} needs seeds")) return (null, "no crafting table at home for the bill");
+        if (!NeedTask(w, plant.SeedId, 4, $"growing zone {ZoneName(zone)} needs seeds")) return (null, "no crafting table at home for the bill");
         return (new JsonObject { ["count"] = 4, ["kind"] = "bill" }, null);
     }
 

@@ -271,7 +271,7 @@ public sealed partial class StoryColony
     {
         var benches = Benches.Where(b => b.Kind == kind).ToList();
         if (benches.Count != 1) return null;
-        int waiting = benches[0].Bills.Count(b => !b.Paused && b.SuspendedReason == null && StoryRecipes.Get(w.Data, b.Recipe) is { } r && Wanted(b, r));
+        int waiting = BillsAndTasks(benches[0]).Count(b => !b.Paused && b.SuspendedReason == null && StoryRecipes.Get(w.Data, b.Recipe) is { } r && Wanted(b, r));
         if (waiting < 4) return null;
         var work = kind == "furnace" ? WorkTypes.Cook : WorkTypes.Craft;
         bool idleCrafter = Pawns.Values.Any(p => p.Priorities.GetValueOrDefault(work) is >= 1 and <= 4

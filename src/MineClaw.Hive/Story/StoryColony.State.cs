@@ -72,6 +72,7 @@ public sealed partial class StoryColony
                     ["enchanted"] = EnchantedJson(st),
                 }).ToArray()),
                 ["reservations"] = ClaimsJson(), // who holds what (StoryColony.Claims.cs), every time: it moves with the stock
+                ["craft_tasks"] = CraftTasksJson(w), // the colony's own crafts, never bills (StoryColony.CraftTasks.cs), every time
                 ["workbenches"] = new JsonArray(Benches.Where(b => New(b.Rev)).Select(b => (JsonNode)new JsonObject
                 {
                     ["pos"] = b.Pos.Json(), ["kind"] = b.Kind, ["label"] = b.Label,

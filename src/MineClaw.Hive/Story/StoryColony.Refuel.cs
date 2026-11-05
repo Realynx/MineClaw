@@ -32,7 +32,7 @@ public sealed partial class StoryColony
     /// </summary>
     private ActiveJob? RefuelJob(IStoryWorld w, PawnLive live, string work, WorkbenchState bench, string lb, string key)
     {
-        var bill = bench.Bills.FirstOrDefault(b => b.Id == lb);
+        var bill = BillById(bench, lb);
         var lr = (bench.LoadedRecipe ?? bill?.Recipe) is { } rid ? StoryRecipes.Get(w.Data, rid) : null;
         if ((lr?.WorkType ?? WorkTypes.Craft) != work) return null;
         int n = bench.RefuelCount;

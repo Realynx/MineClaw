@@ -191,9 +191,9 @@ public sealed class StoryFarmingTests
         var id = AddZone(c, Area.Of(10, 63, 0, 12, 63, 0), "pumpkin");
         Assert.Equal("craft_seeds", Zone(c, id)["seeds"]!["action"]!.GetValue<string>());
         c.Next(); // no seeds: the pumpkin in storage becomes a bill for seeds
-        var bill = Assert.Single(c.Benches.Single().Bills);
+        var bill = Assert.Single(c.Benches.Single().Tasks);
         Assert.Equal(StoryRecipes.For(w.Data, "crafting_table").Single(r => r.Output.Id == 361).Id, bill.Recipe);
-        Assert.Contains(c.Alerts, a => a.Text.Contains("Added a bill"));
+        Assert.Contains("needs", bill.Reason); // a craft task with its reason, never a bill in the owner's list
         // A grown pumpkin beside a stem: the pumpkin is picked, the stem stays.
         if (c.CurrentOf(c.P()) is { } cur) c.Report(c.P(), cur.Id, "done", null, null);
         w.Set(10, 64, 0, 104, 7); w.Set(11, 64, 0, 86);
@@ -222,6 +222,6 @@ public sealed class StoryFarmingTests
         w2.Set(10, 63, 0, 2); w2.Set(10, 63, 2, 9);
         AddZone(c2, Area.Of(10, 63, 0, 10, 63, 0), "wheat");
         Assert.NotEqual("till", c2.Next()["kind"]!.GetValue<string>());
-        Assert.Equal(StoryRecipes.For(w2.Data, "crafting_table").First(r => r.Output.Id == 290).Id, Assert.Single(c2.Benches.Single().Bills).Recipe);
+        Assert.Equal(StoryRecipes.For(w2.Data, "crafting_table").First(r => r.Output.Id == 290).Id, Assert.Single(c2.Benches.Single().Tasks).Recipe);
     }
 }

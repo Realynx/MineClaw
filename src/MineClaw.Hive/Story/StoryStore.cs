@@ -72,8 +72,9 @@ public sealed class StoryStore(AgentDb db)
         foreach (var (kind, oj) in db.Query("SELECT kind, json FROM story_objects WHERE colony = $c ORDER BY rowid", r => (r.GetString(0), r.GetString(1)), ("$c", id)))
             LoadObject(c, kind, oj);
         c.SetRev(rev);
-        // Older saves: rectangle zones become cell sets (the same cells), a growing zone's plant a one-bill list. Saved at once.
-        if (c.MigrateZones() | c.MigrateRoles() | c.MigrateWaterFailures()) Save(c);
+        // Older saves: rectangle zones become cell sets (the same cells), a growing zone's plant a one-bill list, auto bills craft tasks.
+        // Saved at once.
+        if (c.MigrateZones() | c.MigrateRoles() | c.MigrateWaterFailures() | c.MigrateCraftTasks()) Save(c);
         return c;
     }
 
