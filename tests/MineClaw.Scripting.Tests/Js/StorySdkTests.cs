@@ -251,6 +251,44 @@ public sealed class StorySdkTests
             "maid_chan j2 done"], port.Reports);
     }
 
+    /// <summary>
+    /// Builds reconcile with the world (docs/web/story-mode.md): a cell to clear is dug with clear_dig (the owner's order), a refused
+    /// clear is that cell's failure with the dig's own reason (never placed into, never "occupied by"), and a floating cell goes on a
+    /// scaffold block that is dug again once the cell stands.
+    /// </summary>
+    [Fact]
+    public async Task A_refused_clear_is_said_as_such_and_a_floating_cell_goes_on_a_scaffold_dug_after()
+    {
+        var port = new FakeDirector(
+            J("j1", "place", j =>
+            {
+                j["at"] = "1,64,1"; j["block"] = "planks"; j["want"] = "planks";
+                j["cells"] = new JsonArray("1,64,1", "2,65,1");
+                j["clear"] = new JsonArray("1,64,1");
+                j["scaffold"] = new JsonObject { ["2,65,1"] = "2,64,1" };
+            }),
+            J("j2", "end"));
+        using var rig = Rig.Js();
+        rig.Host.Story = port;
+        rig.World.Inventory.SetSlot(0, 36, new MineClaw.Data.ItemStack(5, 4, 0));
+        rig.World.SetBlock(1, 64, 1, 1, 0);
+        rig.On["clear_dig"] = (args, _) => Task.FromResult(args.GetProperty("at").GetString() == "1,64,1"
+            ? ActResult.Fail("won't dig stone at 1,64,1: a placed stone (someone's floor, wall or path)")
+            : ActResult.Success("dug"));
+        var s = await rig.Run(MineClaw.Hive.Story.StoryColonies.PawnCode(), "story_pawn");
+        Assert.True(s.Ok, s.Outcome);
+        var calls = rig.Norm();
+        Assert.DoesNotContain("""place {"at":"1,64,1","block":"planks"}""", calls); // refused: never placed into
+        int scaffold = calls.IndexOf("""place {"at":"2,64,1","block":"planks"}"""), cell = calls.IndexOf("""place {"at":"2,65,1","block":"planks"}"""),
+            back = calls.IndexOf("""clear_dig {"at":"2,64,1"}""");
+        Assert.True(scaffold >= 0 && scaffold < cell && cell < back, string.Join("\n", calls));
+        Assert.Equal([
+            "maid_chan j1 progress cell 1,64,1 failed: can't clear the cell 1,64,1: won't dig stone at 1,64,1: a placed stone (someone's floor, wall or path)",
+            "maid_chan j1 progress cell 2,65,1 done",
+            "maid_chan j1 done batch: 1/2 placed",
+            "maid_chan j2 done"], port.Reports);
+    }
+
     [Fact]
     public async Task The_pawn_script_takes_and_holds_a_jobs_tool_runs_gear_jobs_and_attacks_the_exact_entity()
     {

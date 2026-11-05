@@ -186,6 +186,16 @@ public sealed partial class MinecraftClient
             return r;
         });
 
+    /// <summary>
+    /// A Story build's cell that holds another block (the hidden <c>clear_dig</c>; docs/web/story-mode.md "Builds reconcile with the
+    /// world"): the colony owner ordered that cell built, so soft protection on natural ground there (stone, dirt, grass, sand, gravel:
+    /// live 11-05 the "a placed stone (someone's floor)" guess refused 581 such clears in an hour) yields to the dig. Containers and
+    /// other blocks that open, never-break marks, other blocks a player placed and every safety rule still hold; the strict-harvest
+    /// rule too (a pawn clears stone with a pickaxe).
+    /// </summary>
+    public Task<ActionResult> DigForBuildAsync(BlockPos pos, CancellationToken ct = default) =>
+        RunActionAsync("dig", ct, c => DigCoreAsync(pos, c, floorGuard: true, requested: true, ordered: true));
+
     public Task<ActionResult> DigHereAsync(BlockPos pos, CancellationToken ct = default) =>
         RunActionAsync("dig", ct, c => DigCoreAsync(pos, c, allowPathing: false, requested: true));
 

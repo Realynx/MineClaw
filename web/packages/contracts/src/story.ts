@@ -605,7 +605,9 @@ export type StoryBuild = z.infer<typeof StoryBuild>;
 
 /** Ghost block [x, y, z, id, meta, build_id, state, kind?] (state: todo | leased | done | blocked | unsupported: a block pawns
  * can't place yet, shown and alerted, never a job | misrotated: placed, but turned another way than the design (meta), shown over
- * it and alerted; kind: dig | place | pour — a dig ghost's id/meta is the live world's block
+ * it and alerted (an open cell the reconcile pass finds turned wrong is shown so until it is placed again) | clear: an open cell that
+ * holds another block, dug out before its block goes in (the 9th element says what); kind: dig | place | pour — a dig ghost's id/meta
+ * is the live world's block
  * there, the material the dig expects; a pour ghost is a liquid source, water 9 or lava 11, poured from a bucket). */
 export const StoryGhostBlock = z.tuple([
   z.number().int(),

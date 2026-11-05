@@ -8,10 +8,10 @@ place.single#1 1 B13CAC74EA17FD1B {"ok":true,"msg":"","n":0}
 place.single#2 1 B13CAC74EA17FD1B {"ok":false,"msg":"no known chest","n":0}
 place.single#3 1 B13CAC74EA17FD1B {"ok":false,"msg":"","n":0}
 place.batch#1 0 E3B0C44298FC1C14 {"ok":true,"msg":"batch: 0/4 placed"}
-place.batch#2 9 ECD5B3907EAE0333 {"ok":true,"msg":"batch: 3/4 placed"}
+place.batch#2 7 1AF649289F9F8E80 {"ok":true,"msg":"batch: 2/4 placed"}
 place.batch#3 0 E3B0C44298FC1C14 {"ok":true,"msg":"batch: 0/4 placed"}
 place.turned#1 0 E3B0C44298FC1C14 {"ok":true,"msg":"batch: 0/3 placed"}
-place.turned#2 9 E416AD70E2245932 {"ok":true,"msg":"batch: 2/3 placed"}
+place.turned#2 7 66EA81EB1025CAED {"ok":true,"msg":"batch: 1/3 placed"}
 place.turned#3 0 E3B0C44298FC1C14 {"ok":true,"msg":"batch: 0/3 placed"}
 place.far#1 1 17E8A3FE29EDF517 {"ok":true,"msg":"batch: 0/2 placed"}
 place.far#2 9 BDDD15A5170907CF {"ok":true,"msg":"batch: 2/2 placed"}

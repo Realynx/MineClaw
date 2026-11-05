@@ -397,6 +397,11 @@ public sealed class GhostState
     /// <summary>Why an unsupported ghost can't be placed ("crops are planted, not placed"), or how a misrotated one stands.</summary>
     public string? Reason { get; set; }
     public long Rev { get; set; }
+    /// <summary>What an open cell holds now when it isn't the design's block (the reconcile pass, StoryColony.Reconcile.cs): <c>clear</c>
+    /// (another block: dug out first) or <c>misrotated</c> (its block turned another way: taken back and placed again), with the words
+    /// the map shows. Not saved: the next pass finds it again.</summary>
+    [JsonIgnore] public string? Holds { get; set; }
+    [JsonIgnore] public string? HoldsWords { get; set; }
 }
 
 public sealed class BillState

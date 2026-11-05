@@ -417,6 +417,7 @@ public sealed partial class StoryColony : IStoryPort
             WakeWanderers(); // idle legs: real work takes them back at once (StoryColony.Idle.cs)
             WakeNow();
             HaulTick(); // a drop about to despawn may take a hauler off lesser work (StoryColony.Hauling.cs)
+            ReconcileTick(); // every build cell against the world: drift reopens, wrong blocks are cleared (StoryColony.Reconcile.cs)
             PruneEntityMarks(); // haul, hunt, forbid marks whose entity is gone go (StoryColony.EntityMarks.cs)
             AuditIdle(); // why a pawn is idle in its work hours with work about (StoryColony.IdleAudit.cs)
             _pickEnts = null;

@@ -35,6 +35,7 @@ public sealed partial class ScriptBridge
         EquipTool.ToolName, // hidden tool: equip(item, mode, from, ench) — hold / wear / unwear / take one exact stack
         FaceTool.ToolName, // hidden: face{at} (turn the head; Story pawns' recreation)
         EscapeDigTool.ToolName, // hidden: escape_dig{at} (a Story pawn getting out: any tool, the drop may be lost)
+        ClearDigTool.ToolName, // hidden: clear_dig{at} (a Story build's cell holding another block: dug out before its block goes in)
         FishingTool.ToolName, // hidden tool: fish(at, seconds) with a rod
         TurnedPlaceTool.ToolName, // hidden: place_turned(block, at, meta) (a design's facing, axis or half)
         Blueprints.BlueprintWiring.BuildTool, Blueprints.BlueprintWiring.InfoTool, // hidden: build{bp, part, of, layer} / blueprint(id)
@@ -43,7 +44,7 @@ public sealed partial class ScriptBridge
     /// <summary>Never cut short by a pause/cancel: click sequences and single block actions finish, then the script stops.</summary>
     private static readonly HashSet<string> AtomicTools = new(StringComparer.OrdinalIgnoreCase)
     {
-        "craft", "smelt", "collect_furnace", "deposit", "withdraw", "organize_chest", "place", "dig", "use_block", "eat", EquipTool.ToolName, EscapeDigTool.ToolName,
+        "craft", "smelt", "collect_furnace", "deposit", "withdraw", "organize_chest", "place", "dig", "use_block", "eat", EquipTool.ToolName, EscapeDigTool.ToolName, ClearDigTool.ToolName,
         TurnedPlaceTool.ToolName,
     };
 

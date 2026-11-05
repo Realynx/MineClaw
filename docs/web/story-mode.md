@@ -1027,7 +1027,8 @@ run; nothing is queued (see "Water").
   `unsupported` ghosts: shown, said once in an alert, never a job, and the build finishes around them.
 
 Build: `{id, kind, label, status: queued|active|paused|blocked|done, reason, blocks_total, blocks_done, material, order, created}`.
-Ghosts: `[x,y,z,id,meta,build_id,state,kind]`, with state `todo|leased|done|blocked|unsupported` and kind `dig|place|pour` (a dig
+Ghosts: `[x,y,z,id,meta,build_id,state,kind,reason?]`, with state `todo|leased|done|blocked|unsupported|misrotated|clear` (the last
+two: see "Builds reconcile with the world") and kind `dig|place|pour` (a dig
 ghost's id/meta is the block expected there, read from the world view when it was queued; a pour ghost is a liquid source, water
 9 or lava 11). A water build adds `liquid: water|lava` and `renewable` (its poured sources refill).
 
@@ -1042,8 +1043,8 @@ Execution:
   `blocked` with `reason:"need 34 wooden planks"` and an alert. It goes on by itself once some is stored (a Chop, Mine or Haul
   pawn, or a bill, can supply it).
 - A ghost that failed 3 times is `blocked`.
-- Facing, axis and half are the design's: each turned cell is placed the way its meta says (see "Rotation" below). Scaffolding
-  and pillaring are the place and goto tools' own; there is no extra scaffold.
+- Facing, axis and half are the design's: each turned cell is placed the way its meta says (see "Rotation" below). Pillaring is
+  the goto tool's own; a cell with nothing at all to place against gets a scaffold block (see "Builds reconcile with the world").
 
 ### Building fast (added 2026-11-03, night)
 
@@ -1187,6 +1188,67 @@ transcription of the vanilla rules over every face, quarter, half and a ring of 
 the fake server: a furnace, stairs each way, a wall torch, a log on its side, an upside-down stair, a top slab, a piston pointing
 up from a stand over it), `StoryRotationTests` (the director), and `StoryFakeServerTests.A_pawn_builds_a_design_with_each_block_turned_as_drawn`
 (a pawn, both versions).
+
+### Builds reconcile with the world (added 2026-11-05)
+
+Fox, 11-05: "The hologram of a house being built is failing a lot. We're not even detecting the stairs or other blocks that are
+rotated the wrong way … It's also saying there's no way to place blocks, but there definitely is. I think it's put some blocks down
+by accident." The hour before: `can't place at …: … is occupied by stone` ×116 for one build (9 000 such cell failures in five hours,
+stone and dirt), `… has nothing solid on any side to place against (all air)` ×97 for another, and no rotation warning at all. Causes:
+
+- **A cell was looked at only when it was picked.** Once `done` (by a pawn's report, or at queue time) it was never compared with the
+  world again. Stairs placed before the rotation fix, or turned since, stayed `done`; so did a block broken or swapped later.
+- **The clear's dig was refused, silently.** A wall cell holding natural stone or dirt was sent with `clear`, but the pawn's dig was
+  refused by protection (`protection refusal (floor): stone at …: a placed stone (someone's floor, wall or path)`, 581 in that hour)
+  or because the pawn stood on it. The script ignored the dig's result, placed anyway and reported "occupied by stone", which only
+  rested the cell; it came back fifteen times.
+- **Cells with nothing to click against were handed out.** A build's own lowest level went first, but a placed design is one build per
+  block kind: the planks over the house's unbuilt stone-brick footing (short of cobblestone) and the roof over the unbuilt walls were
+  each "their build's lowest level" and were offered at once, into the air. The seed order only put supported cells first; when they
+  were taken, the unsupported ones went out too.
+
+Now:
+
+- **Every cell is compared with the world every 5 s** (`StoryColony.Reconcile.cs`), done builds included (paused ones not), by the
+  same rule as at pick time (`Matches`: id, variant and the meta bits the placement decides; open, powered and lit bits never count):
+  - the design's block → done (built by hand, or the view caught up), and a build whose cells all show the design is done;
+  - air → to place;
+  - its block turned another way → **misrotated**: taken back and placed again with `place_turned` (one take-back; a block that holds
+    items is never broken for its rotation: it is shown and alerted, as before);
+  - another block (natural stone or dirt, a block put there by mistake) → **to clear**: dug out first, then the design's block.
+  A `done` cell that no longer matches on two passes in a row (one could be the view lagging a fresh placement) reopens with its
+  failures forgotten, its build is queued again, and one alert says what changed ("Build b7 (stairs): 3 blocks no longer match the
+  design (2 turned the wrong way, 1 hold another block): reopened"). So wrongly turned stairs in a house built before the fix are
+  found on the first passes after the update.
+- **The map shows it.** An open cell holding another block is sent as state `clear` with the reason "holds stone: dug out first", one
+  holding its block turned wrong as `misrotated` ("placed facing north, wants facing east"); both are drawn as blocked holograms over
+  the block in the way.
+- **The clear is the owner's order.** `story.place` digs a cell in `clear` with the hidden `clear_dig{at}` tool
+  (`MinecraftClient.DigForBuildAsync`): soft protection on natural ground (stone, dirt, grass, sand, gravel, ores, plants; on skyblock
+  only what is a resource there) yields to it, because the colony owner ordered that cell built. A block someone placed, a chest or
+  anything else that opens, and a never-break mark still refuse; every safety rule and the strict-harvest rule hold (stone takes a
+  pickaxe: the job carries one). The bot's own digs keep every protection.
+- **A refused clear is said once, not retried.** The script reports `cell … failed: can't clear the cell …: <the dig's reason>` and
+  never places into an occupied cell. The director blocks that cell at once with that reason. Alerts for blocked cells are said once
+  per build and reason (coordinates left out), so a hundred cells failing alike are one alert. A clear that is only "not now" (out of
+  reach, the pawn stood on it) rests the cell as before. A pawn standing on the cell steps to the stand first, and a stand is never
+  chosen on top of a cell still to clear.
+- **Support is the client's own rule.** A cell is offered only when a neighbour gives a face to click by the pawn client's rule
+  (`PlaceRules.IsSupport`: anything with a collision box that doesn't open when clicked: stairs, slabs, fences, panes, glass and leaves
+  count; torches, flowers, chests and doors don't). A batch's later cells may lean on its earlier ones. Cells that touch a block still
+  to be placed by another build (or another pawn's batch) wait for it ("build b7: 12 blocks have nothing to place against yet (the
+  blocks beside or under them go in first)"). A level that truly floats (no support and nothing pending beside it) starts with a
+  **scaffold**: the job carries `scaffold: {"x,y,z": "x,y,z"}`, the pawn places one of the batch's blocks at the spot (under the cell
+  first, else beside it; never a build cell), places the cell against it, and digs the scaffold again. The fetch takes one block more.
+  "Nothing solid on any side" from a pawn whose view lagged a neighbour's placement is a "not now" refusal, not a failure.
+
+Tests: `StoryReconcileTests` (the director, both versions: a stair turned wrong in a finished build is found, shown, cleared and placed
+again; stone in a wall's cells is cleared and a refused clear is blocked and said once; a cell over a pane, a slab or stairs is offered
+and one over a torch isn't; a cell over another build's unplaced footing waits and a floating one gets a scaffold; a finished build whose
+blocks were broken or swapped reopens and closes again when they are put back), `StorySdkTests` (the script: a refused clear is
+reported as such and never placed into, a scaffold goes in before its cell and is dug after), `ProtectionReworkClientTests` (the
+client: the ordered clear digs natural ground through soft protection, never planks, a chest or a never-break mark; a plain dig still
+refuses), and `StoryFakeServerTests.A_pawn_fixes_a_wrong_stair_clears_a_stone_and_places_against_a_slab` (a pawn, both versions).
 
 ## Water (added 2026-11-04)
 

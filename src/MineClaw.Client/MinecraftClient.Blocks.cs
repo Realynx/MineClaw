@@ -57,11 +57,13 @@ public sealed partial class MinecraftClient
     /// near the void (see <see cref="WalkwayFloorVeto"/>). Macros that dig their own blocks (pillars, trees, paths) skip it.</param>
     /// <param name="requested">An explicit dig at a named cell (<see cref="DigBlockAsync"/>, <see cref="DigHereAsync"/>): the
     /// editing context may yield soft protection there (<see cref="EditYields"/>). Picks (mine, chop, path digs) never pass it.</param>
+    /// <param name="ordered">A Story build's cell to clear (<see cref="DigForBuildAsync"/>): the owner ordered that block out, so soft
+    /// protection on natural ground yields there (<see cref="OrderedClearYields"/>).</param>
     private async Task<ActionResult> DigCoreAsync(BlockPos pos, CancellationToken ct, bool allowPathing = true, bool ignoreProtection = false,
-        bool generator = false, bool noShears = false, bool floorGuard = false, bool requested = false)
+        bool generator = false, bool noShears = false, bool floorGuard = false, bool requested = false, bool ordered = false)
     {
         int id = World.GetBlock(pos);
-        var d = new DigJob(pos, id, BlockName(id, World.GetMeta(pos)), allowPathing, ignoreProtection, generator, floorGuard, requested);
+        var d = new DigJob(pos, id, BlockName(id, World.GetMeta(pos)), allowPathing, ignoreProtection, generator, floorGuard, requested, ordered);
         if (!World.IsLoaded(pos.X, pos.Z)) return ActionResult.Fail($"{Fmt(pos)} is not loaded");
         if (id == 0 || BlockShapes.IsLiquid(id)) return ActionResult.Success($"{Fmt(pos)} already clear");
         if (DigRefusal(d) is { } no) return ActionResult.Fail(no);
@@ -81,7 +83,7 @@ public sealed partial class MinecraftClient
 
     /// <summary>One dig's target and how it was asked for (see <see cref="DigCoreAsync"/>'s parameters).</summary>
     private sealed record DigJob(BlockPos Pos, int Id, string Name, bool AllowPathing, bool IgnoreProtection, bool Generator, bool FloorGuard,
-        bool Requested);
+        bool Requested, bool Ordered = false);
 
     /// <summary>Why the block must not be dug at all: protected, unbreakable, server-blocked, unsafe from where the bot stands (when it
     /// won't move), or a walkway floor near the void (a free-standing dig).</summary>
@@ -94,9 +96,11 @@ public sealed partial class MinecraftClient
         return d.FloorGuard && !d.Generator && !OverridesSoft(d.Pos, d.Id) ? WalkwayFloorVeto(d.Pos, d.Name) : null;
     }
 
-    /// <summary>Protected, unless the dig ignores protection or an asked-for dig is where the editing context yields it.</summary>
+    /// <summary>Protected, unless the dig ignores protection, an asked-for dig is where the editing context yields it, or a build's
+    /// ordered clear meets natural ground (<see cref="OrderedClearYields"/>).</summary>
     private string? ProtectionRefusal(DigJob d) =>
         d.IgnoreProtection || !IsBlockProtected(d.Pos, d.Id) || (d.Requested && EditYields?.Invoke(d.Pos, d.Id) == true)
+        || (d.Ordered && OrderedClearYields(d.Pos, d.Id))
             ? null
             : ProtectedRefusal(d.Pos, d.Id);
 

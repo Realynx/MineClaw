@@ -213,6 +213,10 @@ public sealed partial class StoryColony
         public bool InFlight;
         /// <summary>The build waits (for water): no more cells, and no blocked note of its own.</summary>
         public bool SkipBuild;
+        /// <summary>Open cells of the level with nothing to place against yet (they wait for the blocks beside them).</summary>
+        public int Unsupported;
+        /// <summary>A floating level's seed and the spot its scaffold block goes (dug again once the cell stands).</summary>
+        public (P3 Seed, P3 Spot)? Scaffold;
     }
 
     /// <summary>This build's next job for the pawn, or null (and why it has none, as blocked work).</summary>
@@ -224,7 +228,7 @@ public sealed partial class StoryColony
         if (DigFirst(b)) { Blocked($"build {b.Id}: its ground is dug out first"); return null; }
         var scan = new GhostScan { Build = b, Todo = todo, Builders = builders, From = from, Mine = b.Kind == "mine" };
         var open = OpenCells(b, todo, scan.Mine);
-        foreach (var g in CellOrder(b, open, scan.Mine, from))
+        foreach (var g in CellOrder(b, open, ref scan, from))
         {
             if (GhostCell(w, p, live, ref scan, g) is { } job) return job;
             if (scan.SkipBuild) return null;
@@ -255,12 +259,21 @@ public sealed partial class StoryColony
     }
 
     /// <summary>A mine: top-down first, digs before its blocks (torches, ladders… one per job), nearest; a level: <see cref="Seeds"/>,
-    /// spread out (a cell next to another pawn's batch comes after the rest: its neighbours are leased anyway).</summary>
-    private IEnumerable<GhostState> CellOrder(BuildState b, List<GhostState> open, bool mine, P3 from)
+    /// spread out (a cell next to another pawn's batch comes after the rest: its neighbours are leased anyway). A level's cells with
+    /// nothing to place against yet are left out (the client would say "nothing solid on any side"); when none of them has any and
+    /// nothing else will give it, the level floats and its first cell goes on a scaffold (<see cref="FloatingSeed"/>).</summary>
+    private List<GhostState> CellOrder(BuildState b, List<GhostState> open, ref GhostScan scan, P3 from)
     {
-        if (mine) return open.OrderByDescending(g => g.At.Y).ThenBy(g => g.Remove ? 0 : 1).ThenBy(g => g.At.Dist(from));
+        if (scan.Mine) return open.OrderByDescending(g => g.At.Y).ThenBy(g => g.Remove ? 0 : 1).ThenBy(g => g.At.Dist(from)).ToList();
         var busy = b.Ghosts.Where(g => g.State == "leased").Select(g => g.At).ToList();
-        return Seeds(open, busy, from);
+        var seeds = Seeds(open, busy, from).ToList();
+        scan.Unsupported = open.Count - seeds.Count;
+        if (seeds.Count == 0 && open.Count > 0 && FloatingSeed(b, open, from) is { } fl)
+        {
+            scan.Scaffold = (fl.Seed.At, fl.Spot);
+            seeds.Add(fl.Seed);
+        }
+        return seeds;
     }
 
     /// <summary>One cell tried as the seed of a batch: a dig, a pour, or a place job; null = not this one (done, taken, short…).</summary>
@@ -378,7 +391,8 @@ public sealed partial class StoryColony
         int openCells = scan.Todo.Count(x => (x.Item ?? "") == s.Item); // open or in a batch now: every builder's share of the whole
         int cap = scan.Mine ? 1 : Math.Min(Math.Clamp((int)Math.Ceiling(openCells / (double)scan.Builders), 1, BatchMax), s.Have + s.Stored);
         var (cells, stand) = Batch(w, b, g, cap, scan.From, p.Name, StoryBlocks.Replaceable.Contains(cur) ? -1 : cur);
-        var (fetch, takes) = BatchFetch(s.Stores, Math.Max(0, cells.Count - s.Have));
+        var scaffold = ScaffoldOf(scan, g); // a floating cell's: one more block, dug again
+        var (fetch, takes) = BatchFetch(s.Stores, Math.Max(0, cells.Count + (scaffold != null ? 1 : 0) - s.Have));
         var want = w.Data.BlockExists(g.Id) ? w.Data.Block(g.Id).Name : null;
         var clear = cells.Where(c => !StoryBlocks.Replaceable.Contains(w.Block(c.At.X, c.At.Y, c.At.Z).Id)).Select(c => c.At.ToString()).ToList();
         var label = cells.Count == 1 ? $"building {b.Label}" : $"building {b.Label}: {cells.Count} blocks";
@@ -386,6 +400,7 @@ public sealed partial class StoryColony
         var job = Job(WorkTypes.Build, "place", label, g.At, key, "ghost", $"{b.Id}|{g.At}", "working",
             f => PlaceFields(f, item, want, cells, clear, g, stand, fetch), xp: Math.Min(60, 8 + 4 * cells.Count));
         job.Takes.AddRange(takes);
+        if (scaffold is { } spot) job.Json["scaffold"] = new JsonObject { [g.At.ToString()] = spot.ToString() };
         var claimed = Claim(b, cells, p.Name, WithTool(clear.Count > 0 ? clearTool : null, job));
         CountRedo(w, b, cells, claimed);
         return claimed;
@@ -441,6 +456,7 @@ public sealed partial class StoryColony
         }
         else if (scan.InFlight) Blocked($"build {b.Id}: its last items are on their way with another builder");
         else if (openCount == 0) Blocked($"build {b.Id}: the level below is still being built");
+        else if (scan.Unsupported == openCount) Blocked($"build {b.Id}: {openCount} blocks have nothing to place against yet (the blocks beside or under them go in first)");
         else Blocked($"build {b.Id}: its open cells are taken or backing off");
     }
 
@@ -453,10 +469,11 @@ public sealed partial class StoryColony
         _buildBlockSaid[b.Id] = reason;
     }
 
-    /// <summary>The seeds of a level in order: support first (touching something solid), then away from other pawns' batches, then nearest.</summary>
+    /// <summary>The seeds of a level in order: only cells with something to click against beside them (<see cref="SeedReady"/>), away
+    /// from other pawns' batches, then nearest.</summary>
     private IEnumerable<GhostState> Seeds(List<GhostState> open, List<P3> busy, P3 from) =>
-        open.OrderBy(t => StoryConstruction.Supported(t.At, Solid) ? 0 : 1)
-            .ThenBy(t => t.At.Dist(from) + (busy.Any(o => Math.Abs(o.X - t.At.X) <= StandRadius + 1 && Math.Abs(o.Z - t.At.Z) <= StandRadius + 1) ? 12 : 0));
+        open.Where(SeedReady)
+            .OrderBy(t => t.At.Dist(from) + (busy.Any(o => Math.Abs(o.X - t.At.X) <= StandRadius + 1 && Math.Abs(o.Z - t.At.Z) <= StandRadius + 1) ? 12 : 0));
 
     /// <summary>A cell holds what the ghost wants: the same block and variant, turned the same way where the placement decides it (a
     /// furnace's front, a stair's rise and half, a log's axis: <see cref="MineClaw.World.BlockOrientation.Same"/>); runtime bits
@@ -624,7 +641,7 @@ public sealed partial class StoryColony
         // A wall's builder works from outside only: no cells it would have to walk to (it could end up inside and be walled in).
         bool walled = Footprint(b).Walled;
         var rest = cand.Where(c => (stand is not { } s || c.At != s && c.At != s.Add(0, 1, 0)) && (!walled || InReach(c.At))).ToList();
-        bool SolidOrPlaced(P3 c) => inBatch.Contains(c) || Solid(c);
+        bool SolidOrPlaced(P3 c) => inBatch.Contains(c) || Clickable(c); // the client's own support rule
         while (batch.Count < cap && rest.Count > 0)
         {
             GhostState? next = null;
@@ -664,7 +681,7 @@ public sealed partial class StoryColony
                 for (int dy = -3; dy <= 1; dy++) // a roof or a wall's top row is laid from the ground below it
                 {
                     var s = seed.At.Add(dx, dy, dz);
-                    if (!StandAllowed(w, seed.At, cells, fp, s)) continue;
+                    if (!StandAllowed(w, seed.At, cells, fp, s) || pending.Contains(s.Add(0, -1, 0))) continue; // never on a cell to clear
                     double score = StandScore(s, cells, pending, taken, from);
                     if (score < bestScore) { bestScore = score; best = s; }
                 }
@@ -896,6 +913,7 @@ public sealed partial class StoryColony
     {
         if (g.State == "done") return;
         g.State = "done";
+        g.Holds = g.HoldsWords = null;
         g.Rev = Touch();
         MaterialsChanged();
         StationBuilt(g); // a brewing stand, anvil or enchanting table the colony built is its own (StoryColony.Stations.cs)
@@ -925,25 +943,29 @@ public sealed partial class StoryColony
             _log.LogInformation("story {Colony}: {Pawn} cell {At} failed: {Why}", Id, p.Name, g.At, why);
             if (CellRested(key, why)) return;
         }
-        // A pour cell with nothing to pour against won't take a retry either (live 11-04: 371 of them, each tried 6 times): blocked at once.
-        if (StoryConstruction.IsLiquid(g) && why.Contains("nothing beside or under", StringComparison.Ordinal)) _ghostFails[id] = Math.Max(_ghostFails.GetValueOrDefault(id), 2);
-        int n = _ghostFails[id] = _ghostFails.GetValueOrDefault(id) + 1;
+        int n = _ghostFails[id] = Math.Max(_ghostFails.GetValueOrDefault(id), BlockedAtOnce(g, why, counted) ? 2 : 0) + 1;
         if (!counted) _skip[key] = Now + Backoff(n);
         if (g.State is "leased" or "todo") g.State = n >= 3 ? "blocked" : "todo";
         g.Reason = why; // the cell's last failure: the map's marker says it, Retry clears it (StoryColony.BuildRetry.cs)
         g.Rev = Touch();
-        if (n >= 3)
-        {
-            b.Reason = $"can't place at {g.At}: {why}";
-            b.Rev = Touch();
-            Alert("warn", $"Build {b.Id}: {b.Reason}", p.Name);
-        }
+        if (n >= 3) SayCellBlocked(p, b, g, why);
     }
+
+    /// <summary>
+    /// A failure no retry will mend, so the cell is blocked at once: a pour cell with nothing to pour against (live 11-04: 371 of them,
+    /// each tried 6 times), or a clear the pawn's dig refused for good (protected, a chest, a never-break mark: never tried again and
+    /// again, live 11-05).
+    /// </summary>
+    private static bool BlockedAtOnce(GhostState g, string why, bool counted) =>
+        StoryConstruction.IsLiquid(g) && why.Contains("nothing beside or under", StringComparison.Ordinal) || !counted && ClearRefused(why);
+
+    /// <summary>"Nothing solid on any side": the pawn's view had no face to click yet (a neighbour placed a moment ago): not now.</summary>
+    private static bool NoFaceYet(string why) => why.Contains("nothing solid on any side", StringComparison.Ordinal);
 
     /// <summary>A "not now" failure rests the cell a little instead of counting, up to <see cref="SoftLimit"/> in a row.</summary>
     private bool CellRested(string key, string why)
     {
-        if (!Transient(why) && !why.Contains("is occupied by", StringComparison.OrdinalIgnoreCase)) return false;
+        if (!Transient(why) && !why.Contains("is occupied by", StringComparison.OrdinalIgnoreCase) && !NoFaceYet(why)) return false;
         int soft = _softFails[key] = _softFails.GetValueOrDefault(key) + 1;
         if (soft < SoftLimit) { _skip[key] = Now + SoftRest; return true; }
         _softFails.Remove(key);

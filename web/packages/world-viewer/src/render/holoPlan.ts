@@ -23,12 +23,13 @@ export const HOLO_CAP = 20_000;
 export const HOLO_LOD_PX = 3;
 
 /**
- * The state a Story ghost (`todo | leased | done | blocked | unsupported | misrotated`) is drawn in, given its build's status
+ * The state a Story ghost (`todo | leased | done | blocked | unsupported | misrotated | clear`) is drawn in, given its build's status
  * (`queued | active | paused | blocked | done`); null = not drawn (done). A misrotated cell (placed, turned another way than the
- * design) stays drawn as blocked over its block even once its build is done: the design's turn, in warning stripes.
+ * design) stays drawn as blocked over its block even once its build is done: the design's turn, in warning stripes. A cell to clear
+ * (it holds another block, dug out before the design's goes in) is drawn the same way over the block in the way.
  */
 export function holoState(ghost: string, buildStatus?: string | null): HoloState | null {
-  if (ghost === 'misrotated') return 'blocked';
+  if (ghost === 'misrotated' || ghost === 'clear') return 'blocked';
   if (ghost === 'done' || buildStatus === 'done') return null;
   if (ghost === 'blocked' || ghost === 'unsupported') return 'blocked';
   if (ghost === 'leased') return 'active';
