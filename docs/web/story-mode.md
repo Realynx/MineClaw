@@ -947,6 +947,14 @@ a face does it fail ("can't reach stone at …: none of its faces is in view fro
 with its last failure in the status and in the idle audit of a pawn that found nothing there ("waiting: quarry z1: 181,57,366 resting
 after failures (can't reach stone)"; several: "3 cell(s) on y 57 resting after failures (e.g. 181,57,366: can't reach stone)").
 
+**The pit's rim is no void walkway.** Live 11-05 ("9 cell(s) on y 63 resting after failures (e.g. 195,63,366: won't dig dirt at
+195,63,366: it's the floor of a walkway with the void 1 away (dig only the taught cell))", ×3 each): the client's skyblock rule that a
+free-standing dig never takes the floor of a walkway near the void (`MinecraftClient.WalkwayFloorVeto`, live 10-27 B21: a script dug
+the island floor beside the cobble generator) counted any drop over 3 as "the void", so the quarry's own pit, dug to bedrock, made
+every top-layer cell on its rim a void walkway and the quarry never got past that layer. The veto now counts only fatal drops (the
+void, lava, water over the void: `Safety.FatalEdgeDistance`, built on `Safety.IsFatalColumn`, like the edge guard's sneak); a pit,
+a ravine or a cliff with a floor is not one. On a skyblock island the floor beside the real void is refused exactly as before.
+
 **State.** A mine zone has `mode`; a quarry adds `quarry: {top, bottom, depth, layer, y, cells_left, stair_fixes, sealed, done,
 stair: [[x,y,z], …] (top first), status}` ("layer 3 of 61 (y 61), 34 cell(s) left", "done: down to bedrock").
 

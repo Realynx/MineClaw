@@ -155,14 +155,25 @@ public static class Safety
     /// Chebyshev distance (1..max) from foot cell (x,y,z) to the nearest deadly column at that level, or max+1 when
     /// none is within <paramref name="max"/>. 1 = the cell is on the rim of the island.
     /// </summary>
-    public static int EdgeDistance(IBlockAccess w, int x, int y, int z, int max = 3, double maxFall = 3)
+    public static int EdgeDistance(IBlockAccess w, int x, int y, int z, int max = 3, double maxFall = 3) =>
+        EdgeDistanceCore(w, x, y, z, max, maxFall, fatalOnly: false);
+
+    /// <summary>
+    /// <see cref="EdgeDistance"/> counting only drops that are also fatal (<see cref="IsFatalColumn"/>: the void, lava, water over the
+    /// void). A pit with a floor (a quarry dug to bedrock, a ravine, a cliff) is not such an edge: falling into it hurts, never kills
+    /// for good. Live 11-05: a quarry's top-layer edge was "the floor of a walkway with the void 1 away" beside its own pit.
+    /// </summary>
+    public static int FatalEdgeDistance(IBlockAccess w, int x, int y, int z, int max = 3, double maxFall = 3) =>
+        EdgeDistanceCore(w, x, y, z, max, maxFall, fatalOnly: true);
+
+    private static int EdgeDistanceCore(IBlockAccess w, int x, int y, int z, int max, double maxFall, bool fatalOnly)
     {
         for (int r = 1; r <= max; r++)
         for (int dx = -r; dx <= r; dx++)
         for (int dz = -r; dz <= r; dz++)
         {
             if (Math.Max(Math.Abs(dx), Math.Abs(dz)) != r) continue;
-            if (IsDeadlyColumn(w, x + dx, y, z + dz, maxFall)) return r;
+            if (IsDeadlyColumn(w, x + dx, y, z + dz, maxFall) && (!fatalOnly || IsFatalColumn(w, x + dx, y, z + dz))) return r;
         }
         return max + 1;
     }

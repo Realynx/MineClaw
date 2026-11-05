@@ -712,7 +712,9 @@ public sealed partial class MinecraftClient
     /// Live 10-27 (B21): a script told to mine the generator's cell dug "the nearest cobblestone" instead: the island floor
     /// next to the gen hole, leaving the bot on the rim ("you're mining the flooor"). A block at or below the level I stand on,
     /// with a walkable cell on top and the void within 3 of it, is a walkway's floor: never dug by a free-standing dig/mine.
-    /// A generator cell (lava could flow in, water next to it) is the exception; trees are never floors.
+    /// A generator cell (lava could flow in, water next to it) is the exception; trees are never floors. Only a fatal drop is "the
+    /// void" here (<see cref="Safety.FatalEdgeDistance"/>): a pit with a floor is not (live 11-05: a Story quarry's top-layer edge
+    /// cells beside its own pit, dug to bedrock, were refused ×3 each and the quarry stalled on that layer).
     /// </summary>
     private string? WalkwayFloorVeto(BlockPos p, string name)
     {
@@ -721,7 +723,7 @@ public sealed partial class MinecraftClient
         if (Trees.Wood.IsLog(id) || Trees.Wood.IsLeaves(id)) return null;
         if (MineClaw.Data.Versioning.WorldMode.Current.GeneratorStone && LavaCouldFlowInto(p) && NextToWater(p)) return null; // a cobble generator's cell
         if (!Safety.IsStandable(World, p.X, p.Y + 1, p.Z)) return null;
-        int edge = Safety.EdgeDistance(World, p.X, p.Y + 1, p.Z, WalkwayVoidDistance);
+        int edge = Safety.FatalEdgeDistance(World, p.X, p.Y + 1, p.Z, WalkwayVoidDistance);
         if (edge > WalkwayVoidDistance) return null;
         return $"won't dig {name} at {Fmt(p)}: it's the floor of a walkway with the void {edge} away (dig only the taught cell)";
     }

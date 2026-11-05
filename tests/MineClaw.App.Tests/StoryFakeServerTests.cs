@@ -894,4 +894,52 @@ public sealed class StoryFakeServerTests(ITestOutputHelper output)
                 }
         s.Inventory[36] = new ItemStack((short)Items.StonePickaxe, 1, 0);
     });
+
+    /// <summary>
+    /// Live 11-05 (bot 20261105-011140): "waiting: quarry z17860: 9 cell(s) on y 63 resting after failures", each "won't dig dirt …: it's the
+    /// floor of a walkway with the void 1 away (dig only the taught cell)" ×3: the quarry's top-layer edge cells beside its own pit, dug to
+    /// bedrock, were taken for a skyblock walkway at the void and the quarry never got past that layer. Here: the 5×5 quarry dug down to
+    /// the bedrock at y 39 (its stair standing) but for its west column's grass on y 63; the pawn digs those and the quarry moves on.
+    /// </summary>
+    [Theory]
+    [InlineData("b1.8.1")]
+    [InlineData("1.12.2")]
+    public Task A_quarry_edge_layer_beside_its_pit_dug_to_bedrock_is_dug_and_the_quarry_moves_on(string version) => Colony(version, 1, async x =>
+    {
+        var c = x.C;
+        var srv = x.Servers[x.Pawns[0]];
+        Only(x, WorkTypes.Mine);
+        var (res, err) = c.ZoneOp("add", "mine", Area.Of(QuarryX, 63, QuarryZ, QuarryX + QuarrySize - 1, 63, QuarryZ + QuarrySize - 1));
+        Assert.True(err == null, err);
+        var zone = c.Zones.Single(z => z.Id == res!["id"]!.GetValue<string>());
+        string Failures() { lock (x.Log) return string.Join(" | ", x.Log.Where(l => l.Contains(" failed: ")).TakeLast(6)); }
+        bool EdgeDug() => QuarryEdge().All(e => srv.Blocks.GetValueOrDefault((e.X, e.Y, e.Z)) == 0);
+        Assert.True(await Until(() => EdgeDug() && zone.QuarryLayer > 0, 90_000),
+            "the edge layer is dug and the quarry moves on: " + Failures() + " | " + x.Diag());
+        lock (x.Log) Assert.DoesNotContain(x.Log, l => l.Contains("floor of a walkway", StringComparison.Ordinal));
+        for (int k = 0; k < 63 - 39; k++) // the stair stands
+            Assert.NotEqual(0, srv.Blocks.GetValueOrDefault((QuarryStep(k).X, QuarryStep(k).Y, QuarryStep(k).Z)));
+    }, s =>
+    {
+        for (int qx = -4; qx <= 22; qx++)
+            for (int qz = -4; qz <= 22; qz++)
+            {
+                s.Blocks[(qx, 39, qz)] = Blocks.Bedrock;
+                for (int y = 40; y < 58; y++) s.Blocks[(qx, y, qz)] = Blocks.Stone;
+            }
+        var edge = QuarryEdge().ToHashSet();
+        for (int k = 0; k < 63 - 39; k++)
+            for (int qx = QuarryX; qx < QuarryX + QuarrySize; qx++)
+                for (int qz = QuarryZ; qz < QuarryZ + QuarrySize; qz++)
+                {
+                    var at = new P3(qx, 63 - k, qz);
+                    if (at != QuarryStep(k) && !edge.Contains(at)) s.Blocks.Remove((qx, 63 - k, qz));
+                }
+        s.Inventory[36] = new ItemStack((short)Items.StonePickaxe, 1, 0);
+        s.Inventory[37] = new ItemStack((short)Items.StoneShovel, 1, 0);
+    });
+
+    /// <summary>The quarry's west column on its top layer (y 63) but for step 0: grass left on the pit's rim.</summary>
+    private static IEnumerable<P3> QuarryEdge() =>
+        Enumerable.Range(QuarryZ, QuarrySize).Select(z => new P3(QuarryX, 63, z)).Where(p => p != QuarryStep(0));
 }
