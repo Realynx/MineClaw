@@ -537,11 +537,14 @@ public sealed partial class MinecraftClient
             generator ? "safe generator spot" : "inward side, no lava");
         var g = await GotoCoreAsync(strict, o with { MaxReplans = 2, AllowPartial = false }, ct).ConfigureAwait(false);
         if (g.Ok) return g;
-        Goal relaxed = new GoalFiltered(reach, (x, y, z) => !Safety.LavaNear(World, x, y, z) && OccupantOf(new BlockPos(x, y, z)) == null
-                && (!generator || Math.Max(Math.Abs(x - pos.X), Math.Abs(z - pos.Z)) >= 2 || y > pos.Y + 1),
-            "no lava");
+        Goal relaxed = new GoalFiltered(reach, (x, y, z) => ReachSpotOk(pos, generator, x, y, z), "no lava");
         return await GotoCoreAsync(relaxed, o, ct).ConfigureAwait(false);
     }
+
+    /// <summary>A spot to dig <paramref name="pos"/> from: no lava near it, nobody on it, and (a generator) out of reach of released lava.</summary>
+    private bool ReachSpotOk(BlockPos pos, bool generator, int x, int y, int z) =>
+        !Safety.LavaNear(World, x, y, z) && OccupantOf(new BlockPos(x, y, z)) == null
+        && (!generator || Math.Max(Math.Abs(x - pos.X), Math.Abs(z - pos.Z)) >= 2 || y > pos.Y + 1);
 
     /// <summary>Standing on the rim of the island (an edge cell) while a dig target is also on the rim.</summary>
     private bool OnRimDiggingRim(BlockPos target)

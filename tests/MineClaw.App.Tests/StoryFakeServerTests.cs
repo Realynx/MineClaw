@@ -790,4 +790,57 @@ public sealed class StoryFakeServerTests(ITestOutputHelper output)
         s.Blocks[(6, 64, 4)] = 15; // iron ore
         s.Chests[(WoodChest.X, WoodChest.Y, WoodChest.Z)][0] = new ItemStack(274, 1, 0);
     });
+
+    // ================================================================ quarries (docs/web/story-mode.md "Quarries")
+
+    private const int QuarryX = 14, QuarryZ = 14, QuarrySize = 5, QuarryLayer = 10;
+
+    /// <summary>Step k of the 5×5 quarry at <see cref="QuarryX"/>,<see cref="QuarryZ"/>: its clockwise ring's cell k mod 16 at y 63 − k.</summary>
+    private static P3 QuarryStep(int k) =>
+        StoryQuarry.Step(StoryQuarry.Ring(ZoneCells.Rect(QuarryX, QuarryZ, QuarryX + QuarrySize - 1, QuarryZ + QuarrySize - 1))!, 63, k);
+
+    /// <summary>
+    /// Live 11-04 story-1 (Fox: "The quarry is not being dug any more because the pawns refuse to go into it. They get the idea to do it,
+    /// they go to do it, they get almost down the stairs and then cancel that idea"; "dig 181,57,366 failed: can't reach stone" ×14, the
+    /// layer held for that cell): a quarry dug 10 layers deep, its layer 10 down to the one cell under stair step 9. The pawn starts at the
+    /// surface, walks down the spiral stair and digs it from the floor of the layer (before: it stopped on the step over the cell, "within
+    /// reach" with the step between, and gave up).
+    /// </summary>
+    [Theory]
+    [InlineData("b1.8.1")]
+    [InlineData("1.12.2")]
+    public Task A_pawn_walks_down_a_deep_quarry_stair_and_digs_the_cell_under_a_step(string version) => Colony(version, 1, async x =>
+    {
+        var c = x.C;
+        var srv = x.Servers[x.Pawns[0]];
+        var over = QuarryStep(QuarryLayer - 1);
+        var target = new P3(over.X, over.Y - 1, over.Z);
+        Assert.Equal(Blocks.Stone, srv.Blocks.GetValueOrDefault((target.X, target.Y, target.Z)));
+        Only(x, WorkTypes.Mine);
+        var (res, err) = c.ZoneOp("add", "mine", Area.Of(QuarryX, 63, QuarryZ, QuarryX + QuarrySize - 1, 63, QuarryZ + QuarrySize - 1));
+        Assert.True(err == null, err);
+        var zone = c.Zones.Single(z => z.Id == res!["id"]!.GetValue<string>());
+        Assert.Equal("quarry", zone.Mode);
+        string Failures() { lock (x.Log) return string.Join(" | ", x.Log.Where(l => l.Contains(" failed: ")).TakeLast(6)); }
+        Assert.True(await Until(() => srv.Blocks.GetValueOrDefault((target.X, target.Y, target.Z)) == 0, 120_000),
+            "the cell under the step is dug: " + Failures() + " | " + x.Diag());
+        Assert.Equal(63, zone.QuarryTop);
+        for (int k = 0; k <= QuarryLayer; k++) // the stair stands
+            Assert.NotEqual(0, srv.Blocks.GetValueOrDefault((QuarryStep(k).X, QuarryStep(k).Y, QuarryStep(k).Z)));
+        lock (x.Log) Assert.DoesNotContain(x.Log, l => l.Contains($"dig {target} failed", StringComparison.Ordinal));
+    }, s =>
+    {
+        for (int qx = -4; qx <= 22; qx++)
+            for (int qz = -4; qz <= 22; qz++)
+                for (int y = 40; y < 58; y++) s.Blocks[(qx, y, qz)] = Blocks.Stone;
+        var target = QuarryStep(QuarryLayer - 1).Add(0, -1, 0);
+        for (int k = 0; k <= QuarryLayer; k++)
+            for (int qx = QuarryX; qx < QuarryX + QuarrySize; qx++)
+                for (int qz = QuarryZ; qz < QuarryZ + QuarrySize; qz++)
+                {
+                    var at = new P3(qx, 63 - k, qz);
+                    if (at != QuarryStep(k) && at != target) s.Blocks.Remove((qx, 63 - k, qz));
+                }
+        s.Inventory[36] = new ItemStack((short)Items.StonePickaxe, 1, 0);
+    });
 }
