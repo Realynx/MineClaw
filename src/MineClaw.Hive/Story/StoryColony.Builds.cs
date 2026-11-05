@@ -477,23 +477,26 @@ public sealed partial class StoryColony
 
     /// <summary>A cell holds what the ghost wants: the same block and variant, turned the same way where the placement decides it (a
     /// furnace's front, a stair's rise and half, a log's axis: <see cref="MineClaw.World.BlockOrientation.Same"/>); runtime bits
-    /// (open, powered, lit) are not compared.</summary>
+    /// (open, powered, lit) are not compared. What the block turns into on its own counts as it (<see cref="StoryDrift"/>: dirt that
+    /// grew grass or was tilled, a lit furnace).</summary>
     internal static bool Matches(GhostState g, int id, int meta, bool modern)
     {
         if (StoryConstruction.IsLiquid(g)) return LiquidSource(g.Id, id, meta); // a source of its liquid, still or just poured (StoryColony.Water.cs)
-        return SameVariant(g, id, meta) && MineClaw.World.BlockOrientation.Same(id, g.Meta, meta, modern);
+        if (StoryDrift.SameGround(g.Id, id, modern)) return true;
+        return SameVariant(g, id, meta) && MineClaw.World.BlockOrientation.Same(g.Id, g.Meta, meta, modern);
     }
 
+    /// <summary>The ghost's block and variant (a runtime twin, a lit furnace, is its block).</summary>
     private static bool SameVariant(GhostState g, int id, int meta)
     {
-        if (id != g.Id) return false;
-        int mask = MineClaw.Bot.Blueprints.DesignFacing.VariantMask(id);
+        if (StoryDrift.Canon(id) != StoryDrift.Canon(g.Id)) return false;
+        int mask = MineClaw.Bot.Blueprints.DesignFacing.VariantMask(g.Id);
         return (meta & mask) == (g.Meta & mask);
     }
 
     /// <summary>The cell holds the ghost's block and variant, turned another way than the design has it.</summary>
     internal static bool WrongTurn(GhostState g, int id, int meta, bool modern) =>
-        !g.Remove && !StoryConstruction.IsLiquid(g) && SameVariant(g, id, meta) && !MineClaw.World.BlockOrientation.Same(id, g.Meta, meta, modern);
+        !g.Remove && !StoryConstruction.IsLiquid(g) && SameVariant(g, id, meta) && !MineClaw.World.BlockOrientation.Same(g.Id, g.Meta, meta, modern);
 
     /// <summary>The colony's server keeps 1.12.2's placement rules (else b1.8.1's).</summary>
     private bool Modern => World?.Data.VersionId != "b1.8.1";

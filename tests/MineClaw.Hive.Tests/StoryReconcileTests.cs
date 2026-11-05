@@ -158,6 +158,57 @@ public sealed class StoryReconcileTests
         Assert.Equal(2, s["fetch"]!.AsArray().Sum(f => f!["n"]!.GetValue<int>())); // the block and its scaffold
     }
 
+    /// <summary>Live 11-05 after the reconcile went out: dirt floors reopened ×22 in 7 minutes as grass spread over them and pawns
+    /// tilled them, and their clears were refused as a farm. Ground that drifted within its family is the design's block.</summary>
+    [Theory, MemberData(nameof(Versions))]
+    public void A_dirt_floor_that_grew_grass_or_was_tilled_stays_done_and_a_stone_in_it_still_reopens(string v)
+    {
+        var (c, _, w) = Rig(v, new Stack(3, 0, 8));
+        int[][] cells = [[4, 64, 12], [5, 64, 12], [6, 64, 12], [7, 64, 12]];
+        foreach (var p in cells) w.Set(p[0], p[1], p[2], 3, 0);
+        var b = Add(c, 3, 0, cells);
+        c.Reconcile(w);
+        Assert.Equal("done", b.Status);
+        w.Set(4, 64, 12, 2, 0);   // grass spread over it
+        w.Set(5, 64, 12, 60, 7);  // tilled, wet
+        if (v == "1.12.2") { w.Set(6, 64, 12, 3, 2); w.Set(7, 64, 12, 208, 0); } // podzol, a grass path
+        for (int i = 0; i < 3; i++) c.Reconcile(w);
+        Assert.All(b.Ghosts, g => Assert.Equal("done", g.State));
+        Assert.Equal("done", b.Status);
+        Assert.DoesNotContain(c.Alerts, a => a.Text.Contains("no longer match"));
+        // A truly wrong block still reopens, and is cleared.
+        w.Set(7, 64, 12, 1, 0);
+        c.Reconcile(w);
+        c.Reconcile(w);
+        Assert.Equal("todo", b.Ghosts[3].State);
+        Assert.Equal("clear", GhostOf(c, new P3(7, 64, 12))[6]!.GetValue<string>());
+        Assert.Equal("done", b.Ghosts[0].State);
+        var j = Pick(c);
+        Assert.Equal(["7,64,12"], Strs(j["clear"]));
+        // A lit furnace is the furnace the design drew (its front still counts).
+        var (c2, _, w2) = Rig(v, new Stack(61, 0, 1));
+        w2.Set(4, 64, 12, 62, 5);
+        var f = Add(c2, 61, 5, [4, 64, 12]);
+        c2.Reconcile(w2);
+        Assert.Equal("done", f.Ghosts.Single().State);
+    }
+
+    [Theory, MemberData(nameof(Versions))]
+    public void A_builds_reopening_is_alerted_at_most_once_per_window_with_a_running_count(string v)
+    {
+        var (c, _, w) = Rig(v, new Stack(5, 0, 8));
+        w.Set(4, 64, 12, 5, 0);
+        w.Set(5, 64, 12, 5, 0);
+        var b = Add(c, 5, 0, [4, 64, 12], [5, 64, 12]);
+        c.Reconcile(w);
+        void Break(int x) { w.Set(x, 64, 12, 0, 0); c.Reconcile(w); c.Reconcile(w); w.Set(x, 64, 12, 5, 0); c.Reconcile(w); }
+        Break(4);
+        Break(5);
+        Break(4);
+        Assert.Single(c.Alerts, a => a.Text.Contains("no longer match"));
+        Assert.Equal("done", b.Status);
+    }
+
     [Theory, MemberData(nameof(Versions))]
     public void A_finished_build_whose_block_was_broken_or_swapped_reopens(string v)
     {

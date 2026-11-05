@@ -115,11 +115,32 @@ public sealed partial class StoryColony
         b.Rev = Touch();
         MaterialsChanged();
         WakeIdle();
+        SayReopened(b, d);
+    }
+
+    /// <summary>How often one build's reopening is alerted; between, the cells are counted and said with the next alert.</summary>
+    public static readonly TimeSpan ReopenAlertEvery = TimeSpan.FromMinutes(10);
+
+    /// <summary>Per build: when its reopening was last alerted, and the cells reopened since.</summary>
+    private readonly Dictionary<string, (DateTimeOffset At, int Since)> _reopenSaid = new(StringComparer.Ordinal);
+
+    /// <summary>One alert per build per <see cref="ReopenAlertEvery"/> (live 11-05: ×22 in 7 minutes), with a running count of the rest.</summary>
+    private void SayReopened(BuildState b, Drift d)
+    {
         var parts = new List<string>();
         if (d.Turned > 0) parts.Add($"{d.Turned} turned the wrong way");
         if (d.Other > 0) parts.Add($"{d.Other} hold another block");
         if (d.Missing > 0) parts.Add($"{d.Missing} missing");
-        Alert("warn", $"Build {b.Id} ({b.Label}): {d.Total} block{(d.Total == 1 ? "" : "s")} no longer match the design ({string.Join(", ", parts)}): reopened");
+        var text = $"Build {b.Id} ({b.Label}): {d.Total} block{(d.Total == 1 ? "" : "s")} no longer match the design ({string.Join(", ", parts)}): reopened";
+        if (_reopenSaid.TryGetValue(b.Id, out var said) && Now - said.At < ReopenAlertEvery)
+        {
+            _reopenSaid[b.Id] = (said.At, said.Since + d.Total);
+            _log.LogInformation("story {Colony}: {Text}", Id, text);
+            return;
+        }
+        if (said.Since > 0) text += $" ({said.Since} more reopened since the last alert)";
+        _reopenSaid[b.Id] = (Now, 0);
+        Alert("warn", text);
     }
 
     /// <summary>What an open cell holds when it isn't the design's block: another block (clear) or its block turned wrong (misrotated).</summary>
