@@ -39,7 +39,7 @@ public sealed class StoryQuarryTests
 
     /// <summary>The pawn does every job the quarry hands out (the world changes as the script would), until it has none.</summary>
     private static (int Digs, int Places, List<JsonObject> Jobs) Work(StoryColony c, FakeStoryWorld w, int max = 6000,
-        Func<JsonObject, bool>? until = null, Func<P3, bool>? fails = null, int others = 0)
+        Func<JsonObject, bool>? until = null, Func<P3, bool>? fails = null, int others = 0, Func<P3, string>? failWhy = null)
     {
         int digs = 0, places = 0;
         var jobs = new List<JsonObject>();
@@ -53,7 +53,7 @@ public sealed class StoryQuarryTests
             var at = P3.Parse(JsonNode.Parse("[" + j["at"]!.GetValue<string>() + "]"))!.Value;
             if (fails?.Invoke(at) == true)
             {
-                c.Report(c.P(), j["id"]!.GetValue<string>(), "failed", $"no path to within 3 of ({at}) (no route)", null);
+                c.Report(c.P(), j["id"]!.GetValue<string>(), "failed", failWhy?.Invoke(at) ?? $"no path to within 3 of ({at}) (no route)", null);
                 continue;
             }
             if (kind == "dig") { Assert.NotEqual(7, w.Block(at.X, at.Y, at.Z).Id); w.Set(at.X, at.Y, at.Z, 0); digs++; }
@@ -206,6 +206,32 @@ public sealed class StoryQuarryTests
         clock.Now += TimeSpan.FromMinutes(15);
         Work(c, w, others: 20, until: j => j["at"]!.GetValue<string>() is var a && P3.Parse(JsonNode.Parse("[" + a + "]"))!.Value.Y < 55);
         Assert.Equal(0, w.Block(stuck.X, stuck.Y, stuck.Z).Id);
+    }
+
+    [Fact]
+    public void Live_a_cell_resting_after_failures_is_named_with_why_in_the_status_and_the_idle_audit()
+    {
+        // Live 11-04 story-1: "quarry z17860: 1 cell(s) on y 57 resting after failures" for half an hour, the layer held, and neither
+        // the status nor the idle audit said which cell or why (181,57,366, under a stair step: "can't reach stone at 181,57,366").
+        var clock = new Clock();
+        var (c, _, w) = Rig(5, 5, clock);
+        var id = Quarry(c, 5, 5);
+        var ring = StoryQuarry.Ring(c.Zones.Single().Cells)!;
+        var stuck = StoryQuarry.Step(ring, 63, 1).Add(0, -1, 0); // layer 2's cell under step 1
+        Work(c, w, fails: at => at == stuck, failWhy: at => $"can't reach stone at {at}");
+        Assert.Equal(1, w.Block(stuck.X, stuck.Y, stuck.Z).Id);
+        Assert.Equal(2, c.Zones.Single().QuarryLayer);
+        var status = QuarryState(c, id)["status"]!.GetValue<string>();
+        Assert.Contains($"{stuck} resting after failures (can't reach stone)", status);
+        clock.Now += TimeSpan.FromSeconds(2);
+        c.Tick();
+        var why = c.IdleReasonOf(c.P());
+        Assert.Equal($"waiting: quarry {id}: {stuck} resting after failures (can't reach stone)", why);
+        // Dug after its rest: forgotten.
+        clock.Now += TimeSpan.FromMinutes(15);
+        Work(c, w, others: 20, until: j => j["at"]!.GetValue<string>() is var a && P3.Parse(JsonNode.Parse("[" + a + "]"))!.Value.Y < 59);
+        Assert.Equal(0, w.Block(stuck.X, stuck.Y, stuck.Z).Id);
+        Assert.DoesNotContain("resting", QuarryState(c, id)["status"]!.GetValue<string>());
     }
 
     [Fact]

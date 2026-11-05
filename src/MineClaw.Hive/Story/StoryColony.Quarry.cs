@@ -182,7 +182,7 @@ public sealed partial class StoryColony
         if (World is not { } w || Quarry(z) is not { Done: false } q) return null;
         var job = StairJob(p, live, z, q);
         if (job == null && !StairBroken(q)) job = LayerJob(p, live, w, z, q);
-        if (job == null && QuarryWaitReason(q) is { } why) Blocked($"quarry {ZoneName(z)}: {why}");
+        if (job == null && QuarryWaitReason(q, anyResting: true) is { } why) Blocked($"quarry {ZoneName(z)}: {why}");
         return job;
     }
 
@@ -247,14 +247,38 @@ public sealed partial class StoryColony
     private bool QuarryCellOpen(PawnState p, IStoryWorld w, P3 at, HashSet<P3> stoodOn) =>
         Open("b:" + at, p.Name, at) && !OpenCell(w.Block(at.X, at.Y, at.Z).Id) && Exposed(w, at) && !stoodOn.Contains(at);
 
-    /// <summary>Why a quarry with work left offers none (status and idle audit), or null.</summary>
-    private string? QuarryWaitReason(QuarryScan q)
+    /// <summary>Why a quarry with work left offers none (status and idle audit), or null. <paramref name="anyResting"/>: a pawn that found
+    /// nothing there (its idle audit) hears of resting cells even when others are still open to other pawns.</summary>
+    private string? QuarryWaitReason(QuarryScan q, bool anyResting = false)
     {
         if (StairBroken(q)) return $"stair broken at y {q.StepFix.Max(f => f.At.Y)}: placing a step";
         if (q.Dig.Count == 0 && q.Held > 0) return $"waiting for the stair step over y {q.Y}";
-        int resting = q.Dig.Count(QuarryResting);
-        if (q.Dig.Count > 0 && resting == q.Dig.Count) return $"{resting} cell(s) on y {q.Y} resting after failures";
-        return null;
+        var resting = q.Dig.Where(QuarryResting).ToList();
+        if (resting.Count == 0 || (!anyResting && resting.Count < q.Dig.Count)) return null;
+        return RestingNote(q, resting);
+    }
+
+    /// <summary>
+    /// The resting cells, named with their last failure (live 11-04 story-1: "quarry z17860: 1 cell(s) on y 57 resting after failures"
+    /// for half an hour said neither which cell nor why: 181,57,366, "can't reach stone", under a stair step): "181,57,366 resting after
+    /// failures (can't reach stone)", "3 cell(s) on y 57 resting after failures (e.g. 181,57,366: can't reach stone)".
+    /// </summary>
+    private string RestingNote(QuarryScan q, List<P3> resting)
+    {
+        var named = resting.Select(c => (At: c, Why: _quarryMiss.GetValueOrDefault("b:" + c))).FirstOrDefault(m => m.Why != null);
+        string why = named.Why?.Replace(" at " + named.At, "", StringComparison.Ordinal) ?? "";
+        if (resting.Count == 1) return $"{resting[0]} resting after failures" + (why.Length > 0 ? $" ({why})" : "");
+        return $"{resting.Count} cell(s) on y {q.Y} resting after failures" + (why.Length > 0 ? $" (e.g. {named.At}: {why})" : "");
+    }
+
+    /// <summary>A quarry cell's last failure (its lease → why), for <see cref="RestingNote"/>; forgotten once the cell is done.</summary>
+    private readonly Dictionary<string, string> _quarryMiss = new(StringComparer.Ordinal);
+
+    /// <summary>Keeps why a quarry cell's job failed.</summary>
+    private void NoteQuarryMiss(ActiveJob j, string why)
+    {
+        if (j.Source != "zone" || j.Lease is not { } lease || !lease.StartsWith("b:", StringComparison.Ordinal)) return;
+        if (Zones.FirstOrDefault(z => z.Id == j.SourceId) is { } zone && IsQuarry(zone)) _quarryMiss[lease] = why;
     }
 
     /// <summary>A cell resting after failures, for everyone or for any pawn (a "no path" rests it for that pawn only).</summary>
