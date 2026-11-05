@@ -262,6 +262,9 @@ public sealed partial class StoryColony
 
     private ActiveJob? WorkSearch(PawnState p, PawnLive live)
     {
+        // A craft work waits on right now (a missing tool, a farm's hoe, a water build's bucket) comes before its other work (Fox 11-05:
+        // "Immediate requirements like that should always be at the top of the list for crafting"): StoryColony.CraftTasks.cs.
+        if (ImmediateCraftJob(p, live) is { } now) return now;
         int riskChecked = 0;
         foreach (var t in WorkOrder(p))
         {

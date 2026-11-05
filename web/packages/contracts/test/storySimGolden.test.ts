@@ -448,7 +448,7 @@ describe('the mock director: a golden run', () => {
     call('designate furnace', () => sim.workbenches(id, { op: 'designate', pos: [-3, 64, -2] }));
     builds();
     benches();
-    const auto = (sim.state(id).workbenches ?? []).flatMap((b) => b.bills).filter((b) => (b.forBuild ?? null) !== null);
+    const auto = sim.state(id).craftTasks ?? [];
     if (auto[0]) call('cancel auto', () => sim.bills(id, { op: 'remove', id: auto[0]!.id }));
     builds();
     benches();

@@ -44,7 +44,7 @@ public sealed class StoryBuildCraftingTests
 
     private static void Done(StoryColony c, int pawn, JsonObject job) => Assert.True(c.Report(c.P(pawn), job["id"]!.GetValue<string>(), "done", null, null));
 
-    private static List<BillState> AutoBills(StoryColony c) => c.Benches.SelectMany(b => b.Bills).Where(b => b.ForBuild != null).ToList();
+    private static List<BillState> AutoBills(StoryColony c) => c.Benches.SelectMany(b => b.Tasks).Where(b => b.ForBuild != null).ToList();
 
     [Fact]
     public void Cobblestone_stairs_are_crafted_from_stored_cobblestone_then_placed()
@@ -61,7 +61,7 @@ public sealed class StoryBuildCraftingTests
         Assert.Equal((3, 0, 3, 0, "craft"), (mat.Need, mat.Have, mat.Crafting, mat.Short, mat.Via));
         var bill = AutoBills(c).Single();
         Assert.Equal(id, bill.ForBuild);
-        Assert.Equal(Table, c.Benches.Single(x => x.Bills.Contains(bill)).Pos);
+        Assert.Equal(Table, c.Benches.Single(x => x.Tasks.Contains(bill)).Pos);
         Assert.DoesNotContain(c.Alerts, a => a.Level == "warn");
         var craft = c.Next(0);
         Assert.Equal("craft", craft["kind"]!.GetValue<string>());
@@ -85,7 +85,7 @@ public sealed class StoryBuildCraftingTests
         var (c, h, w, _) = Rig(table: true, furnace: false, new Stack(17, 0, 4));
         Build(c, new JsonObject { ["kind"] = "fence", ["blocks"] = Cells((0, 64, 5), (1, 64, 5), (2, 64, 5)) });
         c.EnsureMaterials();
-        var bills = c.Benches.Single().Bills;
+        var bills = c.Benches.Single().Tasks;
         var outputs = bills.Select(x => StoryRecipes.Get(Release1122GameData.Instance, x.Recipe)!.Output.Id).ToList();
         Assert.Equal([5, 280, 85], outputs); // planks, sticks, fence: ingredients first
         Assert.All(bills, x => Assert.NotNull(x.ForBuild));
@@ -154,7 +154,7 @@ public sealed class StoryBuildCraftingTests
         Done(c, 0, j);
         Assert.Equal(spot, c.Benches.Single().Pos);
         c.EnsureMaterials();
-        Assert.NotEmpty(c.Benches.Single().Bills);
+        Assert.NotEmpty(c.Benches.Single().Tasks);
         Assert.Equal("craft", c.Next(0)["kind"]!.GetValue<string>());
     }
 
@@ -235,8 +235,9 @@ public sealed class StoryBuildCraftingTests
         var bill = AutoBills(c).Single();
         Assert.NotNull(c.BillsOp("update", new JsonObject { ["id"] = bill.Id, ["target"] = 9 }).Error);
         Assert.NotNull(c.BillsOp("pause", new JsonObject { ["id"] = bill.Id }).Error);
-        var bills = c.State()["workbenches"]!.AsArray().Single()!["bills"]!.AsArray();
-        Assert.Equal(id, bills.Single()!["for_build"]!.GetValue<string>());
+        var st = c.State();
+        Assert.Empty(st["workbenches"]!.AsArray().Single()!["bills"]!.AsArray()); // the owner's list shows the owner's bills only
+        Assert.Equal(id, st["craft_tasks"]!.AsArray().Single()!["for"]!.GetValue<string>());
         Assert.Null(c.BillsOp("remove", new JsonObject { ["id"] = bill.Id }).Error);
         c.EnsureMaterials();
         Assert.Empty(AutoBills(c));

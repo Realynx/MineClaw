@@ -428,6 +428,8 @@ public sealed class BillState
     public string? ForItem { get; set; }
     /// <summary>An auto bill's place in its build's recipe chain (lower first: ingredients before products).</summary>
     public int Step { get; set; }
+    /// <summary>A craft task's reason in words ("for mining: Cleo Z. (+1 spare)", "for the stone bricks of build b3").</summary>
+    public string? Reason { get; set; }
     /// <summary>An enchant bill's highest offer to take (1–3: its lapis and the levels it costs); null = 3.</summary>
     public int? Option { get; set; }
     /// <summary>An enchant bill's preferred enchantment (fortune, silk_touch...): the offer hinting it first.</summary>
@@ -448,7 +450,11 @@ public sealed class WorkbenchState
     /// <summary>crafting_table | furnace | brewing_stand | anvil | enchanting_table.</summary>
     public string Kind { get; set; } = "";
     public string? Label { get; set; }
+    /// <summary>The owner's bills, in the owner's order (docs/web/story-mode.md "Bills").</summary>
     public List<BillState> Bills { get; set; } = new();
+    /// <summary>The colony's own craft tasks here (<see cref="BillState.ForBuild"/> set: a build, tools, a need), never shown as bills
+    /// (StoryColony.CraftTasks.cs).</summary>
+    public List<BillState> Tasks { get; set; } = new();
     /// <summary>A furnace loaded and left to smelt: the bill and when it is ready to collect.</summary>
     public string? LoadedBill { get; set; }
     public int LoadedCount { get; set; }

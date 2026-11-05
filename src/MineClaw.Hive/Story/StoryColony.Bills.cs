@@ -116,7 +116,7 @@ public sealed partial class StoryColony
     private BillState? FindBill(string? id, out WorkbenchState? bench)
     {
         foreach (var b in Benches)
-            if (b.Bills.FirstOrDefault(x => x.Id == id) is { } bill) { bench = b; return bill; }
+            if (BillById(b, id) is { } bill) { bench = b; return bill; }
         bench = null;
         return null;
     }
@@ -168,12 +168,13 @@ public sealed partial class StoryColony
     private void RemoveBill(WorkbenchState bench, BillState bill)
     {
         bench.Bills.Remove(bill);
+        bench.Tasks.Remove(bill);
         // Cancelling an auto bill: that build waits for the item instead of crafting it (its other auto bills for it go too).
         if (bill.ForBuild != null && Builds.FirstOrDefault(b => b.Id == bill.ForBuild) is { } fb && bill.ForItem is { } fi && !fb.NoCraft.Contains(fi))
         {
             fb.NoCraft.Add(fi);
             fb.Rev = Touch();
-            foreach (var other in Benches) other.Bills.RemoveAll(x => x.ForBuild == fb.Id && x.ForItem == fi && other.LoadedBill != x.Id);
+            foreach (var other in Benches) other.Tasks.RemoveAll(x => x.ForBuild == fb.Id && x.ForItem == fi && other.LoadedBill != x.Id);
         }
         else if (bill.ForBuild == ToolsTag && bill.ForItem is { } ti) ToolCraftCancelled(ti); // that tool isn't made by itself again
         MaterialsChanged();
@@ -194,7 +195,6 @@ public sealed partial class StoryColony
         if (P3.Parse(body["bench"]) is not { } at || Bench(at) is not { } bench) return (null, "no such bench");
         var ids = body["ids"] is JsonArray a ? a.Select(x => x?.GetValue<string>() ?? "").ToList() : [];
         if (ids.Count == 0 || ids.Any(i => bench.Bills.All(b => b.Id != i))) return (null, "ids must name this bench's bills");
-        if (bench.Bills.Any(b => b.ForBuild != null && ids.Contains(b.Id))) return (null, "auto bills follow their build's queue order: reorder the builds instead");
         var rest = bench.Bills.Where(b => !ids.Contains(b.Id)).ToList();
         bench.Bills = ids.Distinct().Select(i => bench.Bills.First(b => b.Id == i)).Concat(rest).ToList();
         bench.Rev = Touch();
@@ -399,33 +399,34 @@ public sealed partial class StoryColony
     }
 
     /// <summary>A bill job (craft or cook), or collecting a furnace that is done, for this pawn; null = none runnable.</summary>
-    private ActiveJob? BillJob(PawnState p, PawnLive live, string work)
+    /// <param name="only">Only these (a crafter's immediate tasks: StoryColony.CraftTasks.cs); null = the bench's whole queue.</param>
+    private ActiveJob? BillJob(PawnState p, PawnLive live, string work, Func<BillState, bool>? only = null)
     {
         if (World is not { } w) return null;
         EnsureMaterials(); // the builds' auto bills are on the benches
         RetryOnStockChange(); // a deposit or a look since: the waiting bills try again now (StoryColony.StockCheck.cs)
         var from = live.Block;
         foreach (var bench in Benches.OrderBy(b => b.Pos.Dist(from)))
-            if (BenchJob(w, p, live, work, bench) is { } job) return job;
+            if (BenchJob(w, p, live, work, bench, only) is { } job) return job;
         return null;
     }
 
     /// <summary>The bench's job for this pawn: collecting a furnace that is done, else its first runnable bill; null = none here.</summary>
-    private ActiveJob? BenchJob(IStoryWorld w, PawnState p, PawnLive live, string work, WorkbenchState bench)
+    private ActiveJob? BenchJob(IStoryWorld w, PawnState p, PawnLive live, string work, WorkbenchState bench, Func<BillState, bool>? only)
     {
         var key = "bench:" + bench.Pos;
         if (!Open(key, p.Name, null)) { NoteBenchInUse(w, bench, work); return null; }
         // A loaded furnace: fuel for a load left without it, collecting one that is done (the bill's work type), else still smelting.
-        if (bench.LoadedBill is { } lb) return LoadedFurnaceJob(w, live, work, bench, lb, key);
+        if (bench.LoadedBill is { } lb) return only == null ? LoadedFurnaceJob(w, live, work, bench, lb, key) : null;
         if (StoryRecipes.Stations.Contains(bench.Kind) && (!StoryRecipes.SupportedIn(w.Data, bench.Kind) || StationGone(bench))) return null;
-        foreach (var bill in bench.Bills)
+        foreach (var bill in BenchQueue(bench, only)) // immediate tasks, the owner's bills, the other tasks
             if (BillOnBench(w, p, live, work, bench, bill, key) is { } job) return job;
         return null;
     }
 
     private void NoteBenchInUse(IStoryWorld w, WorkbenchState bench, string work)
     {
-        if (_blockedNotes != null && bench.Bills.Any(b => !b.Paused && b.SuspendedReason == null && StoryRecipes.Get(w.Data, b.Recipe) is { } br && br.WorkType == work && Wanted(b, br)))
+        if (_blockedNotes != null && BillsAndTasks(bench).Any(b => !b.Paused && b.SuspendedReason == null && StoryRecipes.Get(w.Data, b.Recipe) is { } br && br.WorkType == work && Wanted(b, br)))
             Blocked($"the {bench.Kind.Replace('_', ' ')} at {bench.Pos} is in use");
     }
 
@@ -433,7 +434,7 @@ public sealed partial class StoryColony
     /// collected all the same.</summary>
     private ActiveJob? CollectJob(IStoryWorld w, WorkbenchState bench, string lb, string work, string key)
     {
-        var loaded = bench.Bills.FirstOrDefault(b => b.Id == lb);
+        var loaded = BillById(bench, lb);
         var lr = (bench.LoadedRecipe ?? loaded?.Recipe) is { } lrid ? StoryRecipes.Get(w.Data, lrid) : null;
         if ((lr?.WorkType ?? WorkTypes.Craft) != work) return null;
         return Job(work, "collect_furnace", $"collecting {bench.LoadedCount} {(lr != null ? w.Data.DisplayName(lr.Output.Id, lr.Output.Meta).ToLowerInvariant() : "items")} from the furnace",
@@ -489,7 +490,8 @@ public sealed partial class StoryColony
         (batch.Got, batch.Missing) = Ingredients(bill, r, batch.Crafts, bench, live);
         bool auto = bill.ForBuild != null;
         // An auto bill whose ingredient isn't there yet waits quietly (an earlier step makes it; a raw shortfall is the build's alert).
-        if (batch.Missing != null && auto) { Blocked($"{r.Label} for build {bill.ForBuild}: {batch.Missing}"); return null; }
+        if (batch.Missing != null && auto) { Blocked($"{r.Label} for build {bill.ForBuild}: {batch.Missing}"); _taskBlocked[bill.Id] = batch.Missing; return null; }
+        if (auto) _taskBlocked.Remove(bill.Id);
         if (batch.Missing == null && !auto && _reserved.Count > 0) FitReserved(bill, r, bench, live, ref batch);
         if (LookBeforeWaiting(p, work, bench, bill, r, live, ref batch) is { } look) return look;
         if (batch.Missing != null)
@@ -628,7 +630,7 @@ public sealed partial class StoryColony
         foreach (var bench in Benches)
         {
             if (CollectsFrom(j, bench)) { FurnaceCollected(p, bench, j, note); return; }
-            if (bench.Bills.FirstOrDefault(b => b.Id == j.SourceId) is not { } bill) continue;
+            if (BillById(bench, j.SourceId) is not { } bill) continue;
             BillJobDone(bench, bill, j, note);
             return;
         }
@@ -643,7 +645,7 @@ public sealed partial class StoryColony
 
     private void FurnaceLoaded(WorkbenchState fur, ActiveJob j)
     {
-        if (fur.Bills.FirstOrDefault(b => b.Id == j.SourceId) is { } lb) _billFails.Remove(lb.Id);
+        if (BillById(fur, j.SourceId) is { } lb) _billFails.Remove(lb.Id);
         MaterialsChanged();
         int items = SmeltItems(j);
         fur.LoadedBill = j.SourceId;
@@ -664,7 +666,7 @@ public sealed partial class StoryColony
         var m = note == null ? null : System.Text.RegularExpressions.Regex.Match(note, @"collected (\d+)");
         int got = m is { Success: true } ? int.Parse(m.Groups[1].Value) : bench.LoadedCount;
         var still = note == null ? null : System.Text.RegularExpressions.Regex.Match(note, @"still smelting (\d+)");
-        if (bench.Bills.FirstOrDefault(b => b.Id == j.SourceId) is { } fb) fb.Done += Math.Min(got, bench.LoadedCount);
+        if (BillById(bench, j.SourceId) is { } fb) fb.Done += Math.Min(got, bench.LoadedCount);
         int left = bench.LoadedCount - got;
         if (left > 0 && still is { Success: true } && int.Parse(still.Groups[1].Value) > 0)
         {
@@ -705,7 +707,7 @@ public sealed partial class StoryColony
                 bench.Rev = Touch();
                 return;
             }
-            if (bench.Bills.FirstOrDefault(b => b.Id == j.SourceId) is not { } bill) continue;
+            if (BillById(bench, j.SourceId) is not { } bill) continue;
             BillJobFailed(p, bench, bill, why);
             return;
         }
@@ -732,7 +734,7 @@ public sealed partial class StoryColony
     internal void RetrySuspended()
     {
         foreach (var bench in Benches)
-            foreach (var b in bench.Bills.Where(b => b.SuspendedReason != null && !_billFails.ContainsKey(b.Id)))
+            foreach (var b in BillsAndTasks(bench).Where(b => b.SuspendedReason != null && !_billFails.ContainsKey(b.Id)))
             {
                 b.SuspendedReason = null;
                 bench.Rev = Touch();

@@ -139,7 +139,7 @@ public sealed class StoryRecipeFamilyTests
         var (c, _, _) = Rig(null, new Stack(17, 2, 8));
         Assert.Null(c.SetGearOptions(true, new JsonObject { ["count"] = 1, ["kinds"] = new JsonArray("pickaxe") }));
         c.State();
-        var recipes = c.Benches.Single().Bills.Select(b => b.Recipe).ToList();
+        var recipes = c.Benches.Single().Tasks.Select(b => b.Recipe).ToList();
         Assert.Contains("craft:planks_any", recipes);
         Assert.Contains("craft:" + Name(270), recipes);
     }

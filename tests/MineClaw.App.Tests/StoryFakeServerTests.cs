@@ -791,7 +791,7 @@ public sealed class StoryFakeServerTests(ITestOutputHelper output)
         Assert.True(await Until(() => b.Status == "done", 150_000),
             $"fence: {b.BlocksDone}/{b.BlocksTotal} {b.Status} {b.Reason} | {string.Join("; ", b.Materials.Select(m => m.Key))} | " + x.Diag());
         foreach (var g in b.Ghosts) Assert.Equal(85, srv.Blocks.GetValueOrDefault((g.At.X, g.At.Y, g.At.Z)));
-        Assert.Empty(c.Benches.Single().Bills); // the auto bills went with the need
+        Assert.Empty(c.Benches.Single().Tasks); // the craft tasks went with the need
         Assert.DoesNotContain(c.Alerts, a => a.Text.Contains("short of materials"));
     });
 

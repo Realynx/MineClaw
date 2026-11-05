@@ -103,7 +103,7 @@ public sealed class StoryFishingTests
         c.AddContents(c.StorageAt(new P3(0, 64, 4))!, new Stack(StoryColony.StringItem, 0, 2));
         c.Next();
         Assert.Equal(StoryRecipes.For(w.Data, "crafting_table").First(r => r.Output.Id == StoryColony.FishingRod).Id,
-            Assert.Single(c.Benches.Single().Bills).Recipe);
+            Assert.Single(c.Benches.Single().Tasks).Recipe);
         if (c.CurrentOf(c.P()) is { } cur2) c.Report(c.P(), cur2.Id, "done", null, null);
         // A rod in storage: fetched for the session.
         c.AddContents(c.StorageAt(new P3(0, 64, 4))!, new Stack(StoryColony.FishingRod, 0, 1));

@@ -151,7 +151,7 @@ public sealed partial class StoryColony
     private JsonObject? SmeltingJson(WorkbenchState bench)
     {
         if (bench.Kind != "furnace" || bench.LoadedBill == null || World is not { } w) return null;
-        var r = (bench.LoadedRecipe ?? bench.Bills.FirstOrDefault(b => b.Id == bench.LoadedBill)?.Recipe) is { } rid ? StoryRecipes.Get(w.Data, rid) : null;
+        var r = (bench.LoadedRecipe ?? BillById(bench, bench.LoadedBill)?.Recipe) is { } rid ? StoryRecipes.Get(w.Data, rid) : null;
         int done = bench.LoadedAt is { } at ? Math.Clamp((int)((Now - at).TotalSeconds / StoryRecipes.SmeltSeconds), 0, bench.LoadedCount) : 0;
         var input = r?.Inputs.FirstOrDefault()?.Options.FirstOrDefault();
         return new JsonObject
@@ -172,7 +172,7 @@ public sealed partial class StoryColony
         if (!StoryFuels.Valid(d, fuel)) return (null, $"fuel must be {string.Join("|", StoryFuels.ValidFor(d))}");
         bench.FuelSetting = fuel == StoryFuels.Auto ? null : fuel;
         bench.Rev = Touch();
-        foreach (var b in bench.Bills.Where(b => b.SuspendedReason?.StartsWith("needs fuel", StringComparison.Ordinal) == true)) b.SuspendedReason = null;
+        foreach (var b in BillsAndTasks(bench).Where(b => b.SuspendedReason?.StartsWith("needs fuel", StringComparison.Ordinal) == true)) b.SuspendedReason = null;
         MaterialsChanged();
         WakeIdle();
         return (new JsonObject { ["pos"] = bench.Pos.Json(), ["kind"] = bench.Kind, ["designated"] = true, ["fuel"] = fuel }, null);

@@ -735,9 +735,9 @@ export const StoryBill = z.object({
   forBuild: z
     .union([z.string(), z.number()])
     .nullish()
-    .describe('an auto bill: the build it crafts for, or "tools" (a tool a job or the spare-tools option needs); cancel-only'),
-  forItem: z.string().nullish().describe("an auto bill: the build's item its chain ends in"),
-  step: z.number().int().nullish().describe("an auto bill's place in the recipe chain (ingredients first)"),
+    .describe('legacy: an auto bill (now a craft task, never in a bench\'s bills): the build it crafts for, or "tools"'),
+  forItem: z.string().nullish().describe("legacy: an auto bill's item its chain ends in"),
+  step: z.number().int().nullish().describe("legacy: an auto bill's place in the recipe chain (ingredients first)"),
   option: z.number().int().nullish().describe('an enchant bill: the highest offer (1–3) it takes; its lapis and levels'),
   prefer: z.string().nullish().describe('an enchant bill: the enchantment it prefers (the offer hinting it first)'),
   preferOnly: z.boolean().nullish().describe('only an offer hinting the preferred enchantment'),
@@ -751,6 +751,25 @@ export const StoryBill = z.object({
   fuelNeed: StoryFuelNeed.nullish().describe("the fuel this bill's next batch burns: need / have / short"),
 });
 export type StoryBill = z.infer<typeof StoryBill>;
+
+/**
+ * One of the colony's own craft tasks (docs/web/story-mode.md "Craft tasks"): a build's chain step, the tools pawns need, a need's
+ * one-off (hoe, rod, seeds). Never a bill in the bench's list; taken by pawns with the recipe's work type.
+ */
+export const StoryCraftTask = z.object({
+  id: z.union([z.string(), z.number()]).describe('a bench task\'s id (cancel with bills {op:"remove", id}); "hand:…" for a 2×2 hand craft'),
+  item: z.string().describe('the recipe id (craft:stick, smelt:iron_ore…)'),
+  label: z.string().nullish(),
+  count: z.number().int().describe('still to make'),
+  reason: z.string().nullish().describe('why ("for mining: Cleo Z. (+1 spare)", "for the fence of build b4")'),
+  for: z.union([z.string(), z.number()]).nullish().describe('a build id, "tools", or "need" (a zone\'s one-off)'),
+  forItem: z.string().nullish(),
+  priority: z.enum(['immediate', 'normal']).default('normal').describe('immediate: work waits on it now (crafted first)'),
+  bench: Vec3i.nullish().describe('the bench it is made at; null = a hand craft (2×2 grid)'),
+  status: z.enum(['queued', 'crafting', 'waiting', 'paused']).default('queued'),
+  blocked: z.string().nullish().describe('what held it up at its last try'),
+});
+export type StoryCraftTask = z.infer<typeof StoryCraftTask>;
 
 /** A station's facts for the bench inspector (1.12.2 brewing stand, enchanting table, anvil). */
 export const StoryStationInfo = z.object({
@@ -963,6 +982,10 @@ export const StoryColonyState = z.object({
   categories: z.array(StoryCategory).nullish(),
   storages: z.array(StoryStorage).nullish(),
   workbenches: z.array(StoryWorkbench).nullish(),
+  craftTasks: z
+    .array(StoryCraftTask)
+    .nullish()
+    .describe("the colony's own craft tasks (never bills): immediate first; sent whole with every answer"),
   reservations: z
     .array(StoryReservation)
     .nullish()
