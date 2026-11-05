@@ -110,6 +110,7 @@ public sealed partial class StoryColony
         if (err != null || painted == null) return (null, err ?? "nothing painted");
         NamePainted(painted, name);
         ZonesChanged(painted);
+        PaintedQuarry(painted, warnings); // over builds' cells: the overlap is said (StoryColony.QuarryConflicts.cs)
         return (ZoneResultJson(painted, warnings), null);
     }
 
@@ -225,6 +226,8 @@ public sealed partial class StoryColony
         public long Stamp = long.MinValue;
         /// <summary>Column → the (oldest) home zone it is in.</summary>
         public readonly Dictionary<long, ZoneState> Home = new();
+        /// <summary>Column → the (oldest) quarry zone it is in (StoryColony.QuarryConflicts.cs).</summary>
+        public readonly Dictionary<long, ZoneState> Quarry = new();
     }
 
     private ZoneIx _zix = new();
@@ -236,7 +239,7 @@ public sealed partial class StoryColony
         return s;
     }
 
-    /// <summary>The home-column index, rebuilt when a zone changed (an integer pass decides).</summary>
+    /// <summary>The home- and quarry-column index, rebuilt when a zone changed (an integer pass decides).</summary>
     private ZoneIx Zix()
     {
         long stamp = ZoneStamp();
@@ -244,8 +247,10 @@ public sealed partial class StoryColony
         if (ix.Stamp == stamp) return ix;
         var n = new ZoneIx { Stamp = stamp };
         foreach (var z in Zones.ToArray())
-            if (z.Kind == "home")
-                foreach (var k in z.Cells.Keys) n.Home.TryAdd(k, z);
+        {
+            var into = z.Kind == "home" ? n.Home : IsQuarry(z) ? n.Quarry : null;
+            if (into != null) foreach (var k in z.Cells.Keys) into.TryAdd(k, z);
+        }
         _zix = n;
         return n;
     }

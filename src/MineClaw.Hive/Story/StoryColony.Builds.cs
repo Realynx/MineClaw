@@ -49,6 +49,7 @@ public sealed partial class StoryColony
         foreach (var n in items)
             if (ExpandBuildItem(w, n, made, warnings) is { } err) return (null, err);
         var flow = QueueBuilds(w, made);
+        BuildsInQuarries(made, warnings); // a quarry digs them: blocked now, said (StoryColony.QuarryConflicts.cs)
         WakeIdle();
         var added = new JsonObject { ["ids"] = new JsonArray(made.Select(b => (JsonNode)b.Id!).ToArray()) };
         if (warnings.Count > 0) added["warnings"] = new JsonArray(warnings.Distinct().Select(x => (JsonNode)x!).ToArray());
@@ -183,8 +184,9 @@ public sealed partial class StoryColony
         EnsureMaterials(); // what each build may take (reserved in queue order) and what is being crafted for it
         var from = live.Block;
         int builders = BuilderCount();
+        int cap = BuildCap(p, live); // down in a quarry pit: the cells up top are a builder's up there (StoryColony.QuarryConflicts.cs)
         foreach (var b in Builds.Where(b => b.Status is not ("paused" or "done")).OrderBy(b => b.Order))
-            if (BuildJobFor(w, p, live, b, builders, from) is { } job) return job;
+            if (BuildJobFor(w, p, live, b, builders, from, cap) is { } job) return job;
         return null;
     }
 
@@ -220,14 +222,14 @@ public sealed partial class StoryColony
     }
 
     /// <summary>This build's next job for the pawn, or null (and why it has none, as blocked work).</summary>
-    private ActiveJob? BuildJobFor(IStoryWorld w, PawnState p, PawnLive live, BuildState b, int builders, P3 from)
+    private ActiveJob? BuildJobFor(IStoryWorld w, PawnState p, PawnLive live, BuildState b, int builders, P3 from, int cap = int.MaxValue)
     {
         var todo = b.Ghosts.Where(g => g.Job && g.State is "todo" or "leased").ToList();
         if (todo.Count == 0) { FinishOrStuck(b); return null; }
         // A design placed with a basement: its blocks wait until the ground is dug out (dig, then place).
         if (DigFirst(b)) { Blocked($"build {b.Id}: its ground is dug out first"); return null; }
         var scan = new GhostScan { Build = b, Todo = todo, Builders = builders, From = from, Mine = b.Kind == "mine" };
-        var open = OpenCells(b, todo, scan.Mine);
+        var open = CappedCells(b, OpenCells(b, todo, scan.Mine), cap);
         foreach (var g in CellOrder(b, open, ref scan, from))
         {
             if (GhostCell(w, p, live, ref scan, g) is { } job) return job;
@@ -258,6 +260,14 @@ public sealed partial class StoryColony
         return mine ? todo.Where(g => g.State == "todo" && Exposed(g.At)).ToList() : todo.Where(g => g.State == "todo" && g.At.Y == lowest).ToList();
     }
 
+    /// <summary>The open cells no higher than <paramref name="cap"/> (a pawn down in a quarry pit); the ones left out are said.</summary>
+    private List<GhostState> CappedCells(BuildState b, List<GhostState> open, int cap)
+    {
+        if (cap == int.MaxValue || open.All(g => g.At.Y <= cap)) return open;
+        Blocked($"build {b.Id}: left to a builder up top (I'm down in a quarry pit)");
+        return open.Where(g => g.At.Y <= cap).ToList();
+    }
+
     /// <summary>A mine: top-down first, digs before its blocks (torches, ladders… one per job), nearest; a level: <see cref="Seeds"/>,
     /// spread out (a cell next to another pawn's batch comes after the rest: its neighbours are leased anyway). A level's cells with
     /// nothing to place against yet are left out (the client would say "nothing solid on any side"); when none of them has any and
@@ -281,7 +291,7 @@ public sealed partial class StoryColony
     {
         var b = scan.Build;
         var key = $"g:{b.Id}|{g.At}";
-        if (!Open(key, p.Name, g.At) || Occupied(g.At)) return null;
+        if (!Open(key, p.Name, g.At) || Occupied(g.At) || QuarryHeld(b, g)) return null; // a quarry digs it: never placed
         if (g.Remove) return DigCell(w, p, live, b, g, key);
         // A liquid source: poured from a bucket filled at a still source (StoryColony.Water.cs).
         if (StoryConstruction.IsLiquid(g)) return PourCell(p, live, ref scan, g);
@@ -618,7 +628,7 @@ public sealed partial class StoryColony
     /// </summary>
     private bool BatchTakes(IStoryWorld w, BuildState b, GhostState seed, GhostState x, string pawn, int clearId)
     {
-        if (!BatchKin(seed, x) || !NearSeedLevel(seed, x)) return false;
+        if (!BatchKin(seed, x) || !NearSeedLevel(seed, x) || QuarryConflict(x) != null) return false;
         var key = $"g:{b.Id}|{x.At}";
         if (!Open(key, pawn, x.At) || Occupied(x.At)) return false;
         var (cur, curMeta) = w.Block(x.At.X, x.At.Y, x.At.Z);
