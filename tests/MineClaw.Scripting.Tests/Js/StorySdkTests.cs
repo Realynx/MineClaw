@@ -65,6 +65,24 @@ public sealed class StorySdkTests
         Assert.Equal(["build scaffold"], port.TempKinds);
     }
 
+    /// <summary>A preserved zone's repair dig (docs/web/story-mode.md "Preserve zones"): the job says <c>ordered</c>, and the pawn digs with
+    /// the owner's clear (clear_dig, which the preserved-block filter lets through), never a plain dig; a plain dig job stays a dig.</summary>
+    [Fact]
+    public async Task A_preserved_zones_repair_dig_is_the_owners_ordered_clear()
+    {
+        var port = new FakeDirector(J("j1", "dig", j => { j["at"] = "9,64,9"; j["ordered"] = true; }), J("j2", "dig", j => j["at"] = "8,64,9"), J("j3", "end"));
+        using var rig = Rig.Js();
+        rig.Host.Story = port;
+        rig.On["clear_dig"] = (_, _) => Task.FromResult(ActResult.Success("dug"));
+        rig.On["dig"] = (_, _) => Task.FromResult(ActResult.Success("dug"));
+        var s = await rig.Run(MineClaw.Hive.Story.StoryColonies.PawnCode(), "story_pawn");
+        Assert.True(s.Ok, s.Outcome);
+        var calls = rig.Norm();
+        Assert.Contains("""clear_dig {"at":"9,64,9"}""", calls);
+        Assert.DoesNotContain("""dig {"at":"9,64,9"}""", calls);
+        Assert.Contains("""dig {"at":"8,64,9"}""", calls);
+    }
+
     /// <summary>After every job, whatever its outcome, the pawn takes back its own scaffolds, pillars and boxes (clear_temporary).</summary>
     [Fact]
     public async Task After_every_job_even_a_failed_one_the_pawn_takes_its_own_temporary_blocks_back()

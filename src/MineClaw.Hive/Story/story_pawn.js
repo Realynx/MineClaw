@@ -39,13 +39,14 @@ function sleepAt(j) {
   if (j.bed && ok(there) && night()) use_block(j.bed)
   return wait(j.s || 5)
 }
-// j.stand: it stands on its target, step off first. A block still there after an ok dig gets one more go.
+// j.stand: it stands on its target, step off first. A block still there after an ok dig gets one more go (j.ordered, a preserved
+// zone's repair: the owner's clear again).
 function digAt(j) {
   if (j.stand) go(j.stand, 0)
   const was = block(j.at), r = story.dig(j.at, j)
   if (!ok(r) || was == 'air' || block(j.at) != was) return r
   wait(1)
-  return block(j.at) == was ? dig(j.at) : r
+  return block(j.at) == was ? (j.ordered ? story.dig(j.at, j) : dig(j.at)) : r
 }
 function harvestAt(j, a) {
   const there = reach(a, 3)
