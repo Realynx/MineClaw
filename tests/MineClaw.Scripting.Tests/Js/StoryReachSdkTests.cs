@@ -97,6 +97,9 @@ public sealed class StoryReachSdkTests
         using var rig = Make();
         rig.Give(36, Blocks.Dirt, 8);
         rig.World.Player.ServerTeleport(new Vec3d(0.5, 76, 0.5), 77.62, 0, 0, true);
+        var walk = rig.On["goto"];
+        rig.On["goto"] = (a, ct) => Pos(a, "to") == new BlockPos(2, 71, 0)
+            ? Task.FromResult(ActResult.Fail("no path; reachable by building: need 1 blocks")) : walk(a, ct);
         var s = await rig.Run($"const r = story.go('{Ceiling}', 3); return JSON.stringify(ok(r) ? story.dig('{Ceiling}') : r)");
         Assert.True(s.Ok, s.Outcome);
         Assert.Contains("\"ok\":true", s.Outcome);
@@ -104,6 +107,7 @@ public sealed class StoryReachSdkTests
         Assert.Contains(rig.Norm(), c => c.StartsWith("place "));
         Assert.Equal(8, Count(rig, Blocks.Dirt));
         Assert.Equal(65, (int)Math.Floor(rig.World.Player.Position.Y));
+        Assert.Single(rig.Norm(), c => c.StartsWith("goto ") && c.Contains(Ceiling)); // walk below before trying to bridge from the rim
     }
 
     [Fact]

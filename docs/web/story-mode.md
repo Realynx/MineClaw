@@ -506,6 +506,7 @@ own and destroy the nerd pole on the way back down. Not many blocks should truly
     on it). It digs the target, then digs its pillar back down from the top, standing on each block it placed and collecting them
     again. Nothing is left behind.
   - A walk that can't get within reach stops on ground below the target instead (`story.go`), and the dig climbs from there.
+    This floor approach comes before building from the rim, which can otherwise leave the pawn perched over a quarry remnant.
     This also applies when the pawn starts above the target, such as a quarry remnant below the rim but high above the floor.
   - When the walking planner finds a route that needs temporary blocks (`reachable by building`), `story.go` retries once with
     building enabled. This also reaches quarry remnants below the rim that a normal walk cannot approach. An explicit `build: false`

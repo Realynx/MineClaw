@@ -71,13 +71,13 @@ public static class ReachScan
             MaxNodes = 4000, Timeout = TimeSpan.FromMilliseconds(150) };
         if (Pathfinder.FindPath(g.World, start, new GoalBlock(best.Stand), options).Status == PathStatus.Found) return best;
         var goals = new GoalAny(columns.Select(c => (Goal)new GoalBlock(c.Stand)).ToArray());
-        var path = Pathfinder.FindPath(g.World, start, goals, options with { MaxNodes = 8000, Timeout = TimeSpan.FromMilliseconds(350) });
+        var path = Pathfinder.FindPath(g.World, start, goals, options with { MaxNodes = 12000, Timeout = TimeSpan.FromSeconds(2) });
         if (path.Status == PathStatus.Found)
         {
             var end = path.Steps.Count == 0 ? start : path.Steps[^1].Pos;
             return columns.First(c => c.Stand == end);
         }
-        why = "no walkable ground below or beside it";
+        why = "no walkable ground below or beside it (" + (path.Reason ?? "no route") + ")";
         return null;
     }
 

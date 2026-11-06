@@ -356,13 +356,16 @@
     return escStuck(s, climb, e.why);
   };
   const NO_WAY = /no path|no route|unreachable|partway|stuck/i;
-  // go(at, d, opts?): try walking first. A route the planner says needs scaffolding gets one build-mode retry;
+  // go(at, d, opts?): try walking first, then a reachable base below the target for story.dig's removable pillar.
+  // Only without such a base does a route the planner says needs scaffolding get one build-mode retry;
   // the client's temporary ledger and the pawn's post-job sweep take those access blocks back.
   // Otherwise, when the pawn is in a pit, cave or water, it gets out first and goes again.
   const go = (at, d, o) => {
     const g = globalThis, walk = () => (o ? g.go(at, d, o) : g.go(at, d));
     let r = walk();
     if (g.ok(r) || r.cancelled || !NO_WAY.test(r.msg || '')) return r;
+    const below = standBelow(at);
+    if (below) return below;
     if ((!o || o.build == null) && /reachable by building/i.test(r.msg || '')) {
       r = g.go(at, d, { ...o, build: true });
       if (g.ok(r) || r.cancelled || !NO_WAY.test(r.msg || '')) return r;
