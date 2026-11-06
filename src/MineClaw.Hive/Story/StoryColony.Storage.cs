@@ -1,4 +1,5 @@
 using System.Text.Json.Nodes;
+using MineClaw.Data.Versioning;
 
 namespace MineClaw.Hive.Story;
 
@@ -156,6 +157,75 @@ public sealed partial class StoryColony
         if (priority != null) s.Priority = priority;
         if (label != null) s.Label = label.Length > 40 ? label[..40] : label;
         s.Rev = Touch();
+    }
+
+    /// <summary>
+    /// A chest the colony's own build placed (the Architect's chest, a design's chests) is storage at once, taking anything, like a
+    /// station it built (live 11-06: Fox placed 14 chests because storage was full; built, none would have been used until each was
+    /// set as storage by hand). A chest built beside a single storage chest makes it a double chest.
+    /// </summary>
+    private void ChestBuilt(GhostState g)
+    {
+        if (g.Remove || g.Id is not (54 or 146) || StorageAt(g.At) != null) return;
+        foreach (var n in new[] { g.At.Add(1, 0, 0), g.At.Add(-1, 0, 0), g.At.Add(0, 0, 1), g.At.Add(0, 0, -1) })
+            if (StorageAt(n) is { DoubleWith: null } pair && pair.Chest == n && World?.Block(n.X, n.Y, n.Z).Id == g.Id)
+            {
+                pair.DoubleWith = g.At;
+                Recount(pair);
+                WakeIdle();
+                return;
+            }
+        Set(g.At, null, null, null);
+        Alert("info", $"The chest built at {g.At} is storage now: it takes anything (its inspector sets a filter)");
+        WakeIdle();
+    }
+
+    // ---------------------------------------------------------------- lids (live 11-06: "chest at 216,64,400 didn't open (blocked above)"
+    // ×146 and at 223,64,400 ×95 in 7 hours: oak planks lay on one half of each double chest, and every seed fetch, food fetch and
+    // delivery that picked them failed at the chest)
+
+    private readonly Dictionary<P3, (DateTimeOffset At, P3? Lid)> _lids = new();
+    private readonly Dictionary<P3, DateTimeOffset> _lidSaid = new();
+
+    /// <summary>
+    /// The block that keeps a storage chest shut, or null: it opens. Both versions refuse to open a chest (either half of a double one)
+    /// under a full opaque block (mc-dev BlockChest.interact; 1.12.2 BlockChest.isBlocked). Read from the world at most every 5 s per
+    /// chest; a shut chest is left out of every plan (<see cref="ChestOpen"/>) and said once (every 30 minutes at most).
+    /// </summary>
+    internal P3? LidBlocked(P3 chest)
+    {
+        if (_lids.TryGetValue(chest, out var c) && Now - c.At < TimeSpan.FromSeconds(5)) return c.Lid; // asked per chest per pick
+        var s = StorageAt(chest);
+        var key = s?.Chest ?? chest;
+        P3? lid = World is { } w ? LidOn(w, key) ?? (s?.DoubleWith is { } d ? LidOn(w, d) : null) : null;
+        _lids[chest] = (Now, lid);
+        if (lid is { } at) LidAlert(key, at);
+        return lid;
+    }
+
+    /// <summary>The block on top of this chest when it shuts the lid (the chest itself must be in view as a chest).</summary>
+    private static P3? LidOn(IStoryWorld w, P3 c)
+    {
+        if (!w.Loaded(c.X, c.Z) || w.Block(c.X, c.Y, c.Z).Id is not (54 or 146)) return null;
+        var above = c.Add(0, 1, 0);
+        return ShutsLid(w.Data, w.Block(above.X, above.Y, above.Z).Id) ? above : null;
+    }
+
+    /// <summary>A full opaque block (planks, stone, dirt, a crafting table…): a chest under it doesn't open. Chests, glass, leaves,
+    /// slabs, stairs, fences, liquids and plants don't shut it.</summary>
+    internal static bool ShutsLid(IGameData d, int id)
+    {
+        if (id is 0 or 54 or 146 or 130 || !d.BlockExists(id)) return false;
+        var b = d.Block(id);
+        return b.Solid && b.CollisionHeight >= 1 && !b.Transparent && !b.Liquid;
+    }
+
+    private void LidAlert(P3 chest, P3 lid)
+    {
+        if (_lidSaid.TryGetValue(chest, out var said) && Now - said < TimeSpan.FromMinutes(30)) return;
+        _lidSaid[chest] = Now;
+        string what = World is { } w ? BlockIdName(w, w.Block(lid.X, lid.Y, lid.Z).Id).Replace('_', ' ') : "a block";
+        Alert("warn", $"Chest at {chest} can't open: {what} on top of it at {lid}. Pawns leave it alone until that block is gone");
     }
 
     private P3? DoubleHalf(P3 c)
