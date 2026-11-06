@@ -64,6 +64,26 @@ export function opacity(version: GameVersion, id: number): number {
   return OPACITY[version][id] ?? 0;
 }
 
+/** The partial blocks that take all light, whose own cell's light is therefore 0: vanilla reads their light as the
+ * brightest of their neighbours' (b1.8.1 World.a(x, y, z, true): slab, farmland, cobblestone and wooden stairs, from above
+ * and the four sides; 1.12.2 ChunkCache.getLightForExt for useNeighborBrightness: every slab and stairs, farmland, grass
+ * path, and lava, from all six). Without it their sides read as black (farmland beside farmland drew dark seams). */
+const NEIGHBOUR_LIT: Record<GameVersion, Uint8Array> = {
+  'b1.8.1': idTable([44, 53, 60, 67]),
+  '1.12.2': idTable([10, 11, 44, 53, 60, 67, 108, 109, 114, 126, 128, 134, 135, 136, 156, 163, 164, 180, 182, 203, 205, 208]),
+};
+
+function idTable(ids: number[]): Uint8Array {
+  const t = new Uint8Array(256);
+  for (const id of ids) t[id] = 1;
+  return t;
+}
+
+/** 1 for the ids whose light is read from their neighbours (see NEIGHBOUR_LIT), by id. */
+export function neighbourLit(version: GameVersion): Uint8Array {
+  return NEIGHBOUR_LIT[version];
+}
+
 /** Writable light of one column: full sections allocated on demand from the uniform ones. */
 function sectionArray(l: ColumnLight, s: number): Uint8Array {
   let f = l.full[s];

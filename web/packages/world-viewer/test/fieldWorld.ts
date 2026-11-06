@@ -111,27 +111,33 @@ export class FieldWorld {
 
   /** A store holding the farm through a real MCWC payload, lit with `light` (default: the reference light). */
   async store(version: GameVersion, light = this.light()): Promise<ColumnStore> {
-    const entries: EncodeEntry[] = [];
-    for (let cx = CX0; cx <= CX1; cx++)
-      for (let cz = CX0; cz <= CX1; cz++) {
-        const ids = new Uint8Array(256 * HEIGHT), meta = new Uint8Array(256 * HEIGHT);
-        const sections: LightSection[] = [];
-        for (let s = 0; s < HEIGHT >> 4; s++) sections.push({ full: new Uint8Array(SECTION_CELLS) });
-        for (let lx = 0; lx < 16; lx++)
-          for (let lz = 0; lz < 16; lz++)
-            for (let y = 0; y < HEIGHT; y++) {
-              const g = this.index(cx * 16 + lx, y, cz * 16 + lz);
-              ids[cellIndex(lx, y, lz)] = this.ids[g];
-              meta[cellIndex(lx, y, lz)] = this.meta[g];
-              (sections[y >> 4] as { full: Uint8Array }).full[(lx << 8) | (lz << 4) | (y & 15)] = light[g];
-            }
-        const e = encodeColumn(ids, meta, sections);
-        entries.push({ cx, cz, hash: combineHash(e.blockHash, e.lightHash!), seenMs: 1, by: 't', live: true, data: e.data, light: e.light });
-      }
     const store = new ColumnStore();
     store.version = version;
-    await store.applyPayload(encodeMcwc(0, entries));
+    await store.applyPayload(encodeMcwc(0, this.entries(light)));
     return store;
+  }
+
+  /** The farm's columns encoded like the supervisor's payload, lit with `light`. */
+  entries(light: Uint8Array): EncodeEntry[] {
+    const entries: EncodeEntry[] = [];
+    for (let cx = CX0; cx <= CX1; cx++) for (let cz = CX0; cz <= CX1; cz++) entries.push(this.entry(cx, cz, light));
+    return entries;
+  }
+
+  private entry(cx: number, cz: number, light: Uint8Array): EncodeEntry {
+    const ids = new Uint8Array(256 * HEIGHT), meta = new Uint8Array(256 * HEIGHT);
+    const sections: LightSection[] = [];
+    for (let s = 0; s < HEIGHT >> 4; s++) sections.push({ full: new Uint8Array(SECTION_CELLS) });
+    for (let lx = 0; lx < 16; lx++)
+      for (let lz = 0; lz < 16; lz++)
+        for (let y = 0; y < HEIGHT; y++) {
+          const g = this.index(cx * 16 + lx, y, cz * 16 + lz);
+          ids[cellIndex(lx, y, lz)] = this.ids[g];
+          meta[cellIndex(lx, y, lz)] = this.meta[g];
+          (sections[y >> 4] as { full: Uint8Array }).full[(lx << 8) | (lz << 4) | (y & 15)] = light[g];
+        }
+    const e = encodeColumn(ids, meta, sections);
+    return { cx, cz, hash: combineHash(e.blockHash, e.lightHash!), seenMs: 1, by: 't', live: true, data: e.data, light: e.light };
   }
 
   /** The store's light of every cell, in this world's order. */
