@@ -8,7 +8,9 @@ the genre's usual ones:
 - direct orders to one pawn or a group (drafting)
 - zones and designations painted on a top-down map
 
-It's an original design on top of MineClaw. It uses no other game's art, names or text.
+It's an original design on top of MineClaw. It uses no other game's art, names or text. The established layout stays, but new
+mechanics should fit MineClaw's implementation in Minecraft; they do not need to follow RimWorld's model. Pawn counts have no
+gameplay cap: server slots and available process memory determine how many can join at once.
 
 ## Pawns are script-only bodies
 
