@@ -106,6 +106,9 @@ public interface IStoryHost
     /// <summary>The colony's growing zones for this pawn's body (foot cell x,y,z → inside one; null = none): its walks crouch past their
     /// plants (StoryColony.Farming.cs, Fox 11-04). Only ever a colony pawn's.</summary>
     void SetGrowZone(string account, Func<int, int, int, bool>? inZone) { }
+    /// <summary>The colony's preserved blocks for this pawn's body (pos, block id → a kept block): its digs refuse them, except a repair's
+    /// ordered clear (StoryColony.Preserve.cs). Null = none. Only ever a colony pawn's.</summary>
+    void SetPreserved(string account, Func<MineClaw.World.BlockPos, int, bool>? keep) { }
     /// <summary>The pawn body's speed boost as it runs (null = offline or unknown).</summary>
     PawnSpeed? Speed(string account) => null;
     /// <summary>Can the colony ask the server for a Speed effect (1.12.2 with an op account)?</summary>

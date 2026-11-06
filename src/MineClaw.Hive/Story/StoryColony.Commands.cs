@@ -5,7 +5,7 @@ namespace MineClaw.Hive.Story;
 /// <summary>What the browser asks of a colony: priorities, schedules, drafting, orders, zones and designations.</summary>
 public sealed partial class StoryColony
 {
-    public static readonly IReadOnlyList<string> ZoneKinds = ["chop", "mine", "farm", "fish", "home", "forbidden", "dump"];
+    public static readonly IReadOnlyList<string> ZoneKinds = ["chop", "mine", "farm", "fish", "home", "forbidden", "dump", "preserve"];
     public static readonly IReadOnlyList<string> OrderKinds = ["move", "attack", "chop", "mine", "haul", "build", "hold", "stop"];
     public static readonly IReadOnlyList<string> DesignationKinds = ["chop", "cut", "harvest", "mine", "haul", "hunt", "deconstruct", "forbid", "allow"];
 
@@ -323,7 +323,9 @@ public sealed partial class StoryColony
             if (made.Count > 4096) return (null, $"{made.Count} targets: designate a smaller area (max 4096)");
             foreach (var d in made) { d.Auto = auto; d.Rev = Touch(); Designations.Add(d); }
             if (made.Count > 0 || batch.Revived > 0) WakeIdle();
-            return (new JsonObject { ["count"] = made.Count + batch.Revived, ["revived"] = batch.Revived, ["targets"] = batch.Targets }, null);
+            var answer = new JsonObject { ["count"] = made.Count + batch.Revived, ["revived"] = batch.Revived, ["targets"] = batch.Targets };
+            if (!auto) DesignationsOverPreserved(made, answer); // done as asked, then kept as they leave it (StoryColony.Preserve.cs)
+            return (answer, null);
         }
     }
 

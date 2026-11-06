@@ -470,6 +470,7 @@ public sealed partial class StoryColony
             ["id"] = z.Id, ["kind"] = z.Kind, ["area"] = z.Area.Json(), ["name"] = z.Name, ["cells"] = z.Cells.Count,
             ["rows"] = new JsonArray((z.Rows ?? z.Cells.Rows()).Select(r => (JsonNode)new JsonArray(r[0], r[1], r[2])).ToArray()),
         };
+        if (PreserveJson(z) is { } pj) o["preserve"] = pj; // it keeps its blocks (StoryColony.PreserveRepair.cs)
         if (z.Kind == "fish") { FishJson(z, o); return o; } // StoryColony.Fishing.cs
         if (z.Kind == "mine") { QuarryJson(z, o); return o; } // StoryColony.Quarry.cs
         // A growing zone (a plain farm zone has no plant and no bills).

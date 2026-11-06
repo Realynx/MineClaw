@@ -38,7 +38,7 @@ public sealed partial class StoryColony
                 ["seats"] = SeatsJson(),
                 ["unstored_kinds"] = UnstoredKinds(), // a condition: drops and loot with nowhere to go (StoryColony.Hauling.cs)
                 ["blocked_work"] = BlockedWorkJson(), // idle pawns with work about, grouped by why (StoryColony.IdleAudit.cs)
-                ["zones"] = new JsonArray(Zones.Where(z => New(z.Rev) || z.Plant != null || z.Bills != null || z.Kind == "fish" || IsQuarry(z)).Select(z => (JsonNode)ZoneJson(z)).ToArray()),
+                ["zones"] = new JsonArray(Zones.Where(z => New(z.Rev) || z.Plant != null || z.Bills != null || z.Kind == "fish" || IsQuarry(z) || z.Preserve != null).Select(z => (JsonNode)ZoneJson(z)).ToArray()),
                 ["beds"] = BedsJson(),
                 ["designations"] = new JsonArray(Designations.Where(d => New(d.Rev)).Select(d => (JsonNode)DesignationJson(d)).ToArray()),
                 ["orders"] = new JsonArray(Pawns.Values.Where(p => New(p.Rev)).SelectMany(p => p.Queue.Select(q => (JsonNode)OrderJson(q, p.Name))).ToArray()),

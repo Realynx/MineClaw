@@ -235,6 +235,11 @@ public sealed class StoryHost : IStoryHost
         if (PawnClient(account) is { } c) c.GrowZone = inZone;
     }
 
+    public void SetPreserved(string account, Func<MineClaw.World.BlockPos, int, bool>? keep)
+    {
+        if (PawnClient(account) is { } c) c.Preserved = keep;
+    }
+
     public PawnSpeed? Speed(string account)
     {
         if (Find(account) is not { State: BodyState.Online } || PawnClient(account) is not { } c) return null;

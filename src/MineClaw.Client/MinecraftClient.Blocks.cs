@@ -90,6 +90,7 @@ public sealed partial class MinecraftClient
     private string? DigRefusal(DigJob d)
     {
         if (ProtectionRefusal(d) is { } prot) return prot;
+        if (!d.Ordered && IsPreserved(d.Pos, d.Id)) return $"won't dig {d.Name} at {Fmt(d.Pos)}: a preserved block (the colony keeps it; only its repairs dig there)";
         if (Blocks.Get(d.Id).Hardness < 0) return $"{d.Name} is unbreakable";
         if (EditBlocked(d.Pos)) return BlockedReason(d.Pos);
         if (DigSafetyVeto(d.Pos, d.Name, d.Generator, positioned: !d.AllowPathing) is { } veto) return veto;

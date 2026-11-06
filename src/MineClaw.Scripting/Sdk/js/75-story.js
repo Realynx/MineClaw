@@ -437,11 +437,12 @@
     const placed = poleUp(at, s.steps);
     try { return fn(); } finally { unpole(placed, s.stand); }
   };
-  // dig(at, job?): the usual dig; a block out of reach is reached from a pillar (reachUp), never just given up on.
+  // dig(at, job?): the usual dig; a block out of reach is reached from a pillar (reachUp), never just given up on. j.ordered (a
+  // preserved zone's repair): the owner's clear (clear_dig), which the preserved-block filter lets through.
   const dig = (at, j) => {
-    const g = globalThis, r = g.dig(at);
+    const g = globalThis, one = () => (j && j.ordered ? clearDig(at) : g.dig(at)), r = one();
     if (g.ok(r) || !REACH.test(r.msg || '')) return r;
-    return reachUp(at, () => g.dig(at), j);
+    return reachUp(at, one, j);
   };
   // ready(job): a job up high (a tall tree) starts with blocks to pillar with: the job's pillar stack from storage when short.
   const ready = j => {

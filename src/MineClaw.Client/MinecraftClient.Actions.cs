@@ -186,7 +186,7 @@ public sealed partial class MinecraftClient
         {
             AllowBreak = o.AllowBreak,
             // A tunnelling goto never digs a dug design's floor (a stair's tread) out from under its air.
-            CanBreak = (id, meta, pos) => !IsBlockProtected(pos, id) && !NextToLava(pos) && !EditBlocked(pos) && !othersStandOn.Contains(pos)
+            CanBreak = (id, meta, pos) => !IsBlockProtected(pos, id) && !IsPreserved(pos, id) && !NextToLava(pos) && !EditBlocked(pos) && !othersStandOn.Contains(pos)
                                           && !(World.KeepAir.Contains(pos.Up(), World.Dimension) && !World.KeepAir.Contains(pos, World.Dimension))
                                           // A narrowed dig (a chop's way up): only those blocks, never one somebody placed.
                                           && (o.BreakOnly is not { } only || only(id, pos) && !World.Placed.IsPlaced(pos, World.Dimension, id)),
@@ -229,6 +229,14 @@ public sealed partial class MinecraftClient
     /// crouch-walks past their plants (<see cref="PathOptions.GrowZone"/>). Read on the planner's thread: the setter hands over an
     /// immutable predicate.</summary>
     public Func<int, int, int, bool>? GrowZone { get; set; }
+
+    /// <summary>A Story colony's preserved blocks (pos, block id → a kept block; StoryColony.Preserve.cs), or null. No dig takes one (a
+    /// pick, a path's dig, a pillar's or a clutch's dig, a quarry's), except an ordered clear (<see cref="DigForBuildAsync"/>): the
+    /// preserved zone's own repairs. Read on the planner's thread: the setter hands over an immutable predicate.</summary>
+    public Func<BlockPos, int, bool>? Preserved { get; set; }
+
+    /// <summary>The block is preserved by the colony (never dug for other work).</summary>
+    private bool IsPreserved(BlockPos pos, int id) => Preserved?.Invoke(pos, id) == true;
 
     private readonly Dictionary<(BlockPos From, BlockPos To), DateTime> _recentBlockedJumps = new();
 

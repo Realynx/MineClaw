@@ -11,9 +11,13 @@ internal sealed class FakeStoryWorld(IGameData? data = null) : IStoryWorld
     public int Height => 128;
     public System.Collections.Concurrent.ConcurrentDictionary<P3, (int Id, int Meta)> Blocks { get; } = new(); // a test may change a block while a report waits
     public List<StoryEntity> Ents { get; } = new();
-    public (int Id, int Meta) Block(int x, int y, int z) => Blocks.TryGetValue(new P3(x, y, z), out var b) ? b : y <= 63 ? (1, 0) : (0, 0);
+    public (int Id, int Meta) Block(int x, int y, int z) =>
+        Unloaded.Count > 0 && Unloaded.Contains((x, z)) ? (0, 0) : Blocks.TryGetValue(new P3(x, y, z), out var b) ? b : y <= 63 ? (1, 0) : (0, 0);
     public IReadOnlyList<StoryEntity> Entities() => Ents.ToList();
     public void Set(int x, int y, int z, int id, int meta = 0) => Blocks[new P3(x, y, z)] = (id, meta);
+    /// <summary>Columns not in the view (they read as air): everything else is loaded.</summary>
+    public HashSet<(int X, int Z)> Unloaded { get; } = new();
+    public bool Loaded(int x, int z) => !Unloaded.Contains((x, z));
 
     /// <summary>A tree: a log column of <paramref name="h"/> from y 64 with a leaf cap.</summary>
     public void Tree(int x, int z, int h = 4)
@@ -79,6 +83,8 @@ internal sealed class FakeStoryHost(FakeStoryWorld world) : IStoryHost
     /// <summary>Each body's growing-zone filter (crouch-walking), as the colony last handed it.</summary>
     public Dictionary<string, Func<int, int, int, bool>?> GrowZones { get; } = new(StringComparer.OrdinalIgnoreCase);
     public void SetGrowZone(string account, Func<int, int, int, bool>? inZone) => GrowZones[account] = inZone;
+    public Dictionary<string, Func<MineClaw.World.BlockPos, int, bool>?> Preserved { get; } = new(StringComparer.OrdinalIgnoreCase);
+    public void SetPreserved(string account, Func<MineClaw.World.BlockPos, int, bool>? keep) => Preserved[account] = keep;
     public PawnSpeed? Speed(string account) => Live(account).Online && Speeds.TryGetValue(account, out var m)
         ? new PawnSpeed(m, Math.Min(m, SpeedCaps.GetValueOrDefault(account, 3)), ServerAmps.TryGetValue(account, out var a) && a >= 0 ? 1.2 + 0.2 * a : 1,
             SpeedCaps.ContainsKey(account) ? 2 : 0) : null;

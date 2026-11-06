@@ -50,6 +50,7 @@ public sealed partial class StoryColony
             if (ExpandBuildItem(w, n, made, warnings) is { } err) return (null, err);
         var flow = QueueBuilds(w, made);
         BuildsInQuarries(made, warnings); // a quarry digs them: blocked now, said (StoryColony.QuarryConflicts.cs)
+        BuildsOverPreserved(made, warnings); // the build's while it stands, then kept as it leaves them (StoryColony.Preserve.cs)
         WakeIdle();
         var added = new JsonObject { ["ids"] = new JsonArray(made.Select(b => (JsonNode)b.Id!).ToArray()) };
         if (warnings.Count > 0) added["warnings"] = new JsonArray(warnings.Distinct().Select(x => (JsonNode)x!).ToArray());
@@ -118,6 +119,8 @@ public sealed partial class StoryColony
         if (ids is not { Count: > 0 }) return (null, "ids required");
         var hit = Builds.Where(b => ids.Contains(b.Id)).ToList();
         if (hit.Count == 0) return (null, "no such build");
+        if (op == "remove" && hit.FirstOrDefault(b => b.Kind == "preserve") is { } keep)
+            return (null, $"{keep.Id} repairs a preserved zone: switch Preserve off in that zone's settings instead");
         foreach (var b in hit)
         {
             if (op == "remove") { RemoveBuild(b); continue; }
@@ -307,8 +310,9 @@ public sealed partial class StoryColony
         var dt = PlanTool(p, live, DigBlockAt(g.At, g.Id));
         if (dt is { Wait: { } why }) { NoteBuildWait(b, why); Blocked($"build {b.Id}: {b.Reason}"); return null; }
         ClearBuildWait(b);
-        return Claim(b, [g], p.Name,
-            WithTool(dt, Job(WorkTypes.Build, "dig", $"removing a block ({b.Label})", g.At, key, "ghost", $"{b.Id}|{g.At}", xp: 10)));
+        var job = Job(WorkTypes.Build, "dig", $"removing a block ({b.Label})", g.At, key, "ghost", $"{b.Id}|{g.At}", xp: 10);
+        if (b.Kind == "preserve") job.Json["ordered"] = true; // a repair's clear: the owner's order (clear_dig), past the preserved-block filter
+        return Claim(b, [g], p.Name, WithTool(dt, job));
     }
 
     private ActiveJob? PourCell(PawnState p, PawnLive live, ref GhostScan scan, GhostState g)
@@ -492,16 +496,25 @@ public sealed partial class StoryColony
     internal static bool Matches(GhostState g, int id, int meta, bool modern)
     {
         if (StoryConstruction.IsLiquid(g)) return LiquidSource(g.Id, id, meta); // a source of its liquid, still or just poured (StoryColony.Water.cs)
-        if (StoryDrift.SameGround(g.Id, id, modern)) return true;
-        return SameVariant(g, id, meta) && MineClaw.World.BlockOrientation.Same(g.Id, g.Meta, meta, modern);
+        return MatchesBlock(g.Id, g.Meta, id, meta, modern);
+    }
+
+    /// <summary><see cref="Matches"/> for a wanted block (not a liquid): the ground family as one, else the same block and variant turned
+    /// the same way where the placement decides it.</summary>
+    internal static bool MatchesBlock(int wantId, int wantMeta, int id, int meta, bool modern)
+    {
+        if (StoryDrift.SameGround(wantId, id, modern)) return true;
+        return SameVariant(wantId, wantMeta, id, meta) && MineClaw.World.BlockOrientation.Same(wantId, wantMeta, meta, modern);
     }
 
     /// <summary>The ghost's block and variant (a runtime twin, a lit furnace, is its block).</summary>
-    private static bool SameVariant(GhostState g, int id, int meta)
+    private static bool SameVariant(GhostState g, int id, int meta) => SameVariant(g.Id, g.Meta, id, meta);
+
+    private static bool SameVariant(int wantId, int wantMeta, int id, int meta)
     {
-        if (StoryDrift.Canon(id) != StoryDrift.Canon(g.Id)) return false;
-        int mask = MineClaw.Bot.Blueprints.DesignFacing.VariantMask(g.Id);
-        return (meta & mask) == (g.Meta & mask);
+        if (StoryDrift.Canon(id) != StoryDrift.Canon(wantId)) return false;
+        int mask = MineClaw.Bot.Blueprints.DesignFacing.VariantMask(wantId);
+        return (meta & mask) == (wantMeta & mask);
     }
 
     /// <summary>The cell holds the ghost's block and variant, turned another way than the design has it.</summary>
@@ -539,7 +552,7 @@ public sealed partial class StoryColony
         if (b.Ghosts.Where(x => x.Job).All(x => x.State is "done" or "misrotated"))
         {
             b.Status = "done"; b.Reason = null; b.Rev = Touch();
-            Alert("info", $"Build {b.Id} ({b.Label}) is done");
+            if (b.Kind != "preserve") Alert("info", $"Build {b.Id} ({b.Label}) is done");
         }
     }
 
@@ -937,6 +950,7 @@ public sealed partial class StoryColony
         if (b.Ghosts.Where(x => x.Job).All(x => x.State is "done" or "misrotated"))
         {
             b.Status = "done"; b.Reason = null; b.Rev = Touch();
+            if (b.Kind == "preserve") return; // a preserved zone's repairs come and go: the zone's status says it
             Alert("info", $"Build {b.Id} ({b.Label}) is done");
             // An infinite pool the colony made: pourers fill their buckets there from now on (StoryColony.Water.cs).
             if (LiquidOfBuild(b) == "water" && Renewable(b)) Alert("info", $"Build {b.Id} ({b.Label}) refills: pawns fill their buckets there from now on");

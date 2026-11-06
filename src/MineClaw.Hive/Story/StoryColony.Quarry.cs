@@ -310,6 +310,7 @@ public sealed partial class StoryColony
         var o = new JsonObject { ["id"] = z.Id, ["mode"] = mode };
         var warnings = new List<string>();
         QuarryOverBuilds(z, warnings); // over builds' cells: the overlap is said (StoryColony.QuarryConflicts.cs)
+        QuarryOverPreserved(z, warnings); // over preserved zones: the quarry's columns are its own (StoryColony.Preserve.cs)
         AddWarnings(o, warnings);
         return (o, null);
     }

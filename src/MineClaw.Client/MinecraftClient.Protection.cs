@@ -64,7 +64,7 @@ public sealed partial class MinecraftClient
     /// via <see cref="MineSource"/>, is a gen cell).</remarks>
     internal bool IsMineSource(BlockPos p, int id)
     {
-        if (NeverBreak?.Invoke(p) == true) return false;
+        if (NeverBreak?.Invoke(p) == true || IsPreserved(p, id)) return false; // a Story colony's preserved block is never a resource
         if (MineSource?.Invoke(p, id) == true || OverridesSoft(p, id)) return true;
         if (NaturalResource(id, World.Dimension) || NaturalPlant(id)) return true;
         return TerrainMineSource(p, id);

@@ -18,7 +18,7 @@ public sealed partial class StoryColony
         if (name is { Length: > 40 }) return (null, "name: at most 40 characters");
         if (ZoneByIdOp(op, id, name, grow) is { } byId) return byId;
         kind = ZoneKindOf(op, kind, grow);
-        if (op is not ("add" or "remove")) return (null, "op must be add|remove|rename|update|seek_seeds|bill_add|bill_update|bill_remove|bill_pause|bill_resume|bill_reorder");
+        if (op is not ("add" or "remove")) return (null, "op must be add|remove|rename|update|seek_seeds|irrigation|preserve|bill_add|bill_update|bill_remove|bill_pause|bill_resume|bill_reorder");
         if (area is not { } a) return (null, "area [x1,y1,z1,x2,y2,z2] required");
         if (ZonePaintError(op, kind, a) is { } err) return (null, err);
         var cells = ZoneCells.Rect(a);
@@ -32,6 +32,7 @@ public sealed partial class StoryColony
         if (op == "update" && grow?["mode"] != null) return ZoneModeOp(id, grow);
         if (op is "update" or "seek_seeds") return GrowZoneOp(op, id, grow); // growing zones (StoryColony.Farming.cs)
         if (op == "irrigation") return Irrigation(id); // water channels the zone wants (StoryColony.Water.cs)
+        if (op == "preserve") return PreserveOp(id, grow); // keep its blocks as they are (StoryColony.Preserve.cs)
         if (op.StartsWith("bill_", StringComparison.Ordinal)) return GrowBillOp(op, id, grow);
         if (op == "rename") return RenameZone(id, name);
         if (op == "remove" && id != null) return RemoveZone(id);
@@ -106,11 +107,13 @@ public sealed partial class StoryColony
         if (serr != null) return (null, serr);
         var (paintCells, ferr) = PaintCells(template, cells, a);
         if (ferr != null) return (null, ferr);
+        var before = PreserveBefore(); // a preserved zone merged into another gives its cells' snapshot over (StoryColony.Preserve.cs)
         var (painted, err) = ZonePainter.Paint(Zones, template.Kind, template.Plant, paintCells!, a.Y1, a.Y2, into, () => MakeZone(into, template, name), () => NextId("z"));
         if (err != null || painted == null) return (null, err ?? "nothing painted");
         NamePainted(painted, name);
-        ZonesChanged(painted);
+        ZonesChanged(painted, before);
         PaintedQuarry(painted, warnings); // over builds' cells: the overlap is said (StoryColony.QuarryConflicts.cs)
+        PaintedPreserve(painted, warnings); // over builds, quarries, designations; a quarry over preserved zones (StoryColony.Preserve.cs)
         return (ZoneResultJson(painted, warnings), null);
     }
 
@@ -128,6 +131,7 @@ public sealed partial class StoryColony
     private string? NewZoneSettings(ZoneState template, Area a, ZoneCells cells, JsonObject? grow, List<string> warnings)
     {
         if (template.Kind == "mine" && MineZoneSettings(template, a, cells, grow) is { } merr) return merr;
+        if (template.Kind == "preserve") return PreserveZoneSettings(template, cells, a, grow);
         if (grow != null && (grow["plant"] != null || grow["sow"] != null || grow["harvest"] != null)) return GrowZoneSettings(template, a, cells, grow, warnings);
         return null;
     }
@@ -182,8 +186,9 @@ public sealed partial class StoryColony
         painted.Changed.Add(named);
     }
 
-    /// <summary>After a paint or an erase: revisions, the delta's removals, the zones' scan caches, beds, idle pawns.</summary>
-    private void ZonesChanged(ZonePaintResult r)
+    /// <summary>After a paint or an erase: revisions, the delta's removals, the zones' scan caches, beds, idle pawns, preserved zones'
+    /// snapshots (<paramref name="before"/>: the preserved snapshots before a paint, for merges).</summary>
+    private void ZonesChanged(ZonePaintResult r, Dictionary<string, PreserveSnap>? before = null)
     {
         foreach (var z in r.Changed)
         {
@@ -198,6 +203,7 @@ public sealed partial class StoryColony
             _growScan.Remove(id);
         }
         _bedScan = null;
+        PreserveZonesChanged(r, before);
         WakeIdle();
     }
 

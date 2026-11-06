@@ -235,6 +235,10 @@ public sealed class ZoneState
     public int? QuarryTop { get; set; }
     /// <summary>A quarry: the layer it has reached (0 = the top), a hint its scan starts from.</summary>
     public int QuarryLayer { get; set; }
+    /// <summary>Preserve: the zone keeps its blocks as its snapshot has them (StoryColony.Preserve.cs); null = off. Always on for a zone of
+    /// kind <c>preserve</c>.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public PreserveState? Preserve { get; set; }
 
     private Area _area;
     private List<int[]>? _rows;
@@ -263,6 +267,7 @@ public sealed class ZoneState
     public ZoneState CopySettings(string id) => new()
     {
         Id = id, Kind = Kind, Name = Name, Plant = Plant, Sow = Sow, Harvest = Harvest, Mode = Mode, QuarryTop = QuarryTop, QuarryLayer = QuarryLayer,
+        Preserve = Preserve?.Copy(),
         Bills = Bills?.Select(b => new GrowBill { Id = b.Id, Plant = b.Plant, Mode = b.Mode, Target = b.Target, Done = b.Done, Paused = b.Paused }).ToList(),
     };
 }
