@@ -64,6 +64,7 @@ public sealed class PlacedBlockStore : IDisposable
     {
         if (_pending.IsEmpty) return 0;
         int n = 0;
+        var added = new Dictionary<(int Dim, BlockPos Pos), PlacedBlock?>();
         lock (_flushLock)
         try
         {
@@ -73,6 +74,7 @@ public sealed class PlacedBlockStore : IDisposable
                     while (_pending.TryDequeue(out var op))
                     {
                         n++;
+                        added[(op.Dim, op.Pos)] = op.Add ? op.Row : null;
                         if (op.Add && op.Row is { } r)
                             _db.Exec("""
                                 INSERT INTO placed_blocks(dim,x,y,z,block,bot,at) VALUES($d,$x,$y,$z,$b,$bot,$t)
@@ -87,6 +89,10 @@ public sealed class PlacedBlockStore : IDisposable
                     _db.Exec($"DELETE FROM placed_blocks WHERE rowid NOT IN (SELECT rowid FROM placed_blocks ORDER BY at DESC LIMIT {PlacedBlockLog.Capacity})");
                 });
             _seen = Signature();
+            // An in-process body's placements (a Story pawn's pillar, a clone's scaffold) join this log at once: the protection reads
+            // it, and "a hive bot's own block is always minable" must hold for any body this session, not only after the next restart
+            // re-reads the table (live 11-06: pawns' leftovers refused as "someone's floor").
+            _log.Merge(added.Values.OfType<PlacedBlock>().Where(r => r.Bot is { Length: > 0 }));
         }
         catch (Exception ex) { _logger?.LogDebug(ex, "placed_blocks flush failed"); }
         return n;

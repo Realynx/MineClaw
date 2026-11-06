@@ -552,6 +552,12 @@ Now:
   planks, stone kinds, logs, sand and gravel that still stand, in a small cluster (12 or fewer: a box, a stub, a lone block) or one
   column (a pillar), not a build's cell, not in or beside a quarry, not already designated, become cleanup jobs with one alert ("Found 23 stray
   block(s) the pawns left near home (14 oak wood planks, …)"). Never a player's block, never main's, never a wall or a floor.
+- **Cleanups that fail** (live 11-06, the first sweep). A cleanup digs from a stand beside its block (never "won't dig the dirt I'm
+  standing on"). One refused as protected is not the pawns' block any more (live: a stonebrick where a pawn's dirt had been): it is
+  never dug, only listed ("Left for you to remove … not the pawns' block any more"). One out of reach (old boxes in a cave nobody can
+  path to) rests 30 minutes; a second miss leaves it to the owner, listed the same way (one alert every 5 minutes at most). A pawn's
+  own blocks are always minable in the same session too: an in-process body's placements join main's placed-block log (the one the
+  protection reads) at the store's next flush, not only after a restart.
 - **Never on a lid.** No temporary block goes on a chest, a furnace, a crafting table or another container or workstation (a chest
   under a full block won't open; live 11-06: oak planks on storage chests 216,64,400 and 223,64,400, 241 failed opens in 7 hours): the
   walk's scaffold veto, the reach pillar's column and the build scaffold's spot all skip them. On load, a block on a storage chest's

@@ -70,6 +70,7 @@ public sealed partial class StoryColony
             foreach (var t in temps.ToList()) TempCheck(w, t, cells);
         if (!_straysSwept) SweepStrays(w);
         AlertQueuedTemps();
+        AlertLeftTemps();
     }
 
     /// <summary>The pawns' clients' own temporary blocks (walk scaffolds, shelter boxes, clutch blocks) join the registry.</summary>
@@ -171,5 +172,59 @@ public sealed partial class StoryColony
         var where = string.Join(", ", _tempQueued.Select(t => t.At.ToString()).Distinct().Take(4));
         Alert("info", $"{_tempQueued.Count} temporary block(s) the pawns left behind ({string.Join(", ", kinds)}; at {where}{(_tempQueued.Count > 4 ? ", …" : "")}): queued for removal");
         _tempQueued.Clear();
+    }
+
+    // ---------------------------------------------------------------- cleanups that fail (live 11-06, the first sweep: a stonebrick where a
+    // pawn's dirt had been was refused as someone's path ×3; old shelter boxes in a cave at 221,39..41,424..426 "unreachable even by
+    // pillaring/bridging", retried every minute)
+
+    /// <summary>A rest after a cleanup couldn't reach its block; a second miss leaves it to the owner.</summary>
+    public static readonly TimeSpan TempUnreachRest = TimeSpan.FromMinutes(30);
+
+    private readonly List<(P3 At, string Why)> _tempLeft = new();
+    private DateTimeOffset _tempLeftSaid = DateTimeOffset.MinValue;
+
+    /// <summary>The temporary block whose cleanup designation this job worked, or null.</summary>
+    private TempBlockState? TempOf(ActiveJob j) =>
+        j.Source == "designation" && j.SourceId is { } id ? Meta.TempBlocks?.FirstOrDefault(t => t.Designation == id) : null;
+
+    internal bool IsTempMark(DesignationState d) => d.Auto && d.Kind == "deconstruct" && (Meta.TempBlocks?.Any(t => t.Designation == d.Id) ?? false);
+
+    /// <summary>
+    /// A cleanup that failed. Refused as protected: the block isn't the one a pawn put there any more (someone's block replaced it; a
+    /// pawn's own is always minable), so it is never dug: forgotten and listed for the owner. Out of reach: rested
+    /// <see cref="TempUnreachRest"/>, and on a second miss left to the owner (listed). Anything else (a fight, a busy chest) is an
+    /// ordinary failure. True = handled.
+    /// </summary>
+    private bool TempCleanupFailed(PawnState p, ActiveJob j, string why)
+    {
+        if (TempOf(j) is not { } t) return false;
+        if (why.Contains("protected", StringComparison.OrdinalIgnoreCase)) { LeaveTemp(t, "not the pawns' block any more"); return true; }
+        if (!Unreachable(why) && !OutOfReach(why) && !ReachOnly(why)) return false;
+        if (++t.Misses >= 2) { LeaveTemp(t, "out of reach"); return true; }
+        _dirty = true;
+        if (Designations.FirstOrDefault(d => d.Id == t.Designation) is { } des) _skip[DesignationKey(des)] = Now + TempUnreachRest;
+        _log.LogInformation("story {Colony}: temporary {Block} at {At} out of reach for {Pawn} ({Why}): resting {Min} min", Id, BlockLabel(t.Id), t.At,
+            p.Name, Short(why), TempUnreachRest.TotalMinutes);
+        return true;
+    }
+
+    /// <summary>The cleanup is dropped and the cell listed for the owner (one alert every few minutes with every cell since).</summary>
+    private void LeaveTemp(TempBlockState t, string why)
+    {
+        ForgetTemp(t);
+        _tempLeft.Add((t.At, why));
+        _log.LogInformation("story {Colony}: temporary block at {At} left for the owner: {Why}", Id, t.At, why);
+        AlertLeftTemps();
+    }
+
+    /// <summary>Every cell left to the owner since the last alert, grouped by why (at most every 5 minutes; the tick says the rest).</summary>
+    private void AlertLeftTemps()
+    {
+        if (_tempLeft.Count == 0 || Now - _tempLeftSaid < TimeSpan.FromMinutes(5)) return;
+        _tempLeftSaid = Now;
+        var groups = _tempLeft.GroupBy(x => x.Why).Select(g => $"{g.Key}: {string.Join(", ", g.Select(x => x.At.ToString()).Take(8))}");
+        Alert("info", $"Left for you to remove ({_tempLeft.Count} block(s) the pawns can't take back): {string.Join("; ", groups)}");
+        _tempLeft.Clear();
     }
 }

@@ -466,7 +466,8 @@ public sealed partial class StoryColony
         (DesignationState D, string Key, P3 Target) best, MarkSearch s)
     {
         var (d, key, target) = best;
-        P3? stand = s.Digs && s.W != null && s.Mine.Contains(target)
+        // A temporary block's cleanup always digs from beside it (live 11-06: "won't dig the dirt I'm standing on … the drop below is too far").
+        P3? stand = s.Digs && s.W != null && (s.Mine.Contains(target) || IsTempMark(d))
             ? StandBeside(s.W, target, c => c == target || list.Any(o => o.Target == c)) : null;
         NoteWait(d, null);
         var tool = s.Tooled && s.W != null ? PlanTool(p, live, s.W.Block(target.X, target.Y, target.Z).Id) : null;
@@ -763,6 +764,7 @@ public sealed partial class StoryColony
         NoteQuarryMiss(j, why);
         GearOrNeedFailed(p, j, why);
         if (gone) return;
+        if (TempCleanupFailed(p, j, why)) return; // a temporary block's cleanup: not ours any more, or out of reach (StoryColony.TempBlocks.cs)
         MarkFullChests(j, why); // first: a delivery's "A full; chest at B didn't open" is both
         // The chest's record was wrong (corrected), or the tool's trouble (none, broke, couldn't hold): re-planned at once, never a
         // target failure, back-off or rest (StoryColony.Ledger.cs).
