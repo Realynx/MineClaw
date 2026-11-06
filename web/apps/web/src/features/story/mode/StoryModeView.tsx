@@ -48,7 +48,8 @@ import { openContext, pickMenu } from './menu';
 import { releaseTool } from './release';
 import { selectionInspector } from './SelectionInspector';
 import type { V3 } from './state';
-import { colonyZones, tabPanel } from './tabPanel';
+import { PreserveContext } from '../zones/PreservePanel';
+import { colonyZones, preserveWriter, tabPanel } from './tabPanel';
 import { queueWater, usePendingWaterHolo } from './water';
 
 type Props = { c: Story };
@@ -347,11 +348,13 @@ export function StoryHudLayer({ c }: Props) {
 
       {/* bottom: inspector + the open tab's window, the tab bar, the toast, the chat */}
       <div className="absolute right-[22rem] bottom-9 left-2 flex flex-col items-start gap-2">
-        <div className="flex max-w-[calc(100vw-1rem)] items-end gap-2">
-          {selectionInspector(c)}
-          {tabPanel(c)}
-          {colonyZones(c)}
-        </div>
+        <PreserveContext.Provider value={preserveWriter(c)}>
+          <div className="flex max-w-[calc(100vw-1rem)] items-end gap-2">
+            {selectionInspector(c)}
+            {tabPanel(c)}
+            {colonyZones(c)}
+          </div>
+        </PreserveContext.Provider>
         <WaterConfirmSlot c={c} />
         <BuildBar c={c} />
       </div>

@@ -35,31 +35,45 @@ function mergeBy<T>(
 
 type Ghosts = NonNullable<StoryColonyState['ghosts']>;
 
+/** A ghost's key: "<build>|x,y,z" (the delta's `removed.ghosts` names ghosts so). */
+const ghostKey = (g: Ghosts['blocks'][number]) => `${g[5]}|${g[0]},${g[1]},${g[2]}`;
+const keySet = (keys: ReadonlyArray<unknown> | null | undefined) => new Set((keys ?? []).map(String));
+
 /**
  * The build queue's ghosts after a delta. The bot sends only the ghosts that changed after `since` (a full reply: all of
- * them), so a delta's ghosts are merged by build and cell (a changed state replaces the old one in place), and a removed
- * build's ghosts go with it. Nothing changed → the same object (the map's holograms rebuild only when it changes).
+ * them), so a delta's ghosts are merged by build and cell (a changed state replaces the old one in place), a removed
+ * build's ghosts go with it, and `removedGhosts` ("<build>|x,y,z": a preserved zone's repaired cell) go one by one. A ghost
+ * sent in the same delta wins over its removal (it came back). Nothing changed → the same object (the map's holograms rebuild
+ * only when it changes).
  */
 export function mergeGhosts(
   prev: StoryColonyState['ghosts'],
   next: StoryColonyState['ghosts'],
   removedBuilds?: ReadonlyArray<unknown> | null,
+  removedGhosts?: ReadonlyArray<string> | null,
 ): StoryColonyState['ghosts'] {
-  const gone = new Set((removedBuilds ?? []).map(String));
   if (!prev) return next;
+  const gone = keySet(removedBuilds);
   const fresh = next?.blocks ?? [];
-  if (!ghostsTouched(prev, fresh, gone)) return prev;
-  const key = (g: Ghosts['blocks'][number]) => `${g[5]}|${g[0]},${g[1]},${g[2]}`;
+  const cells = keySet(removedGhosts);
+  if (!ghostsTouched(prev, fresh, gone, cells)) return prev;
   const map = new Map<string, Ghosts['blocks'][number]>();
-  for (const g of prev.blocks) map.set(key(g), g);
-  for (const g of fresh) map.set(key(g), g);
+  for (const g of prev.blocks) if (!cells.has(ghostKey(g))) map.set(ghostKey(g), g);
+  for (const g of fresh) map.set(ghostKey(g), g);
   const blocks = [...map.values()].filter((g) => !gone.has(String(g[5])));
   return { rev: Math.max(prev.rev, next?.rev ?? 0), blocks };
 }
 
-/** Whether a delta changes the ghosts: new ones, or a removed build that had some. */
-function ghostsTouched(prev: Ghosts, fresh: Ghosts['blocks'], gone: ReadonlySet<string>): boolean {
-  return fresh.length > 0 || (gone.size > 0 && prev.blocks.some((g) => gone.has(String(g[5]))));
+/** Whether a delta changes the ghosts: new ones, a removed build that had some, or a removed ghost held. */
+function ghostsTouched(
+  prev: Ghosts,
+  fresh: Ghosts['blocks'],
+  gone: ReadonlySet<string>,
+  cells: ReadonlySet<string>,
+): boolean {
+  if (fresh.length > 0) return true;
+  if (!gone.size && !cells.size) return false;
+  return prev.blocks.some((g) => gone.has(String(g[5])) || cells.has(ghostKey(g)));
 }
 
 /** Applies a delta (or a whole state) to what the client holds. Older revisions are ignored. */
@@ -103,7 +117,7 @@ function mergeDelta(prev: StoryColonyState, d: StoryColonyState): StoryColonySta
     workbenches: mergeBy(prev.workbenches, d.workbenches, (w) => k3(w.pos), rm.workbenches),
     directives: mergeBy(prev.directives, d.directives, id, rm.directives).slice(-60),
     ai: d.ai ?? prev.ai,
-    ghosts: mergeGhosts(prev.ghosts, d.ghosts, rm.builds),
+    ghosts: mergeGhosts(prev.ghosts, d.ghosts, rm.builds, rm.ghosts),
     categories: d.categories ?? prev.categories,
     removed: null,
   };

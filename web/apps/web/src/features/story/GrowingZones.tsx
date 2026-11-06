@@ -13,6 +13,7 @@ import { Button } from '@/components/ui/primitives';
 import { cn } from '@/lib/utils';
 import { panel } from './StoryHud';
 import { ItemIcon } from './visuals';
+import { ZonePreserve } from './zones/PreservePanel';
 import { zoneCellCount } from './zones/zonePaint';
 
 // ------------------------------------------------------------------ the plant the next growing zone gets
@@ -193,6 +194,7 @@ function GrowingZone(p: ZoneProps) {
         <div className="text-warn">Needs a hoe to till: store one, or a crafting table makes one</div>
       ) : null}
       {growing ? <ZoneSwitches z={z} canWrite={canWrite} onUpdate={p.onUpdate} onSeek={p.onSeek} /> : null}
+      <ZonePreserve z={z} />
     </li>
   );
 }

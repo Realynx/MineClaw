@@ -1,6 +1,7 @@
 /**
  * The open bottom tab's window (Architect, Work, Schedule, Queue, Directives, Assign, Colony) and, beside the Colony tab, the
- * growing / fishing / quarry zone panels: each wired to the colony's write routes.
+ * growing / fishing / quarry / other zone panels: each wired to the colony's write routes (every zone's "Preserve blocks"
+ * section through `preserveWriter`).
  */
 import { isWaterTool, STORY_FURNITURE, type StoryArchitectEntry, type StoryPolicy } from '@mineclaw/contracts';
 import type { ReactElement } from 'react';
@@ -19,6 +20,8 @@ import {
 } from '../StoryPanels';
 import { failedByBuild, failedCells } from '../tools';
 import { FishingZonesPanel } from '../zones/FishingZones';
+import { OtherZonesPanel } from '../zones/OtherZones';
+import type { PreserveWriter } from '../zones/PreservePanel';
 import { QuarryZonesPanel } from '../zones/quarry';
 import {
   bringOnline,
@@ -26,6 +29,7 @@ import {
   displayOf,
   focusZone,
   moveHome,
+  preserveZone,
   retryFailed,
   sayWarnings,
   stillBlocked,
@@ -265,6 +269,21 @@ export function colonyZones(c: Story) {
             )
         }
       />
+      <OtherZonesPanel
+        state={c.state}
+        canWrite={c.canWrite}
+        onShow={(z) => focusZone(c, z)}
+        onRemove={(z) =>
+          void c
+            .write('story.zones', { op: 'remove', id: z.id })
+            .then(() => c.say(`${z.name || 'Preserve zone'} removed: its blocks are no longer kept`), warnOn(c))
+        }
+      />
     </>
   );
+}
+
+/** What every zone's "Preserve blocks" section writes through (zones/PreservePanel.tsx). */
+export function preserveWriter(c: Story): PreserveWriter {
+  return { canWrite: c.canWrite, onPreserve: (z, change) => preserveZone(c, z, change) };
 }

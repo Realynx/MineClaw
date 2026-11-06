@@ -1400,9 +1400,10 @@ export const ROUTES = {
     audit: 'story',
     summary:
       'Paints (add: merges with touching zones of the type, overwrites other work zones), erases (remove an area), deletes ' +
-      '(remove an id) or renames zones (cell sets; home and forbidden are overlay layers; home zones are the houses); growing ' +
-      'zones take a plant, sow and harvest (update) and planting bills (bill_add|update|remove|pause|resume|reorder), and ' +
-      'seek_seeds designates tall grass to cut (wheat) or queues a seed bill (pumpkin, melon).',
+      '(remove an id) or renames zones (cell sets; home, forbidden, dump and preserve are overlay layers; home zones are the ' +
+      'houses); growing zones take a plant, sow and harvest (update) and planting bills ' +
+      '(bill_add|update|remove|pause|resume|reorder), and seek_seeds designates tall grass to cut (wheat) or queues a seed ' +
+      'bill (pumpkin, melon); preserve keeps any zone but a mine zone as it is (on, below, above, retake).',
   }),
   'story.designations': post('/api/story/colonies/:id/designations', {
     access: 'story',

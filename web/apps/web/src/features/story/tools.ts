@@ -436,7 +436,16 @@ export const ZONE_TOOLS: ReadonlyArray<{ id: StoryZoneKind; label: string; hint:
   { id: 'fish', label: 'Fishing zone', hint: 'Pawns fish here with rods (still water only)', color: '#3fb8d9' },
   { id: 'forbidden', label: 'Keep out', hint: 'Pawns never walk here', color: '#e0525a' },
   { id: 'dump', label: 'Drop spot', hint: 'Loot goes here while the colony has no storage', color: '#c8a46a' },
+  {
+    id: 'preserve',
+    label: 'Preserve',
+    hint: 'Pawns keep these blocks as they are and repair any change',
+    color: '#e879c9',
+  },
 ];
+
+/** The colour of a preserved region's outline on the map (a Preserve zone's, or any zone with Preserve on). */
+export const PRESERVE_COLOR = '#e879c9';
 
 export function zoneColor(kind: string): string {
   return ZONE_TOOLS.find((z) => z.id === kind)?.color ?? '#c9a3ff';
@@ -814,7 +823,8 @@ export type Target =
   | { kind: 'item'; entity: number; name: string; x: number; y: number; z: number }
   /** A player (an entity) or an AI bot (no entity id in the viewer: attacked by name). Never the colony's own pawns. */
   | { kind: 'player'; entity: number | null; name: string; bot: boolean; x: number; y: number; z: number }
-  | { kind: 'ghost'; build: string | number; label: string; x: number; y: number; z: number }
+  /** A build's ghost; `repair`: a preserved zone's repair (never cancelled by hand: Preserve goes off in the zone). */
+  | { kind: 'ghost'; build: string | number; label: string; x: number; y: number; z: number; repair?: boolean }
   | { kind: 'ground'; x: number; y: number; z: number };
 
 export interface MenuItem {
@@ -877,7 +887,7 @@ function blockItems(t: Extract<Target, { kind: 'block' }>, c: MenuCtx): void {
 const TARGET_ITEMS: { [K in Target['kind']]: (t: Extract<Target, { kind: K }>, c: MenuCtx) => void } = {
   ghost: (t, c) => {
     c.out.push({ id: 'first-build', label: `Build "${t.label}" first`, action: 'first-build' });
-    c.out.push({ id: 'cancel-build', label: `Cancel "${t.label}"`, action: 'cancel-build' });
+    if (!t.repair) c.out.push({ id: 'cancel-build', label: `Cancel "${t.label}"`, action: 'cancel-build' });
     c.order('build', 'Build this now', { kind: 'build', target: c.at, design: t.build }, { kind: 'build', targets: [c.p] });
   },
   mob: (t, c) => {

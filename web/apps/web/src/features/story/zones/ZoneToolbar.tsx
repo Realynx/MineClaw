@@ -2,8 +2,9 @@
 
 /**
  * The Architect's Zones tools (docs/web/story-mode.md "Zones"): work zones (Growing zone with its plant, Woodlot, Quarry) that
- * replace each other where painted, the overlay layers (Home area, Keep out) that never do, and Erase with the kind it erases
- * (Any by default). Zone tools stay in hand until Esc or a right-click, like RimWorld's; Shift-drag from inside a zone extends it.
+ * replace each other where painted, the overlay layers (Home area, Keep out, Drop spot, Preserve with its depth and height) that
+ * never do, and Erase with the kind it erases (Any by default). Zone tools stay in hand until Esc or a right-click, like
+ * RimWorld's; Shift-drag from inside a zone extends it.
  */
 import { isOverlayZone, type StoryPlant, type StoryZone } from '@mineclaw/contracts';
 import type { ReactNode } from 'react';
@@ -11,6 +12,7 @@ import { useSyncExternalStore } from 'react';
 import { cn } from '@/lib/utils';
 import { GrowPlantPicker } from '../GrowingZones';
 import { ZONE_TOOLS } from '../tools';
+import { PreserveRangePicker } from './PreservePanel';
 import { QuarryModePicker } from './quarry';
 import { ERASE_ANY, type ZoneTool } from './zonePaint';
 
@@ -59,8 +61,8 @@ export function ZoneToolbar({
       )}
       {zt ? <ZoneToolExtra zt={zt} erase={erase} onTool={onTool} plants={plants} zones={zones} /> : null}
       <p className="w-full text-[11px] leading-snug text-muted">
-        Drag to paint. Cells touching a zone of the same type join it; work zones replace each other; Home area and Keep
-        out are overlay layers. Shift-drag from inside a zone extends that zone.
+        Drag to paint. Cells touching a zone of the same type join it; work zones replace each other; Home area, Keep
+        out, Drop spot and Preserve are overlay layers. Shift-drag from inside a zone extends that zone.
       </p>
     </>
   );
@@ -83,6 +85,7 @@ function ZoneToolExtra({
   if (zt.op === 'remove') return <EraseKindPicker erase={erase} onTool={onTool} />;
   if (zt.into !== undefined) return <ExtendingNote into={zt.into} zones={zones} />;
   if (zt.id === 'farm') return <GrowPlantPicker plants={plants} />;
+  if (zt.id === 'preserve') return <PreserveRangePicker />;
   return zt.id === 'mine' ? <QuarryModePicker /> : null;
 }
 

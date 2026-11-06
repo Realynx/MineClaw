@@ -31,6 +31,7 @@ import {
   WATER_TOOLS,
   ZONE_TOOLS,
 } from '../tools';
+import { preservePaintRange } from '../zones/preserve';
 import { quarryModeNow } from '../zones/quarry';
 import { zoneBody, zoneInto, zoneToast } from '../zones/zonePaint';
 import { retryFailed } from './actions';
@@ -101,7 +102,8 @@ async function releaseZone(c: Story, tool: ToolOf<'zone'>, r: DragResult, shift:
   const into = zoneInto(tool, c.state?.zones ?? [], r.a, shift);
   const label =
     into !== undefined ? 'Zone extended' : `${ZONE_TOOLS.find((z) => z.id === tool.id)?.label ?? 'Zone'} painted`;
-  await c.write('story.zones', zoneBody(tool, r.rect, c.lv, growPlantNow(), into, quarryModeNow())).then(
+  const body = zoneBody(tool, r.rect, c.lv, growPlantNow(), into, quarryModeNow(), preservePaintRange());
+  await c.write('story.zones', body).then(
     (out) => {
       const warned = !!out.warnings?.length;
       c.say(zoneToast(label, tool, out) + (warned ? ` (${out.warnings!.join('; ')})` : ''), warned ? 'warn' : 'ok');

@@ -63,8 +63,11 @@ export const STORY_ORDER_KINDS = ['move', 'attack', 'chop', 'mine', 'haul', 'bui
 export const StoryOrderKind = z.enum(STORY_ORDER_KINDS);
 export type StoryOrderKind = z.infer<typeof StoryOrderKind>;
 
-/** Zone kinds. Loot goes into chests with storage settings (`storage`): the director refuses a `stockpile` zone. */
-export const STORY_ZONE_KINDS = ['chop', 'mine', 'farm', 'fish', 'home', 'forbidden', 'dump'] as const;
+/**
+ * Zone kinds. Loot goes into chests with storage settings (`storage`): the director refuses a `stockpile` zone. `preserve` is an
+ * overlay layer whose blocks pawns keep as they are (docs/web/story-mode.md "Preserve zones").
+ */
+export const STORY_ZONE_KINDS = ['chop', 'mine', 'farm', 'fish', 'home', 'forbidden', 'dump', 'preserve'] as const;
 export const StoryZoneKind = z.enum(STORY_ZONE_KINDS);
 export type StoryZoneKind = z.infer<typeof StoryZoneKind>;
 
@@ -260,6 +263,10 @@ export const StoryAck = z.object({
   dig: z.array(Vec3i).nullish().describe('zones irrigation: the cells among them that hold soil (dug first, one group)'),
   axis: z.string().nullish().describe('zones irrigation: x | z, the way the channels run'),
   lines: z.number().int().nullish().describe('zones irrigation: how many channels'),
+  preserve: z
+    .lazy(() => StoryZonePreserve)
+    .nullish()
+    .describe("zones preserve: the zone's Preserve now (null: switched off)"),
 });
 export type StoryAck = z.infer<typeof StoryAck>;
 
@@ -469,8 +476,45 @@ export const StoryZone = z.object({
   status: z.string().nullish().describe('a growing zone: "12/40 sown, 6 ripe"'),
   seeds: z.lazy(() => StoryZoneSeeds).nullish(),
   needsHoe: z.boolean().nullish().describe('there is dirt to till and no hoe anywhere'),
+  preserve: z
+    .lazy(() => StoryZonePreserve)
+    .nullish()
+    .describe('its blocks kept as they are (null = off; always on for a zone of kind preserve)'),
 });
 export type StoryZone = z.infer<typeof StoryZone>;
+
+/** The most a Preserve setting reaches under or over the zone's painted level. */
+export const STORY_PRESERVE_MAX_RANGE = 32;
+/** The most blocks (columns × layers) one zone keeps. */
+export const STORY_PRESERVE_MAX_CELLS = 262_144;
+
+/**
+ * A zone's Preserve (docs/web/story-mode.md "Preserve zones"): a snapshot of every block from `below` under its painted level to
+ * `above` over it (`y1`..`y2`, absolute). The cells that differ now are the ghosts of the zone's repair build (`build`, a build of
+ * kind `preserve`): pawns put them back as the snapshot has them.
+ */
+export const StoryZonePreserve = z.object({
+  on: z.boolean().default(true),
+  below: z.number().int().default(1).describe('layers kept under the painted level'),
+  above: z.number().int().default(3).describe('layers kept over the painted level'),
+  y1: z.number().int().describe('the lowest y kept'),
+  y2: z.number().int().describe('the highest y kept'),
+  cells: z.number().int().default(0).describe('blocks kept (columns × layers)'),
+  takenAt: When.nullish().describe('when the snapshot was taken'),
+  build: z.union([z.string(), z.number()]).nullish().describe("the zone's repair build"),
+  unknown: z.number().int().default(0).describe('blocks not seen yet (their chunk is not loaded)'),
+  held: z.number().int().default(0).describe("cells an owner's build, designation or quarry holds now"),
+  damage: z
+    .object({
+      missing: z.number().int().default(0),
+      foreign: z.number().int().default(0),
+      turned: z.number().int().default(0),
+    })
+    .default({ missing: 0, foreign: 0, turned: 0 }),
+  toRepair: z.number().int().default(0).describe('blocks that differ from the snapshot now'),
+  status: z.string().nullish().describe('"intact", "12 blocks to repair: 9 missing, 3 foreign; waiting for 6 dirt"'),
+});
+export type StoryZonePreserve = z.infer<typeof StoryZonePreserve>;
 
 /** A growing zone's seeds: what is sown, how many the colony has, how many empty cells wait, and where they come from. */
 export const StoryZoneSeeds = z.object({
@@ -933,6 +977,10 @@ export const StoryRemoved = z.object({
   workbenches: z.array(z.union([z.string(), Vec3i])).nullish(),
   directives: z.array(z.union([z.string(), z.number()])).nullish(),
   alerts: z.array(z.union([z.string(), z.number()])).nullish(),
+  ghosts: z
+    .array(z.string())
+    .nullish()
+    .describe('"<build>|x,y,z": ghosts that left their build (a repaired cell of a preserved zone matches again)'),
 });
 export type StoryRemoved = z.infer<typeof StoryRemoved>;
 
@@ -1191,15 +1239,20 @@ const BillSpec = {
   target: z.number().int().min(1).max(100_000).optional(),
   paused: z.boolean().optional(),
 };
+/** A Preserve range: layers under (`below`) or over (`above`) the zone's painted level. */
+const PreserveRange = z.number().int().min(0).max(STORY_PRESERVE_MAX_RANGE);
 
 /**
  * Zones are cell sets painted RimWorld-style (docs/web/story-mode.md "Zones"; houses are zones of kind `home`): `add` paints an
  * area (cells touching a zone of the same type join it, several merge into the oldest; other work zones under it are overwritten;
- * home and forbidden are overlay layers; `into` extends one zone), `remove` erases an area's cells from zones of a kind (or any;
- * empty zones go, cut ones split) or deletes one zone by id, `rename` one zone (an empty name clears it). A growing zone (kind
- * `farm`) takes a `plant` (from `plants`: its first planting bill), `sow` and `harvest`; `update` changes them; `bill_*` edit its
- * planting bills (like a workbench's: add, update, remove, pause, resume, reorder); `seek_seeds` designates tall grass to cut
- * (wheat) or queues a seed bill (pumpkin, melon). Answers what changed: created, merged, grown, shrunk, split, deleted.
+ * home, forbidden, dump and preserve are overlay layers; `into` extends one zone), `remove` erases an area's cells from zones of
+ * a kind (or any; empty zones go, cut ones split) or deletes one zone by id, `rename` one zone (an empty name clears it). A
+ * growing zone (kind `farm`) takes a `plant` (from `plants`: its first planting bill), `sow` and `harvest`; `update` changes them;
+ * `bill_*` edit its planting bills (like a workbench's: add, update, remove, pause, resume, reorder); `seek_seeds` designates tall
+ * grass to cut (wheat) or queues a seed bill (pumpkin, melon). Answers what changed: created, merged, grown, shrunk, split,
+ * deleted. `preserve` keeps a zone's blocks as they are (docs/web/story-mode.md "Preserve zones"; any zone but a mine zone):
+ * `on: false` stops it, `below` / `above` set how deep and how high, `retake` takes a new snapshot; a zone of kind `preserve` is
+ * always on and takes its range when painted.
  */
 export const StoryZoneRequest = z.union([
   z
@@ -1213,6 +1266,18 @@ export const StoryZoneRequest = z.union([
       plant: z.string().min(1).max(32).optional(),
       sow: z.boolean().optional(),
       harvest: z.boolean().optional(),
+      below: PreserveRange.optional().describe('a Preserve zone: layers kept under the level (default 1)'),
+      above: PreserveRange.optional().describe('a Preserve zone: layers kept over the level (default 3)'),
+    })
+    .strict(),
+  z
+    .object({
+      op: z.literal('preserve'),
+      id: ZoneId,
+      on: z.boolean().optional().describe('default true; a zone of kind preserve is always on'),
+      below: PreserveRange.optional(),
+      above: PreserveRange.optional(),
+      retake: z.boolean().optional().describe('take a new snapshot of the blocks as they are now'),
     })
     .strict(),
   z
@@ -1285,6 +1350,10 @@ export const StoryDesignationResponse = z.object({
     .describe('retry: the designations tried again now'),
   entities: z.array(z.number().int()).nullish(),
   rev: z.number().int().nullish(),
+  warnings: z
+    .array(z.string())
+    .nullish()
+    .describe('add: targets that lie in a preserved zone (done as asked, then kept as they leave it)'),
 });
 export type StoryDesignationResponse = z.infer<typeof StoryDesignationResponse>;
 
@@ -1400,7 +1469,10 @@ export const StoryBuildResponse = z.object({
   ok: z.boolean().nullish(),
   ids: z.array(z.union([z.string(), z.number()])).nullish(),
   rev: z.number().int().nullish(),
-  warnings: z.array(z.string()).nullish().describe('add / preview of water items: the liquid will spread, or meet lava'),
+  warnings: z
+    .array(z.string())
+    .nullish()
+    .describe('add / preview of water items: the liquid will spread, or meet lava; add: blocks in a preserved zone'),
   flow: StoryLiquidFlow.nullish().describe('add / preview of water items: where the liquid would run'),
   cells: z.number().int().nullish().describe('preview: the water cells'),
   done: z.number().int().nullish().describe('preview: cells already holding the source'),

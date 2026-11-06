@@ -2,11 +2,14 @@
  * Zones on the map, drawn by their cells (docs/web/story-mode.md "Zones"): each zone's row runs filled with its kind's tint and one
  * merged outline around the whole zone (edges between a cell in it and one not). Work zones: a light fill and a dashed edge
  * (growing zones also say what they sow). Overlay layers are drawn apart: home areas a stronger fill, a solid edge and the house
- * name; keep-out red stripes and a solid red edge. The live preview of a paint or erase draws the resulting cells and the cells
- * that would be taken from other zones.
+ * name; keep-out red stripes and a solid red edge; Preserve zones the lightest tint, a solid edge and the y range they keep, on
+ * top. Any other zone with Preserve on gets a dotted outline in the Preserve colour under its own edge (the cells to repair show
+ * as the repair build's holograms). The live preview of a paint or erase draws the resulting cells and the cells that would be
+ * taken from other zones.
  */
 import { cellX, cellZ, zoneCellSet, type StoryZone } from '@mineclaw/contracts';
-import { zoneColor } from '../tools';
+import { PRESERVE_COLOR, zoneColor } from '../tools';
+import { preserveRangeText } from './preserve';
 
 type Pt = { x: number; y: number };
 export type Proj = (x: number, y: number, z: number) => Pt | null;
@@ -138,22 +141,35 @@ export function drawZones(
       ctx.fillStyle = zoneFill(ctx, z.kind, col);
       ctx.fill();
     }
+    if (z.preserve?.on && z.kind !== 'preserve') strokePreserved(ctx, z, y, proj);
     strokeZone(ctx, z, y, proj, col);
     const name = px > 3 ? label(z, houseNo) : null;
     if (name) drawZoneName(ctx, z, y, proj, name);
   }
 }
 
-/** A zone's fill: keep-out stripes, a stronger tint for home areas, a light one for work zones. */
+/** A zone's fill: keep-out stripes, a stronger tint for home areas, the lightest for Preserve zones, a light one for work zones. */
 function zoneFill(ctx: CanvasRenderingContext2D, kind: string, col: string): string | CanvasPattern {
   if (kind === 'forbidden') return keepOutPattern(ctx) ?? `${col}33`;
+  if (kind === 'preserve') return `${col}22`;
   return kind === 'home' ? `${col}38` : `${col}2e`;
+}
+
+/** A zone with Preserve on: a dotted outline in the Preserve colour under its own edge (its blocks are kept). */
+function strokePreserved(ctx: CanvasRenderingContext2D, z: StoryZone, y: number, proj: Proj): void {
+  ctx.strokeStyle = PRESERVE_COLOR;
+  ctx.lineWidth = 3.5;
+  ctx.lineCap = 'round';
+  ctx.setLineDash([0.5, 5]);
+  strokeOutline(ctx, outlineOf(zoneCellSet(z)), y, proj);
+  ctx.setLineDash([]);
+  ctx.lineCap = 'butt';
 }
 
 /** A zone's outline: solid for the overlay layers (home thicker), dashed for work zones. */
 function strokeZone(ctx: CanvasRenderingContext2D, z: StoryZone, y: number, proj: Proj, col: string): void {
   const home = z.kind === 'home';
-  const overlay = home || z.kind === 'forbidden';
+  const overlay = home || z.kind === 'forbidden' || z.kind === 'preserve';
   ctx.strokeStyle = overlay ? col : `${col}cc`;
   ctx.lineWidth = home ? 2 : 1.5;
   if (!overlay) ctx.setLineDash([6, 4]);
@@ -184,7 +200,14 @@ export function zoneLabel(
 ): string | null {
   if (z.kind === 'home') return z.name || z.label || `House ${houseNo}`;
   if (z.kind === 'farm' && (z.plant || z.bills)) return farmLabel(z, plants);
+  if (z.kind === 'preserve') return preserveLabel(z);
   return z.name || null;
+}
+
+/** A Preserve zone's label: its name (else "Preserve") and the y range it keeps. */
+function preserveLabel(z: StoryZone): string {
+  const p = z.preserve;
+  return `${z.name || 'Preserve'}${p ? ` · ${preserveRangeText(p)}` : ''}`;
 }
 
 /** A growing zone's label: what it sows now (its name first when it has one). */
@@ -194,7 +217,8 @@ function farmLabel(z: StoryZone, plants: ReadonlyArray<{ id: string; label: stri
   return z.name ? `${z.name} · ${what}` : what;
 }
 
-const layer = (kind: string) => (kind === 'home' ? 2 : kind === 'forbidden' ? 3 : 1);
+const LAYERS: Record<string, number> = { home: 2, forbidden: 3, preserve: 4 };
+const layer = (kind: string) => LAYERS[kind] ?? 1;
 
 /**
  * A paint's or an erase's preview: the zone the painted cells end up in (all of it: a merge shows the merged zone) in the tool's

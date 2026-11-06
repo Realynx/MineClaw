@@ -22,6 +22,8 @@ import {
   type StoryScheduleBlock,
   type StoryZone,
 } from '@mineclaw/contracts';
+import { ZonePreserve } from './zones/PreservePanel';
+import { buildTitle, isRepairBuild } from './zones/preserve';
 import { zoneCellCount } from './zones/zonePaint';
 import { ZoneToolbar } from './zones/ZoneToolbar';
 import {
@@ -35,6 +37,7 @@ import {
   Pencil,
   Play,
   Plus,
+  ShieldCheck,
   Trash2,
 } from 'lucide-react';
 import { useRef, useState, type ReactNode } from 'react';
@@ -544,7 +547,8 @@ export function QueuePanel({
   onRetry?: (id: string | number) => void;
 }) {
   const list = [...builds].filter((b) => b.status !== 'done').sort((a, b) => a.order - b.order);
-  const done = builds.filter((b) => b.status === 'done').length;
+  // A preserved zone's repairs rest as done while the zone is intact: not a finished build.
+  const done = builds.filter((b) => b.status === 'done' && !isRepairBuild(b)).length;
   const dragId = useRef<string | number | null>(null);
   const [over, setOver] = useState<string | number | null>(null);
   /** Dropping the dragged build on `onto`: it goes before it. */
@@ -626,13 +630,14 @@ function QueueRow({
   others: readonly StoryBuild[];
 }) {
   const paused = b.status === 'paused';
+  const title = buildTitle(b);
   return (
     <>
       <GripVertical className="size-3.5 cursor-grab text-subtle" aria-hidden />
       <span className="w-4 text-right text-subtle tabular-nums">{i + 1}</span>
       <ToolIcon id={b.kind === 'furniture' ? 'block' : b.kind} className="size-3.5 text-muted" />
       <div className="min-w-0 flex-1">
-        <div className="truncate font-semibold">{b.label}</div>
+        <div className="truncate font-semibold">{title}</div>
         <BuildProgress b={b} />
         <BuildNotes b={b} canWrite={canWrite} failedCells={failedCells} onRetry={onRetry} />
         {b.station ? (
@@ -655,7 +660,7 @@ function QueueRow({
         onClick={() => onOp('reorder', [b.id, ...others.filter((x) => x.id !== b.id).map((x) => x.id)])}
         className="rounded px-1 text-[10px] font-semibold text-muted hover:bg-surface-3 disabled:opacity-30"
         title="Build first"
-        aria-label={`Build ${b.label} first`}
+        aria-label={`Build ${title} first`}
       >
         Top
       </button>
@@ -664,20 +669,37 @@ function QueueRow({
         disabled={!canWrite}
         onClick={() => onOp(paused ? 'resume' : 'pause', [b.id])}
         className="rounded p-0.5 hover:bg-surface-3"
-        aria-label={paused ? `Resume ${b.label}` : `Pause ${b.label}`}
+        aria-label={paused ? `Resume ${title}` : `Pause ${title}`}
       >
         {paused ? <Play className="size-3.5" /> : <Pause className="size-3.5" />}
       </button>
-      <button
-        type="button"
-        disabled={!canWrite}
-        onClick={() => onOp('remove', [b.id])}
-        className="rounded p-0.5 text-danger hover:bg-danger-soft"
-        aria-label={`Cancel ${b.label}`}
-      >
-        <Trash2 className="size-3.5" />
-      </button>
+      <CancelBuild b={b} title={title} canWrite={canWrite} onOp={onOp} />
     </>
+  );
+}
+
+/** A build's Cancel button; a preserved zone's repairs have none (Preserve goes off in the zone's settings). */
+function CancelBuild({ b, title, canWrite, onOp }: { b: StoryBuild; title: string; canWrite: boolean; onOp: QueueOp }) {
+  if (isRepairBuild(b))
+    return (
+      <span
+        className="p-0.5 text-subtle"
+        title="Repairs a preserved zone: switch Preserve off in that zone's settings to stop them"
+        data-testid="repair-build"
+      >
+        <ShieldCheck className="size-3.5" aria-hidden />
+      </span>
+    );
+  return (
+    <button
+      type="button"
+      disabled={!canWrite}
+      onClick={() => onOp('remove', [b.id])}
+      className="rounded p-0.5 text-danger hover:bg-danger-soft"
+      aria-label={`Cancel ${title}`}
+    >
+      <Trash2 className="size-3.5" />
+    </button>
   );
 }
 
@@ -1208,7 +1230,7 @@ function Houses({
             const name = z.name || z.label || `House ${i + 1}`;
             const id = String(z.id);
             return (
-              <li key={id} className="flex items-center gap-1.5" data-zone={id}>
+              <li key={id} className="flex flex-wrap items-center gap-1.5" data-zone={id}>
                 {editing?.id === id ? (
                   <form
                     className="flex min-w-0 flex-1 gap-1"
@@ -1265,6 +1287,7 @@ function Houses({
                     </Button>
                   </>
                 )}
+                <ZonePreserve z={z} />
               </li>
             );
           })}

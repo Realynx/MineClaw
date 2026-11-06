@@ -26,6 +26,7 @@ import {
   rectCells,
   zoneCellSet,
 } from './storyZones.js';
+import { applyPreserveOp, preserveWarnings, preserveZoneFields, withPreserveState } from './storySimPreserve.js';
 
 const QUARRY_TOO_NARROW =
   'a quarry needs at least 2×2 (a 1-wide strip is a trench: paint it as Ores only, or designate Mine)';
@@ -924,7 +925,7 @@ export class StorySim {
       workTypes: [...STORY_WORK_TYPES],
       pawns: [...c.pawns.values()].filter((p) => full || p.rev > s).map((p) => structuredClone(p.p)),
       seats: this.seatsState(c),
-      zones: pick(c.zones).map((z) => this.growStatus(c, z)),
+      zones: pick(c.zones).map((z) => withPreserveState(this.growStatus(c, z))),
       ...(full ? { plants: STORY_SIM_PLANTS } : {}),
       designations: pick(c.designations),
       orders: pick(c.orders),
@@ -1296,7 +1297,19 @@ export class StorySim {
     if (body.op === 'irrigation') return this.irrigation(c, String(body.id));
     if (body.op.startsWith('bill_')) return this.billOp(c, body as Extract<StoryZoneRequest, { op: `bill_${string}` }>);
     if (body.op === 'rename') return this.renameZone(c, body.id, body.name);
+    if (body.op === 'preserve') return this.preserveZone(c, body);
     return undefined;
+  }
+
+  /** zones preserve (storySimPreserve.ts): switch a zone's Preserve on or off, set its range, take a new snapshot. */
+  private preserveZone(c: Colony, body: Extract<StoryZoneRequest, { op: 'preserve' }>) {
+    const f = c.zones.get(String(body.id));
+    if (!f) throw Object.assign(new Error('id: no such zone'), { status: 404 });
+    f.v = applyPreserveOp(f.v, body, this.iso());
+    f.rev = this.bump(c);
+    const z = withPreserveState(f.v);
+    const warnings = preserveWarnings(z, [...c.zones.values()].map((x) => x.v));
+    return { id: z.id, preserve: z.preserve ?? null, warnings, rev: c.rev };
   }
 
   /** A mine zone's mode: quarry (everything to bedrock, a stair) or ores only. */
@@ -1356,8 +1369,10 @@ export class StorySim {
     const kind = into?.kind ?? body.kind ?? 'home';
     if (!into) checkNewZone(body, kind, list, rect);
     const water = kind === 'fish' ? this.fishWater(rect, a, list) : null;
+    const cols = (rect[2] - rect[0] + 1) * (rect[3] - rect[1] + 1);
+    const kept = into ? null : preserveZoneFields(body, kind, a, cols, this.iso());
     const make = (k: string, plant: string | null): StoryZone =>
-      into ? { ...into, id: newId(), name: null, rows: null } : newZone(c, body, a, newId, k, plant);
+      into ? { ...into, id: newId(), name: null, rows: null } : { ...newZone(c, body, a, newId, k, plant), ...kept };
     const out = paintZones(
       list,
       { kind, plant: body.plant ?? null, rect, y: [a[1], a[4]], into: body.into, cells: water },
@@ -3724,6 +3739,7 @@ type ZonesAnswer =
     }
   | { id: string | number; rev: number; name?: undefined; removed?: undefined; deleted?: undefined }
   | { id: string | number; name: string; rev: number; removed?: undefined; deleted?: undefined }
+  | { id: string | number; preserve: StoryZone['preserve']; warnings: string[]; rev: number }
   | { removed: (string | number)[]; deleted: (string | number)[]; rev: number; id?: undefined; name?: undefined }
   | {
       removed: (string | number)[];

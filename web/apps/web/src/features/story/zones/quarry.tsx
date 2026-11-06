@@ -10,6 +10,7 @@ import { Pickaxe } from 'lucide-react';
 import { useSyncExternalStore } from 'react';
 import { cn } from '@/lib/utils';
 import { panel } from '../StoryHud';
+import { ZonePreserve } from './PreservePanel';
 
 export type QuarryMode = 'quarry' | 'ores';
 
@@ -206,6 +207,7 @@ export function QuarryZonesPanel({
               ) : (
                 <div className="text-muted">Mines the ores in the zone.</div>
               )}
+              <ZonePreserve z={z} />
             </li>
           );
         })}

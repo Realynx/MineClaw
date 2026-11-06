@@ -46,7 +46,9 @@ function useRun({ canWrite, split, write, say }: StoryModeState) {
           plan.directive ? api('story.directives', { body: plan.directive }) : Promise.resolve(null),
         ]);
         const head = after?.(out);
-        say([head, plan.summary].filter(Boolean).join(' · '));
+        // A designation's or a build's answer may warn (e.g. targets in a preserved zone): said with it.
+        const warnings = (out as { warnings?: string[] | null } | null)?.warnings ?? [];
+        say([head, plan.summary, ...warnings].filter(Boolean).join(' · '), warnings.length ? 'warn' : undefined);
       } catch (e) {
         say(errorText(e), 'warn');
       }

@@ -1,6 +1,7 @@
 /**
  * Story Mode's actions (each takes the screen's `Story` object): bringing pawns online, retrying failed work, attack / gear /
- * formation orders, jumping to what an alert or a message names, founding a colony and moving its home, zone bills.
+ * formation orders, jumping to what an alert or a message names, founding a colony and moving its home, zone bills, a zone's
+ * Preserve.
  */
 import type { StoryAlert, StoryGearOp, StoryOnlineBlocked, StoryZone } from '@mineclaw/contracts';
 import { sendDirective } from '@/features/world/directives';
@@ -12,6 +13,7 @@ import type { Condition } from '../notices';
 import type { JumpTarget } from '../StoryNotices';
 import type { FormationMove } from '../StoryMap';
 import { failedCells, stalledIn } from '../tools';
+import { preserveBody, preserveSaid, type PreserveChange } from '../zones/preserve';
 import type { Story } from './commands';
 import type { V3 } from './state';
 
@@ -270,6 +272,13 @@ export function zoneBill(c: Story, z: StoryZone, body: GrowBillChange) {
   void c
     .write('story.zones', { ...body, id: z.id })
     .then((out) => sayWarnings(c, out.warnings, 'Bills updated'), warnOn(c));
+}
+
+/** A zone's Preserve (zones/PreservePanel.tsx): switched, its range set, or a new snapshot; the answer's warnings are said. */
+export function preserveZone(c: Story, z: StoryZone, change: PreserveChange) {
+  void c
+    .write('story.zones', preserveBody(z, change))
+    .then((out) => sayWarnings(c, out.warnings, preserveSaid(change, out.preserve)), warnOn(c));
 }
 
 /** Centres the map on a zone. */

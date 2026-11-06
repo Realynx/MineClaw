@@ -11,6 +11,7 @@ import { Button } from '@/components/ui/primitives';
 import { cn } from '@/lib/utils';
 import type { GrowBillChange } from '../GrowingZones';
 import { panel } from '../StoryHud';
+import { ZonePreserve } from './PreservePanel';
 
 export function FishingZonesPanel({
   state,
@@ -71,6 +72,7 @@ function FishingZone({
         <FishBill key={String(b.id)} z={z} b={b} canWrite={canWrite} onBill={onBill} />
       ))}
       {canWrite ? <QuickFishBills z={z} onBill={onBill} /> : null}
+      <ZonePreserve z={z} />
     </li>
   );
 }

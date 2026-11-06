@@ -9,7 +9,7 @@
  */
 import type { EntityView, PickedBlock, WorldViewerEngine, WorldViewerHandle } from '@mineclaw/world-viewer';
 import { getViewerQuality } from '@mineclaw/world-viewer/settings';
-import { designationCells, type StoryColonyState } from '@mineclaw/contracts';
+import { designationCells, type StoryBuild, type StoryColonyState } from '@mineclaw/contracts';
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef } from 'react';
 import { useWorldHost } from '@/features/world/integration';
 import { DotMap } from '@/features/world/DotMap';
@@ -78,6 +78,7 @@ import {
   stalledIn,
 } from './tools';
 import { COLORS, pawnColor } from './visuals';
+import { buildTitle, isRepairBuild } from './zones/preserve';
 import { drawZones, zoneLabel } from './zones/zoneDraw';
 import { waterColumns } from './zones/zonePaint';
 import { drawQuarries } from './zones/quarry';
@@ -402,7 +403,13 @@ function ghostTargetAt(cell: V3, st: StoryColonyState | undefined): Target | nul
   const g = (st?.ghosts?.blocks ?? []).find((b) => b[0] === cell[0] && b[2] === cell[2] && b[6] !== 'done');
   if (!g) return null;
   const build = (st?.builds ?? []).find((b) => String(b.id) === String(g[5]));
-  return { kind: 'ghost', build: g[5], label: build?.label ?? 'build', x: g[0], y: g[1], z: g[2] };
+  return { kind: 'ghost', build: g[5], x: g[0], y: g[1], z: g[2], ...ghostBuildOf(build) };
+}
+
+/** A ghost target's build fields: its title, and whether it is a preserved zone's repair (never cancelled by hand). */
+function ghostBuildOf(build: StoryBuild | undefined): { label: string; repair?: boolean } {
+  if (!build) return { label: 'build' };
+  return isRepairBuild(build) ? { label: buildTitle(build), repair: true } : { label: build.label };
 }
 
 /** Per build kind (wall, door, chest…): its cells still queued and how many of them the viewer draws as holograms now. */

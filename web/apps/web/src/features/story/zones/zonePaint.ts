@@ -55,7 +55,7 @@ export function zoneInto(
   return zones.find((z) => z.kind === tool.id && zoneCellSet(z).has(k))?.id;
 }
 
-/** The request a released drag sends. */
+/** The request a released drag sends (a Preserve zone: the `range` it keeps under and over the level). */
 export function zoneBody(
   tool: ZoneTool,
   rect: ZoneRect,
@@ -63,6 +63,7 @@ export function zoneBody(
   plant: string | null,
   into: string | number | undefined,
   mode?: 'quarry' | 'ores',
+  range?: { below: number; above: number },
 ): StoryZoneRequest {
   const area: StoryArea = [
     Math.min(rect[0], rect[2]),
@@ -81,6 +82,7 @@ export function zoneBody(
     area,
     ...(tool.id === 'farm' && plant ? { plant } : {}),
     ...(tool.id === 'mine' && mode ? { mode } : {}),
+    ...(tool.id === 'preserve' && range ? { below: range.below, above: range.above } : {}),
   };
 }
 
