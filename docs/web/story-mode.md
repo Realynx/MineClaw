@@ -480,6 +480,8 @@ later while they keep mining until the job is done or their inventory is full."
 - Ordinary pawn travel does not excavate shortcuts. Storage trips use walkable routes, including the quarry's perimeter stair,
   and report a failed route instead of retrying with scaffolding or a pillar. Explicit mining, building and rescue jobs retain their
   own access actions.
+- Automatic defensive shelters are disabled for all bodies: mob attacks, low health, nighttime and exposed respawns do not make
+  them place walls around themselves. Fighting, retreating, walking home and cleanup of existing temporary blocks remain active.
 - One trip later takes everything to storage, by the usual rules (every chest of the load in one trip). That trip comes when:
   - it has 2 free slots or fewer;
   - no target of that work is left for it;

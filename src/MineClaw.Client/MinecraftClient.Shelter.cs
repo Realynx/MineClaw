@@ -390,6 +390,8 @@ public sealed partial class MinecraftClient
     /// holding the body), or says it is stranded without blocks.</summary>
     private async Task<string> BoxInAfterSpawnAsync(BlockPos feet, CancellationToken ct)
     {
+        if (!Options.Survival.ShelterEnabled)
+            return $"woke up stranded at {Fmt(feet)} ({(World.IsNight ? "night" : "mobs near")}): no walkable way down";
         if (ShelterBlocksTotal() == 0) return $"woke up stranded at {Fmt(feet)} at {(World.IsNight ? "night" : "with mobs near")}: no way down and no blocks to box in with";
         var up = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
         var run = ShelterAsync("spawned exposed with no way home", ct, boxed: l => up.TrySetResult(l));

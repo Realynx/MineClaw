@@ -159,18 +159,18 @@ public sealed class SurvivalReflex
         if (health > o.CriticalHealth + o.Hysteresis) _critical = false;
     }
 
-    /// <summary>A normal world has no island interior: the reflexes get away from the mobs or box in.</summary>
+    /// <summary>A normal world has no island interior: the reflexes get away from the mobs.</summary>
     private static HealthAlert CriticalAlert(int health, string foodText, bool hasFood, string? threat, bool underWater)
     {
         string retreat = underWater ? "head under water: surfacing"
-            : WorldMode.Current.HasVoidBelow ? "retreating inward" : threat is null ? "getting to safety" : $"{threat}: boxing in or getting away";
+            : WorldMode.Current.HasVoidBelow ? "retreating inward" : threat is null ? "getting to safety" : $"{threat}: getting away";
         return new HealthAlert(true, $"critical hp {health}/20 ({foodText}): stopped, {retreat}" + (hasFood ? " to eat" : ""));
     }
 
     private static HealthAlert LowAlert(int health, string foodText, bool hasFood, string? threat, bool underWater)
     {
         string rest = underWater ? "head under water: surfacing first"
-            : threat is null ? "work goes on" : $"{threat}: fighting back only if I can win, else boxing in";
+            : threat is null ? "work goes on" : $"{threat}: fighting back only if I can win, else retreating";
         return new HealthAlert(false, $"low health {health}/20 ({foodText}): no fights/spars until it recovers, {rest}" + (hasFood ? ", eating" : ""));
     }
 

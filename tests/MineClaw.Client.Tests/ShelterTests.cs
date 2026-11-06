@@ -13,6 +13,28 @@ namespace MineClaw.Client.Tests;
 /// </summary>
 public class ShelterTests
 {
+    [Fact]
+    public async Task Default_self_defence_and_spawn_safety_do_not_place_walls_even_when_stranded_and_outnumbered()
+    {
+        var (c, s) = await Harness.StartAsync(srv => srv.Inventory[36] = Harness.Stack(Blocks.Cobblestone, 32));
+        await using var _ = c;
+        using var __ = s;
+        Assert.False(c.Options.Survival.ShelterEnabled);
+        Assert.True(await Harness.WaitAsync(() => c.World.Inventory.CountItem(Blocks.Cobblestone) == 32));
+        c.World.Spawn = new BlockPos(8, 40, 8);
+        c.World.Time = 18000;
+        s.SetVitals(6, 20);
+        Assert.True(await Harness.WaitAsync(() => c.World.Player.Health == 6));
+        foreach (var (id, x, z) in new[] { (901, 6.5, 6.5), (902, 10.5, 10.5), (903, 10.5, 6.5) })
+            c.World.Entities.SpawnMob(id, MobTypes.Zombie, new Vec3d(x, 64, z), 0, 0, null);
+        var result = await c.SecureAfterSpawnAsync(CancellationToken.None);
+        Assert.Contains("no walkable way down", result);
+        await Task.Delay(800);
+        Assert.Empty(c.TemporaryBlocks());
+        Assert.Equal(32, c.World.Inventory.CountItem(Blocks.Cobblestone));
+        Assert.False(s.Blocks.ContainsKey((8, 66, 8)));
+    }
+
     private static WorldState Platform(int half = 1, int y = 63)
     {
         var w = new WorldState();
@@ -91,7 +113,7 @@ public class ShelterTests
     {
         // The fake server's 5×5 platform at y63 hangs over the void; home (the island) is far below it.
         var (c, s) = await Harness.StartAsync(srv => srv.Inventory[36] = Harness.Stack(Blocks.Cobblestone, 32),
-            o => o with { Survival = o.Survival with { ShelterMaxMinutes = 0.05 } });
+            o => o with { Survival = o.Survival with { ShelterEnabled = true, ShelterMaxMinutes = 0.05 } });
         await using var _ = c;
         using var __ = s;
         var events = new List<CombatEvent>();
@@ -161,7 +183,7 @@ public class ShelterTests
     public async Task Once_it_is_safe_the_whole_box_comes_down_and_the_blocks_come_back()
     {
         var (c, s) = await Harness.StartAsync(srv => srv.Inventory[36] = Harness.Stack(Blocks.Cobblestone, 32),
-            o => o with { Survival = o.Survival with { ShelterMaxMinutes = 0.05 } });
+            o => o with { Survival = o.Survival with { ShelterEnabled = true, ShelterMaxMinutes = 0.05 } });
         await using var _ = c;
         using var __ = s;
         c.World.Spawn = new BlockPos(8, 40, 8);
@@ -184,7 +206,7 @@ public class ShelterTests
     public async Task A_box_that_timed_out_with_mobs_about_is_cleared_later_once_nothing_can_get_at_the_body()
     {
         var (c, s) = await Harness.StartAsync(srv => srv.Inventory[36] = Harness.Stack(Blocks.Cobblestone, 32),
-            o => o with { Survival = o.Survival with { ShelterMaxMinutes = 0.05 } });
+            o => o with { Survival = o.Survival with { ShelterEnabled = true, ShelterMaxMinutes = 0.05 } });
         await using var _ = c;
         using var __ = s;
         c.World.Spawn = new BlockPos(8, 40, 8);
@@ -207,7 +229,7 @@ public class ShelterTests
     {
         // 10-30: "stop filling it in, you're not being attacked". The brain's defend brave holds the box-in reflex off; a hit ends it.
         var (c, s) = await Harness.StartAsync(srv => srv.Inventory[36] = Harness.Stack(Blocks.Cobblestone, 32),
-            o => o with { Survival = o.Survival with { ShelterMaxMinutes = 0.05 } });
+            o => o with { Survival = o.Survival with { ShelterEnabled = true, ShelterMaxMinutes = 0.05 } });
         await using var _ = c;
         using var __ = s;
         c.World.Spawn = new BlockPos(8, 40, 8);

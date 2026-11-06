@@ -10,9 +10,7 @@ namespace MineClaw.Client.Tests;
 /// <summary>
 /// Live 2026-10-29, the first 1.12.2 night in a normal world: clone 69 chopped bare-handed with 30 spruce logs, a zombie came,
 /// "fight started: zombie 5m away (defending myself)", "low health 8/20 …, work goes on", slain 3 s later (3 hits, took 22). Clone
-/// 1337 waited at the hangout: a zombie villager, "critical hp 4/20: stopped, retreating inward", the box started at hp 4 and it
-/// died building it. A fight a 1.9+ body can't win (bare hands: 2 dmg/s against 20 hp while taking 3/s) boxes in with the blocks
-/// it carries (logs are walls) instead, in time; and in a normal world there is no "inward".
+/// Normal-world self defence: fight or retreat without placing walls that block other pawns joining the fight.
 /// </summary>
 public class Release1122NightDefenceTests
 {
@@ -42,7 +40,7 @@ public class Release1122NightDefenceTests
     }
 
     [Fact]
-    public async Task A_zombie_on_a_bare_handed_chopping_body_at_night_makes_it_box_in_with_its_logs_and_it_lives()
+    public async Task A_zombie_on_a_bare_handed_chopping_body_at_night_does_not_make_it_wall_itself_in()
     {
         using var mode = WorldMode.Override(WorldMode.Normal);
         var (c, s) = await Start(srv =>
@@ -59,21 +57,14 @@ public class Release1122NightDefenceTests
         var zombie = s.SpawnMob(MobTypes.Zombie, 3.5, 64, 8.5, health: 20, chase: true, attackDamage: 3);
         Assert.True(await Harness.WaitAsync(() => c.World.Entities.Get(zombie.Id) is { Profile.Name: "zombie" }));
 
-        // It boxes in (the engine's estimate, before the zombie gets many hits in), with logs as walls.
-        Assert.True(await Harness.WaitAsync(() => Shelter.Enclosed(c.World, FeetCell(c)), 15000),
-            $"not boxed in: hp {c.World.Player.Health}, combat {c.Combat.Status}");
+        Assert.False(c.Options.Survival.ShelterEnabled);
+        Assert.True(await Harness.WaitAsync(() => s.MeleeHits.Any(h => h.Target == zombie.Id) || c.World.Player.Health < 20, 10000),
+            $"the fight never started: {c.Combat.Status}");
         await chop; // the chop was interrupted, not left running into the zombie
-        Assert.True(c.World.Player.Health >= 10, $"hp {c.World.Player.Health}: boxed in too late");
-        var f = FeetCell(c);
-        int logWalls = new[] { (1, 0), (-1, 0), (0, 1), (0, -1) }.Count(d => c.World.GetBlock(f.X + d.Item1, f.Y, f.Z + d.Item2) == Blocks.Log);
-        Assert.True(logWalls >= 3, $"the walls are its logs ({logWalls} log sides)");
-        Assert.False(c.Combat.Engaged);
-
-        // Inside the box nothing reaches it: health holds while the zombie stands outside.
-        int hp = c.World.Player.Health;
-        await Task.Delay(400); // ≈ 80 ticks: 4 zombie attacks if it could reach
-        Assert.True(c.World.Player.Health >= hp, $"hp {hp} → {c.World.Player.Health} inside the box");
-        Assert.False(zombie.Dead);
+        s.SetVitals(6, 20); // low-health self defence must not enable the box either
+        await Task.Delay(400);
+        Assert.Empty(c.TemporaryBlocks());
+        Assert.True(c.World.Inventory.CountItem(Blocks.Log) >= 30);
     }
 
     [Fact]
@@ -130,7 +121,7 @@ public class Release1122NightDefenceTests
         Assert.Contains("zombie 2m away", low.Value.Message);
         var crit = r.OnHealth(4, 20, false, "zombie villager 1m away");
         Assert.DoesNotContain("inward", crit!.Value.Message);
-        Assert.Contains("boxing in", crit.Value.Message);
+        Assert.Contains("getting away", crit.Value.Message);
 
         using var sky = WorldMode.Override(WorldMode.SkyblockWorld);
         var r2 = new SurvivalReflex();
