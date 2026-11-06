@@ -70,7 +70,10 @@
     if (eyes(c) > 4) call('go', c, 2);
     const s = scaffoldUp(j, c);
     if (s && s.ok === false) return s;
-    try { return putCell(j, c, put); } finally { if (s) scaffoldDown(s); }
+    try {
+      const r = putCell(j, c, put);
+      return j.reach && !good(r) && REACH.test(why(r)) ? reachUp(c, put, j) : r;
+    } finally { if (s) scaffoldDown(s); }
   };
   // A cell of place(): already built -> BUILT; a batch out of items -> null (the rest go back); else the placing's result.
   const placeOne = (j, c, m, clear) => {
@@ -80,6 +83,7 @@
   };
   const clearOf = j => (Array.isArray(j.clear) ? j.clear : j.clear ? [j.at] : []);
   const place = j => {
+    if (j.reach) ready(j);
     const cells = j.cells || [j.at], clear = clearOf(j), metas = j.metas || [];
     if (j.stand && eyes(j.stand) > 1.8) call('go', j.stand, 0);
     let n = 0;
@@ -392,19 +396,21 @@
   // collected again). Short of blocks: the job's pillar stack from storage (j.pillar), else dirt dug around the column.
   const reachScan = at => H.storyReach(String(at));
   const NO_PILLAR = s => ({ ok: false, msg: 'out of reach even from a pillar: ' + s.why });
+  // A quarry placement keeps one block for the seal/step when it uses the same material for access.
+  const pillarNeed = (s, j) => s.steps + (j && j.reach && s.block === j.block ? 1 : 0);
   // Blocks to pole with: the job's pillar stack from storage when short, then dirt dug around the column. -> the scan after.
   const stockUp = (at, s, j) => {
-    if (s.blocks < s.steps && j && j.pillar) globalThis.take(j.pillar.item, j.pillar.n, j.pillar.from);
+    if (s.blocks < pillarNeed(s, j) && j && j.pillar) globalThis.take(j.pillar.item, j.pillar.n, j.pillar.from);
     s = reachScan(at);
     for (const c of s.gather || []) {
-      if (s.blocks >= s.steps) break;
+      if (s.blocks >= pillarNeed(s, j)) break;
       globalThis.dig(c);
       s = reachScan(at);
     }
     return s;
   };
-  const pillarShort = s => (!s.stand ? NO_PILLAR(s)
-    : s.blocks < s.steps ? { ok: false, msg: 'out of reach: ' + s.steps + ' block(s) to pillar up, ' + s.blocks + ' on me' } : null);
+  const pillarShort = (s, j) => (!s.stand ? NO_PILLAR(s)
+    : s.blocks < pillarNeed(s, j) ? { ok: false, msg: 'out of reach: ' + pillarNeed(s, j) + ' block(s) needed, ' + s.blocks + ' on me' } : null);
   // Nerd-pole up (one place at its own feet per step) until it is in reach -> the cells placed, bottom first.
   const poleUp = (at, steps) => {
     const placed = [];
@@ -440,7 +446,7 @@
     if (s.within) return fn();
     if (!s.stand) return NO_PILLAR(s);
     s = stockUp(at, s, j);
-    const short = pillarShort(s);
+    const short = pillarShort(s, j);
     if (short) return short;
     const w = globalThis.go(s.stand, 0);
     if (!globalThis.ok(w)) return { ok: false, msg: 'out of reach: ' + w.msg };

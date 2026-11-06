@@ -69,7 +69,7 @@ public class UnreachableThreatTests
     }
 
     [Fact]
-    public void Guard_fight_with_zero_hits_gives_up_and_does_not_retrigger_until_reachable()
+    public void Guard_ignores_a_hidden_spider_until_it_leaves_its_pen_and_becomes_visible()
     {
         // 10-28 00:07:52 "fight started: spider 13m away (guarding kiwi)" → main's gen job "busy: fighting spider 13.1m
         // (guarding kiwi): 0 hits" for 20 s, then the same spider again.
@@ -81,18 +81,9 @@ public class UnreachableThreatTests
         r.W.Time = 18000; // night: spiders are hostile
         r.Player(77, "kiwi", 9.5, 4.5);
         var spider = r.Mob(9, MobTypes.Spider, 9.5, 0.5);
-        int startTick = -1, endTick = -1;
-        for (int i = 0; i < 400 && endTick < 0; i++)
-        {
-            r.Step(physics: true);
-            if (startTick < 0 && r.E.Engaged) startTick = i;
-            if (startTick >= 0 && !r.E.Engaged) endTick = i;
-        }
-        Assert.True(startTick >= 0, "the guard reflex never engaged");
-        Assert.True(endTick > 0, "the guard fight never gave up");
-        Assert.InRange(endTick - startTick, 100, new CombatOptions().ZeroHitGiveUpTicks + 20);
-        Assert.Contains(r.Events, e => e.Kind == CombatEventKind.FightEnded && e.Message.Contains("couldn't reach spider"));
-        Assert.Contains(spider.Id, r.E.GaveUpOn);
+        for (int i = 0; i < 400; i++) Assert.False(r.Step(physics: true).AbortAction);
+        Assert.Equal(0, Starts(r));
+        Assert.False(r.E.Engaged);
         Assert.False(r.W.IsPlayerOverVoid(r.P.Position));
 
         // The spider wanders on its own island: no new fight, no aborted job.
@@ -110,7 +101,7 @@ public class UnreachableThreatTests
         r.W.Entities.Teleport(spider.Id, new Vec3d(r.P.Position.X + 1.6, 64, r.P.Position.Z), 0, 0);
         for (int i = 0; i < 10; i++) r.Step();
         Assert.True(r.E.Engaged);
-        Assert.Contains(r.Events, e => e.Message.Contains("spider") && e.Message.Contains("in reach"));
+        Assert.Equal(1, Starts(r));
     }
 
     [Fact]
@@ -216,7 +207,7 @@ public class UnreachableThreatTests
     }
 
     [Fact]
-    public void Can_get_at_sees_through_open_air_and_its_own_level_but_not_through_the_floor()
+    public void Can_get_at_requires_sight_through_air_not_through_the_floor_or_a_wall()
     {
         var r = new CombatRig(Opts(), half: 12);
         var me = r.P.Position;
@@ -225,11 +216,11 @@ public class UnreachableThreatTests
         // A hole in the floor over it: now it sees the bot.
         for (int x = 1; x <= 4; x++) r.W.SetBlock(x, 63, 0, Blocks.Air, 0);
         Assert.True(CombatGeometry.CanGetAt(r.W, cave, me));
-        // On the bot's level behind a wall it still counts (it walks round).
-        r.W.SetBlock(2, 64, 4, Blocks.Stone, 0);
-        r.W.SetBlock(2, 65, 4, Blocks.Stone, 0);
-        var behind = r.Mob(10, MobTypes.Zombie, 3.5, 5.5);
-        Assert.True(CombatGeometry.CanGetAt(r.W, behind, me));
+        // A walk around a small wall does not make the mob visible.
+        r.W.SetBlock(2, 64, 0, Blocks.Stone, 0);
+        r.W.SetBlock(2, 65, 0, Blocks.Stone, 0);
+        var behind = r.Mob(10, MobTypes.Zombie, 3.5, 0.5);
+        Assert.False(CombatGeometry.CanGetAt(r.W, behind, me));
     }
 
     [Fact]
@@ -256,7 +247,7 @@ public class UnreachableThreatTests
     }
 
     [Fact]
-    public void Zombies_in_the_next_cave_behind_solid_stone_are_no_threat_but_one_with_a_way_round_is()
+    public void Zombies_behind_solid_stone_remain_unseen_even_with_a_doorway_to_walk_round()
     {
         // 10-30 stair shaft: zombies a few blocks away behind the shaft wall boxed main in again and again mid-dig. Fox: "you're
         // not being attacked, they're behind the wall".
@@ -274,7 +265,38 @@ public class UnreachableThreatTests
         // A doorway in the wall: now it can walk round to the bot.
         r.W.SetBlock(2, 64, 4, Blocks.Air, 0);
         r.W.SetBlock(2, 65, 4, Blocks.Air, 0);
-        Assert.True(CombatGeometry.CanGetAt(r.W, zb, r.P.Position));
+        Assert.False(CombatGeometry.CanGetAt(r.W, zb, r.P.Position));
+    }
+
+    [Theory]
+    [InlineData(MobTypes.Zombie)]
+    [InlineData(MobTypes.Skeleton)]
+    [InlineData(MobTypes.Creeper)]
+    public void A_hidden_mob_with_a_walkable_route_does_not_interrupt_work_or_trigger_guarding(int type)
+    {
+        var r = new CombatRig(Opts());
+        r.E.Guarded = ["fox"];
+        r.Player(11, "fox", 4.5, 1.5);
+        r.Mob(9, type, 4.5, 0.5);
+        for (int y = 64; y <= 66; y++) r.W.SetBlock(2, y, 0, Blocks.Stone, 0);
+        Assert.True(CombatGeometry.CanWalkNear(r.W, r.P.Position, new Vec3d(4.5, 64, 0.5), 1.5));
+        for (int i = 0; i < 100; i++) Assert.False(r.Step().AbortAction);
+        Assert.Equal(0, Starts(r));
+        Assert.Null(r.E.NearestThreat(r.P.Position, 16));
+    }
+
+    [Fact]
+    public void An_automatic_fight_ends_when_a_wall_hides_its_target()
+    {
+        var r = new CombatRig(Opts());
+        r.Mob(9, MobTypes.Zombie, 4.5, 0.5);
+        for (int i = 0; i < 10; i++) r.Step();
+        Assert.True(r.E.Engaged);
+        for (int y = 64; y <= 66; y++) r.W.SetBlock(2, y, 0, Blocks.Stone, 0);
+        r.Step();
+        Assert.False(r.E.Engaged);
+        for (int i = 0; i < 30; i++) Assert.False(r.Step().AbortAction);
+        Assert.Equal(1, Starts(r));
     }
 
     [Fact]

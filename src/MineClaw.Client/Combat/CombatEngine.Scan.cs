@@ -30,6 +30,7 @@ public sealed partial class CombatEngine
     private (string Why, bool Cover, double D)? ScanReason(PhysicsState phys, Vec3d me, Entity e, List<Entity?> guards)
     {
         if (CombatRules.IsTamedWolf(e)) return null;
+        if (!CombatGeometry.CanGetAt(_w, e, me)) return null;
         var prof = CombatRules.ProfileOf(e);
         if (prof.Tactic == MobTactic.Ignore) return null;
         bool provoked = _provoked.TryGetValue(e.Id, out var pt) && _tick - pt < 200;

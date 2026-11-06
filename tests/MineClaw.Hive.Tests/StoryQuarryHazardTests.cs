@@ -96,6 +96,35 @@ public sealed class StoryQuarryHazardTests
         c.State()["zones"]!.AsArray().Single()!["quarry"]!["status"]!.GetValue<string>();
 
     [Fact]
+    public void A_failed_seal_above_the_floor_does_not_hold_every_lower_layer_and_is_retried()
+    {
+        var (c, _, w, clock) = Rig();
+        // Previously dug upper layers, one new cave opening in their wall.
+        var ring = Ring(c);
+        Carve(w, X0, 59, Z0, X0 + Size - 1, 63, Z0 + Size - 1);
+        for (int k = 0; k <= 4; k++)
+        {
+            var s = StoryQuarry.Step(ring, 63, k);
+            w.Set(s.X, s.Y, s.Z, 1);
+        }
+        w.Set(X0 + Size, 59, Z0 + 2, 0);
+        var seal = c.Next();
+        Assert.Equal("place", seal["kind"]!.GetValue<string>());
+        Assert.True(seal["reach"]!.GetValue<bool>());
+        Assert.Equal(59, At(seal).Y);
+        c.Report(c.P(), seal["id"]!.GetValue<string>(), "failed", "can't reach the support face", null);
+        clock.Now += TimeSpan.FromSeconds(6);
+        var mining = c.Next();
+        Assert.Equal("dig", mining["kind"]!.GetValue<string>());
+        Assert.Equal(58, At(mining).Y);
+        c.Report(c.P(), mining["id"]!.GetValue<string>(), "done", null, null);
+        clock.Now += TimeSpan.FromMinutes(15);
+        var retry = c.Next();
+        Assert.Equal("place", retry["kind"]!.GetValue<string>());
+        Assert.Equal(At(seal), At(retry));
+    }
+
+    [Fact]
     public void A_breached_cave_beside_the_quarry_is_walled_off_no_pawn_goes_in_and_the_quarry_goes_on_to_bedrock()
     {
         var (c, _, w, _) = Rig();

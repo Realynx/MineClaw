@@ -195,15 +195,18 @@ public sealed partial class StoryColony
     private bool ContinuesMining(PawnState p, PawnLive live) =>
         PrefersMining(p, live) && (Candidate(WorkTypes.Mine, p, live) != null || WaitingForQuarry(p, live));
 
-    // Other miners finishing this layer is a brief handoff, not the end of the mining run. Only wait for leased cells,
-    // never a missing tool, a hazard or a failed target, and let the pawn move on after thirty seconds without progress.
+    // Another miner finishing a layer, stair repair or seal is a brief handoff, not the end of the mining run.
+    // Only wait for leased work, never an unassigned hazard, and move on after thirty seconds without progress.
     private bool WaitingForQuarry(PawnState p, PawnLive live)
     {
         if (!PrefersMining(p, live) || !_lastQuarryWork.TryGetValue(p.Name, out var last)
             || Now - last.At >= TimeSpan.FromSeconds(30)) return false;
         var zone = Zones.FirstOrDefault(z => z.Id == last.Zone && IsQuarry(z) && z.Contains(live.Block.X, live.Block.Z));
-        return zone != null && Quarry(zone) is { Done: false, Spawner: null } q && !StairBroken(q) && !SealPending(q)
-            && q.Dig.Count > 0 && q.Dig.All(at => !Free("b:" + at, p.Name));
+        if (zone == null || Quarry(zone) is not { Done: false, Spawner: null } q) return false;
+        var repairs = q.StepFix.Where(f => f.At.Y >= q.Y).Select(f => f.At)
+            .Concat(q.SealFix.Where(f => !QuarryResting(f.At)).Select(f => f.At)).ToList();
+        return repairs.Count > 0 ? repairs.All(at => !Free("b:" + at, p.Name))
+            : q.Dig.Count > 0 && q.Dig.All(at => !Free("b:" + at, p.Name));
     }
 
     /// <summary>

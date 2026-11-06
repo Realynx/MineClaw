@@ -189,22 +189,18 @@ public static class CombatGeometry
     }
 
     /// <summary>
-    /// The mob can get at a body standing at <paramref name="me"/> (feet): touching it, in sight of its eyes or feet (vanilla mobs
-    /// only target what they see: EntityAINearestAttackableTarget's sight check, an archer's clear shot, a creeper's swell), or on
-    /// about the same level within 8 with a walk to the bot (behind a tree or a corner, it walks round). A mob in a cave under the
+    /// The mob can see a body standing at <paramref name="me"/> (feet): a clear ray to its eyes or feet. A route around a corner
+    /// does not make an unseen mob a threat. A mob in a cave under the
     /// floor, on a ledge out of sight or in the next cave behind solid stone is no danger yet (live 10-29: a creeper below the edge
     /// west of the tunnel broke every job of four bodies; 10-30: zombies in a cave beside the stair shaft boxed main in again and
     /// again, Fox: "you're not being attacked, they're behind the wall").
     /// </summary>
     public static bool CanGetAt(IBlockAccess w, Entity mob, Vec3d me)
     {
-        double dx = mob.Position.X - me.X, dy = mob.Position.Y - me.Y, dz = mob.Position.Z - me.Z, h2 = dx * dx + dz * dz;
-        if (h2 + dy * dy <= 1.5 * 1.5) return true;
         var box = CombatRules.Hitbox(mob);
         var eye = new Vec3d(mob.Position.X, box.MinY + (box.MaxY - box.MinY) * 0.85, mob.Position.Z);
-        if (HasLineOfSight(w, eye, me + new Vec3d(0, PlayerPhysics.EyeHeight, 0)) || HasLineOfSight(w, eye, me + new Vec3d(0, 0.3, 0))) return true;
-        // Out of sight on our level: only if it can walk round to us (no digging, no gap jumps).
-        return Math.Abs(dy) < 2 && h2 <= 8 * 8 && CanWalkNear(w, mob.Position, me, 1.5, radius: 10, maxNodes: 400);
+        return HasLineOfSight(w, eye, me + new Vec3d(0, PlayerPhysics.EyeHeight, 0))
+            || HasLineOfSight(w, eye, me + new Vec3d(0, 0.3, 0));
     }
 
     /// <summary>Water at the feet and the head: standing there puts the head under (no fight footing, the air runs out).</summary>

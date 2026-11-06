@@ -652,6 +652,8 @@ that meets all of these:
 - **Fresh:** some body had news of it in the last 45 s (`seen_at`, the freshest copy across bodies).
 - **At home:** in a home area.
 - **Reachable:** within 8 blocks of home's ground level, or within 3 of the pawn, and not under ground.
+- **Visible to this pawn:** a clear block ray from its own view. A walkable route around a wall is not sight. Automatic guard
+  jobs stop when the target is hidden; the client's self-defense scan also requires sight and ends pursuit when sight is lost.
 - **Not just missed by this pawn.** One it couldn't find rests 60 s for that pawn only. That is not a failure: no alert, no rest.
 
 Among guards with nothing better to do (idle or wandering), the nearest goes. Drafted pawns' attack orders are separate and unchanged.
@@ -1109,6 +1111,10 @@ A seal to place comes before any more digging (like a missing step; one resting 
 is alerted once, not once a look: cells near a hazard already said (a cave within 8, a pool of lava or water within 4) are the same
 one ("Quarry z3: breached a cave at y 52: 4 opening cell(s) walled off"). The status ends with what was sealed ("…; sealed: 4 cave,
 2 lava (breached a cave at y 52)"), and the state's `quarry.hazards` has the counts by kind, `spawner_at` and `to_seal`.
+
+An opening found above an already-dug floor can require temporary access: the pawn walks to a reachable base, places from a
+removable pillar, and takes the pillar back down. A failed seal is retried after back-off; an otherwise empty upper layer does not
+hold every lower layer while that seal rests.
 
 Tests: `StoryQuarryHazardTests` (a breached cave walled off and never walked into, the quarry to bedrock; a cave by the stair's head
 room sealed outside; a cave inside the zone already dug with its steps placed; lava and water in the zone covered with cobblestone,

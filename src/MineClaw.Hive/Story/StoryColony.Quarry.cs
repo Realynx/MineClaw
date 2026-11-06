@@ -111,7 +111,7 @@ public sealed partial class StoryColony
         for (; k <= q.MaxK; k++)
         {
             ScanLayer(w, z, q, k);
-            if (q.Dig.Count > 0 || q.Held > 0 || q.SealFix.Count > 0) break;
+            if (q.Dig.Count > 0 || q.Held > 0 || SealPending(q)) break;
         }
         q.Layer = k;
         q.Done = k > q.MaxK;
@@ -219,6 +219,7 @@ public sealed partial class StoryColony
         var j = Job(WorkTypes.Mine, "place", label, at, "b:" + at, "zone", z.Id, "working", f =>
         {
             f["block"] = ItemName(item.Id, item.Meta);
+            f["reach"] = true; // an old cave opening may be high above the current quarry floor
             if (clear) f["clear"] = true;
             if (stored is { } st) f["fetch"] = Fetch(st.Store.Chest, st.Stack, 16);
         }, xp: 5);

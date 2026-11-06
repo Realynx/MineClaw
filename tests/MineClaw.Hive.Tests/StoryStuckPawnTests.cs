@@ -483,6 +483,25 @@ public sealed class StoryStuckPawnTests
     // ================================================================ defending: fresh, reachable monsters only
 
     [Fact]
+    public void A_guard_requires_sight_and_stops_when_the_target_disappears_behind_a_wall()
+    {
+        var (c, h, w) = StoryRig.Make();
+        Only(c, WorkTypes.Guard);
+        h.Lives[c.P()] = FakeStoryHost.Live(0.5, 64, 0.5);
+        w.Ents.Add(new StoryEntity(77, "mob", "zombie", 4.5, 64, 0.5, Hostile: true));
+        w.Set(2, 64, 0, 1); w.Set(2, 65, 0, 1);
+        Assert.Null(c.GuardJob(c.Pawns[c.P()], h.Live(c.P())));
+        w.Set(2, 64, 0, 0); w.Set(2, 65, 0, 0);
+        var job = c.Next();
+        Assert.Equal("attack", Kind(job));
+        w.Set(2, 64, 0, 1); w.Set(2, 65, 0, 1);
+        c.Tick();
+        Assert.Contains(h.Interrupted, s => s.Contains("guard target out of sight"));
+        Assert.False(c.Report(c.P(), Id(job), "done", null, null));
+        Assert.DoesNotContain("e:77", c.Leases().Keys);
+    }
+
+    [Fact]
     public void Guards_ignore_cave_mobs_and_stale_ones_and_a_mob_not_found_rests_for_that_pawn_only()
     {
         var clock = NewClock();

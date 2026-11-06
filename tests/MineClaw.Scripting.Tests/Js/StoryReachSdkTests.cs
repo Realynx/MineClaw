@@ -79,6 +79,34 @@ public sealed class StoryReachSdkTests
     private static int Count(Rig rig, int id) => rig.World.Inventory.CountItem(id);
 
     [Fact]
+    public async Task A_quarry_seal_below_the_rim_is_placed_from_the_floor_and_its_access_pillar_is_removed()
+    {
+        using var rig = Make(w => { w.SetBlock(2, 71, 0, 0, 0); w.SetBlock(3, 71, 0, Blocks.Stone, 0); });
+        var colony = new Colony();
+        rig.Host.Story = colony;
+        rig.Give(36, Blocks.Dirt, 8);
+        rig.Give(37, Blocks.Cobblestone, 1);
+        rig.World.Player.ServerTeleport(new Vec3d(0.5, 76, 0.5), 77.62, 0, 0, true);
+        var pillar = rig.On["place"];
+        rig.On["place"] = (a, ct) =>
+        {
+            if (a.GetProperty("at").GetString() != Ceiling) return pillar(a, ct);
+            double d = rig.World.Player.EyePosition.DistanceTo(new Vec3d(2.5, 71.5, 0.5));
+            if (d > 4.3) return Task.FromResult(ActResult.Fail($"can't place: support face is {d:0.0} blocks from my eyes"));
+            rig.World.SetBlock(2, 71, 0, Blocks.Cobblestone, 0);
+            rig.Give(37, Blocks.Cobblestone, 0);
+            return Task.FromResult(ActResult.Success("sealed"));
+        };
+        var s = await rig.Run($"return JSON.stringify(story.place({{at:'{Ceiling}',block:'cobblestone',reach:true}}))");
+        Assert.Contains("\"ok\":true", s.Outcome);
+        Assert.Equal(Blocks.Cobblestone, rig.World.GetBlock(2, 71, 0));
+        for (int y = 65; y <= 70; y++) Assert.Equal(0, rig.World.GetBlock(2, y, 0));
+        Assert.Equal(8, Count(rig, Blocks.Dirt));
+        Assert.Equal(65, (int)Math.Floor(rig.World.Player.Position.Y));
+        Assert.Empty(colony.Temps);
+    }
+
+    [Fact]
     public async Task An_isolated_ledge_is_skipped_for_a_walkable_pillar_base()
     {
         using var rig = Make(w => w.SetBlock(3, 68, 0, Blocks.Stone, 0));

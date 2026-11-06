@@ -127,9 +127,10 @@ public sealed class StoryLootBatchingTests(ITestOutputHelper output)
     }
 
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public void A_miner_waits_briefly_for_other_miners_to_finish_the_layer(bool stalled)
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    public void A_miner_waits_briefly_for_other_miners_to_finish_the_layer(bool stalled, bool seal)
     {
         var clock = new Clock(DateTimeOffset.Parse("2026-11-06T06:00:00Z"));
         var (c, h, w) = StoryRig.Make(2, time: clock);
@@ -149,6 +150,17 @@ public sealed class StoryLootBatchingTests(ITestOutputHelper output)
         w.Set(at.X, at.Y, at.Z, 0);
         h.Lives[c.P()] = FakeStoryHost.Live(10, 64, 10, inv: new Stack(4, 0, 3));
         c.Report(c.P(), Id(first), "done", null, null);
+        if (seal)
+        {
+            at = At(other);
+            w.Set(at.X, at.Y, at.Z, 0);
+            c.Report(c.P(1), Id(other), "done", null, null);
+            w.Set(12, 63, 10, 0);
+            for (int y = 65; y <= 67; y++) w.Set(12, y, 10, 1);
+            h.Lives[c.P(1)] = FakeStoryHost.Live(10, 64, 10, inv: new Stack(4, 0, 3));
+            other = c.Next(1);
+            Assert.Equal("place", Kind(other));
+        }
         var waiting = c.Next();
         Assert.Equal("hold", Kind(waiting));
         Assert.False(Stores(waiting));
@@ -157,7 +169,7 @@ public sealed class StoryLootBatchingTests(ITestOutputHelper output)
         else
         {
             at = At(other);
-            w.Set(at.X, at.Y, at.Z, 0);
+            w.Set(at.X, at.Y, at.Z, seal ? 4 : 0);
             c.Report(c.P(1), Id(other), "done", null, null);
         }
         var next = c.Next();

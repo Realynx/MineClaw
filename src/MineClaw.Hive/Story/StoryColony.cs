@@ -413,6 +413,7 @@ public sealed partial class StoryColony : IStoryPort
             if (Meta.Active) CollectRestarts(restart);
             if (Now - _benchScan > TimeSpan.FromSeconds(30)) { _benchScan = Now; ScanBenches(); RefreshSeen(Storages); RetrySuspended(); } // missing ingredients may be stored by now
             _pickEnts = null; // the tick's searches read the world's entities once (and never a pick's old list)
+            GuardTick(); // automatic guards stop pursuing a target hidden by the world
             WakeWanderers(); // idle legs: real work takes them back at once (StoryColony.Idle.cs)
             WakeNow();
             HaulTick(); // a drop about to despawn may take a hauler off lesser work (StoryColony.Hauling.cs)

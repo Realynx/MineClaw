@@ -40,9 +40,10 @@ public sealed partial class StoryColony
     /// the pawn at the rim but above its reachable floor, so digs cannot use the pawn's starting height to rule out a climb.</summary>
     private ActiveJob PillarHint(ActiveJob job, PawnLive live)
     {
-        if (job.Kind is not ("dig" or "harvest" or "chop") || job.At is not { } at || !live.Online || Meta.PillarStack <= 0) return job;
+        if (job.Kind is not ("dig" or "harvest" or "chop") && job.Json["reach"]?.GetValue<bool>() != true
+            || job.At is not { } at || !live.Online || Meta.PillarStack <= 0) return job;
         int top = JobTop(job, at);
-        if (job.Kind != "dig" && top <= live.Y + 3) return job;
+        if (job.Kind is not ("dig" or "place") && top <= live.Y + 3) return job;
         int have = live.Inventory.Where(s => PillarAny.Contains(s.Id)).Sum(s => s.Count);
         int want = Math.Max(8, Math.Min(Meta.PillarStack, top - (int)live.Y + 2));
         if (have >= want) return job;

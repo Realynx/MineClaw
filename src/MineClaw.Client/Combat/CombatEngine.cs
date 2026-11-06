@@ -568,7 +568,8 @@ public sealed partial class CombatEngine
         if (_fight?.Spar is { } s && _w.Entities.Get(s.OpponentId) is { } opp && opp.Position.DistanceTo(me) <= 5
             && _lastSwing.TryGetValue(opp.Id, out var sw) && _tick - sw <= 10) return opp;
         var melee = _w.Entities.Nearest(me, 4, e => e.Kind == EntityKind.Mob
-                                                    && (CombatRules.MeleeDamageOf(e) > 0 || e.TypeId == MobTypes.Silverfish));
+                                                    && (CombatRules.MeleeDamageOf(e) > 0 || e.TypeId == MobTypes.Silverfish)
+                                                    && CombatGeometry.CanGetAt(_w, e, me));
         if (melee is not null) return melee;
         var swinger = _w.Entities.Nearest(me, 4.5, e => e.Kind == EntityKind.Player && _lastSwing.TryGetValue(e.Id, out var t) && _tick - t <= 10);
         if (swinger is not null) return swinger;

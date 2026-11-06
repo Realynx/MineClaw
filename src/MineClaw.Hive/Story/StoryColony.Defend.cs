@@ -1,3 +1,6 @@
+using MineClaw.Client.Combat;
+using MineClaw.World;
+
 namespace MineClaw.Hive.Story;
 
 /// <summary>
@@ -29,13 +32,32 @@ public sealed partial class StoryColony
         if (Home() is not { } home) return null;
         var from = live.Block;
         foreach (var mob in Ents().Where(e => e.Kind == "mob" && e.Hostile && Fresh(e) && InHome(e.Block, home) && Open("e:" + e.Id, p.Name, null)
-                     && OnHomeLevel(e.Block, home, from)).OrderBy(e => e.Block.Dist(from)))
+                     && OnHomeLevel(e.Block, home, from) && GuardSees(p, live, e)).OrderBy(e => e.Block.Dist(from)))
         {
             if (CloserGuard(p, mob)) continue;
             return Job(WorkTypes.Guard, "attack", $"guarding: {mob.Name}", mob.Block, "e:" + mob.Id, "guard", mob.Id.ToString(), "fighting",
                 j => j["mob"] = mob.Name, xp: 25);
         }
         return null;
+    }
+
+    private bool GuardSees(PawnState p, PawnLive live, StoryEntity mob)
+    {
+        var w = Host.ViewOf(p.Name) ?? World;
+        if (!live.Online || w == null || live.Dim != w.Dimension || !w.Loaded(mob.Block.X, mob.Block.Z)) return false;
+        return CombatGeometry.HasLineOfSight(new StoryBlockAccess(w), new Vec3d(live.X, live.Y + 1.62, live.Z),
+            new Vec3d(mob.X, mob.Y + 0.5, mob.Z));
+    }
+
+    private void GuardTick()
+    {
+        foreach (var (name, job) in _current.Where(kv => kv.Value.Source == "guard").ToList())
+        {
+            var mob = Ents().FirstOrDefault(e => e.Id.ToString() == job.SourceId);
+            if (mob != null && Fresh(mob) && GuardSees(Pawns[name], Host.Live(name), mob)) continue;
+            Supersede(Pawns[name], "guard target out of sight");
+            Pawns[name].Rev = Bump();
+        }
     }
 
     /// <summary>Another guard with nothing better to do (idle, wandering) is clearly nearer the monster: it goes instead.</summary>
@@ -46,7 +68,7 @@ public sealed partial class StoryColony
         {
             if (!FreeGuard(o, p, mob)) continue;
             var l = Host.Live(o.Name);
-            if (l.Online && mob.Block.Dist(l.X, l.Y, l.Z) + 4 < mine) return true;
+            if (l.Online && mob.Block.Dist(l.X, l.Y, l.Z) + 4 < mine && GuardSees(o, l, mob)) return true;
         }
         return false;
     }

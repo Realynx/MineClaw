@@ -42,6 +42,11 @@ public sealed partial class CombatEngine
         if (t.Dist > Options.MaxEngageDistance + 8) { EndFight(f, $"{f.TargetName} out of range", phys, ctx); return face; }
         if (t.Dist < f.BestDist - 0.5) { f.BestDist = t.Dist; f.LastProgressTick = _tick; }
         if (f.Cover) return CoverTick(f, phys, target, ctx);
+        if (!f.Explicit && !CombatGeometry.CanGetAt(_w, target, t.Me))
+        {
+            EndFight(f, $"{f.TargetName} out of sight", phys, ctx);
+            return face;
+        }
         if (MobGaveUp(in t)) return face;
         t.Approaching = MobApproaching(f, t.Me, target, t.Dist);
         Sample(f, phys, target);
