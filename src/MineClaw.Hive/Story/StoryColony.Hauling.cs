@@ -182,6 +182,30 @@ public sealed partial class StoryColony
     /// <summary>The old way (benchmarks only): every gathering job is followed by a trip to storage.</summary>
     internal bool DepositEachJob { get; set; }
 
+    private readonly Dictionary<string, (string Zone, DateTimeOffset At)> _lastQuarryWork = new(StringComparer.OrdinalIgnoreCase);
+
+    // Picking up a nearby drop must not turn a miner into a dedicated hauler for its next trip.
+    private bool PrefersMining(PawnState p, PawnLive live) =>
+        !DepositEachJob && live.FreeSlots > NearlyFull
+        && p.Priorities.GetValueOrDefault(WorkTypes.Mine) is >= 1 and <= 4
+        && (p.Priorities.GetValueOrDefault(WorkTypes.Haul) is < 1 or > 4
+            || p.Priorities[WorkTypes.Mine] < p.Priorities[WorkTypes.Haul])
+        && ScheduleBlockAt(p, HourNow) is ScheduleBlocks.Work or ScheduleBlocks.Anything;
+
+    private bool ContinuesMining(PawnState p, PawnLive live) =>
+        PrefersMining(p, live) && (Candidate(WorkTypes.Mine, p, live) != null || WaitingForQuarry(p, live));
+
+    // Other miners finishing this layer is a brief handoff, not the end of the mining run. Only wait for leased cells,
+    // never a missing tool, a hazard or a failed target, and let the pawn move on after thirty seconds without progress.
+    private bool WaitingForQuarry(PawnState p, PawnLive live)
+    {
+        if (!PrefersMining(p, live) || !_lastQuarryWork.TryGetValue(p.Name, out var last)
+            || Now - last.At >= TimeSpan.FromSeconds(30)) return false;
+        var zone = Zones.FirstOrDefault(z => z.Id == last.Zone && IsQuarry(z) && z.Contains(live.Block.X, live.Block.Z));
+        return zone != null && Quarry(zone) is { Done: false, Spawner: null } q && !StairBroken(q) && !SealPending(q)
+            && q.Dig.Count > 0 && q.Dig.All(at => !Free("b:" + at, p.Name));
+    }
+
     /// <summary>
     /// After a gathering job the pawn keeps its loot and goes on when: it has more than <see cref="NearlyFull"/> free slots, its hours
     /// are still work (or anything), and there is another target of the same work for it. Otherwise one trip takes everything to

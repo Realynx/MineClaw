@@ -107,6 +107,25 @@ public sealed class StorySdkTests
     }
 
     [Fact]
+    public async Task A_storage_trip_does_not_build_or_escape_when_its_walk_fails()
+    {
+        var port = new FakeDirector(J("j1", "go", j =>
+        {
+            j["at"] = "2,64,2";
+            j["stash"] = new JsonArray(new JsonObject { ["to"] = "2,64,2", ["items"] = new JsonArray("log") });
+        }), J("j2", "end"));
+        using var rig = Rig.Js();
+        rig.Host.Story = port;
+        rig.On["goto"] = (_, _) => Task.FromResult(ActResult.Fail("no path: reachable by building"));
+        var s = await rig.Run(MineClaw.Hive.Story.StoryColonies.PawnCode(), "story_pawn");
+        Assert.True(s.Ok, s.Outcome);
+        var calls = rig.Norm();
+        Assert.Single(calls, c => c.StartsWith("goto "));
+        Assert.DoesNotContain(calls, c => c.StartsWith("dig ") || c.StartsWith("place ") || c.StartsWith("deposit ") || c.Contains("\"build\":true"));
+        Assert.StartsWith("maid_chan j1 failed no path", port.Reports.First());
+    }
+
+    [Fact]
     public async Task The_pawn_script_runs_each_job_with_the_usual_primitives_and_reports()
     {
         var port = new FakeDirector(

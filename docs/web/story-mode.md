@@ -474,6 +474,12 @@ later while they keep mining until the job is done or their inventory is full."
 
 - After a gathering job (a designation, a zone task, a crop, a catch, a furnace's output), the pawn keeps what it picked up and goes on
   to its next job. That is its next target of the same work when there is one.
+- A pawn that prioritizes mining over hauling resumes available mining after an incidental pickup instead of unloading a small
+  load. At a quarry, it waits locally for up to 30 seconds after its last dig when coworkers hold every remaining cell in the layer.
+  A full inventory, changed schedule, higher-priority work, or a stalled/blocked layer ends that wait.
+- Ordinary pawn travel does not excavate shortcuts. Storage trips use walkable routes, including the quarry's perimeter stair,
+  and report a failed route instead of retrying with scaffolding or a pillar. Explicit mining, building and rescue jobs retain their
+  own access actions.
 - One trip later takes everything to storage, by the usual rules (every chest of the load in one trip). That trip comes when:
   - it has 2 free slots or fewer;
   - no target of that work is left for it;

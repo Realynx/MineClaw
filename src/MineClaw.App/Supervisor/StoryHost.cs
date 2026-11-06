@@ -138,7 +138,7 @@ public sealed class StoryHost : IStoryHost
             // A pawn never digs a block for nothing (iron ore with a wooden pickaxe: refused) and keeps the tool the director chose.
             pc.StrictHarvest = true;
             pc.PreferHeldTool = true;
-            pc.DigThroughDetours = true; // a long way round under ground is dug short through the dirt (normal world)
+            pc.DigThroughDetours = false; // ordinary travel follows the quarry stair; excavation belongs to an explicit job
             pc.NoOverflowChests = true; // a full storage is the colony's to say, never a chest put down by itself (Fox 11-05)
         }
         var v = lane.Library.Resolve(StoryColonies.PawnScript, null, out var why);

@@ -100,6 +100,71 @@ public sealed class StoryLootBatchingTests(ITestOutputHelper output)
         Assert.Empty(c.Designations);
     }
 
+    [Theory]
+    [InlineData(1, 3, 30, "dig")]
+    [InlineData(3, 1, 30, "go")]
+    [InlineData(1, 3, 2, "go")]
+    public void An_incidental_pickup_does_not_force_a_lightly_loaded_miner_to_storage(int mine, int haul, int slots, string nextKind)
+    {
+        var (c, h, w) = StoryRig.Make();
+        Only(c, WorkTypes.Mine, WorkTypes.Haul);
+        c.StorageOp("set", [Chest], null, null, null);
+        c.SetHaulOptions(null, null, null, pillarStack: 0);
+        var pawn = c.Pawns.Values.Single();
+        pawn.Priorities[WorkTypes.Mine] = mine;
+        pawn.Priorities[WorkTypes.Haul] = haul;
+        w.Ents.Add(new StoryEntity(1, "item", "dirt", 2.5, 64, 2.5, ItemId: 3, Count: 3));
+        var pickup = c.Next();
+        Assert.Equal("collect", Kind(pickup));
+        w.Ents.Clear();
+        h.Lives[c.P()] = new PawnLive(true, 20, 20, 1.5, 64, 1.5, 0, null, [new Stack(3, 0, 3)], true, slots);
+        c.Report(c.P(), Id(pickup), "done", null, null);
+        w.Set(3, 64, 3, 3);
+        c.Designate("add", "mine", null, [new P3(3, 64, 3)], "all");
+        var next = c.Next();
+        Assert.Equal(nextKind, Kind(next));
+        Assert.Equal(nextKind == "go", Stores(next));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void A_miner_waits_briefly_for_other_miners_to_finish_the_layer(bool stalled)
+    {
+        var clock = new Clock(DateTimeOffset.Parse("2026-11-06T06:00:00Z"));
+        var (c, h, w) = StoryRig.Make(2, time: clock);
+        Only(c, WorkTypes.Mine);
+        c.SetHaulOptions(null, null, null, pillarStack: 0);
+        c.StorageOp("set", [Chest], null, null, null);
+        c.ZoneOp("add", "mine", Area.Of(10, 63, 10, 11, 63, 11));
+        // A 2x2 top layer: one permanent step, two remaining blocks, one already cleared.
+        w.Set(11, 63, 11, 0);
+        h.Lives[c.P()] = FakeStoryHost.Live(10, 64, 10);
+        h.Lives[c.P(1)] = FakeStoryHost.Live(10, 64, 10);
+        var first = c.Next();
+        var other = c.Next(1);
+        Assert.Equal("dig", Kind(first));
+        Assert.Equal("dig", Kind(other));
+        var at = At(first);
+        w.Set(at.X, at.Y, at.Z, 0);
+        h.Lives[c.P()] = FakeStoryHost.Live(10, 64, 10, inv: new Stack(4, 0, 3));
+        c.Report(c.P(), Id(first), "done", null, null);
+        var waiting = c.Next();
+        Assert.Equal("hold", Kind(waiting));
+        Assert.False(Stores(waiting));
+        c.Report(c.P(), Id(waiting), "done", null, null);
+        if (stalled) clock.Now += TimeSpan.FromSeconds(31);
+        else
+        {
+            at = At(other);
+            w.Set(at.X, at.Y, at.Z, 0);
+            c.Report(c.P(1), Id(other), "done", null, null);
+        }
+        var next = c.Next();
+        Assert.Equal(stalled ? "go" : "dig", Kind(next));
+        Assert.Equal(stalled, Stores(next));
+    }
+
     [Fact]
     public void Sleep_hours_and_a_draft_end_the_run_the_first_with_a_trip_to_storage_the_second_keeping_the_loot()
     {

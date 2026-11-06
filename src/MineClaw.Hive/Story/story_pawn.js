@@ -1,4 +1,4 @@
-// purpose: Story Mode pawn: ask the colony director for the next job, do it with the usual primitives, report (no model, ever)
+// purpose: Story pawn: fetch jobs, execute, report (no model)
 onInterrupt('*', () => 'resume')
 const each = (list, f) => {
   for (const s of list || []) { const r = f(s); if (!ok(r)) return r }
@@ -56,7 +56,7 @@ function harvestAt(j, a) {
 }
 // Job actions (a: j.at); fallback: story.work.
 const acts = new Map(Object.entries({
-  go: (j, a) => story.go(a, j.dist || 1),
+  go: (j, a) => (j.stash ? go : story.go)(a, j.dist || 1),
   chop: chopTree,
   dig: (j, a) => { story.ready(j); const t = reach(a, 3); return ok(t) ? digAt(j) : t },
   harvest: harvestAt,

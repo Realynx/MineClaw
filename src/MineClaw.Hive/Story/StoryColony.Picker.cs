@@ -232,7 +232,7 @@ public sealed partial class StoryColony
 
     /// <summary>After gathering work (a designation, a zone, a crop, fishing) the pawn keeps what it gathered while it goes on.</summary>
     private bool StaysGathering(PawnState p, PawnLive live, bool after, string? src) =>
-        after && src is "designation" or "zone" or "crop" or "fish" && KeepGathering(p, live);
+        ContinuesMining(p, live) || after && src is "designation" or "zone" or "crop" or "fish" && KeepGathering(p, live);
 
     // ---------------------------------------------------------------- work
 
@@ -275,6 +275,8 @@ public sealed partial class StoryColony
                 if (HaulJob(p, live, riskOnly: true) is { } risky) return risky;
             }
             if (Candidate(t, p, live) is { } j) return j;
+            if (t == WorkTypes.Mine && WaitingForQuarry(p, live))
+                return Hold("waiting for the quarry's next layer", "working", s: 2, type: WorkTypes.Mine);
         }
         return null;
     }
@@ -622,6 +624,8 @@ public sealed partial class StoryColony
         if (j.Lease != null) { _leaseFails.Remove(j.Lease); _softFails.Remove(j.Lease); }
         Reached(p, j); // it isn't stuck; a rescue's blocks arrived (StoryColony.Rescue.cs)
         if (WorkTypes.Known(j.Type)) _lastWork[p.Name] = j.Type; // what it gathers next keeps its loot (KeepGathering)
+        if (j.Type == WorkTypes.Mine && j.Source == "zone" && j.Kind == "dig" && j.SourceId is { } zone)
+            _lastQuarryWork[p.Name] = (zone, Now);
         HauledDone(j); // every drop a collect trip leased: its haul designation is done (StoryColony.EntityMarks.cs)
         if (j.Source == "deliver") _leaseFails.Remove("deliver:" + p.Name);
         if (DoneBySource.TryGetValue(j.Source, out var done)) done(this, p, j, note);

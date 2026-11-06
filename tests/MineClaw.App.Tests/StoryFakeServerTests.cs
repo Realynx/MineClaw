@@ -909,6 +909,38 @@ public sealed class StoryFakeServerTests(ITestOutputHelper output)
     private static P3 QuarryStep(int k) =>
         StoryQuarry.Step(StoryQuarry.Ring(ZoneCells.Rect(QuarryX, QuarryZ, QuarryX + QuarrySize - 1, QuarryZ + QuarrySize - 1))!, 63, k);
 
+    [Theory]
+    [InlineData("b1.8.1")]
+    [InlineData("1.12.2")]
+    public Task A_storage_trip_from_a_deep_quarry_walks_the_stair_without_digging_or_pillaring(string version) => Colony(version, 1, async x =>
+    {
+        var c = x.C;
+        var srv = x.Servers[x.Pawns[0]];
+        var chest = new P3(19, 64, 16);
+        Only(x, WorkTypes.Haul);
+        c.SetHaulOptions(null, null, null, pillarStack: 0);
+        Assert.Null(c.StorageOp("set", [chest], null, null, null).Error);
+        Assert.True(await Until(() => c.StorageAt(chest)!.Contents.Any(s => s.Id == Blocks.Cobblestone && s.Count >= 64), 30_000), x.Diag());
+        // Only the modern fake server persists container slots; both versions execute real movement and report the deposit.
+        if (x.Modern) Assert.True(await Until(() => InChest(srv, chest, i => i.Id == Blocks.Cobblestone) >= 64, 5000), x.Diag());
+        Assert.Equal(0, x.Placed.GetValueOrDefault(x.Pawns[0])); // counts every terrain change, both digs and placements
+        for (int k = 0; k <= QuarryLayer; k++)
+            Assert.NotEqual(0, srv.Blocks.GetValueOrDefault((QuarryStep(k).X, QuarryStep(k).Y, QuarryStep(k).Z)));
+        lock (x.Log) Assert.DoesNotContain(x.Log, l => l.Contains("detour dug short"));
+    }, s =>
+    {
+        for (int qx = -4; qx <= 22; qx++)
+            for (int qz = -4; qz <= 22; qz++)
+                for (int y = 40; y < 58; y++) s.Blocks[(qx, y, qz)] = Blocks.Stone;
+        for (int k = 0; k <= QuarryLayer; k++)
+            for (int qx = QuarryX; qx < QuarryX + QuarrySize; qx++)
+                for (int qz = QuarryZ; qz < QuarryZ + QuarrySize; qz++)
+                    if (new P3(qx, 63 - k, qz) != QuarryStep(k)) s.Blocks.Remove((qx, 63 - k, qz));
+        s.SpawnAt = (17.5, 53, 16.5);
+        s.Blocks[(19, 64, 16)] = Blocks.Chest;
+        s.Chests[(19, 64, 16)] = Enumerable.Repeat(ItemStack.Empty, 27).ToArray();
+    });
+
     /// <summary>
     /// Live 11-04 story-1 (Fox: "The quarry is not being dug any more because the pawns refuse to go into it. They get the idea to do it,
     /// they go to do it, they get almost down the stairs and then cancel that idea"; "dig 181,57,366 failed: can't reach stone" ×14, the
