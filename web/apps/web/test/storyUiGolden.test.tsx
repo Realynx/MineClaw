@@ -172,6 +172,24 @@ describe('ColonyPanel', () => {
           blocked: [{ pawn: o.pawns[1]!.name, reason: 'server full' }] as never,
         }),
       noneOnline: () => panel({ state: { ...o, pawns: o.pawns.map((p) => ({ ...p, online: false })) } }),
+      // No upper limit (Fox 11-05): 40 wanted, 18 in, the line says which real limit keeps the rest out.
+      crowd: () =>
+        panel({
+          state: {
+            ...o,
+            seats: {
+              ...o.seats!,
+              online: 18,
+              wanted: 40,
+              pending: 22,
+              waiting: 22,
+              waitingReason: 'server full (20 slots, 2 kept for poofimafox and kiwi)',
+              slots: 20,
+              keptFor: ['poofimafox', 'kiwi'],
+              memoryRoom: 9,
+            },
+          },
+        }),
     });
     expect(out).toMatchSnapshot();
   });
@@ -394,6 +412,9 @@ describe('ColonistBar', () => {
         controls: () =>
           colonistBar({ selected: [names[0]!], pending: 2, onAdd: vi.fn(), onRemove: vi.fn(), onBringAll: vi.fn() }),
         removeOnly: () => colonistBar({ selected: names, onRemove: vi.fn(), pending: -1 }),
+        // Many waiting (no upper limit): one "+22 waiting" tile with the reason on hover, not 22 tiles.
+        many: () =>
+          colonistBar({ pending: 22, pendingReason: 'server full (20 slots, 2 kept for poofimafox and kiwi)', onAdd: vi.fn() }),
         addOnly: () => colonistBar({ onAdd: vi.fn(), onBringAll: null }),
         noAi: () => colonistBar({ bodies: bodies().filter((b) => b.kind === 'pawn'), onBringAll: vi.fn() }),
       }),

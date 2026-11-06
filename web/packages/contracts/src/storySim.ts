@@ -180,6 +180,9 @@ interface Colony {
   /** The server's free seats and those kept for offline regulars (mock). */
   capFree: number;
   kept: number;
+  /** The server's max players, and the bodies the memory ceiling still takes (null = no ceiling) (mock). */
+  slots: number;
+  memoryRoom: number | null;
   pawns: Map<string, PawnSim>;
   zones: Map<Key, Fn<StoryZone>>;
   designations: Map<Key, Fn<StoryDesignation>>;
@@ -659,6 +662,12 @@ const SIM_ARCHITECT: Array<
 ];
 
 const NAMES = ['Ash', 'Bryn', 'Cato', 'Dara', 'Elio', 'Fenn', 'Gwen', 'Hollis', 'Ivo', 'June', 'Kit', 'Lark'];
+
+/** "a", "a and b", "a, b and c"; "regulars" when the names aren't known. */
+function andList(names: readonly string[]): string {
+  if (!names.length) return 'regulars';
+  return names.length === 1 ? names[0]! : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
+}
 const TRAITS = [
   { id: 'night_owl', label: 'Night owl', effect: 'Works best at night' },
   { id: 'brave', label: 'Brave', effect: 'Stays in a fight longer' },
@@ -804,6 +813,8 @@ export class StorySim {
       tod: 3000,
       capFree: 6,
       kept: 2,
+      slots: 20,
+      memoryRoom: null,
       pawns: new Map(),
       zones: new Map(),
       designations: new Map(),
@@ -831,15 +842,33 @@ export class StorySim {
       gear: newSimGear(),
       roles: defaultRoles(),
     };
-    for (let i = 0; i < req.pawns; i++) {
+    // No upper limit: as many as the server takes come now (its slots less the seats kept for regulars, and memory), the rest wait
+    // for room ("joining…").
+    const come = Math.min(req.pawns, Math.max(0, Math.min(c.slots - c.kept, c.memoryRoom ?? Number.MAX_SAFE_INTEGER)));
+    if (come <= 0 && req.pawns > 0) {
+      this.nextId--;
+      throw Object.assign(new Error(`no pawn could come: ${this.waitingReason(c, req.pawns)}`), { status: 503 });
+    }
+    for (let i = 0; i < come; i++) {
       const display = NAMES[(i + n * 3) % NAMES.length]!;
-      const name = `maid_s${n}_${display.toLowerCase()}`;
+      const name = `maid_s${n}_${display.toLowerCase()}${i >= NAMES.length ? i : ''}`;
       c.pawns.set(name, this.newPawn(c, name, display, i));
+    }
+    // A founding that fills the server leaves only the regulars' seats (a smaller one keeps the seeded seat numbers).
+    if (come < req.pawns) {
+      c.wanted = req.pawns;
+      c.capFree = c.slots - come;
     }
     this.colonies.set(id, c);
     // Workbenches and chests already standing near home count from the start.
     this.discover(c, [home[0] - 24, home[1] - 6, home[2] - 24, home[0] + 24, home[1] + 10, home[2] + 24]);
-    this.alert(c, 'info', `${req.name} was founded with ${req.pawns} pawn${req.pawns === 1 ? '' : 's'}.`);
+    this.alert(
+      c,
+      'info',
+      come < req.pawns
+        ? `${req.name} was founded: ${come} of ${req.pawns} pawns came now; the other ${req.pawns - come} wait (${this.waitingReason(c, req.pawns - come)}).`
+        : `${req.name} was founded with ${req.pawns} pawn${req.pawns === 1 ? '' : 's'}.`,
+    );
     return { id };
   }
 
@@ -955,12 +984,20 @@ export class StorySim {
 
   /** The colony's seats: online now, wanted, the cap's free seats, those kept for regulars, pawns waiting for one. */
   private seatsState(c: Colony) {
+    const online = [...c.pawns.values()].filter((p) => p.p.online).length;
+    const wanted = Math.max(c.wanted ?? 0, c.pawns.size);
+    const pending = Math.max(0, (c.wanted ?? 0) - [...c.pawns.values()].filter((p) => !p.p.leaving).length);
     return {
-      online: [...c.pawns.values()].filter((p) => p.p.online).length,
-      wanted: Math.max(c.wanted ?? 0, c.pawns.size),
+      online,
+      wanted,
       capFree: this.seatsOf(c).capFree,
       keptForRegulars: this.seatsOf(c).kept,
-      pending: Math.max(0, (c.wanted ?? 0) - [...c.pawns.values()].filter((p) => !p.p.leaving).length),
+      pending,
+      waiting: Math.max(0, wanted - online),
+      waitingReason: this.waitingReason(c, pending),
+      keptFor: this.keptFor(c),
+      slots: c.slots,
+      memoryRoom: c.memoryRoom,
     };
   }
 
@@ -1015,12 +1052,49 @@ export class StorySim {
     return { capFree: c.capFree, kept: c.kept };
   }
 
-  /** Mock knobs: the free seats and those kept for offline regulars. */
-  setSeats(id: string, capFree: number, kept: number): void {
+  /**
+   * Mock knobs: the free seats, those kept for offline regulars, and the bodies the memory ceiling still takes (null = none). Pawns
+   * waiting for room join as it frees up (the bot's seat retry).
+   */
+  setSeats(id: string, capFree: number, kept: number, memoryRoom: number | null = null): void {
     const c = this.colony(id);
     c.capFree = capFree;
     c.kept = kept;
+    c.memoryRoom = memoryRoom;
     for (const p of c.pawns.values()) p.rev = this.bump(c);
+    const waiting = Math.max(0, (c.wanted ?? 0) - this.staying(c).length);
+    const now = Math.min(waiting, this.room(c));
+    if (now > 0 && !c.released) this.join(c, now);
+  }
+
+  /** How many more pawns come in now: the free seats (never the regulars') and the memory ceiling's room. */
+  private room(c: Colony): number {
+    return Math.max(0, Math.min(c.capFree - c.kept, c.memoryRoom ?? Number.MAX_SAFE_INTEGER));
+  }
+
+  /** `n` new pawns join now, taking seats (and memory). */
+  private join(c: Colony, n: number): void {
+    for (let i = 0; i < n; i++) this.joinPawn(c);
+    c.capFree -= n;
+    if (c.memoryRoom !== null) c.memoryRoom -= n;
+  }
+
+  /**
+   * Why `waiting` pawns can't all come now, naming the limit that binds (the bot's SeatFacts.WhyWaiting): "server full (20 slots,
+   * 2 kept for poofimafox and kiwi)" or "memory: room for 3 more". Null when they all fit (they're on their way).
+   */
+  private waitingReason(c: Colony, waiting: number): string | null {
+    const seats = Math.max(0, c.capFree - c.kept);
+    if (waiting <= 0 || this.room(c) >= waiting) return null;
+    if (c.memoryRoom !== null && c.memoryRoom < seats) return `memory: room for ${Math.max(0, c.memoryRoom)} more`;
+    const kept = c.kept > 0 ? `, ${c.kept} kept for ${andList(this.keptFor(c))}` : '';
+    return `server full (${c.slots} slots${kept})`;
+  }
+
+  /** The offline regulars the kept seats are for (mock: Fox and Robin's accounts). */
+  private keptFor(c: Colony): string[] {
+    const names = ['poofimafox', 'kiwi'];
+    return c.kept <= names.length ? names.slice(0, c.kept) : [];
   }
 
   private capReason(c: Colony): string {
@@ -1626,22 +1700,20 @@ export class StorySim {
     return {
       pawns: here,
       wanted: c.wanted ?? here.length,
-      pending: Array.from({ length: pending }, () => ({ reason: why ?? 'waiting for a seat' })),
+      pending: pending ? [{ reason: why ?? 'waiting for a seat', count: pending }] : [],
       leaving: [...c.pawns.values()].filter((p) => p.p.leaving).map((p) => p.p.name),
       blocked: why && pending ? [{ reason: why }] : [],
     };
   }
 
-  /** pawns add: up to 12 wanted; as many join now as the seats allow (the rest wait); why some wait (null: none do). */
+  /** pawns add, any number (no upper limit): as many join now as the seats and memory allow, the rest wait; why some wait (null: none). */
   private addPawns(c: Colony, count: number): string | null {
     if (c.released) throw Object.assign(new Error('the colony is released: resume it first'), { status: 400 });
     const wanted = Math.max(c.wanted ?? 0, this.staying(c).length);
-    if (wanted + count > 12) throw Object.assign(new Error(`a colony has at most 12 pawns (${wanted} now)`), { status: 400 });
     c.wanted = wanted + count;
-    const now = Math.max(0, Math.min(count, c.capFree - c.kept));
-    for (let i = 0; i < now; i++) this.joinPawn(c);
-    c.capFree -= now;
-    const why = now < count ? this.capReason(c) : null;
+    const now = Math.min(count, this.room(c));
+    const why = this.waitingReason(c, count);
+    this.join(c, now);
     this.alert(c, 'info', `${count} pawn${count === 1 ? '' : 's'} joining${why ? ` (${count - now} wait: ${why})` : ''}.`);
     return why;
   }

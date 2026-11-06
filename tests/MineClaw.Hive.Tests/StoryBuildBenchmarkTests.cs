@@ -205,4 +205,21 @@ public sealed class StoryBuildBenchmarkTests(ITestOutputHelper output)
         foreach (var l in r.FailLines) output.WriteLine("  " + l);
         Assert.Equal(r.Total, r.Placed);
     }
+
+    /// <summary>No upper limit on pawns (Fox 11-05): the same build with 30 and 50 pawns finishes, and the director's real time per
+    /// job (the whole simulated build, picks, reports and ticks) stays about what it is with 10.</summary>
+    [Theory]
+    [InlineData(10)]
+    [InlineData(30)]
+    [InlineData(50)]
+    public void Many_pawns_finish_the_build_and_each_job_stays_cheap(int pawns)
+    {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var r = Run(pawns, FloorAndWalls(exact: false));
+        double perJob = sw.Elapsed.TotalMilliseconds / Math.Max(1, r.Jobs);
+        output.WriteLine($"{pawns} pawns: {r.Placed}/{r.Total} in {r.Seconds:0} s simulated = {r.PerMinute:0.0} blocks/min, idle {r.IdlePct:0}%, {r.Jobs} jobs, " +
+                         $"{r.Failures} failed ({r.Busy} chest busy, {r.Occupied} occupied); director {sw.Elapsed.TotalMilliseconds:0} ms real = {perJob:0.00} ms a job");
+        Assert.Equal(r.Total, r.Placed);
+        Assert.True(perJob < 20, $"{perJob:0.00} ms a job at {pawns} pawns");
+    }
 }

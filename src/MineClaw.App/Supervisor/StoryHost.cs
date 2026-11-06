@@ -77,6 +77,20 @@ public sealed class StoryHost : IStoryHost
 
     public (int Free, int Kept)? Seats() => _hierarchy?.Seats();
 
+    private sealed record SeatCache(MineClaw.Hive.Slots.SeatFacts? Facts, long At);
+    private volatile SeatCache? _seatInfo;
+
+    /// <summary>The seats line's facts (the hierarchy's seats and the memory probe), read at most once a second: every state poll
+    /// shows them.</summary>
+    public MineClaw.Hive.Slots.SeatFacts? SeatInfo()
+    {
+        long now = Environment.TickCount64;
+        if (_seatInfo is { } cached && now - cached.At < 1000) return cached.Facts;
+        var facts = _hierarchy?.SeatInfo();
+        _seatInfo = new SeatCache(facts, now);
+        return facts;
+    }
+
     public IReadOnlyList<(string Account, string? Why)> Bring(string colony, IReadOnlyList<string> accounts, bool overCap) =>
         _hierarchy is { } h ? h.BringGroup(colony, accounts, StoryColonies.PawnScript, overCap)
             : accounts.Select(a => (a, (string?)"the hive is off: Story Mode needs Hive:Enabled and Hive:Subhives:Enabled")).ToList();

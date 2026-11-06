@@ -78,13 +78,20 @@ public sealed class SupervisorStoryRouteTests
         Assert.Empty(j["pending"]!.AsArray());
         Assert.Empty(j["blocked"]!.AsArray());
         Assert.Equal(400, (await Call(r, "POST", $"/api/story/colonies/{id}/pawns", new { op = "add", count = 0 })).Status);
-        Assert.Equal(400, (await Call(r, "POST", $"/api/story/colonies/{id}/pawns", new { op = "add", count = 9 })).Status); // past 12
+        // No upper limit (Fox 11-05): 40 more is fine.
+        var (big, bj) = await Call(r, "POST", $"/api/story/colonies/{id}/pawns", new { op = "add", count = 40 });
+        Assert.Equal(200, big);
+        Assert.Equal(44, bj!["wanted"]!.GetValue<int>());
+        Assert.Equal(44, bj["pawns"]!.AsArray().Count);
+        var (founded, fj) = await Call(r, "POST", "/api/story/colonies", new { name = "Crowd", pawns = 40 });
+        Assert.Equal(200, founded);
+        Assert.NotNull(fj!["id"]);
         Assert.Equal(400, (await Call(r, "POST", $"/api/story/colonies/{id}/pawns", new { op = "kick" })).Status);
         Assert.Equal(404, (await Call(r, "POST", $"/api/story/colonies/{id}/pawns", new { op = "remove", pawn = "nobody" })).Status);
         var gone = j["pawns"]![0]!.GetValue<string>();
         (s, j) = await Call(r, "POST", $"/api/story/colonies/{id}/pawns", new { op = "remove", pawn = gone });
         Assert.Equal(200, s);
-        Assert.Equal(3, j!["wanted"]!.GetValue<int>());
+        Assert.Equal(43, j!["wanted"]!.GetValue<int>());
         Assert.Equal(gone, j["leaving"]![0]!.GetValue<string>());
 
         // A growing zone: a plant this version grows, update, seek seeds.
@@ -155,7 +162,7 @@ public sealed class SupervisorStoryRouteTests
         var (r, h, _, _, _) = Make();
         Assert.Equal(400, (await Call(r, "POST", "/api/story/colonies", new { name = "x", pawns = 0 })).Status);
         Assert.Equal(400, (await Call(r, "POST", "/api/story/colonies", new { name = "", pawns = 2 })).Status);
-        Assert.Equal(400, (await Call(r, "POST", "/api/story/colonies", new { name = "x", pawns = 13 })).Status);
+        Assert.Equal(400, (await Call(r, "POST", "/api/story/colonies", new { name = "x", pawns = 1.5 })).Status); // a whole number, no upper limit
         var id = await Colony(r);
         Assert.Equal("story-1", id);
         var (_, list) = await Call(r, "GET", "/api/story");

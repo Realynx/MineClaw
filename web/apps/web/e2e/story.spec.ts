@@ -663,6 +663,17 @@ test('+ adds a joining pawn; − removes the selected one after a confirm; a gro
   expect(body(await add)).toEqual({ op: 'add', count: 1 });
   await expect(bar.getByTestId('bar-joining')).toHaveCount(1);
 
+  // No upper limit (Fox 11-05): Shift+click asks how many; 30 more are accepted and wait as one "+31 waiting" tile with the reason.
+  const many = post(page, /\/api\/story\/colonies\/[^/]+\/pawns$/);
+  await bar.getByTestId('bar-add-pawn').click({ modifiers: ['Shift'] });
+  await bar.getByLabel('How many pawns').fill('30');
+  await bar.getByRole('button', { name: 'Add', exact: true }).click();
+  expect(body(await many)).toEqual({ op: 'add', count: 30 });
+  const waiting = bar.getByTestId('bar-joining');
+  await expect(waiting).toHaveCount(1);
+  await expect(waiting).toHaveAttribute('data-count', '31');
+  await expect(waiting).toHaveAttribute('title', /server full \(20 slots, 2 kept for poofimafox and kiwi\)/);
+
   const here = await portraits.count();
   expect(here).toBeGreaterThanOrEqual(before); // the new one is pending, not a portrait
   await portraits.first().click();

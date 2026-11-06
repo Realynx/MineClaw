@@ -173,20 +173,56 @@ public sealed partial class StoryColony
     private static List<P3> WithRoom(IEnumerable<P3> cells, List<P3> taken, out double room, double[]? rooms = null)
     {
         var all = cells.ToList();
+        var near = new TakenGrid(taken);
         foreach (var r in rooms ?? Room)
         {
             var ok = new List<P3>();
             foreach (var c in all)
-            {
-                bool free = true; // a loop, not taken.All(lambda over c): a closure per cell
-                foreach (var t in taken)
-                    if (StoryWander.Gap(c, t) < r || t == c) { free = false; break; }
-                if (free) ok.Add(c);
-            }
+                if (near.Free(c, r)) ok.Add(c);
             if (ok.Count > 0) { room = r; return ok; }
         }
         room = 0;
         return [];
+    }
+
+    /// <summary>
+    /// The taken spots bucketed by 4×4 columns: a cell checks only the spots in the buckets around it (a room is at most 2.5), never
+    /// every pawn and player. A colony has no upper limit on pawns: at 50 an idle pick was ~600 cells × ~100 spots per room tried.
+    /// </summary>
+    private sealed class TakenGrid
+    {
+        private const int Size = 4; // ≥ any room asked for; a larger one scans every spot
+        private readonly Dictionary<(int, int), List<P3>> _buckets = new();
+        private readonly List<P3> _all;
+
+        public TakenGrid(List<P3> taken)
+        {
+            _all = taken;
+            foreach (var t in taken)
+            {
+                var k = (t.X >> 2, t.Z >> 2);
+                if (!_buckets.TryGetValue(k, out var l)) _buckets[k] = l = new List<P3>();
+                l.Add(t);
+            }
+        }
+
+        /// <summary>No spot nearer than <paramref name="r"/> to <paramref name="c"/> (nor on it).</summary>
+        public bool Free(P3 c, double r)
+        {
+            if (r > Size) return FreeOf(_all, c, r);
+            int bx = c.X >> 2, bz = c.Z >> 2;
+            for (int dx = -1; dx <= 1; dx++)
+                for (int dz = -1; dz <= 1; dz++)
+                    if (_buckets.TryGetValue((bx + dx, bz + dz), out var l) && !FreeOf(l, c, r)) return false;
+            return true;
+        }
+
+        private static bool FreeOf(List<P3> spots, P3 c, double r)
+        {
+            foreach (var t in spots) // a loop, not All(lambda over c): a closure per cell
+                if (StoryWander.Gap(c, t) < r || t == c) return false;
+            return true;
+        }
     }
 
     /// <summary>

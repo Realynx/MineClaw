@@ -290,16 +290,16 @@ export function focusZone(c: Story, z: StoryZone) {
 export function addPawns(c: Story, n: number) {
   void c
     .write('story.pawns', { op: 'add', count: n })
-    .then(
-      (out) =>
-        c.say(
-          out.blocked.length
-            ? `${n - out.pending.length} joining now; ${out.pending.length} wait: ${out.blocked[0]!.reason}`
-            : `${plural(n, 'pawn')} joining`,
-          out.blocked.length ? 'warn' : 'ok',
-        ),
-      warnOn(c),
-    );
+    .then((out) => {
+      // The pawns still to come are one entry per reason with a count (no upper limit: never one entry per pawn).
+      const waiting = Math.min(n, out.pending.reduce((sum, p) => sum + p.count, 0));
+      c.say(
+        out.blocked.length
+          ? `${n - waiting} joining now; ${waiting} wait: ${out.blocked[0]!.reason}`
+          : `${plural(n, 'pawn')} joining`,
+        out.blocked.length ? 'warn' : 'ok',
+      );
+    }, warnOn(c));
 }
 
 /** A pawn leaves the colony (its items go to storage). */

@@ -65,8 +65,13 @@ main (admin root, default hive, brain Opus 5.5)
    list yet must leave one slot per offline regular (`SlotPolicy.CanSpawn`; subhive bodies count as running, and as pending until
    they are on the tab list); the **resource ceiling** (`Hive:Resources`, `Slots/ResourceCeiling`: memory headroom from the cgroup
    limit, used = max(estimate, kernel's measurement)) must fit the new hive process or body; `Hive:MaxClones` > 0 is an extra ceiling (0 = only
-   the player cap). Refusals say which ("player cap: only 1 slot free and 1 kept for offline regulars").
-4. **Whitelist add**: right before the login (`IHiveAccounts.BeforeLaunch`), through the command gate's scoped exception.
+   the player cap). Refusals say which ("player cap: only 1 slot free and 1 kept for offline regulars"). A Story Mode colony's group
+   spawn (`SpawnGroup`) has no count cap of its own, not even `Hive:Subhives:MaxPerSpawn`; `HiveHierarchy.SeatInfo` (`Slots/SeatFacts`)
+   gives the colony both limits with the server's slots and whom the kept seats are for (docs/web/story-mode.md "How many pawns").
+4. **Whitelist add**: right before the login (`IHiveAccounts.BeforeLaunch`), through the command gate's scoped exception. The lines
+   go out one at a time (`WhitelistManager`'s turn), each armed in the gate only when its turn comes, so a burst (a colony's 40 pawns
+   in login batches of 10) never outlives the gate's 15 s arm in main's paced chat queue; a launch waits `WhitelistWait` plus
+   `PerLine` (1 s) per line queued ahead of it.
 5. **Spawn/connect**: the existing supervisor launch (login throttle spacing: `JoinPacer`, one at a time on b1.8.1, `LaunchBatch` 10
    on 1.12.2; hello → welcome with the bus token) over the launcher's transport: an in-memory link to a hive in main's process
    (default), or a current-user-only pipe to a clone process.

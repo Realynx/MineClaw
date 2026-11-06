@@ -68,7 +68,7 @@ public sealed partial class SupervisorStoryRoutes
         return Reply(200, new JsonObject { ["id"] = c.Id, ["pawns"] = c.Pawns.Count, ["note"] = why });
     }
 
-    // {op:"add", count:1..12} | {op:"remove", pawn} → {pawns, wanted, pending:[{reason}], leaving, blocked:[{reason}]}.
+    // {op:"add", count ≥ 1 (no upper limit)} | {op:"remove", pawn} → {pawns, wanted, pending:[{reason}], leaving, blocked:[{reason}]}.
     private SupervisorReply PawnsAction(StoryColony c, JsonObject b) => (S(b, "op") ?? "") switch
     {
         "add" => AddPawns(c, b),
@@ -78,8 +78,8 @@ public sealed partial class SupervisorStoryRoutes
 
     private SupervisorReply AddPawns(StoryColony c, JsonObject b)
     {
-        if (b["count"] is not JsonValue cv || !cv.TryGetValue<int>(out var n) || n is < 1 or > StoryColony.MaxPawns)
-            return Bad($"count must be 1..{StoryColony.MaxPawns}");
+        if (b["count"] is not JsonValue cv || !cv.TryGetValue<int>(out var n) || n < 1)
+            return Bad("count must be a whole number, 1 or more");
         var (res, err) = Colonies.AddPawns(c, n);
         return err != null ? Bad(err) : Reply(200, res!);
     }

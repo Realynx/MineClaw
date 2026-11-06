@@ -20,7 +20,9 @@ public sealed class HiveClone
 /// </summary>
 public sealed class HiveOptions
 {
-    public int MaxClones { get; set; } = 4;
+    /// <summary>Trims only the legacy configured roster (<see cref="AllClones"/>); 0 (default) = no trim. Spawns are capped by
+    /// <c>HiveConfig.MaxClones</c> (also 0 = none), the player cap and the memory ceiling, never by this.</summary>
+    public int MaxClones { get; set; }
     /// <summary>Plain username list (legacy shape of the section); merged with <see cref="Clones"/>.</summary>
     public string[] CloneUsernames { get; set; } = [];
     public List<HiveClone> Clones { get; set; } = [];

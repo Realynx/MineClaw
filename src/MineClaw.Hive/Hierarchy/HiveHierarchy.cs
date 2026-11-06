@@ -216,6 +216,22 @@ public sealed class HiveHierarchy : IHiveAccounts
     }
 
     /// <summary>
+    /// <see cref="Seats"/> with what Story Mode shows: the server's slots, the offline regulars the kept seats are for, and how many
+    /// more in-process bodies the memory ceiling takes (null = no ceiling). Null without a bodies host.
+    /// </summary>
+    public SeatFacts? SeatInfo()
+    {
+        if (Bodies is not { } b) return null;
+        var f = Facts(b);
+        var d = SlotPolicy.CanSpawn(f.Slots, f.Regulars, f.Pending, _maxPlayersFallback);
+        var online = new HashSet<string>(f.Slots.Online, StringComparer.OrdinalIgnoreCase);
+        var keptFor = f.Regulars.Distinct(StringComparer.OrdinalIgnoreCase).Where(r => !online.Contains(r)).ToList();
+        int? room = Resources?.BodiesThatFit() is { } fit && fit != int.MaxValue ? fit : null;
+        string? why = room is <= 0 ? Resources?.CanAdd(0, 1).Why : null;
+        return new SeatFacts(Math.Max(0, d.Free), d.Reserved, SlotPolicy.Capacity(f.Slots, _maxPlayersFallback), keptFor, room, why);
+    }
+
+    /// <summary>
     /// "server full (player cap: 2 free, 2 kept for regulars)" (the regulars' seats would fit it: the owner may choose over_cap) or
     /// "server full (7/7 seats taken)" (nothing would): why one more can't log in.
     /// </summary>
@@ -305,13 +321,15 @@ public sealed class HiveHierarchy : IHiveAccounts
     {
         Tree.SetState(account, "running");
         if (!Whitelist.Accepts(account)) return;
+        // The adds go out one at a time (main's chat pacing): one queued behind others waits for them too (a colony's 40 pawns).
+        var wait = WhitelistWait + Whitelist.PerLine * Whitelist.Queued;
         var add = Whitelist.AddAsync(account, ct);
         try
         {
-            if (!await add.WaitAsync(WhitelistWait, ct).ConfigureAwait(false))
+            if (!await add.WaitAsync(wait, ct).ConfigureAwait(false))
                 _log.LogWarning("hive: whitelisting {Account} wasn't confirmed; launching anyway (a refused login yields the slot)", account);
         }
-        catch (TimeoutException) { _log.LogWarning("hive: whitelisting {Account} took over {S:0}s; launching anyway", account, WhitelistWait.TotalSeconds); }
+        catch (TimeoutException) { _log.LogWarning("hive: whitelisting {Account} took over {S:0}s; launching anyway", account, wait.TotalSeconds); }
     }
 
     public void Released(string account, string reason)
@@ -683,10 +701,12 @@ public sealed class HiveHierarchy : IHiveAccounts
         var got = new List<string>();
         string? why = null;
         var want = new Queue<string>((prefer ?? []).Where(p => !string.IsNullOrWhiteSpace(p)));
-        int target = Math.Min(Math.Max(1, n), Math.Max(1, MaxBodiesPerSpawn));
+        // No count cap of its own (not even Hive:Subhives:MaxPerSpawn, a brain's per-spawn knob): the player cap, the seats kept for
+        // regulars, the memory ceiling and an optional Hive:MaxClones stop it, each refusal saying which.
+        int target = Math.Max(1, n);
         while (got.Count < target && AddGroupBody(b, group, script, want, got, out why)) { }
         if (got.Count > 0) _log.LogInformation("hive: group {Group}: {N} script-only bodies ({Names})", group, got.Count, string.Join(", ", got));
-        return (got, got.Count < n ? why ?? (n > target ? $"max {target} per spawn" : null) : null);
+        return (got, got.Count < n ? why : null);
     }
 
     /// <summary>Allocates and logs in one more group body (added to <paramref name="got"/>); false, with why, when it can't.</summary>

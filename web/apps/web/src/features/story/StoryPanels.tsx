@@ -1073,11 +1073,26 @@ function capText(seats: NonNullable<StoryColonyState['seats']>): string {
   return ` · server: ${seats.capFree} seat${seats.capFree === 1 ? '' : 's'} free, ${seats.keptForRegulars ?? 0} kept for regulars`;
 }
 
+/**
+ * "8 of 20 pawns in game — server full (20 slots, 2 kept for poofimafox and kiwi) · memory: room for 9 more": a colony has no
+ * upper limit, so the line says which real limit keeps the rest out (or the free seats when nothing does).
+ */
 function SeatsLine({ seats }: { seats: NonNullable<StoryColonyState['seats']> }) {
+  const memory = seats.memoryRoom === null || seats.memoryRoom === undefined ? '' : ` · memory: room for ${seats.memoryRoom} more`;
   return (
     <div className="text-muted" data-testid="colony-seats">
       {seats.online} of {seats.wanted} pawns in game
-      {capText(seats)}
+      {seats.waitingReason ? (
+        <>
+          {' — '}
+          <span className="text-warn" data-testid="colony-seats-reason">
+            {seats.waitingReason}
+          </span>
+        </>
+      ) : (
+        capText(seats)
+      )}
+      {memory}
     </div>
   );
 }
@@ -1339,7 +1354,7 @@ export function NewColony({
             className="h-7 w-7 px-0"
             aria-label="Fewer pawns"
             disabled={n <= 1}
-            onClick={() => setN((v) => Math.max(1, v - 1))}
+            onClick={(e) => setN((v) => Math.max(1, v - (e.shiftKey ? 10 : 1)))}
           >
             −
           </Button>
@@ -1350,14 +1365,15 @@ export function NewColony({
           >
             {n}
           </output>
+          {/* No upper limit (Fox 11-05): the server's seats and memory decide how many come now; the rest wait. Shift: ±10. */}
           <Button
             type="button"
             size="sm"
             variant="ghost"
             className="h-7 w-7 px-0"
             aria-label="More pawns"
-            disabled={n >= 12}
-            onClick={() => setN((v) => Math.min(12, v + 1))}
+            title="More pawns (Shift: 10 more)"
+            onClick={(e) => setN((v) => v + (e.shiftKey ? 10 : 1))}
           >
             +
           </Button>
@@ -1376,7 +1392,10 @@ export function NewColony({
           'Settles at the map centre.'
         )}
       </p>
-      <p className="text-[10.5px] text-subtle">Pawns are script-only bodies running the colony script.</p>
+      <p className="text-[10.5px] text-subtle">
+        Pawns are script-only bodies running the colony script. Any number: as many as the server&apos;s seats and memory allow come
+        now, the rest join as room frees up.
+      </p>
       <Button type="submit" size="sm" variant="primary" disabled={!canWrite}>
         Found colony
       </Button>

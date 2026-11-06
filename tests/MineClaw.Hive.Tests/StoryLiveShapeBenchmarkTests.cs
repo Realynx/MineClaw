@@ -188,7 +188,7 @@ public sealed class StoryLiveShapeBenchmarkTests(ITestOutputHelper output)
 
     internal sealed record Numbers(double PickMs, double ReportMs, double TickMs, double StateMs, double ArchitectMs, double ArchitectP95, double StateP95,
         double SecondMs, long Blocks, long Loads, long EntityLists, int LiveCalls, int Jobs, double PickKb = 0, double ReportKb = 0, double TickKb = 0,
-        double StateKb = 0, double ArchitectKb = 0, int Picks = 0);
+        double StateKb = 0, double ArchitectKb = 0, int Picks = 0, double DeltaChars = 0);
 
     /// <summary>Runs <paramref name="seconds"/> simulated seconds (warm-up excluded) and returns the costs per second.</summary>
     internal static Numbers Run(StoryColony c, LiveShapeHost h, int seconds)
@@ -201,7 +201,7 @@ public sealed class StoryLiveShapeBenchmarkTests(ITestOutputHelper output)
         h.Counting.Reset();
         h.LiveCalls = 0;
         int jobs = 0, pickCount = 0;
-        long pickB = 0, reportB = 0, tickB = 0, stateB = 0, archB = 0;
+        long pickB = 0, reportB = 0, tickB = 0, stateB = 0, archB = 0, deltaChars = 0;
         static long A() => GC.GetAllocatedBytesForCurrentThread();
         var all = Stopwatch.StartNew();
         for (int s = 0; s < seconds; s++)
@@ -243,7 +243,7 @@ public sealed class StoryLiveShapeBenchmarkTests(ITestOutputHelper output)
             states.Start();
             var st = c.State(since);
             since = st["rev"]!.GetValue<long>();
-            _ = st.ToJsonString();
+            deltaChars += st.ToJsonString().Length;
             states.Stop();
             stateB += A() - s1;
             stateTimes.Add(states.Elapsed.TotalMilliseconds - t0);
@@ -262,7 +262,7 @@ public sealed class StoryLiveShapeBenchmarkTests(ITestOutputHelper output)
         return new Numbers(per(picks), per(reports), per(ticks), per(states), archTimes.Count == 0 ? 0 : archTimes.Average(), P95(archTimes), P95(stateTimes),
             all.Elapsed.TotalMilliseconds / seconds, h.Counting.Blocks / seconds, h.Counting.Loads / seconds, h.Counting.EntityLists / seconds,
             h.LiveCalls / seconds, jobs, pickB / 1024.0 / Math.Max(1, pickCount), reportB / 1024.0 / seconds, tickB / 1024.0 / seconds,
-            stateB / 1024.0 / seconds, archB / 1024.0 / seconds, pickCount);
+            stateB / 1024.0 / seconds, archB / 1024.0 / seconds, pickCount, deltaChars / (double)seconds);
     }
 
     internal static string Format(Numbers n) =>
@@ -285,14 +285,38 @@ public sealed class StoryLiveShapeBenchmarkTests(ITestOutputHelper output)
     }
 
     /// <summary>
+    /// No upper limit on pawns (Fox 11-05): the busy colony at 10, 30 and 50 pawns. What one pawn costs (a pick, its share of the tick
+    /// and of the state delta) must stay about flat as the colony grows: nothing in a second of play is pawns × pawns.
+    /// </summary>
+    [Theory]
+    [InlineData(10)]
+    [InlineData(30)]
+    [InlineData(50)]
+    public void A_busy_colony_scales_with_its_pawns(int pawns)
+    {
+        var (c, h) = Rig(pawns);
+        Run(c, h, 5); // warm-up (JIT, caches)
+        var n = Run(c, h, 30);
+        double perPick = n.PickMs / pawns, fullKb = c.State().ToJsonString().Length / 1024.0;
+        output.WriteLine($"{pawns} pawns: {perPick:0.000} ms a pick, tick {n.TickMs:0.00} ms, state delta {n.StateMs:0.00} ms and {n.DeltaChars / 1024.0:0.0} KB " +
+            $"({n.DeltaChars / 1024.0 / pawns:0.00} KB a pawn), full state {fullKb:0.0} KB; {Format(n)}");
+        // Generous (machines vary): a pick stays cheap whatever the size, and the delta grows with the pawns, not their square.
+        Assert.True(perPick < 10, $"{perPick:0.00} ms a pick at {pawns} pawns");
+        Assert.True(n.DeltaChars / pawns < 8 * 1024, $"{n.DeltaChars / pawns:0} chars of delta a pawn at {pawns} pawns");
+        Assert.True(n.SecondMs < 25.0 * pawns, Format(n));
+    }
+
+    /// <summary>
     /// The live shape at 11-04 03:30 ("story 60 ticks 6717 ms, idle-with-work 228: build or bill waiting 227"): ten pawns with nothing
     /// they can do (a build short of iron with no iron anywhere, chests with stock), every one idle. The watchdog tick ran a full job
     /// search per idle pawn every second (the idle audit) on top of the wanderers' wake check.
     /// </summary>
-    [Fact]
-    public void Ten_idle_pawns_with_a_blocked_build_tick_cheaply()
+    [Theory]
+    [InlineData(10)]
+    [InlineData(50)] // no upper limit on pawns (Fox 11-05): the idle audit stays bounded per pawn
+    public void Idle_pawns_with_a_blocked_build_tick_cheaply(int pawns)
     {
-        var (c, h) = Rig(busy: false, simTime: true);
+        var (c, h) = Rig(pawns, busy: false, simTime: true);
         var chests = new[] { new P3(Home.X + 2, 64, Home.Z), new P3(Home.X + 4, 64, Home.Z) };
         foreach (var ch in chests)
         {
@@ -329,7 +353,7 @@ public sealed class StoryLiveShapeBenchmarkTests(ITestOutputHelper output)
         long before = c.Searches;
         for (int s = 0; s < 30; s++) { h.Clock!.Now += TimeSpan.FromSeconds(1); c.Tick(); }
         long searches = c.Searches - before;
-        output.WriteLine($"30 ticks, nothing changing: {searches} searches");
-        Assert.True(searches <= 40, $"{searches} searches in 30 ticks");
+        output.WriteLine($"{pawns} pawns, 30 ticks, nothing changing: {searches} searches; tick {n.TickMs:0.00} ms");
+        Assert.True(searches <= 4 * pawns, $"{searches} searches in 30 ticks");
     }
 }

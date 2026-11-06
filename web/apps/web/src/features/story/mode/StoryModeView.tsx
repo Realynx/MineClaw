@@ -185,6 +185,7 @@ function ColonistBarSlot({ c }: Props) {
           : null
       }
       pending={state.seats?.pending ?? 0}
+      pendingReason={state.seats?.waitingReason ?? null}
       onAdd={manage ? (n) => addPawns(c, n) : null}
       onRemove={manage ? (name) => removePawn(c, name) : null}
     />

@@ -89,30 +89,62 @@ public sealed partial class WhitelistManager
     private static partial Regex Denied();
     public Task<bool> RemoveAsync(string name, CancellationToken ct = default) => RunAsync("remove", name, ct);
 
+    private readonly SemaphoreSlim _turn = new(1, 1);
+    private int _queued;
+
+    /// <summary>Whitelist lines waiting for their turn or going out now (a colony of 40 pawns logs in 10 at a time).</summary>
+    public int Queued => Volatile.Read(ref _queued);
+
+    /// <summary>About how long one queued line takes to go out (main's chat pacing, <c>Agent:Chat:LineDelayMs</c> 800 ms, plus slack):
+    /// a launch waits this much longer for its add per line ahead of it (<see cref="HiveHierarchy.BeforeLaunchAsync"/>).</summary>
+    public TimeSpan PerLine { get; set; } = TimeSpan.FromSeconds(1);
+
     private async Task<bool> RunAsync(string op, string name, CancellationToken ct)
     {
         name = (name ?? "").Trim();
         if (!Accepts(name)) { _log.LogWarning("hive: /whitelist {Op} {Name} refused: not a managed account", op, name); return false; }
         var line = $"/whitelist {op} {name}";
-        if (!_arm(line)) return false;
-        // An add counts once the server confirms it (when replies are fed): a gate that ate the line, a non-op main or a
-        // typo'd name must not leave the account marked whitelisted (the clone would be kicked at login, forever).
-        // A removal too: the reconcile counts only what the server took off its list.
-        var confirm = Expect(op, name);
+        Interlocked.Increment(ref _queued);
+        TaskCompletionSource<bool>? confirm = null;
         bool sent;
         try
         {
-            try { sent = await _send(line, ct).ConfigureAwait(false); }
-            catch (Exception ex) when (ex is not OperationCanceledException) { _log.LogWarning(ex, "hive: {Line} failed", line); return false; }
+            (sent, confirm) = await SendInTurnAsync(op, name, line, ct).ConfigureAwait(false);
+            // An add counts once the server confirms it (when replies are fed): a gate that ate the line, a non-op main or a
+            // typo'd name must not leave the account marked whitelisted (the clone would be kicked at login, forever).
+            // A removal too: the reconcile counts only what the server took off its list.
             if (sent && confirm != null && !await ConfirmedAsync(confirm, line, ct).ConfigureAwait(false)) return false;
         }
-        finally { Forget(op, name, confirm); }
+        finally
+        {
+            Interlocked.Decrement(ref _queued);
+            Forget(op, name, confirm);
+        }
         if (sent)
         {
             _managed.SetWhitelisted(name, op == "add");
             _log.LogInformation("hive: {Line}", line);
         }
         return sent;
+    }
+
+    /// <summary>
+    /// One whitelist line at a time: it is armed in the gate's scoped exception only when its turn comes, right before main sends it
+    /// (paced like chat). Armed all at once, a burst of adds outlived the gate's 15 s arm in main's chat queue and was refused.
+    /// → (sent, the server's answer to wait for).
+    /// </summary>
+    private async Task<(bool Sent, TaskCompletionSource<bool>? Confirm)> SendInTurnAsync(string op, string name, string line, CancellationToken ct)
+    {
+        await _turn.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            if (!_arm(line)) return (false, null);
+            var confirm = Expect(op, name);
+            try { return (await _send(line, ct).ConfigureAwait(false), confirm); }
+            catch (OperationCanceledException) { Forget(op, name, confirm); throw; }
+            catch (Exception ex) { _log.LogWarning(ex, "hive: {Line} failed", line); return (false, confirm); }
+        }
+        finally { _turn.Release(); }
     }
 
     /// <summary>The server confirmed the line within <see cref="ConfirmTimeout"/>.</summary>

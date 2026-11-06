@@ -79,6 +79,9 @@ public interface IStoryHost
     PawnSeat Seat(string account) => new(true, null);
     /// <summary>The server's seats now (free, kept for offline regulars), or null when unknown.</summary>
     (int Free, int Kept)? Seats() => null;
+    /// <summary>The real limits on pawns in game, for the colony's seats line: the server's seats with whom the kept ones are for and
+    /// its slots, and the memory ceiling's room. Null when unknown.</summary>
+    MineClaw.Hive.Slots.SeatFacts? SeatInfo() => Seats() is { } s ? new MineClaw.Hive.Slots.SeatFacts(s.Free, s.Kept) : null;
     /// <summary>
     /// Brings exactly these pawn accounts in: a hosted one is whitelisted again and retried now; another logs in, the player cap
     /// permitting (<paramref name="overCap"/>: the regulars' seats too). Never another account. (account, null = started | why not).

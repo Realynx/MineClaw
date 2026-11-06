@@ -62,7 +62,14 @@ describe('story contracts', () => {
   });
 
   it('request bodies are strict and bounded', () => {
-    expect(C.StoryCreateRequest.safeParse({ name: 'Hollow', pawns: 13 }).success).toBe(false);
+    // No upper limit on pawns (Fox 11-05); still a whole number, 1 or more.
+    expect(C.StoryCreateRequest.safeParse({ name: 'Hollow', pawns: 40 }).success).toBe(true);
+    expect(C.StoryCreateRequest.safeParse({ name: 'Hollow', pawns: 0 }).success).toBe(false);
+    expect(C.StoryCreateRequest.safeParse({ name: 'Hollow', pawns: 2.5 }).success).toBe(false);
+    expect(C.StoryPawnsRequest.safeParse({ op: 'add', count: 40 }).success).toBe(true);
+    expect(C.StoryDraftRequest.safeParse({ pawns: Array.from({ length: 80 }, (_, i) => `p${i}`), drafted: true }).success).toBe(
+      true,
+    );
     expect(C.StoryPrioritiesRequest.safeParse({ pawns: ['a'], work: { chop: 5 } }).success).toBe(false);
     expect(C.StoryPrioritiesRequest.safeParse({ pawns: ['a'], work: { dance: 1 } }).success).toBe(false);
     expect(C.StoryScheduleRequest.safeParse({ pawns: ['a'], hours: { '24': 'work' } }).success).toBe(false);
@@ -236,6 +243,30 @@ describe('the mock director', () => {
     for (let i = 0; i < 900 && sim.state(id).designations.some((d) => d.kind === 'haul'); i++) sim.step(1000);
     expect(sim.state(id).designations.some((d) => d.kind === 'haul')).toBe(false);
     expect(sim.state(id, rev).removed?.designations).toContain(mark.id);
+  });
+
+  it('takes any number of pawns: as many as there is room for come, the rest wait with the reason and join as room frees up', () => {
+    let t = 1_762_000_000_000;
+    const sim = new StorySim({ world: world(), defaultHome: [0, 63, 0], now: () => t });
+    // 20 slots, 2 kept for regulars: 18 come now, 22 wait.
+    const { id } = sim.create({ name: 'Crowd', pawns: 40 });
+    let seats = sim.state(id).seats!;
+    expect(sim.state(id).pawns).toHaveLength(18);
+    expect(seats).toMatchObject({ online: 18, wanted: 40, pending: 22, waiting: 22, slots: 20, keptFor: ['poofimafox', 'kiwi'] });
+    expect(seats.memoryRoom).toBeNull();
+    expect(seats.waitingReason).toBe('server full (20 slots, 2 kept for poofimafox and kiwi)');
+    // + 40 more: accepted (no cap); the answer groups the waiting pawns into one entry with a count.
+    const add = sim.pawns(id, { op: 'add', count: 40 });
+    expect(add.wanted).toBe(80);
+    expect(add.pending).toEqual([{ reason: 'server full (20 slots, 2 kept for poofimafox and kiwi)', count: 62 }]);
+    // Seats free up but memory takes only 3: 3 join and memory is the reason now.
+    sim.setSeats(id, 22, 2, 3);
+    seats = sim.state(id).seats!;
+    expect(seats.pending).toBe(59);
+    expect(seats.waitingReason).toBe('memory: room for 0 more');
+    t += 2000;
+    sim.step(2000);
+    expect(sim.state(id).seats!.online).toBe(21);
   });
 
   it('founds a colony, expands designations against the world and answers deltas', () => {

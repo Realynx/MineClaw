@@ -12,9 +12,9 @@ namespace MineClaw.Hive.Tests;
 /// </summary>
 public sealed class StoryPickerBenchmarkTests(ITestOutputHelper output)
 {
-    private static (StoryColony C, FakeStoryHost H, FakeStoryWorld W) Rig()
+    private static (StoryColony C, FakeStoryHost H, FakeStoryWorld W) Rig(int pawns = 10)
     {
-        var (c, h, w) = StoryRig.Make(10);
+        var (c, h, w) = StoryRig.Make(pawns);
         int i = 0;
         foreach (var p in c.Pawns.Keys.ToList()) h.Lives[p] = FakeStoryHost.Live(i * 2 % 20, 64, i++ % 5);
         foreach (var p in c.Pawns.Values)
@@ -69,6 +69,100 @@ public sealed class StoryPickerBenchmarkTests(ITestOutputHelper output)
         // Generous bounds (CI machines vary): the point is no O(n²) per pick.
         Assert.True(pickRound < 25, $"a pick round took {pickRound:0.0} ms");
         Assert.True(perTick < 25, $"a tick took {perTick:0.0} ms");
+    }
+
+    /// <summary>No upper limit on pawns (Fox 11-05): the 500-cell dig-out with 10, 30 and 50 pawns. A pick and a round per pawn stay
+    /// about flat: nothing per pick is pawns × designations × pawns.</summary>
+    [Theory]
+    [InlineData(10)]
+    [InlineData(30)]
+    [InlineData(50)]
+    public void Picking_scales_with_the_pawns(int pawns)
+    {
+        var (c, h, w) = Rig(pawns);
+        // Each on a cell of its own beside the box (the rig's ten spots would put pawns on top of each other, and a cell another pawn
+        // stands on is never handed out to dig).
+        int i = 0;
+        foreach (var name in c.Pawns.Keys.ToList()) { h.Lives[name] = FakeStoryHost.Live(i % 20, 64, 6 + i / 20); i++; }
+        foreach (var p in c.Pawns.Values) c.Candidate(WorkTypes.Mine, p, h.Live(p.Name)); // warm-up
+        var sw = Stopwatch.StartNew();
+        const int rounds = 20;
+        for (int r = 0; r < rounds; r++)
+            foreach (var p in c.Pawns.Values) Assert.NotNull(c.Candidate(WorkTypes.Mine, p, h.Live(p.Name)));
+        double perPick = sw.Elapsed.TotalMilliseconds / (rounds * pawns);
+        long since = c.Rev, chars = 0;
+        int ticks = 0, done = 0;
+        double tickMs = 0;
+        sw.Restart();
+        while (c.Designations.Any(d => d.Kind == "mine") && ticks < 400)
+        {
+            done += DigRound(c, w);
+            var t0 = sw.Elapsed.TotalMilliseconds;
+            c.Tick();
+            tickMs += sw.Elapsed.TotalMilliseconds - t0;
+            var st = c.State(since);
+            chars += st.ToJsonString().Length;
+            since = st["rev"]!.GetValue<long>();
+            ticks++;
+        }
+        double perRound = sw.Elapsed.TotalMilliseconds / Math.Max(1, ticks);
+        output.WriteLine($"{pawns} pawns, 500 open: {perPick:0.000} ms a mine pick; dig-out {ticks} rounds, {done} digs, {perRound:0.00} ms a round " +
+            $"({perRound / pawns:0.000} ms a pawn), tick {tickMs / Math.Max(1, ticks):0.000} ms, state delta {chars / 1024.0 / Math.Max(1, ticks):0.0} KB a round");
+        Assert.Equal(500, done);
+        Assert.True(perPick < 5, $"{perPick:0.00} ms a pick at {pawns} pawns");
+        Assert.True(perRound / pawns < 5, $"{perRound / pawns:0.00} ms a pawn a round at {pawns} pawns");
+    }
+
+    /// <summary>
+    /// An idle pick (a spread-out wander spot) with 10, 30 and 50 pawns. It checked every candidate cell against every other pawn and
+    /// player: 0.9 ms a pick at 10 pawns, 2.3 at 30, 3.2 at 50 (pawns² a round). The taken spots are bucketed now: about flat.
+    /// </summary>
+    [Theory]
+    [InlineData(10)]
+    [InlineData(30)]
+    [InlineData(50)]
+    public void Idle_picks_stay_flat_as_the_colony_grows(int pawns)
+    {
+        var (c, h, _) = StoryRig.Make(pawns);
+        int i = 0;
+        foreach (var name in c.Pawns.Keys.ToList()) { h.Lives[name] = FakeStoryHost.Live(i % 20, 64, 6 + i / 20); i++; }
+        foreach (var name in c.Pawns.Keys) EndLeg(c, name); // warm-up
+        var sw = Stopwatch.StartNew();
+        int picks = 0;
+        for (int r = 0; r < 20; r++)
+            foreach (var name in c.Pawns.Keys) picks += EndLeg(c, name);
+        double perPick = sw.Elapsed.TotalMilliseconds / Math.Max(1, picks);
+        output.WriteLine($"{pawns} pawns, nothing to do: {picks} idle picks, {perPick:0.000} ms each");
+        Assert.Equal(20 * pawns, picks);
+        Assert.True(perPick < 3, $"{perPick:0.00} ms an idle pick at {pawns} pawns");
+    }
+
+    /// <summary>The pawn's next job (an idle leg here), ended at once. 1 when it had one.</summary>
+    private static int EndLeg(StoryColony c, string name)
+    {
+        var j = c.Next(name);
+        if (j == null) return 0;
+        c.Report(name, j["id"]!.GetValue<string>(), "done", null, null);
+        return 1;
+    }
+
+    /// <summary>Every pawn takes its job and finishes it (a dig really happens). Returns the digs.</summary>
+    private static int DigRound(StoryColony c, FakeStoryWorld w)
+    {
+        int done = 0;
+        foreach (var name in c.Pawns.Keys)
+        {
+            var j = c.Next(name);
+            if (j == null) continue;
+            if (j["kind"]?.GetValue<string>() == "dig" && j["at"] is { } at)
+            {
+                var xyz = at.GetValue<string>().Split(",").Select(int.Parse).ToArray();
+                w.Set(xyz[0], xyz[1], xyz[2], 0);
+                done++;
+            }
+            c.Report(name, j["id"]!.GetValue<string>(), "done", null, null);
+        }
+        return done;
     }
 
     /// <summary>The real host builds a pawn's pockets (inventory and gear, slot by slot) when they changed and a fresh

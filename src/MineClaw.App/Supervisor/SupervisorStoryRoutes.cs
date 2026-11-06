@@ -204,7 +204,7 @@ public sealed partial class SupervisorStoryRoutes(SupervisorOptions o, StoryColo
     private SupervisorReply Create(JsonObject b)
     {
         var name = b["name"]?.GetValue<string>();
-        if (b["pawns"] is not JsonValue pv || !pv.TryGetValue<int>(out var n)) return Bad("pawns must be a number 1..12");
+        if (b["pawns"] is not JsonValue pv || !pv.TryGetValue<int>(out var n)) return Bad("pawns must be a whole number, 1 or more");
         P3? home = null;
         if (b["home"] is { } h && (home = P3.Parse(h)) == null) return Bad("home must be {x,y,z}");
         var (c, err) = colonies.Create(name ?? "", n, home);

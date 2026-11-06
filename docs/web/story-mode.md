@@ -83,11 +83,11 @@ work, so viewers can watch). JSON is snake_case with nulls written. Errors are `
 |---|---|---|
 | GET | `/api/story` | `{colonies:[{id, name, created, paused, active, pawns:[name], version}], ai:[Ai], directives:[Directive], time_control:{available, by}}` |
 | POST | `/api/story/time` | `{time: 0..23999}` (whole number) → `{time, by}`; 400 on a bad body, 409 `{error:"no op account"}` when no account the bot controls is op, 429 for more than one change a second. See "Time of day" |
-| POST | `/api/story/colonies` | `{name (1..40 chars), pawns (1..12), home?:{x,y,z}}` → `{id}` (`story-<n>`). Spawns script-only bodies running `story_pawn` |
+| POST | `/api/story/colonies` | `{name (1..40 chars), pawns (1 or more: no upper limit), home?:{x,y,z}}` → `{id}` (`story-<n>`). Spawns script-only bodies running `story_pawn`: as many as there is room for now, the rest wait (see "How many pawns") |
 | POST | `/api/story/colonies/{id}/release` | `{}` → `{id, released}`. The pawns deposit and log out; the saved state is kept (`active:false`) |
 | POST | `/api/story/colonies/{id}/resume` | `{}` → `{id, pawns, note}`. A released colony spawns its pawns again, their old accounts first |
 | POST | `/api/story/colonies/{id}/online` | `{pawns:[name]\|null, over_cap?:bool}` → `{started:[account], blocked:[{pawn, reason}]}`; 400 on a bad body, 404 for an unknown colony or pawn. Offline pawns are whitelisted again and (re)started now, the player cap permitting (see "Offline pawns") |
-| POST | `/api/story/colonies/{id}/pawns` | `{op:"add", count:1..12}` \| `{op:"remove", pawn}` → `{pawns:[name], wanted, pending:[{reason}], leaving:[name], blocked:[{reason}]}`; 400 on a bad body, past 12, or the last pawn; 404 for an unknown colony or pawn. See "Adding and removing pawns" |
+| POST | `/api/story/colonies/{id}/pawns` | `{op:"add", count ≥ 1}` \| `{op:"remove", pawn}` → `{pawns:[name], wanted, pending:[{reason, count}], leaving:[name], blocked:[{reason}]}`; 400 on a bad body or the last pawn;\| `{op:"remove", pawn}` → `{pawns:[name], wanted, pending:[{reason}], leaving:[name], blocked:[{reason}]}`; 400 on a bad body, past 12, or the last pawn; 404 for an unknown colony or pawn. See "Adding and removing pawns" |
 | POST | `/api/story/colonies/{id}/pause` | `{paused}` → `{paused}` |
 | POST | `/api/story/colonies/{id}/home` | `{home:{x,y,z}}` (whole numbers) → `{home:[x,y,z]}`; 400 on a bad body, 404 for an unknown colony. Moves and saves the colony's home; pawns far from it are brought there (see "Home") |
 | GET | `/api/story/colonies/{id}?since=rev` | The state (below): full, or a delta when `since` is given |
@@ -117,7 +117,7 @@ storage is chests (see "Storage").
 ```
 {id, rev, since, full, at, time_of_day, time_frozen, hour, paused, active, home:[x,y,z]|null, tie_break: "column"|"skill", version,
  work_types:[guard, doctor, cook, hunt, build, farm, mine, chop, craft, haul],
- pawns:[Pawn], seats:{online, wanted, cap_free, kept_for_regulars, pending}, zones:[{id, kind, area, rows, cells, name, plant?, active_plant?, bills?, active_bill?, sow?, harvest?, status?, seeds?, needs_hoe?, preserve?}], plants:[Plant] (full only), beds:[{pos:[x,y,z], dim, pawn, zone}], designations:[Designation], orders:[{id, pawn, kind, target, design, given, left}],
+ pawns:[Pawn], seats:{online, wanted, pending, waiting, waiting_reason, cap_free, kept_for_regulars, kept_for, slots, memory_room}, zones:[{id, kind, area, rows, cells, name, plant?, active_plant?, bills?, active_bill?, sow?, harvest?, status?, seeds?, needs_hoe?, preserve?}], plants:[Plant] (full only), beds:[{pos:[x,y,z], dim, pawn, zone}], designations:[Designation], orders:[{id, pawn, kind, target, design, given, left}],
  alerts:[{at, level: info|warn, text, pawn}], builds:[Build], ghosts:{rev, blocks:[[x,y,z,id,meta,build_id,state,kind]]},
  storages:[Storage], workbenches:[Workbench], categories:[Category] (full only), ai:[Ai], directives:[Directive],
  time_control:{available: bool, by: account|null}, policies:[Policy], material_rules:[MaterialRule], materials:[MaterialInfo] (full only),
@@ -300,7 +300,8 @@ Each pawn carries `offline_reason` (null while online): `released`, `connecting`
 `not whitelisted — re-adding`, `not whitelisted — main (<main>) isn't op, so it can't whitelist <pawn>: op <main> on the server`,
 `server full (player cap: 2 free, 2 kept for regulars)` (the regulars' seats would fit it), `server full (7/7 seats taken)`
 (nothing would), `someone else is logged in as it`, `retired for this session (crashed too often)`, `waiting for a seat`. The colony
-state carries `seats: {online, wanted, cap_free, kept_for_regulars}` (the last two null when unknown).
+state carries `seats: {online, wanted, cap_free, kept_for_regulars, …}` (the last two null when unknown; the rest under "How many
+pawns").
 
 `POST /api/story/colonies/{id}/online` `{pawns:[name]|null, over_cap?:bool}` → 200 `{started:[account], blocked:[{pawn, reason}]}`.
 `null` means every offline pawn. Each one is whitelisted again (through main) and (re)started now: a hosted body's reconnect wait is
@@ -737,17 +738,48 @@ instead of sitting in the same place."
 
 Fox 11-03: "+ and − buttons to add or remove pawns in Story Mode."
 
-- **+** (`POST …/pawns {op:"add", count}`): the colony's wanted size grows (at most 12, joining pawns included). As many as the free
-  seats allow come now (never the seats kept for offline regulars) through the usual spawn path: managed `maid_` accounts,
-  whitelisted through main. The rest are pending (`seats.pending`, `pending:[{reason}]`) and join with the seat retry as seats free
-  up. One log line and one alert per change.
+- **+** (`POST …/pawns {op:"add", count}`): the colony's wanted size grows (no upper limit: see "How many pawns"). As many as the free
+  seats and the memory ceiling allow come now (never the seats kept for offline regulars) through the usual spawn path: managed
+  `maid_` accounts, whitelisted through main. The rest are pending (`seats.pending`, `pending:[{reason, count}]`: one entry with a
+  count, never one per pawn) and join with the seat retry as room frees up. One log line and one alert per change.
 - **−** (`{op:"remove", pawn}`): the pawn's job, leases, idle reservation and bed go back at once and it is `leaving`. It takes what
   it carries to storage by the filters (what no chest accepts goes with its logout's deposit, with an alert), its script ends, then
   it logs out and its account is released (whitelist removal through main). It leaves the state (`removed.pawns`). An offline pawn
   leaves at once; one that doesn't finish within 2 minutes is released anyway. The wanted size drops by one. The last pawn can't be
   removed (release the colony instead).
 - **Web.** The colonist bar ends with **+** (Shift+click asks how many) and **−** (the one selected pawn, after "Remove Nils J.?
-  Their items go to storage."). Pending pawns show as greyed "joining…" tiles.
+  Their items go to storage."). Pending pawns show as greyed "joining…" tiles; more than 4 as one "+N waiting" tile, the reason on
+  hover.
+
+### How many pawns (added 2026-11-05)
+
+Fox 11-05: "Don't set an upper limit at all for how many pawns I can spawn in. Allow me to do as many as I want." (and Story no
+longer has to copy RimWorld). A colony takes any count, founding (`pawns ≥ 1`) and + (`count ≥ 1`) alike; the old cap of 12 is gone
+from the director, the routes, the contracts, the mock and both web steppers (the founding stepper's Shift+click steps by 10). Only
+two real limits decide how many are in game, and both are shown, never silent:
+
+- **The server's seats**: its max players (the Join Game packet) less those online and logging in, and one seat kept per offline
+  regular (`Hive:RegularPlayers`). The server's max-players and the regulars' reservation are the owner's: Story never changes them.
+- **The memory ceiling** (`Hive:Resources`, `ResourceCeiling.BodiesThatFit`): how many more in-process bodies fit.
+
+`Hive:MaxClones` stays an optional hard cap (0, the default, = none); Story adds no ceiling of its own, and a colony's group spawn
+isn't held to `Hive:Subhives:MaxPerSpawn` (a brain's per-spawn knob). As many as fit come now; the rest wait (`seats.pending`) and
+the seat retry (every 15 s) brings them in as seats or memory free up. Accounts are allocated per pawn with no fixed roster
+(`maid_chan_101`…`9999`, quantity-like ids skipped); their `/whitelist add` lines go out one at a time through the gate's scoped
+exception, each armed only when its turn comes (40 at once used to outlive the gate's 15 s arm in main's chat queue), and a launch
+waits that much longer for its add per line queued ahead of it.
+
+The colony state's `seats` says how many and why: `{online, wanted, pending, waiting (wanted − online), waiting_reason, cap_free,
+kept_for_regulars, kept_for:[regular], slots, memory_room}`. `waiting_reason` names the limit that keeps the waiting pawns out
+(`SeatFacts.WhyWaiting`): `server full (20 slots, 2 kept for poofimafox and kiwi)`, `memory: room for 3 more` (or the ceiling's own
+words when none fits), null when they are all on their way. Founding short alerts `18 of 40 pawns came now; the other 22 wait and
+join as room frees up (…)`. The Colony tab's seats line reads `18 of 40 pawns in game — server full (20 slots, 2 kept for poofimafox
+and kiwi) · memory: room for 9 more`.
+
+Scale (11-05, `StoryLiveShapeBenchmarkTests`, `StoryPickerBenchmarkTests`, `StoryBuildBenchmarkTests`, this machine): a busy
+colony's pick is 0.21 / 0.27 / 0.39 ms at 10 / 30 / 50 pawns, the tick 0.05 / 0.09 / 0.10 ms, the state delta 27 / 69 / 113 KB a
+second (≈2.3 KB a pawn) and the full state 94 / 135 / 177 KB. An idle pick (a spread-out wander spot) checked every candidate cell
+against every other pawn: 0.9 / 2.3 / 3.2 ms (pawns² a round); the taken spots are bucketed by 4×4 columns now, 0.7 / 0.9 / 0.7 ms.
 
 ### Pawn bodies and the pawn script
 

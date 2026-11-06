@@ -411,6 +411,7 @@ export function ColonistBar({
   onJump,
   onBringAll,
   pending = 0,
+  pendingReason = null,
   onAdd,
   onRemove,
 }: {
@@ -423,8 +424,10 @@ export function ColonistBar({
   onJump: (name: string) => void;
   /** Shown while any pawn is offline: bring every offline pawn in (null = no button: viewers can't). */
   onBringAll?: (() => void) | null;
-  /** Pawns added that aren't here yet: greyed "joining…" tiles. */
+  /** Pawns added that aren't here yet: greyed "joining…" tiles (one "+N waiting" tile when many: there is no upper limit). */
   pending?: number;
+  /** Why they wait (the seats line's reason: "server full (20 slots, 2 kept for …)"), shown on hover. */
+  pendingReason?: string | null;
   /** + : add pawns (shift-click asks how many; null = no button: viewers can't). */
   onAdd?: ((n: number) => void) | null;
   /** − : remove the one selected pawn, after a confirm (null = no button). */
@@ -474,7 +477,7 @@ export function ColonistBar({
       aria-label="Colonists"
     >
       {pawns.map(portrait)}
-      <JoiningTiles pending={pending} />
+      <JoiningTiles pending={pending} reason={pendingReason} />
       {onAdd || onRemove ? (
         <BarControls
           pawns={pawns}
@@ -495,13 +498,32 @@ export function ColonistBar({
   );
 }
 
-/** Greyed "joining…" tiles for pawns added that aren't here yet. */
-function JoiningTiles({ pending }: { pending: number }) {
+/** Up to this many pawns waiting show a tile each; more show as one "+N waiting" tile. */
+export const JOINING_TILES_MAX = 4;
+
+const joiningTile =
+  'flex h-[58px] w-[58px] flex-col items-center justify-center gap-0.5 rounded-md border border-dashed border-border text-[10px] text-subtle opacity-70 grayscale';
+
+/** Greyed "joining…" tiles for pawns added that aren't here yet; many collapse into one "+N waiting" tile. */
+function JoiningTiles({ pending, reason }: { pending: number; reason?: string | null }) {
+  const why = reason ? `: ${reason}` : '';
+  if (pending > JOINING_TILES_MAX)
+    return (
+      <div
+        className={cn(joiningTile, 'leading-tight')}
+        title={`${pending} pawns waiting to join: they come as room frees up${why}`}
+        data-testid="bar-joining"
+        data-count={pending}
+      >
+        <span className="text-sm font-semibold tabular-nums">+{pending}</span>
+        waiting
+      </div>
+    );
   return Array.from({ length: Math.max(0, pending) }, (_, i) => (
     <div
       key={`joining-${i}`}
-      className="flex h-[58px] w-[58px] flex-col items-center justify-center gap-0.5 rounded-md border border-dashed border-border text-[10px] text-subtle opacity-70 grayscale"
-      title="A new pawn joining: it comes as soon as a seat is free"
+      className={joiningTile}
+      title={`A new pawn joining: it comes as soon as a seat is free${why}`}
       data-testid="bar-joining"
     >
       <Avatar name={`joining-${i}`} size={24} />
@@ -615,10 +637,9 @@ function AddManyBox({ n, setN, onAdd }: { n: number; setN: (n: number | null) =>
       <input
         type="number"
         min={1}
-        max={12}
         value={n}
         aria-label="How many pawns"
-        onChange={(e) => setN(Math.max(1, Math.min(12, Number(e.target.value) || 1)))}
+        onChange={(e) => setN(Math.max(1, Math.floor(Number(e.target.value)) || 1))}
         className="w-12 rounded border border-border bg-surface-2 px-1"
       />
       <button

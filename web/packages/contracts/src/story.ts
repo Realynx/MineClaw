@@ -184,7 +184,7 @@ export type StoryListResponse = z.infer<typeof StoryListResponse>;
 export const StoryCreateRequest = z
   .object({
     name: z.string().trim().min(1).max(40),
-    pawns: z.number().int().min(1).max(12),
+    pawns: z.number().int().min(1), // no upper limit: the rest wait for a seat
     home: z.object({ x: z.number().int(), y: z.number().int(), z: z.number().int() }).strict().optional(),
   })
   .strict();
@@ -1058,7 +1058,7 @@ export type StoryColonyFrame = z.infer<typeof StoryColonyFrame>;
 
 // ------------------------------------------------------------------ writes
 
-const PawnList = z.array(z.string().min(1).max(64)).min(1).max(64);
+const PawnList = z.array(z.string().min(1).max(64)).min(1); // any number of pawns (no upper limit)
 
 /** The colony's seats: pawns in game, pawns wanted, the server's free seats and those kept for offline regulars (null = unknown). */
 export const StorySeats = z.object({
@@ -1067,12 +1067,21 @@ export const StorySeats = z.object({
   capFree: z.number().int().nullish(),
   keptForRegulars: z.number().int().nullish(),
   pending: z.number().int().nullish().describe('pawns added that are not here yet ("joining…")'),
+  waiting: z.number().int().nullish().describe('wanted − online'),
+  waitingReason: z
+    .string()
+    .nullish()
+    .describe('the limit keeping waiting pawns out: "server full (20 slots, 2 kept for a and b)" or the memory ceiling; null = on their way'),
+  keptFor: z.array(z.string()).nullish().describe('the offline regulars the kept seats are for'),
+  slots: z.number().int().nullish().describe("the server's max players"),
+  memoryRoom: z.number().int().nullish().describe('more bodies the memory ceiling takes (null = no ceiling)'),
 });
 export type StorySeats = z.infer<typeof StorySeats>;
 
 /** POST /api/story/colonies/{id}/pawns: + one or more pawns (as seats allow; the rest join later), or − one pawn. */
 export const StoryPawnsRequest = z.discriminatedUnion('op', [
-  z.object({ op: z.literal('add'), count: z.number().int().min(1).max(12) }).strict(),
+  // No upper limit (Fox 11-05): the server's seats and the memory ceiling decide how many are in now; the rest wait.
+  z.object({ op: z.literal('add'), count: z.number().int().min(1) }).strict(),
   z.object({ op: z.literal('remove'), pawn: z.string().min(1).max(64) }).strict(),
 ]);
 export type StoryPawnsRequest = z.infer<typeof StoryPawnsRequest>;
@@ -1080,7 +1089,10 @@ export type StoryPawnsRequest = z.infer<typeof StoryPawnsRequest>;
 export const StoryPawnsResponse = z.object({
   pawns: z.array(z.string()).default([]),
   wanted: z.number().int(),
-  pending: z.array(z.object({ reason: z.string() })).default([]),
+  pending: z
+    .array(z.object({ reason: z.string(), count: z.number().int().default(1) }))
+    .default([])
+    .describe('the pawns still to come: one entry per reason with a count (never one per pawn)'),
   leaving: z.array(z.string()).default([]),
   blocked: z.array(z.object({ reason: z.string() })).default([]),
 });

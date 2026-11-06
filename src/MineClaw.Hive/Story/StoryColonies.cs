@@ -120,18 +120,24 @@ public sealed class StoryColonies : IDisposable
     private static string? OwnerTrouble(string? why) =>
         why is { } w && w.StartsWith("not whitelisted — ", StringComparison.Ordinal) && !w.EndsWith("re-adding", StringComparison.Ordinal) ? w : null;
 
-    /// <summary>A colony founded short grows to its wanted size as seats free up (never the seats kept for regulars).</summary>
+    /// <summary>A colony founded short (or grown with +) comes up to its wanted size as seats and memory free up (never the seats kept
+    /// for regulars): as many as fit, each retry.</summary>
     private void GrowToWanted(StoryColony c)
     {
         int short_ = c.Meta.Wanted - c.PawnNames().Count;
-        if (short_ <= 0 || _host.Seats() is not { } s || s.Free - 1 < s.Kept) return;
+        if (short_ <= 0 || _host.SeatInfo() is not { Room: > 0 } s) return;
+        short_ = Math.Min(short_, s.Room);
         (IReadOnlyList<string> Accounts, string? Why) r;
         try { r = _host.Spawn(c.Id, short_, null); } catch (Exception ex) { r = ([], ex.Message); }
         if (r.Accounts.Count == 0) return;
         c.Joined(r.Accounts);
-        c.Alert("info", $"{r.Accounts.Count} more pawn(s) joined now that seats are free ({string.Join(", ", r.Accounts.Select(MineClaw.Hive.Hierarchy.HiveNode.ShortOf))})");
+        c.Alert("info", $"{r.Accounts.Count} more pawn(s) joined now that seats are free ({ShortNames(r.Accounts)})");
         c.Save(force: true);
     }
+
+    /// <summary>"101, 102, 105" (at most 8 names, then "+N more": a colony has no upper limit).</summary>
+    private static string ShortNames(IReadOnlyList<string> accounts) =>
+        string.Join(", ", accounts.Take(8).Select(MineClaw.Hive.Hierarchy.HiveNode.ShortOf)) + (accounts.Count > 8 ? $" +{accounts.Count - 8} more" : "");
 
     private void Came(StoryColony c, IReadOnlyList<(string Account, string? Why)> res)
     {
@@ -171,11 +177,15 @@ public sealed class StoryColonies : IDisposable
         return (started, blocked);
     }
 
-    /// <summary>A new colony with <paramref name="pawns"/> (1..12) script-only bodies → (id, error).</summary>
+    /// <summary>
+    /// A new colony that wants <paramref name="pawns"/> script-only bodies (1 or more: no upper limit) → (id, error). As many as fit
+    /// now come (the server's seats, never the regulars', and the memory ceiling); the rest wait and join with the seat retry as room
+    /// frees up. It fails only when not one could come.
+    /// </summary>
     public (StoryColony? Colony, string? Error) Create(string name, int pawns, P3? home)
     {
         if (string.IsNullOrWhiteSpace(name) || name.Trim().Length > 40) return (null, "name: 1-40 characters");
-        if (pawns is < 1 or > StoryColony.MaxPawns) return (null, $"pawns: 1..{StoryColony.MaxPawns}");
+        if (pawns < 1) return (null, "pawns: 1 or more");
         StoryColony c;
         lock (_lock)
         {
@@ -202,7 +212,9 @@ public sealed class StoryColonies : IDisposable
         catch (Exception ex) { r = ([], ex.Message); }
         c.Joined(r.Accounts);
         Scripting.Crew.Crews.Open(c.Id); // its bodies are this group's (main's wake digest holds their events back)
-        if (r.Accounts.Count < n) c.Alert("warn", $"only {r.Accounts.Count} of {n} pawns came: {r.Why ?? "no room"}");
+        if (r.Accounts.Count < n && r.Accounts.Count > 0)
+            c.Alert("info", $"{r.Accounts.Count} of {n} pawns came now; the other {n - r.Accounts.Count} wait and join as room frees up ({r.Why ?? "no room"})");
+        else if (r.Accounts.Count < n) c.Alert("warn", $"no pawn could come: {r.Why ?? "no room"}");
         _log.LogInformation("story {Colony}: {N} pawn(s) spawned ({Names})", c.Id, r.Accounts.Count, string.Join(", ", r.Accounts));
         return r.Why;
     }
@@ -210,35 +222,34 @@ public sealed class StoryColonies : IDisposable
     // ================================================================ adding and removing pawns (the colonist bar's + and −)
 
     /// <summary>
-    /// + : <paramref name="n"/> more pawns. The colony's wanted size grows (at most <see cref="StoryColony.MaxPawns"/>); as many as the
-    /// free seats allow (never the seats kept for offline regulars) spawn now through the usual path (managed accounts, whitelisted
-    /// through main), the rest are pending and come with the seat retry as seats free up.
+    /// + : <paramref name="n"/> more pawns (no upper limit). The colony's wanted size grows; as many as the free seats allow (never the
+    /// seats kept for offline regulars) and the memory ceiling takes spawn now through the usual path (managed accounts, whitelisted
+    /// through main), the rest are pending and come with the seat retry as room frees up.
     /// </summary>
     public (JsonObject? Result, string? Error) AddPawns(StoryColony c, int n)
     {
         if (!c.Meta.Active) return (null, "the colony is released: resume it first");
-        if (n is < 1 or > StoryColony.MaxPawns) return (null, $"count: 1..{StoryColony.MaxPawns}");
-        int staying = c.Staying, wanted = Math.Max(c.Meta.Wanted, staying);
-        if (wanted + n > StoryColony.MaxPawns)
-            return (null, $"a colony has at most {StoryColony.MaxPawns} pawns ({wanted} now{(wanted > staying ? $", {wanted - staying} of them joining" : "")})");
+        if (n < 1) return (null, "count: 1 or more");
+        int wanted = Math.Max(c.Meta.Wanted, c.Staying);
+        if (n > int.MaxValue - wanted) return (null, "count: too many to count");
         c.Meta.Wanted = wanted + n;
         var (now, why) = SeatsNow(n);
         var came = new List<string>();
         if (now > 0) why = SpawnInto(c, now, came, why);
         _log.LogInformation("story {Colony}: + {N} pawn(s): {Came} now, wanted {Wanted} {Why}", c.Id, n, came.Count, c.Meta.Wanted, why ?? "");
-        c.Alert("info", came.Count == n ? $"{n} pawn(s) joining: {string.Join(", ", came.Select(MineClaw.Hive.Hierarchy.HiveNode.ShortOf))}"
-            : $"{came.Count} of {n} new pawn(s) joining now; the rest come when seats free up ({why})");
+        c.Alert("info", came.Count == n ? $"{n} pawn(s) joining: {ShortNames(came)}"
+            : $"{came.Count} of {n} new pawn(s) joining now; the other {n - came.Count} come as room frees up ({why})");
         c.Save(force: true);
         if (came.Count > 0) c.BringHome("joined", came);
         return (Roster(c, why), null);
     }
 
-    /// <summary>How many of <paramref name="n"/> new pawns the free seats take now (never the seats kept for regulars), and why not all.</summary>
+    /// <summary>How many of <paramref name="n"/> new pawns come now (the free seats, never the ones kept for regulars, and the memory
+    /// ceiling), and why not all: the limit that binds.</summary>
     private (int Now, string? Why) SeatsNow(int n)
     {
-        if (_host.Seats() is not { } s) return (n, null);
-        int now = Math.Clamp(s.Free - s.Kept, 0, n);
-        return (now, now < n ? $"server full (player cap: {s.Free} free, {s.Kept} kept for regulars)" : null);
+        if (_host.SeatInfo() is not { } s) return (n, null);
+        return (Math.Clamp(s.Room, 0, n), s.WhyWaiting(n));
     }
 
     /// <summary>Spawns <paramref name="now"/> pawns into the colony (added to <paramref name="came"/>); the reason when fewer came.</summary>
@@ -272,17 +283,21 @@ public sealed class StoryColonies : IDisposable
         return (Roster(c, null), null, false);
     }
 
+    /// <summary>{pawns, wanted, pending:[{reason, count}], leaving, blocked:[{reason}]}: the pawns still to come are one entry with a
+    /// count (never one per pawn: there is no upper limit).</summary>
     private static JsonObject Roster(StoryColony c, string? why)
     {
         var names = c.PawnNames().Where(a => !c.IsLeaving(a)).ToList();
         int pending = Math.Max(0, c.Meta.Wanted - names.Count);
         var blocked = new JsonArray();
         if (why != null && pending > 0) blocked.Add(new JsonObject { ["reason"] = why });
+        var waiting = new JsonArray();
+        if (pending > 0) waiting.Add(new JsonObject { ["reason"] = why ?? "waiting for a seat", ["count"] = pending });
         return new JsonObject
         {
             ["pawns"] = new JsonArray(names.Select(a => (JsonNode)a!).ToArray()),
             ["wanted"] = c.Meta.Wanted,
-            ["pending"] = new JsonArray(Enumerable.Range(0, pending).Select(_ => (JsonNode)new JsonObject { ["reason"] = why ?? "waiting for a seat" }).ToArray()),
+            ["pending"] = waiting,
             ["leaving"] = new JsonArray(c.PawnNames().Where(c.IsLeaving).Select(a => (JsonNode)a!).ToArray()),
             ["blocked"] = blocked,
         };

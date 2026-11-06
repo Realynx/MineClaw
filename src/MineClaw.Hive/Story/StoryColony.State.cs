@@ -147,17 +147,34 @@ public sealed partial class StoryColony
         ["type"] = cur.Type, ["label"] = cur.Label, ["target"] = cur.At?.Json(), ["progress"] = cur.Progress, ["since"] = cur.Since,
     };
 
-    /// <summary>{online, wanted, cap_free, kept_for_regulars}: how many pawns are in, how many the colony wants, the server's seats.</summary>
+    /// <summary>
+    /// {online, wanted, pending, waiting, waiting_reason, cap_free, kept_for_regulars, kept_for, slots, memory_room}: how many pawns
+    /// are in, how many the colony wants (no upper limit), and the two real limits on the rest: the server's seats (its slots, the
+    /// free ones, those kept for offline regulars and whose) and the memory ceiling's room. <c>waiting_reason</c> names the one that
+    /// keeps the waiting pawns out ("server full (20 slots, 2 kept for poofimafox and kiwi)"); null when they're all on their way.
+    /// </summary>
     private JsonObject SeatsJson()
     {
-        (int Free, int Kept)? s = null;
-        try { s = Host.Seats(); } catch (Exception) { /* unknown */ }
+        MineClaw.Hive.Slots.SeatFacts? s = null;
+        try { s = Host.SeatInfo(); } catch (Exception) { /* unknown */ }
+        int online = 0, unseated = 0; // in game; neither in game nor logging in (they need room)
+        foreach (var p in Pawns.Values)
+        {
+            if (Host.Live(p.Name).Online) online++;
+            else if (!_leaving.ContainsKey(p.Name) && !Host.Seat(p.Name).Hosted) unseated++;
+        }
+        int wanted = Math.Max(Meta.Wanted, Pawns.Count);
+        int pending = Math.Max(0, Meta.Wanted - Pawns.Keys.Count(k => !_leaving.ContainsKey(k))); // asked for, not here yet ("joining…")
         return new JsonObject
         {
-            ["online"] = Pawns.Values.Count(p => Host.Live(p.Name).Online),
-            ["wanted"] = Math.Max(Meta.Wanted, Pawns.Count),
-            ["pending"] = Math.Max(0, Meta.Wanted - Pawns.Keys.Count(k => !_leaving.ContainsKey(k))), // asked for, not here yet ("joining…")
+            ["online"] = online,
+            ["wanted"] = wanted,
+            ["pending"] = pending,
+            ["waiting"] = Math.Max(0, wanted - online),
+            ["waiting_reason"] = s?.WhyWaiting(pending + unseated),
             ["cap_free"] = s?.Free, ["kept_for_regulars"] = s?.Kept,
+            ["kept_for"] = s?.KeptFor is { } k ? new JsonArray(k.Select(n => (JsonNode)n!).ToArray()) : null,
+            ["slots"] = s?.Slots, ["memory_room"] = s?.MemoryRoom,
         };
     }
 

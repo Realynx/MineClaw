@@ -23,13 +23,14 @@ public sealed class StoryRosterTests
         Assert.Null(err);
         Assert.Equal(5, c.Pawns.Count);
         Assert.Equal(7, c.Meta.Wanted);
-        Assert.Equal(2, res!["pending"]!.AsArray().Count);
+        Assert.Equal(2, Assert.Single(res!["pending"]!.AsArray())!["count"]!.GetValue<int>());
         Assert.Contains("server full", res["blocked"]![0]!["reason"]!.GetValue<string>());
         Assert.Equal(2, c.State()["seats"]!["pending"]!.GetValue<int>());
 
-        // At most 12, pending ones included.
-        (_, err) = colonies.AddPawns(c, 6);
-        Assert.Contains("at most 12", err);
+        // No upper limit (Fox 11-05): more than the old 12 is fine, they wait for seats like the rest.
+        (res, err) = colonies.AddPawns(c, 6);
+        Assert.Null(err);
+        Assert.Equal(13, res!["wanted"]!.GetValue<int>());
         Assert.NotNull(colonies.AddPawns(c, 0).Error);
         c.Meta.Active = false;
         Assert.Contains("released", colonies.AddPawns(c, 1).Error);

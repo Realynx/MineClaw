@@ -61,7 +61,6 @@ public sealed partial class StoryColony : IStoryPort
     public static readonly TimeSpan LeaseTtl = TimeSpan.FromSeconds(90);
     /// <summary>A job's lease is kept alive while its pawn's script runs, up to this long.</summary>
     public static readonly TimeSpan JobMax = TimeSpan.FromMinutes(10);
-    public const int MaxPawns = 12;
 
     public StoryColony(ColonyMeta meta, IStoryHost host, TimeProvider? time = null, StoryStore? store = null, ILogger? log = null)
     {
