@@ -83,6 +83,39 @@ public class LiveTests
     }
 
     [Fact]
+    public void A_slow_reader_is_disconnected_instead_of_silently_losing_deltas()
+    {
+        using var hub = new LiveHub(null!, null!, Microsoft.Extensions.Logging.Abstractions.NullLogger<LiveHub>.Instance);
+        var (client, _, _) = Subscribe(hub, null);
+        try
+        {
+            for (int i = 0; i < 1100; i++) hub.Publish("entities", new JsonObject { ["rev"] = i });
+            Assert.True(client.Lagging);
+            var received = new List<long>();
+            while (client.Reader.TryRead(out var f)) received.Add(f.Id);
+            Assert.True(received.Count <= 64, "a stalled reader must not accumulate tens of seconds of old movement");
+            Assert.True(client.Reader.Completion.IsCompletedSuccessfully);
+        }
+        finally { hub.Unsubscribe(client); }
+    }
+
+    [Fact]
+    public void Large_frames_evict_replay_by_bytes_before_the_frame_count_limit()
+    {
+        using var hub = new LiveHub(null!, null!, Microsoft.Extensions.Logging.Abstractions.NullLogger<LiveHub>.Instance);
+        var first = hub.Publish("bots", new JsonObject { ["main"] = "a" }, "bots");
+        for (int i = 0; i < 80; i++) hub.Publish("story", new JsonObject { ["data"] = new string('x', 64 * 1024) });
+        var latest = hub.Publish("bots", new JsonObject { ["main"] = "b" }, "bots");
+        var (client, replay, sent) = Subscribe(hub, first.Id);
+        try
+        {
+            Assert.Equal(0, sent); // old cursor no longer fits: return current state, never a partial delta history
+            Assert.Equal([latest.Id], replay.Select(f => f.Id));
+        }
+        finally { hub.Unsubscribe(client); }
+    }
+
+    [Fact]
     public async Task Stream_polls_only_while_connected_and_emits_typed_frames()
     {
         await using var h = await BridgeHost.StartAsync();

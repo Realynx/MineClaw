@@ -67,7 +67,9 @@ the embeddings key reaches search).
 - **WAL.** The db is opened `Mode=ReadOnly` + `query_only`. SQLite reads the bot's `-wal` / `-shm`; with the bot running (it
   holds the `-shm`), group read on those files is enough.
 - **Memory.** The bridge keeps the vectors and the RAPTOR tree in memory (like the explorer) and re-opens them when the bot
-  changed them; `MemoryMax=600M` in the unit.
+  changed them; `MemoryMax=600M` in the unit. The published runtime config limits the managed heap to 384 MiB and enables
+  memory conservation (level 5), leaving room for native allocations and HTTP buffers. The SSE replay ring also has an
+  8 MiB text limit; a reader more than 64 frames behind reconnects instead of silently losing deltas or accumulating old movement.
 - **Textures.** The browser world viewer ships its own textures (`@mineclaw/world-viewer`); the bridge serves no atlas.
 - **Dev on Fox's PC.** `dotnet run --project tools/ViewerBridge` with `tools/ViewerBridge/appsettings.Development.json` (gitignored;
   start from `appsettings.Development.example.json`) pointing at a local db and supervisor.

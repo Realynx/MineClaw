@@ -12,6 +12,13 @@
     <InvariantGlobalization>true</InvariantGlobalization>
   </PropertyGroup>
 
+  <!-- The service has a 600 MiB total limit. Leave room for native SQLite, HTTP buffers and the runtime instead of
+       letting the managed heap push the process into kernel reclaim and stall live updates. -->
+  <ItemGroup>
+    <RuntimeHostConfigurationOption Include="System.GC.HeapHardLimit" Value="402653184" />
+    <RuntimeHostConfigurationOption Include="System.GC.ConserveMemory" Value="5" />
+  </ItemGroup>
+
   <ItemGroup>
     <ProjectReference Include="..\..\src\MineClaw.Agent\MineClaw.Agent.csproj" />
     <ProjectReference Include="..\..\src\MineClaw.Raptor\MineClaw.Raptor.csproj" />

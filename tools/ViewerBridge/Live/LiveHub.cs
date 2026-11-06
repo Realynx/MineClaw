@@ -12,12 +12,14 @@ namespace MineClaw.ViewerBridge.Live;
 /// (status 1 Hz, events 2 Hz, viewer/feed 2 Hz, viewer/now 2 Hz per online bot (1 Hz per subhive body), entity deltas 5 Hz, hive/tree every 3 s,
 /// viewer/memory-activity 1 Hz, world/blocks 5 Hz, Story Mode colonies 2 Hz) and emits the typed events of api.md §5 (<c>bots</c>, <c>event</c>,
 /// <c>feed</c>, <c>now</c>, <c>entities</c>, <c>hive</c>, <c>memoryActivity</c>, <c>blocks</c>, <c>story</c>) as <c>event/id/data</c> frames with increasing ids. The last 256 frames
-/// are kept for <c>Last-Event-ID</c> resume; a fresh client first gets the latest state frames (bots, hive, one now per bot).
+/// are kept for <c>Last-Event-ID</c> resume, within an 8 MiB text budget; a fresh client first gets the latest state frames (bots, hive, one now per bot).
 /// Delta topics start from the supervisor's current cursor (clients fetch the REST route once, then apply newer frames).
 /// </summary>
 public sealed class LiveHub : IDisposable
 {
     public const int RingSize = 256;
+    public const long RingBytes = 8L * 1024 * 1024;
+    public const int ClientQueueSize = 64;
     public static readonly TimeSpan Heartbeat = TimeSpan.FromSeconds(15);
 
     private readonly SupervisorClient _sup;
@@ -26,6 +28,7 @@ public sealed class LiveHub : IDisposable
     private readonly object _lock = new();
     private readonly List<Client> _clients = [];
     private readonly LinkedList<Frame> _ring = new();
+    private long _ringBytes;
     private readonly Dictionary<string, Frame> _state = new(StringComparer.Ordinal);
     // Seeded from the clock so ids keep increasing across bridge restarts (a stale Last-Event-ID then simply gets fresh state).
     private long _nextId = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
@@ -45,8 +48,9 @@ public sealed class LiveHub : IDisposable
 
     public sealed class Client
     {
-        internal Channel<Frame> Channel { get; } = System.Threading.Channels.Channel.CreateBounded<Frame>(new BoundedChannelOptions(1024)
-        { SingleReader = true, FullMode = BoundedChannelFullMode.DropWrite });
+        // TryWrite must return false when full. DropWrite returns true even when it discards a delta, hiding the gap forever.
+        internal Channel<Frame> Channel { get; } = System.Threading.Channels.Channel.CreateBounded<Frame>(new BoundedChannelOptions(ClientQueueSize)
+        { SingleReader = true, FullMode = BoundedChannelFullMode.Wait });
         public ChannelReader<Frame> Reader => Channel.Reader;
         public bool Lagging { get; internal set; }
     }
@@ -100,7 +104,12 @@ public sealed class LiveHub : IDisposable
         {
             var f = new Frame(++_nextId, evt, Format(evt, _nextId, payload.ToJsonString()));
             _ring.AddLast(f);
-            while (_ring.Count > RingSize) _ring.RemoveFirst();
+            _ringBytes += (long)f.Text.Length * sizeof(char);
+            while (_ring.Count > RingSize || _ringBytes > RingBytes)
+            {
+                _ringBytes -= (long)_ring.First!.Value.Text.Length * sizeof(char);
+                _ring.RemoveFirst();
+            }
             if (stateKey != null) _state[stateKey] = f;
             foreach (var c in _clients)
                 if (!c.Channel.Writer.TryWrite(f) && !c.Lagging)
@@ -144,6 +153,7 @@ public sealed class LiveHub : IDisposable
                     continue;
                 }
                 if (!any) break; // lagging: Nest reconnects with Last-Event-ID
+                if (client.Lagging) break; // reconnect now instead of replaying a stalled reader's old movement
                 while (client.Reader.TryRead(out var f))
                     if (f.Id > sent) { await WriteAsync(ctx, f.Text, ct); sent = f.Id; }
                 await ctx.Response.Body.FlushAsync(ct);

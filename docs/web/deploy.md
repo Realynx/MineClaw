@@ -275,7 +275,7 @@ ssh alice pct exec 114 -- /usr/local/sbin/mineclaw-web-release status
 |---|---|
 | api | 512M (`MemoryHigh` 448M, V8 heap capped at 384 MB) |
 | ui | 384M (`MemoryHigh` 320M, V8 heap capped at 256 MB) |
-| bridge | 600M (.NET sizes its GC heap from the cgroup limit) |
+| bridge | 600M total; published .NET managed heap limit 384 MiB, memory conservation level 5 |
 | **total** | **about 1.5 GB** |
 
 - **The ceiling.** The hive's `ResourceCeiling` measures the CT. With `Hive:Resources:LimitMb=14336` on the 16 GB CT, it
