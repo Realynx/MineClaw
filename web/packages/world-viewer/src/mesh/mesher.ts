@@ -4,8 +4,9 @@
 // - culled by its cull face against an opaque cube neighbour (and same-id glass, ice and slime);
 // - lit per vertex from the payload's sky/block light: axis-aligned quads take the smooth light + ambient occlusion of the
 //   face plane they lie in (the four cells in front of each corner, bilinearly interpolated to the vertex), flush faces from
-//   the neighbour cell, inner faces from the brighter of their own cell and the cell they face; rotated quads (plants) take
-//   their cell's light flat. Model `ambientocclusion: false` and light-emitting blocks skip the occlusion;
+//   the neighbour cell, inner faces from the brighter of their own cell and the cell they face; rotated quads (plants) and
+//   the inner quads of models without ambient occlusion (crops, torches, rails: vanilla's flat path) take their cell's light
+//   flat. Model `ambientocclusion: false` and light-emitting blocks skip the occlusion;
 // - tinted (biome grass/foliage/water blended over 3×3 columns, or a fixed colour), shaded by its face, and written with its
 //   atlas cell (or untextured, the tile's average colour).
 // Light is stored per vertex as raw sky/block levels, so day and night are a shader uniform and never a remesh.
@@ -288,9 +289,11 @@ function culled(n: number, id: number, sflags: number): boolean {
   return (T.flags[(nid << 4) | metas[n]] & F_OPAQUE) !== 0 || ((sflags & F_SELF_CULL) !== 0 && nid === id);
 }
 
-/** Fills `vl` with the quad's per-vertex light; returns its light flags. */
+/** Fills `vl` with the quad's per-vertex light; returns its light flags. Rotated quads and the inner quads of a model without
+ * ambient occlusion (crops, torches, rails…) take their cell's light flat, as vanilla's renderModelFlat does (a smooth
+ * plane would also average the cells beside and below: a crop's lower half took the farmland's light, which is 0). */
 function lightQuad(q: Quad, p: number, lf: number, emissive: boolean): number {
-  return q.dir >= 0 ? faceLight(q, p, lf, emissive) : flatLight(p, lf);
+  return q.dir >= 0 && (q.ao || q.flush) ? faceLight(q, p, lf, emissive) : flatLight(p, lf);
 }
 
 /** An axis-aligned quad: the smooth light + AO of the face plane it lies in, interpolated to each vertex. */

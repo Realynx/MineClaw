@@ -32,12 +32,36 @@ export function emission(id: number): number {
 /** What the see-through blocks take from light passing through them: water, ice and frosted ice 3; leaves and cobweb 1. */
 const SEE_THROUGH: Record<number, number> = { 8: 3, 9: 3, 79: 3, 212: 3, 18: 1, 161: 1, 30: 1 };
 
-/** How much light a block takes away when light passes through it (15 = stops it). */
+/** Vanilla's light opacity where it isn't "opaque cube = 15": lava, farmland, slabs and stairs take all light although they
+ * aren't full cubes (mc-dev BlockSoil / BlockStep / BlockStairs f(255), lava f(255); 1.12.2 setLightOpacity(255) for
+ * farmland, grass paths, every slab and stairs), and pistons (and in 1.12.2 cauldrons, anvils, hoppers, chorus plants, end
+ * gateways and shulker boxes) take none, not being opaque cubes. The server's light (the payload) follows these, so the
+ * local relight must too, or a relit patch disagrees with the cells around it (a farmland field relit full bright inside
+ * the ±15-block rectangles around the bots' harvests and dark outside them). Same as the C# LightTables / Light1122. */
+const VANILLA_OPACITY: Record<GameVersion, Record<number, number>> = {
+  'b1.8.1': { ...idsAt(15, [10, 11, 43, 44, 53, 60, 67, 95, 108, 109]), ...idsAt(0, [29, 33]) },
+  '1.12.2': {
+    ...idsAt(15, [10, 11, 43, 44, 53, 60, 67, 108, 109, 114, 125, 126, 128, 134, 135, 136, 156, 163, 164, 180, 181, 182, 203, 204, 205, 208]),
+    ...idsAt(0, [29, 33, 118, 145, 154, 199, 200, 209, 219, 220, 221, 222, 223, 224, 225, 226, 227, 228, 229, 230, 231, 232, 233, 234]),
+  },
+};
+
+function idsAt(level: number, ids: number[]): Record<number, number> {
+  return Object.fromEntries(ids.map((id) => [id, level]));
+}
+
+function buildOpacity(version: GameVersion): Uint8Array {
+  const t = new Uint8Array(256);
+  const table = tableFor(version);
+  for (let id = 1; id < 256; id++) t[id] = VANILLA_OPACITY[version][id] ?? ((table[id]?.flags ?? 0) & F_OPAQUE ? 15 : (SEE_THROUGH[id] ?? 0));
+  return t;
+}
+
+const OPACITY: Record<GameVersion, Uint8Array> = { 'b1.8.1': buildOpacity('b1.8.1'), '1.12.2': buildOpacity('1.12.2') };
+
+/** How much light a block takes away when light passes through it (15 = stops it): vanilla's Block.lightOpacity, capped. */
 export function opacity(version: GameVersion, id: number): number {
-  if (id === 0) return 0;
-  const d = tableFor(version)[id];
-  if (d && d.flags & F_OPAQUE) return 15;
-  return SEE_THROUGH[id] ?? 0;
+  return OPACITY[version][id] ?? 0;
 }
 
 /** Writable light of one column: full sections allocated on demand from the uniform ones. */
