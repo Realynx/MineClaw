@@ -153,6 +153,11 @@ public sealed partial class StoryColony
     private static readonly Regex CantReach = new(@"can't reach (?:the )?(?<what>[a-z_ ]+?) at (?<x>-?\d+),(?<y>-?\d+),(?<z>-?\d+)",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
+    /// <summary>The client's "chest at 216,64,400 didn't open (blocked above, or protected?)": the pawn got there and the lid stayed shut
+    /// (a block or an ocelot on either half). Live 11-06: ×241 in 7 hours, and the chest was never left out of the plans.</summary>
+    private static readonly Regex DidntOpen = new(@"(?<what>chest|trapped chest|crafting table|furnace) at (?<x>-?\d+),(?<y>-?\d+),(?<z>-?\d+) didn't open",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
     /// <summary>The pawn whose job is being picked (its unreachable chests are left out of its plans), or null.</summary>
     private string? _pickPawn;
     /// <summary>Gear claims, read once per pick (StoredUnits asks for each block a pawn could dig).</summary>
@@ -172,8 +177,10 @@ public sealed partial class StoryColony
     /// <summary>No pawn gets to this chest (now).</summary>
     internal bool ChestUnreachable(P3 chest) => _unreachable.TryGetValue(chest, out var until) && until > Now;
 
-    /// <summary>The chest is in this pick's plans: someone gets there, and the pawn picking hasn't just failed to.</summary>
-    internal bool ChestOpen(P3 chest) => !ChestUnreachable(chest) && (_pickPawn == null || _chestSkip.Count == 0 || !ChestSkipped(_pickPawn, chest));
+    /// <summary>The chest is in this pick's plans: nothing shuts its lid (StoryColony.Storage.cs), someone gets there, and the pawn picking
+    /// hasn't just failed to.</summary>
+    internal bool ChestOpen(P3 chest) => !ChestUnreachable(chest) && LidBlocked(chest) == null
+        && (_pickPawn == null || _chestSkip.Count == 0 || !ChestSkipped(_pickPawn, chest));
 
     /// <summary>
     /// A job failed because the pawn couldn't reach a chest or a bench (not its target): that pawn leaves the chest out of every plan for
@@ -182,7 +189,10 @@ public sealed partial class StoryColony
     /// </summary>
     internal bool ContainerUnreachable(PawnState p, string? note)
     {
-        if (note == null || CantReach.Match(note) is not { Success: true } m) return false;
+        if (note == null) return false;
+        var m = CantReach.Match(note);
+        bool shut = !m.Success && (m = DidntOpen.Match(note)).Success;
+        if (!m.Success) return false;
         var at = new P3(int.Parse(m.Groups["x"].Value), int.Parse(m.Groups["y"].Value), int.Parse(m.Groups["z"].Value));
         if (Benches.FirstOrDefault(b => b.Pos == at) is { } bench)
         {
@@ -195,17 +205,18 @@ public sealed partial class StoryColony
         int n = _chestFails[(p.Name, chest)] = _chestFails.GetValueOrDefault((p.Name, chest)) + 1;
         _chestSkip[(p.Name, chest)] = Now + ChestRest(n);
         var online = Pawns.Values.Where(o => Host.Live(o.Name).Online).ToList();
-        if (online.Count > 0 && online.All(o => ChestSkipped(o.Name, chest)))
-        {
-            _unreachable[chest] = Now + TimeSpan.FromMinutes(10);
-            MaterialsChanged(); // its contents aren't stock any more
-            if (!_unreachableSaid.TryGetValue(chest, out var said) || Now - said > TimeSpan.FromMinutes(30))
-            {
-                _unreachableSaid[chest] = Now;
-                Alert("warn", $"Chest at {chest} is unreachable — pawns can't get to it");
-            }
-        }
+        if (online.Count > 0 && online.All(o => ChestSkipped(o.Name, chest))) NoPawnGetsIn(chest, shut);
         return true;
+    }
+
+    /// <summary>Every pawn in game failed this chest: its contents aren't stock for 10 minutes; the colony hears it once (per 30 minutes).</summary>
+    private void NoPawnGetsIn(P3 chest, bool shut)
+    {
+        _unreachable[chest] = Now + TimeSpan.FromMinutes(10);
+        MaterialsChanged(); // its contents aren't stock any more
+        if (_unreachableSaid.TryGetValue(chest, out var said) && Now - said <= TimeSpan.FromMinutes(30)) return;
+        _unreachableSaid[chest] = Now;
+        Alert("warn", shut ? $"Chest at {chest} won't open for the pawns (a block or a cat on top of it?)" : $"Chest at {chest} is unreachable — pawns can't get to it");
     }
 
     /// <summary>A job that used chests finished: they are reachable (for that pawn, and so for the colony) again.</summary>
