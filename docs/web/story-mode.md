@@ -1113,8 +1113,10 @@ a palette and run lengths, base64 (`PreserveCodec`): a 36-column, 6-layer field 
   it (anything not on that list: a block dropped in a field, a pillar, cobblestone) is a change; it is dug out;
 - *kept*: any other block. It must be there again by the build rule (`Matches`, with the drift table `StoryDrift`): the ground family is
   one block (dirt, grass, farmland, and on 1.12.2 coarse dirt, podzol, mycelium, grass path), a lit furnace is a furnace, turned blocks
-  keep their facing, a door's or bed's second half comes with its first. Blocks whose meta is runtime state (redstone wire's power, a
-  pressed plate, a cake's bites, a cauldron's water, a jukebox's record, a brewing stand's bottles, a daylight sensor) are compared by id.
+  keep their facing, a door's or bed's second half comes with its first. Blocks whose meta is runtime state are compared by id: redstone
+  power, pressed plates and buttons, levers, a cake's bites, a cauldron's water, a record, a brewing stand's bottles, doors, trapdoors and
+  gates open or shut (a b1.8.1 door's open bit reads as a turn), a bed's occupied bit, a repeater's delay, a piston's extension (its head
+  in an open cell comes and goes too), a dispenser's or hopper's trigger, rails' shapes.
 
 So in a preserved growing zone, harvesting, replanting, growth stages, tilling (dirt ↔ farmland ↔ grass), trampling and the air above
 the crops are never changes; only the soil's shape (craters, missing or foreign blocks) and blocks outside the crop layer are restored.

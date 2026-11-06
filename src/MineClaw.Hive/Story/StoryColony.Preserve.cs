@@ -271,7 +271,7 @@ public sealed partial class StoryColony
     internal Func<BlockPos, int, bool>? PreserveFilter()
     {
         var kept = Zones.Where(z => z.Preserve is { On: true, Data: not null }).Select(z => (Snap: z.Preserve!.Data!, z.Kind)).ToArray();
-        var key = string.Join(";", kept.Select(k => $"{System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(k.Snap)}:{k.Kind}"));
+        var key = string.Join(";", kept.Select(k => $"{k.Snap.Serial}:{k.Kind}"));
         if (key == _preserveKey) return _preserveFilter;
         _preserveKey = key;
         bool modern = Modern;

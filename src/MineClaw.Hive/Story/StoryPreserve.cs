@@ -61,6 +61,11 @@ internal sealed class PreserveSnap(int lo, int hi, Dictionary<long, int[]> cols)
 {
     public const int Unknown = -1, Held = -2;
 
+    private static long _serials;
+
+    /// <summary>Unique per snapshot object (the bodies' dig filter is rebuilt when one is replaced).</summary>
+    public long Serial { get; } = Interlocked.Increment(ref _serials);
+
     public int Lo { get; } = lo;
     public int Hi { get; } = hi;
     public Dictionary<long, int[]> Cols { get; } = cols;
@@ -188,14 +193,21 @@ internal static class PreserveCodec
 /// </summary>
 internal static class PreserveRules
 {
-    /// <summary>What grows, falls, flows and burns in an open cell (crops at any stage, plants, snow, fire, liquids).</summary>
+    /// <summary>What grows, falls, flows and burns in an open cell (crops at any stage, plants, snow, fire, liquids), and a piston's
+    /// head or moving block.</summary>
     private static readonly HashSet<int> Comes =
     [
-        0, 6, 8, 9, 10, 11, 31, 32, 37, 38, 39, 40, 51, 59, 78, 81, 83, 86, 103, 104, 105, 106, 111, 115, 127, 141, 142, 175, 207,
+        0, 6, 8, 9, 10, 11, 31, 32, 34, 36, 37, 38, 39, 40, 51, 59, 78, 81, 83, 86, 103, 104, 105, 106, 111, 115, 127, 141, 142, 175, 207,
     ];
 
-    /// <summary>Blocks whose meta is runtime state, compared by id only.</summary>
-    private static readonly HashSet<int> RuntimeMeta = [55, 70, 72, 92, 118, 132, 147, 148, 151, 178, 84, 117, 120];
+    /// <summary>Blocks whose meta is runtime state, compared by id only: redstone power, pressed plates and buttons, a cake's bites, a
+    /// cauldron's water, a record, bottles, an eye; doors, trapdoors and gates open and shut (a b1.8.1 door's open bit reads as a turn),
+    /// a bed's occupied bit, a repeater's delay, a piston's extension, a dispenser's or hopper's trigger, rails' shapes.</summary>
+    private static readonly HashSet<int> RuntimeMeta =
+    [
+        23, 26, 27, 28, 29, 33, 55, 64, 66, 69, 70, 71, 72, 77, 84, 92, 93, 94, 96, 107, 117, 118, 120, 131, 132, 143, 147, 148, 149, 150,
+        151, 154, 157, 158, 167, 178, 183, 184, 185, 186, 187, 193, 194, 195, 196, 197,
+    ];
 
     /// <summary>Ores that only silk touch gives back: restored as the stone they lie in (any of them still there counts as kept).</summary>
     private static readonly HashSet<int> OreToStone = [14, 15, 16, 21, 56, 73, 74, 129];
