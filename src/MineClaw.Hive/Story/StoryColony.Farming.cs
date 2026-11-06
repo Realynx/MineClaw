@@ -181,18 +181,66 @@ public sealed partial class StoryColony
         return have - reserved;
     }
 
-    /// <summary>The next growing-zone job for this pawn in zone <paramref name="z"/>: harvest first, then sow, then till.</summary>
+    /// <summary>The next growing-zone job for this pawn in zone <paramref name="z"/>: harvest first, then sow, then till. Each cell is
+    /// checked in the pawn's own view first (<see cref="FirstAgreed"/>).</summary>
     private ActiveJob? GrowJob(PawnState p, PawnLive live, ZoneState z)
     {
         if (World is not { } w) return null;
         var plant = ActivePlant(w, z);
         var from = live.Block;
         var cells = GrowCells(z).Where(c => Open("b:" + c.At, p.Name, c.At)).OrderBy(c => c.At.Dist(from)).ToList();
-        if (z.Harvest && cells.FirstOrDefault(c => c.State == "ripe") is { } r && StoryPlants.Get(w.Data, r.Plant) is { } crop)
-            return HarvestJob(w, z, plant, r, crop);
+        var own = OwnView(p.Name);
+        if (z.Harvest && RipeJob(w, z, plant, cells, own) is { } harvest) return harvest;
         if (!z.Sow || plant == null) return null;
-        if (cells.FirstOrDefault(c => c.State == "sow") is { } sow && SowJob(w, p, live, z, plant, sow) is { } sown) return sown;
-        return cells.FirstOrDefault(c => c.State == "till") is { } till ? TillJob(live, z, till) : null;
+        HoeCheck(z, cells);
+        if (FirstAgreed(cells, "sow", z, own) is { } sow && SowJob(w, p, live, z, plant, sow) is { } sown) return sown;
+        return FirstAgreed(cells, "till", z, own) is { } till ? TillJob(live, z, till) : null;
+    }
+
+    /// <summary>The nearest ripe cell's harvest, unless no chest has room for what it yields (<see cref="HarvestHeld"/>).</summary>
+    private ActiveJob? RipeJob(IStoryWorld w, ZoneState z, StoryPlant? plant, List<GrowCell> cells, IStoryWorld? own)
+    {
+        if (FirstAgreed(cells, "ripe", z, own) is not { } r || StoryPlants.Get(w.Data, r.Plant) is not { } crop) return null;
+        return HarvestHeld(z, crop) ? null : HarvestJob(w, z, plant, r, crop);
+    }
+
+    /// <summary>The pawn's own view (its connection's world), or null: the colony's (main's) view is all there is.</summary>
+    private IStoryWorld? OwnView(string pawn)
+    {
+        try { return Host.ViewOf(pawn); } catch (Exception) { return null; }
+    }
+
+    /// <summary>How many cells of one state are checked in the pawn's own view per pick (each is a few block reads).</summary>
+    private const int OwnViewChecks = 8;
+
+    /// <summary>How long a cell rests when the pawn's view disagrees with the colony's (main's copy of the change is on its way).</summary>
+    internal static readonly TimeSpan ViewLagRest = TimeSpan.FromSeconds(10);
+
+    /// <summary>
+    /// The nearest cell in <paramref name="state"/> that the pawn's own view agrees with. Live 11-05 (story-1): "harvest failed: wheat
+    /// is protected (not ripe 0/7)" ×175 and "seeds on farmland had no effect" ×7: the colony reads main's view, whose copy of a
+    /// harvest-and-replant (or a sowing) can come after the pawns'; the pawn there sees the young crop. A cell its view disagrees with
+    /// rests a moment (<see cref="ViewLagRest"/>) and the next one is tried; with no own view (or the column not in it) main's stands.
+    /// </summary>
+    private GrowCell? FirstAgreed(List<GrowCell> cells, string state, ZoneState z, IStoryWorld? own)
+    {
+        int checkedCells = 0;
+        foreach (var c in cells)
+        {
+            if (c.State != state) continue;
+            if (own == null || Agrees(own, z, c)) return c;
+            _skip["b:" + c.At] = Now + ViewLagRest;
+            if (++checkedCells >= OwnViewChecks) return null;
+        }
+        return null;
+    }
+
+    /// <summary>The pawn's view classifies the cell the same (or doesn't hold its column).</summary>
+    private bool Agrees(IStoryWorld own, ZoneState z, GrowCell c)
+    {
+        if (!own.Loaded(c.Soil.X, c.Soil.Z) || StoryPlants.Get(own.Data, c.Plant) is not { } plant) return true;
+        var mine = Classify(own, plant, z, c.Soil);
+        return mine.State == c.State && mine.At == c.At;
     }
 
     /// <summary>A ripe cell's harvest: a grown tree is chopped; a crop is sown again in the same go only when it is still what the zone
@@ -237,6 +285,9 @@ public sealed partial class StoryColony
         {
             f["hoe"] = ItemName(item.Id, item.Meta);
             if (stored is { } st) f["fetch"] = Fetch(st.Store.Chest, st.Stack, 1);
+            // Tall grass or a flower on it: a hoe does nothing there (live 11-05: "hoe on grass at 180,63,419 had no effect" every
+            // 10 minutes for hours), so the script cuts it first.
+            if (till.Clear) f["clear_at"] = till.At.Add(0, 1, 0).ToString();
         }, xp: 5);
         if (stored is { } st2) j.Takes.Add((st2.Store.Chest, st2.Stack with { Count = 1 }));
         return j;
@@ -253,6 +304,18 @@ public sealed partial class StoryColony
         if (_growAlert.TryGetValue("seeds:" + z.Id, out var last) && Now - last < TimeSpan.FromMinutes(10)) return;
         _growAlert["seeds:" + z.Id] = Now;
         Alert("warn", $"Growing zone {ZoneName(z)}: {SeedHint(plant)}");
+    }
+
+    /// <summary>
+    /// Soil to till and no hoe anywhere: the hoe's craft task, whatever else the zone offers first (live 11-05: 21 empty cells kept
+    /// every farm pick on sowing, the till branch that asks for a hoe was never reached, and 142 cells stayed grass for 9 hours).
+    /// Looked at every 30 s per zone at most.
+    /// </summary>
+    private void HoeCheck(ZoneState z, List<GrowCell> cells)
+    {
+        if (_growAlert.TryGetValue("hoecheck:" + z.Id, out var last) && Now - last < TimeSpan.FromSeconds(30)) return;
+        _growAlert["hoecheck:" + z.Id] = Now;
+        if (cells.Any(c => c.State == "till") && HoesHeld() == 0) NeedHoe(z);
     }
 
     private void NeedHoe(ZoneState z)
@@ -452,7 +515,8 @@ public sealed partial class StoryColony
             return;
         }
         int have = CountItem(plant.SeedId, plant.SeedId == 6 ? plant.SeedMeta : -1);
-        o["status"] = $"{n.Planted}/{n.Planted + n.Room} sown, {n.Ripe} ripe" + (n.Dry > 0 ? $", {n.Dry} too far from water" : "");
+        o["status"] = $"{n.Planted}/{n.Planted + n.Room} sown, {n.Ripe} ripe" + (n.Dry > 0 ? $", {n.Dry} too far from water" : "")
+            + (HarvestHeldNow(z) ? ", storage full: ripe crops left standing" : "");
         o["seeds"] = SeedsJson(w, plant, have, n.Room);
         o["needs_hoe"] = z.Sow && n.Till > 0 && HoesHeld() == 0;
     }

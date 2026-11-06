@@ -84,7 +84,7 @@ public sealed partial class StoryColony
     /// <summary>"Unfiltered storage takes anything": a chest with room that doesn't deny it, open ("*") chests first, then the lowest
     /// priority (general storage), then the nearest.</summary>
     private StorageState? Fallback(int id, int meta, P3 from, StorageState? except) =>
-        Storages.Where(s => s != except && HasRoom(s, id, meta) && !Denied(s, id, meta))
+        Storages.Where(s => s != except && HasRoom(s, id, meta) && !Denied(s, id, meta) && LidBlocked(s.Chest) == null)
             .OrderBy(s => s.Filter.Allow.Contains("*") ? 0 : 1).ThenBy(s => StoragePriority.Rank(s.Priority)).ThenBy(s => s.Chest.Dist(from))
             .FirstOrDefault();
 

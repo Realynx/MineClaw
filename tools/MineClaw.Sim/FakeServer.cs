@@ -506,7 +506,7 @@ public partial class FakeServer : IDisposable
     /// <summary>A click on a chest or furnace opens its window; else the held block (or seeds on farmland) is placed.</summary>
     private void OpenOrPlace(PlayerBlockPlacementPacket place)
     {
-        if (Chests.TryGetValue((place.X, place.Y, place.Z), out var contents)) OpenContainerWindow(0, "Chest", contents, 27);
+        if (Chests.TryGetValue((place.X, place.Y, place.Z), out var contents)) { if (!LidShut((place.X, place.Y, place.Z))) OpenContainerWindow(0, "Chest", contents, 27); }
         else if (Furnaces.TryGetValue((place.X, place.Y, place.Z), out var fslots)) OpenContainerWindow(2, "Furnace", fslots, 3);
         else if (PlaceBlocks && !place.HeldItem.IsEmpty && (place.HeldItem.Id < 256 ||
                  (place.HeldItem.Id == 295 && place.Direction == 1 && Blocks.GetValueOrDefault((place.X, place.Y, place.Z)) == 60)))
@@ -666,7 +666,17 @@ public partial class FakeServer : IDisposable
             return true;
         }
         if (!Chests.TryGetValue(at, out var contents)) return false;
+        if (LidShut(at)) return true; // the click is used, nothing opens
         return OpenModernWindow(WindowType.Chest, 0, "Chest", 27, contents, () => _openChest = at);
+    }
+
+    /// <summary>Vanilla (mc-dev BlockChest.interact, 1.12.2 BlockChest.isBlocked): a chest under a full opaque block doesn't open.</summary>
+    private bool LidShut((int X, int Y, int Z) at)
+    {
+        int id = Blocks.GetValueOrDefault((at.X, at.Y + 1, at.Z));
+        if (id is 0 or 54 or 146 || !MineClaw.Data.Blocks.Exists(id)) return false;
+        var b = MineClaw.Data.Blocks.Get(id);
+        return b.Solid && b.CollisionHeight >= 1 && !b.Transparent && !b.Liquid;
     }
 
     /// <summary>Opens a window on the server model (filled with <paramref name="contents"/> and the player's inventory when given),
