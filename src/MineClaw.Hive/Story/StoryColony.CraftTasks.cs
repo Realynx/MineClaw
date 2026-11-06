@@ -38,7 +38,14 @@ public sealed partial class StoryColony
     /// <summary>Work waits on it right now: a tool pawns are waiting on, a farm's hoe or a fishing rod, the bucket of a water build.</summary>
     internal bool Immediate(BillState t) =>
         t.ForBuild == NeedTag || t.ForItem == "bucket" && t.ForBuild != null
-        || t.ForBuild == ToolsTag && t.ForItem is { } fi && _urgentTools.Contains(fi);
+        || t.ForBuild == ToolsTag && t.ForItem is { } fi && _urgentTools.Contains(fi)
+        || t.ForItem == "chest" && t.ForBuild is { } fb && IsChestBuild(fb);
+
+    /// <summary>
+    /// A build of the Architect's chest (storage the owner placed): its chest is crafted before other work. Live 11-06: storage was full,
+    /// Fox placed 14 chests, and their crafts queued behind a "forever" bread bill and every build at the crafters' priority.
+    /// </summary>
+    private bool IsChestBuild(string id) => Builds.Any(b => b.Id == id && b.Kind == "chest" && b.Status != "done");
 
     /// <summary>
     /// An immediate craft task this pawn can do (the recipe's work enabled), taken before its other work: a missing tool holds the
@@ -68,8 +75,23 @@ public sealed partial class StoryColony
                 changed = true;
             }
             changed |= bench.Bills.RemoveAll(x => FinishedNeedBill(bench, x)) > 0;
+            changed |= OpenNeedBillsToTasks(bench);
         }
         return changed;
+    }
+
+    /// <summary>A one-off bill the colony added for a need that isn't made yet becomes that need's (immediate) task.</summary>
+    private static bool OpenNeedBillsToTasks(WorkbenchState bench)
+    {
+        var open = bench.Bills.Where(x => x.Mode == "count" && x.Done < x.Target && x.ForBuild == null && bench.LoadedBill != x.Id && ColonyMade(x)).ToList();
+        foreach (var bill in open)
+        {
+            bench.Bills.Remove(bill);
+            bill.ForBuild = NeedTag;
+            bill.ForItem ??= bill.Recipe;
+            bench.Tasks.Add(bill);
+        }
+        return open.Count > 0;
     }
 
     /// <summary>A one-off bill the colony added itself (a hoe, a fishing rod: count, the defaults it was made with) that is done.</summary>
@@ -82,14 +104,16 @@ public sealed partial class StoryColony
 
     private static bool NeedRecipe(string recipe) => recipe.EndsWith("_hoe", StringComparison.Ordinal) || recipe.EndsWith("fishing_rod", StringComparison.Ordinal) || recipe.EndsWith("_seeds", StringComparison.Ordinal);
 
-    /// <summary>A one-off craft task for a need (a farm's hoe, a fishing rod) at the colony's crafting table, unless one is still open.
+    /// <summary>A one-off craft task for a need (a farm's hoe, a fishing rod) at the colony's crafting table, unless a task is still open.
     /// False when there is no crafting table or no such recipe in this version.</summary>
     private bool NeedTask(IStoryWorld w, int outputId, int target, string why)
     {
         var recipe = StoryRecipes.For(w.Data, "crafting_table").FirstOrDefault(r => r.Output.Id == outputId);
         var bench = Benches.Where(b => b.Kind == "crafting_table").OrderBy(b => Home() is { } h ? b.Pos.Dist(h) : 0).FirstOrDefault();
         if (recipe == null || bench == null) return false;
-        if (Benches.Any(b => BillsAndTasks(b).Any(x => x.Recipe == recipe.Id && !x.Paused && (x.Mode != "count" || x.Done < x.Target)))) return true;
+        // Only an open task counts: an owner's bill for it waits its turn in the owner's queue (live 11-05: a "wooden hoe 1/1" bill and
+        // the owner's "stone hoe until 1" kept the farm's hoe from ever becoming an immediate task, and no hoe was made for 9 hours).
+        if (Benches.Any(b => b.Tasks.Any(x => x.Recipe == recipe.Id && !x.Paused && (x.Mode != "count" || x.Done < x.Target)))) return true;
         bench.Tasks.Add(new BillState { Id = NextId("bill"), Recipe = recipe.Id, Mode = "count", Target = target, ForBuild = NeedTag, ForItem = recipe.Id, Reason = why });
         bench.Rev = Touch();
         return true;

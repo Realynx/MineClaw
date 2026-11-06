@@ -931,6 +931,23 @@ with the plant picker; mode and target; drag or the arrows to reorder; pause; re
 "met"), status, seeds (have, cells to sow, where from, what is missing), Sow and Harvest switches, "needs a hoe", and the action
 button ("Designate grass cutting nearby" or "Craft seeds (a bill)"). The map labels a growing zone with what it sows.
 
+**Keeping the field (added 2026-11-06).** Fox: "The farm looks really bad. I don't know why it's not being maintained." Live (story-1,
+a 1,565-cell wheat field): 142 cells grass or dirt for 9 hours, "harvest failed: … not ripe (0/7)" ×175, "seeds … had no effect",
+"chest at 216,64,400 didn't open (blocked above)" ×146, and every chest full.
+- *The hoe.* Soil to till and no hoe anywhere makes the hoe's craft task (immediate: a crafter takes it before other work) whatever
+  else the zone offers first, looked at every 30 s. Only an open task counts as "already asked for": an owner's bill for a hoe waits
+  its turn in the owner's list (live: an old "wooden hoe 1/1" bill there kept the task from ever being made). An unfinished one-off
+  bill the colony made for a need (a hoe, a rod, seeds) moves to the tasks on load.
+- *Tall grass on soil to till* is cut first (`till` jobs carry `clear_at`; a hoe does nothing under a plant).
+- *The pawn's own view.* Each ripe, empty or tillable cell offered is checked in the picking pawn's own view first (its connection's
+  world, when it holds the column): main's copy of a harvest-and-replant or a sowing can come after the pawns'. A cell the pawn sees
+  differently rests 10 s and the next is offered. Ripeness is each crop's own last stage (wheat, carrots, potatoes 7; beetroot,
+  nether wart 3).
+- *Full storage.* A ripe crop whose produce no storage chest has room for is left standing (a ripe crop keeps in the field) while
+  tilling and sowing go on; the zone's status adds "storage full: ripe crops left standing", and one alert (every 10 minutes at
+  most) says storage is full, how many chests are full, and which chests within 24 of home aren't storage yet (or to place more).
+  With no storage at all nothing changes (the drop spot).
+
 **Walking fields (added 2026-11-04).** Fox: "The pawns need to crouch-walk through growing zones, so they don't crush plants or
 tilled ground", "If the ground in a grow zone isn't planted or tilled, they don't have to crouch-walk — better for speed", and "In
 the version we're using now (1.12.2) we can walk on wheat and not crush it. We can't sprint on it, but we don't have to crouch-walk
@@ -1526,6 +1543,16 @@ Filters:
 Storage: `{chest, double_with, label, priority, filter:{allow, deny}, contents:[[id,meta,count]], free_slots, known_at}`. The
 contents start from what the bot remembers of the chest. The director keeps them up to date after each deposit and withdrawal.
 
+Chests that can't open and chests the colony builds (added 2026-11-06; live: oak planks lay on two double chests and every fetch
+and delivery that chose them failed, ×241 in 7 hours; Fox placed 14 chests when storage filled up):
+- A chest under a full opaque block (planks, stone, dirt, a crafting table…; either half of a double chest) doesn't open in either
+  version. The colony reads that from the world (every 5 s per chest at most), leaves the chest out of every fetch and delivery, and
+  says once (every 30 minutes) "Chest at X can't open: oak planks on top of it at X". A pawn's "chest at X didn't open" (a cat on
+  it, anything the colony can't see) rests that chest for the pawn like "can't reach" (2, 5, 10 minutes), never the job's target;
+  when every pawn has failed it, "Chest at X won't open for the pawns".
+- A chest a colony build places (the Architect's chest, a design's chests) is storage once built, taking anything; one built
+  beside a single storage chest makes it a double chest. The chest of an Architect chest build is crafted as an immediate task.
+
 Web (added 2026-11-03): clicking a chest opens its inspector with the storage settings and the chest's contents as the game's grid
 (27 or 54 slots) with how fresh they are ("Seen 3 min ago by maid_chan_102", "Open right now by …", "Story storage ledger", "Not
 opened yet by any bot"), from `GET /api/world/container` (api.md §6: a bot's live window, its last look, the world memory or this
@@ -1670,9 +1697,9 @@ of the list for crafting." (Live 11-05: one table listed 20 finished "wooden hoe
   its count is made, then goes.
 - **Order on a bench:** immediate tasks, then the owner's bills top to bottom, then the other tasks (a build's ingredients, by build
   order then step). **Immediate** = work waits on it right now: a tool a pawn is waiting for (or works on with a worn one), a
-  need's one-off (hoe, rod, seeds), a water build's bucket chain. A pawn with Craft (or Cook) work takes an immediate task before
-  any other work, whatever its priorities (live 11-05: the pickaxe bill sat "crafting one" for 30 minutes while every crafter
-  hauled at priority 2).
+  need's one-off (hoe, rod, seeds), a water build's bucket chain, the chest of an Architect chest build (storage the owner is
+  waiting for). A pawn with Craft (or Cook) work takes an immediate task before any other work, whatever its priorities (live
+  11-05: the pickaxe bill sat "crafting one" for 30 minutes while every crafter hauled at priority 2).
 - **State:** `craft_tasks: [{id, item, label, count, reason, for, for_item, priority: immediate|normal, bench:[x,y,z]|null, status:
   queued|crafting|waiting|paused, blocked}]` (every state, full or delta), `count` what is still to make, `blocked` what held it up
   at its last try ("no sticks: checked 2 chests …"). Hand crafts (a 2×2 recipe while there is no table) are listed with `bench:

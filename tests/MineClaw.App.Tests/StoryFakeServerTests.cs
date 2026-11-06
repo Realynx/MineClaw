@@ -775,6 +775,37 @@ public sealed class StoryFakeServerTests(ITestOutputHelper output)
         s.Inventory[38] = new ItemStack((short)295, 8, 0);       // wheat seeds
     });
 
+    /// <summary>
+    /// Live 11-06 (story-1): "chest at 216,64,400 didn't open (blocked above, or protected?)" ×146: oak planks lay on the nearest seed
+    /// chest and every sowing fetched there. The colony sees the block on the lid, takes the seeds from the other chest, and says once
+    /// which chest can't open and why; the pawn never walks to the shut one.
+    /// </summary>
+    [Fact]
+    public Task Seeds_come_from_the_chest_that_opens_when_the_nearest_has_a_block_on_its_lid() => Colony("1.12.2", 1, async x =>
+    {
+        var c = x.C;
+        var srv = x.Servers[x.Pawns[0]];
+        Only(x, WorkTypes.Farm);
+        Assert.Null(c.StorageOp("set", [WoodChest], null, "normal", "Near").Error);
+        Assert.Null(c.StorageOp("set", [FoodChest], null, "normal", "Far").Error);
+        c.AddContents(c.StorageAt(WoodChest)!, new Stack(295, 0, 16));
+        c.AddContents(c.StorageAt(FoodChest)!, new Stack(295, 0, 16));
+        var (res, err) = c.ZoneOp("add", "farm", Area.Of(16, 63, 2, 16, 63, 2), name: "Wheat", grow: new JsonObject { ["plant"] = "wheat" });
+        Assert.True(err == null, err);
+        Assert.True(await Until(() => srv.Blocks.GetValueOrDefault((16, 64, 2)) == 59, 60_000), "sown: " + x.Diag());
+        Assert.Equal(16, InChest(srv, WoodChest, i => i.Id == 295)); // the shut chest was never opened
+        Assert.True(InChest(srv, FoodChest, i => i.Id == 295) < 16, "the seeds came from the chest that opens");
+        lock (x.Log) Assert.DoesNotContain(x.Log, l => l.Contains("didn't open"));
+        Assert.Single(c.Alerts, a => a.Text.Contains($"Chest at {WoodChest} can't open"));
+    }, s =>
+    {
+        s.Blocks[(16, 63, 2)] = 60;                                                // farmland
+        s.Blocks[(16, 63, 4)] = 9;                                                 // water near it
+        s.Blocks[(WoodChest.X, WoodChest.Y + 1, WoodChest.Z)] = Blocks.Planks;     // on the nearer chest's lid
+        s.Chests[(WoodChest.X, WoodChest.Y, WoodChest.Z)][0] = new ItemStack((short)295, 16, 0);
+        s.Chests[(FoodChest.X, FoodChest.Y, FoodChest.Z)][0] = new ItemStack((short)295, 16, 0);
+    });
+
     [Fact]
     public Task A_fence_build_has_its_fences_crafted_from_stored_planks_at_the_colony_table_then_builds_them() => Colony("1.12.2", 1, async x =>
     {

@@ -244,12 +244,17 @@
     if (s) return s.stop;
     return j.tool ? equip(j.tool, 'hold', '', j.tool_ench) : { ok: true };
   };
-  // till(job): hold the hoe (j.hoe) and use it on the dirt or grass at j.at, walking over first when it is far.
+  // till(job): hold the hoe (j.hoe) and use it on the dirt or grass at j.at, walking over first when it is far. j.clear_at: tall
+  // grass or a flower on it, cut first (a hoe does nothing under a plant).
   const till = j => {
     const g = globalThis;
     if (g.dist(g.pos(j.at)) > 5) {
       const r = g.go(j.at, 3);
       if (!g.ok(r)) return r;
+    }
+    if (j.clear_at && g.block(j.clear_at) !== 'air') {
+      const c = g.dig(j.clear_at);
+      if (!g.ok(c) && g.block(j.clear_at) !== 'air') return c;
     }
     g.skill('hold_item', j.hoe);
     return g.use_block(j.at);
