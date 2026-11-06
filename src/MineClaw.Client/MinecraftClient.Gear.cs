@@ -30,6 +30,14 @@ public sealed partial class MinecraftClient
     /// </summary>
     public bool DigThroughDetours { get; set; }
 
+    /// <summary>
+    /// A deposit that finds every chest full never puts a new chest down by itself (the overflow chest beside a full one). Live 11-05/06
+    /// story-1: pawns' clients placed chests the colony never knew of (223,65,404 on top of a storage chest, 218,64,395, 239,64,397…);
+    /// Fox 11-05: "Bots should delete whatever they put down unless it was a directive to build it." Story Mode's pawns turn it on: the
+    /// colony says storage is full and builds its own chests. Off by default.
+    /// </summary>
+    public bool NoOverflowChests { get; set; }
+
     /// <summary>This body's recent failed searches (<see cref="NoRouteCache"/>): the same one isn't run again for a while.</summary>
     public NoRouteCache NoRoutes { get; } = new();
 

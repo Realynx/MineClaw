@@ -93,6 +93,7 @@ function pawn() {
     if (!j) continue
     if (j.kind === 'end') { story.report(j.id, 'done'); return 'released: ' + (j.label || 'colony') }
     const r = runJob(j)
+    story.sweep()
     story.report(j.id, ok(r) ? 'done' : 'failed', r && r.msg)
   }
   return 'shift over'

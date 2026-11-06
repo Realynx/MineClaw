@@ -774,6 +774,6 @@ internal static class StoryScanGoldenData
   reach 0,2,0 {"within":true,"block":null,"blocks":0}
   reach 3,6,0 {"within":false,"block":null,"blocks":0,"stand":"1,67,6","steps":0,"gather":["-2,66,3","0,66,3","0,66,4","0,66,8","1,66,4","1,66,5","1,66,8","3,66,6","3,66,8","4,66,6","4,66,7"]}
   reach -2,9,2 {"within":false,"block":null,"blocks":0,"stand":"-3,72,9","steps":0,"gather":[]}
-all BDB42033E7DCB62D
+all 9C31AE8B61362B91
 """;
 }

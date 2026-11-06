@@ -52,8 +52,8 @@ public static class SkillWorld
         if (SkillJson.Item(preferred) is { } want && want.Id < 256 && ctx.Has(want.Id)) return want.Id;
         foreach (int id in MineClaw.Client.MinecraftClient.ScaffoldBlocks)
         {
-            // Dirt is everywhere in a normal world: a fine building block, before the logs (skyblock never spends it).
-            if (id == Blocks.Log && DirtUsable(ctx)) return Blocks.Dirt;
+            // Dirt is everywhere in a normal world: a fine building block, before planks and logs (skyblock never spends it).
+            if (id == Blocks.Planks && DirtUsable(ctx)) return Blocks.Dirt;
             if (!ctx.Game.ReservedItems.Contains(id) && ctx.Has(id)) return id;
         }
         if (DirtUsable(ctx)) return Blocks.Dirt;

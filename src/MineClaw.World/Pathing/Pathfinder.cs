@@ -714,8 +714,15 @@ public sealed partial class Pathfinder
         // farmland/crops with scaffold in either of the two cells above them (bridging and pillaring share this veto).
         for (int y = p.Y; y >= Math.Max(0, p.Y - 2); y--)
             if (ScaffoldVeto.Contains(_world.GetBlock(p.X, y, p.Z))) return false;
+        // Never on a container's lid or a workstation (a chest under a block won't open: live 11-06, planks on two storage chests).
+        if (p.Y > 0 && LidVeto.Contains(_world.GetBlock(p.X, p.Y - 1, p.Z))) return false;
         return _o.CanPlace is null || _o.CanPlace(p);
     }
+
+    /// <summary>Blocks a scaffold never stands on: chests (and trapped, ender), furnaces, the crafting table, dispenser, dropper,
+    /// hopper, brewing stand, enchanting table, anvil, shulker boxes.</summary>
+    internal static readonly IdSet LidVeto = IdSet.Of([54, 146, 130, 61, 62, 58, 23, 158, 154, 117, 116, 145, 219, 220, 221, 222, 223, 224, 225, 226,
+        227, 228, 229, 230, 231, 232, 233, 234]);
 
     /// <summary>Farmland and crops scaffold never replaces or covers: wheat, cactus, cane, fruit/stems, nether wart, cocoa,
     /// carrots, potatoes, beetroot.</summary>

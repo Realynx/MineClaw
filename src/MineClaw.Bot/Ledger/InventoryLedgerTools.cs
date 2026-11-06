@@ -39,8 +39,8 @@ public static class InventoryLedgerTools
         ["harvest_generator"] = "harvest_generator",
         ["dig"] = "dig",
         ["collect_drops"] = "picked up",
-        ["goto"] = "placed while moving (bridge/pillar block)",
-        ["follow"] = "placed while moving (bridge/pillar block)",
+        ["goto"] = InventoryLedger.MovingCause,
+        ["follow"] = InventoryLedger.MovingCause,
     };
 
     private static string? StrArg(JsonElement i, string k) =>

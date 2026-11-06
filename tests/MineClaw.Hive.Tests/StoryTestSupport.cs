@@ -89,6 +89,12 @@ internal sealed class FakeStoryHost(FakeStoryWorld world) : IStoryHost
     /// <summary>Pawns released one by one (removed from the colony).</summary>
     public List<string> ReleasedPawns { get; } = new();
     public string? ReleasePawn(string account, string why) { ReleasedPawns.Add(account); Lives.Remove(account); return null; }
+    /// <summary>Each body's own temporary blocks (its client's walk scaffolds, shelter box, clutch blocks).</summary>
+    public Dictionary<string, List<(P3 At, int Id)>> Temps { get; } = new(StringComparer.OrdinalIgnoreCase);
+    public IReadOnlyList<(P3 At, int Id)> TemporaryBlocks(string account) => Temps.TryGetValue(account, out var t) ? t.ToList() : [];
+    /// <summary>The hive's placed-block log: every block a bot placed that still stands, and who.</summary>
+    public List<(P3 At, int Id, string Bot)> Placed { get; } = new();
+    public IReadOnlyList<(P3 At, int Id, string Bot)> PlacedByBots() => Placed.ToList();
     /// <summary>The server's seats (free, kept for regulars); null = unknown.</summary>
     public (int Free, int Kept)? SeatsNow;
     public (int Free, int Kept)? Seats() => SeatsNow;

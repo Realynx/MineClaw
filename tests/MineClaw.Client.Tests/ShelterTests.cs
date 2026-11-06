@@ -76,7 +76,8 @@ public class ShelterTests
 
     [Theory]
     [InlineData(Blocks.Cobblestone, 0)]
-    [InlineData(Blocks.Planks, 1)]
+    [InlineData(Blocks.Planks, 7)]
+    [InlineData(Blocks.Stone, 2)]
     [InlineData(Blocks.Dirt, 9)]
     [InlineData(Blocks.Sapling, -1)]
     [InlineData(Blocks.Sand, -1)]

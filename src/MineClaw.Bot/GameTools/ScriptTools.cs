@@ -36,6 +36,7 @@ public sealed partial class ScriptBridge
         FaceTool.ToolName, // hidden: face{at} (turn the head; Story pawns' recreation)
         EscapeDigTool.ToolName, // hidden: escape_dig{at} (a Story pawn getting out: any tool, the drop may be lost)
         ClearDigTool.ToolName, // hidden: clear_dig{at} (a Story build's cell holding another block: dug out before its block goes in)
+        ClearTemporaryTool.ToolName, // hidden: clear_temporary{} (a Story pawn's own scaffolds, pillars and boxes dug back after each job)
         FishingTool.ToolName, // hidden tool: fish(at, seconds) with a rod
         TurnedPlaceTool.ToolName, // hidden: place_turned(block, at, meta) (a design's facing, axis or half)
         Blueprints.BlueprintWiring.BuildTool, Blueprints.BlueprintWiring.InfoTool, // hidden: build{bp, part, of, layer} / blueprint(id)

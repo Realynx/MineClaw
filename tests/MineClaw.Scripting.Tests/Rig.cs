@@ -29,11 +29,14 @@ public sealed class Rig : IDisposable
 
     /// <summary>A rig whose scripts are JavaScript.</summary>
     public static Rig Js(ScriptOptions? options = null, Crew.ICrewPort? crew = null, IScriptCheckpointStore? checkpoints = null,
-        Func<string, string?>? storedParams = null, string? body = null, MineClaw.Data.Versioning.IGameData? data = null) =>
-        new(options, crew, checkpoints, storedParams, body, data) { Lang = ScriptLanguage.Js };
+        Func<string, string?>? storedParams = null, string? body = null, MineClaw.Data.Versioning.IGameData? data = null,
+        IReadOnlyList<ScriptAction>? more = null) =>
+        new(options, crew, checkpoints, storedParams, body, data, more) { Lang = ScriptLanguage.Js };
 
+    /// <param name="more">Script actions besides the usual ones (a hidden tool a test needs, e.g. clear_temporary).</param>
     public Rig(ScriptOptions? options = null, Crew.ICrewPort? crew = null, IScriptCheckpointStore? checkpoints = null,
-        Func<string, string?>? storedParams = null, string? body = null, MineClaw.Data.Versioning.IGameData? data = null)
+        Func<string, string?>? storedParams = null, string? body = null, MineClaw.Data.Versioning.IGameData? data = null,
+        IReadOnlyList<ScriptAction>? more = null)
     {
         World.ApplyChunkRegion(-16, 0, -16, 32, 128, 32, new byte[32 * 128 * 32], null, null, null);
         for (int x = -6; x <= 6; x++)
@@ -66,6 +69,7 @@ public sealed class Rig : IDisposable
                 new ScriptAction("attack", ["target"]),
                 new ScriptAction("equip", ["item", "mode", "from", "ench"], Atomic: true),
                 new ScriptAction("face", ["at"]),
+                .. more ?? [],
             ],
             Act = (name, args, ct) =>
             {

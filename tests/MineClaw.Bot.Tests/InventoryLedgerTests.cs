@@ -180,6 +180,42 @@ public class InventoryLedgerTests
         Assert.DoesNotContain(l.Entries, x => x.Cause.Contains("used during withdraw", StringComparison.Ordinal));
     }
 
+    /// <summary>
+    /// Live 11-05: "-1 Seeds: placed while moving (bridge/pillar block)" ×176, "-35 Bread: placed while moving", "-1 Wooden Shovel: placed
+    /// while moving": 1.12.2 sends a sowing's slot update a tick after its block change, so it landed in the next walk. Only a block a
+    /// walk builds with is placed while moving; seeds are booked to the sowing before, bread to the deposit.
+    /// </summary>
+    [Fact]
+    public void Sowing_or_a_deposit_whose_update_lands_during_a_walk_is_not_a_movement_placement()
+    {
+        const int Seeds = Items.Seeds, Bread = Items.Bread, Dirt = Blocks.Dirt;
+        var (l, c) = New((Seeds, 0, 10), (Bread, 0, 35), (Dirt, 0, 8));
+        string? action = "place";
+        l.CurrentAction = () => action;
+        l.Flush();               // the sowing runs (the pump samples it)
+        c.Advance(0.3);
+        action = "goto";         // it ended; the next walk is under way when the seed's slot update arrives
+        l.Observe(Inv((Seeds, 0, 9), (Bread, 0, 35), (Dirt, 0, 8)));
+        c.Advance(0.5);
+        l.Flush();
+        var seed = Assert.Single(l.History("seeds"));
+        Assert.Equal(-1, seed.Delta);
+        Assert.StartsWith("placed as a block", seed.Cause);
+        // A walk that really pillars with dirt is still a movement placement; bread with no action before it is never one.
+        using (l.Scope(InventoryLedger.MovingCause))
+        {
+            l.Observe(Inv((Seeds, 0, 9), (Bread, 0, 35), (Dirt, 0, 6)));
+            c.Advance(6);
+            l.Observe(Inv((Seeds, 0, 9), (Dirt, 0, 6)));
+        }
+        c.Advance(0.5);
+        l.Flush();
+        Assert.Equal(InventoryLedger.MovingCause, Assert.Single(l.History("dirt")).Cause);
+        var bread = Assert.Single(l.History("bread"));
+        Assert.DoesNotContain("placed while moving", bread.Cause);
+        Assert.DoesNotContain(l.Entries, e => e.ItemId != Dirt && e.Cause == InventoryLedger.MovingCause);
+    }
+
     [Theory]
     [InlineData("generator: 64/64 cobblestone in 4m15s (dug 64 at 5,64,7)", 4, "generator: 4/64 cobblestone in 4m15s (dug 64 at 5,64,7)")]
     [InlineData("generator: 7/64 cobblestone in 2m10s (dug 9 at 5,64,7)", 9, "generator: 7/64 cobblestone in 2m10s (dug 9 at 5,64,7)")]

@@ -98,6 +98,76 @@ public sealed class StoryReachSdkTests
         Assert.Equal(65, (int)Math.Floor(w.Player.Position.Y));
     }
 
+    /// <summary>The colony's side as the pawn sees it: its registry of temporary blocks and its answer to "stuck".</summary>
+    private sealed class Colony : MineClaw.Scripting.Story.IStoryPort
+    {
+        public HashSet<string> Temps { get; } = new();
+        public List<string> Stuck { get; } = new();
+        public System.Text.Json.Nodes.JsonObject? Next(string body) => null;
+        public bool Report(string body, string job, string status, string? note, double? pct) => true;
+        public void Temporary(string body, string cell, bool placed, string why) { if (placed) Temps.Add(cell); else Temps.Remove(cell); }
+        string MineClaw.Scripting.Story.IStoryPort.Stuck(string body, string why) { Stuck.Add(why); return "teleported home"; }
+    }
+
+    /// <summary>
+    /// Fox 11-05: "If a bot can't navigate something without deleting its nerd pole, then it should teleport." A pillar of planks whose
+    /// block under the pawn won't come out (the dig target was fine): every other block is still dug back, the pawn stranded up there is
+    /// teleported home (the colony's rescue), and the block it couldn't take back stays in the colony's registry (a cleanup job): nothing
+    /// is left standing on purpose, nothing forgotten.
+    /// </summary>
+    [Fact]
+    public async Task A_pawn_stranded_on_its_pillar_is_teleported_home_and_what_it_couldnt_dig_back_is_the_colonys_cleanup()
+    {
+        // A ledge 10 above the floor: a pillar of five.
+        using var rig = Make(w => { w.SetBlock(2, 71, 0, 0, 0); w.SetBlock(2, 75, 0, Blocks.Cobblestone, 0); });
+        var colony = new Colony();
+        rig.Host.Story = colony;
+        rig.Give(36, Blocks.Planks, 8);
+        var dig = rig.On["dig"];
+        rig.On["dig"] = (a, ct) => a.GetProperty("at").GetString() == "2,66,0"
+            ? Task.FromResult(ActResult.Fail("won't dig planks at 2,66,0: a player's block"))
+            : dig(a, ct);
+        var s = await rig.Run("return JSON.stringify(story.dig('2,75,0'))");
+        Assert.Contains("\"ok\":true", s.Outcome); // the target came down
+        Assert.Equal(0, rig.World.GetBlock(2, 75, 0));
+        for (int y = 67; y <= 70; y++) Assert.Equal(0, rig.World.GetBlock(2, y, 0)); // everything above the stuck block dug back
+        Assert.True(colony.Temps.SetEquals(["2,66,0"]), string.Join(" ", colony.Temps) + " | " + string.Join(" | ", rig.Norm()));
+        var why = Assert.Single(colony.Stuck);
+        Assert.Contains("stranded on its pillar", why);
+    }
+
+    /// <summary>A pillar never stands on a chest (a chest under a block won't open: live 11-06, planks on two storage chests' lids).</summary>
+    [Fact]
+    public async Task A_pillar_never_goes_up_on_a_chest()
+    {
+        using var rig = Make(w => w.SetBlock(2, 64, 0, Blocks.Chest, 0));
+        rig.Give(36, Blocks.Dirt, 8);
+        var s = await rig.Run($"return JSON.stringify(story.dig('{Ceiling}'))");
+        Assert.Contains("\"ok\":true", s.Outcome);
+        Assert.DoesNotContain(rig.Norm(), c => c.StartsWith("place ") && c.Contains("\"2,65,0\""));
+        Assert.Equal(Blocks.Chest, rig.World.GetBlock(2, 64, 0));
+        Assert.Equal(0, rig.World.GetBlock(2, 65, 0));
+    }
+
+    /// <summary>A pillar comes down even when the work at its top is cut short (the dig there throws): try/finally, not luck.</summary>
+    [Fact]
+    public async Task The_pillar_comes_down_and_is_unregistered_even_when_the_work_at_the_top_fails()
+    {
+        using var rig = Make();
+        var colony = new Colony();
+        rig.Host.Story = colony;
+        rig.Give(36, Blocks.Planks, 8);
+        var dig = rig.On["dig"];
+        rig.On["dig"] = (a, ct) => a.GetProperty("at").GetString() == Ceiling && Math.Floor(rig.World.Player.Position.Y) >= 66
+            ? Task.FromResult(ActResult.Fail("too hard: needs a better pickaxe"))
+            : dig(a, ct);
+        var s = await rig.Run($"return JSON.stringify(story.dig('{Ceiling}'))");
+        Assert.True(s.Outcome.Contains("too hard"), s.Outcome + " | " + string.Join(" | ", rig.Norm()));
+        for (int y = 65; y <= 70; y++) Assert.Equal(0, rig.World.GetBlock(2, y, 0));
+        Assert.Empty(colony.Temps);
+        Assert.Empty(colony.Stuck);
+    }
+
     [Fact]
     public async Task With_no_blocks_on_it_it_takes_the_jobs_pillar_stack_from_storage_first()
     {

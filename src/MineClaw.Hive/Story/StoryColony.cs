@@ -419,6 +419,7 @@ public sealed partial class StoryColony : IStoryPort
             HaulTick(); // a drop about to despawn may take a hauler off lesser work (StoryColony.Hauling.cs)
             ReconcileTick(); // every build cell against the world: drift reopens, wrong blocks are cleared (StoryColony.Reconcile.cs)
             PruneEntityMarks(); // haul, hunt, forbid marks whose entity is gone go (StoryColony.EntityMarks.cs)
+            TempTick(); // blocks pawns put down for themselves: left behind -> a cleanup job (StoryColony.TempBlocks.cs)
             AuditIdle(); // why a pawn is idle in its work hours with work about (StoryColony.IdleAudit.cs)
             _pickEnts = null;
             NoteJoined(joined);

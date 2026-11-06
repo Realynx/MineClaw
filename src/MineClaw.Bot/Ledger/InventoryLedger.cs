@@ -62,6 +62,7 @@ public sealed class InventoryLedger(TimeProvider? time = null, int capacity = 60
         string? container = action == "deposit" ? SafeContainer() : null;
         lock (_lock)
         {
+            NoteAction(action, now);
             if (_last is null) { _last = new(counts); return; }
             bool correction = _resyncUntil is { } until && now <= until;
             _resyncUntil = null;
@@ -152,7 +153,12 @@ public sealed class InventoryLedger(TimeProvider? time = null, int capacity = 60
     /// <summary>Attributes settled changes (called by a timer and before every query).</summary>
     public void Flush()
     {
-        lock (_lock) Flush(_time.GetUtcNow(), force: false);
+        string? action = SafeAction();
+        lock (_lock)
+        {
+            NoteAction(action, _time.GetUtcNow());
+            Flush(_time.GetUtcNow(), force: false);
+        }
     }
 
     private void Flush(DateTimeOffset now, bool force)
@@ -185,7 +191,50 @@ public sealed class InventoryLedger(TimeProvider? time = null, int capacity = 60
                 ? "server correction: my inventory model listed them but the server didn't have them (gone earlier, unrecorded)"
                 : "server correction: the server had more than my model showed";
         return PickupCause(at, id, delta, scope, action) ?? MealCause(at, id, delta) ?? DeathCause(at, delta)
-               ?? ActionCauseOf(id, delta, scope, action, container);
+               ?? NotMovementCause(at, id, delta, scope, action) ?? ActionCauseOf(id, delta, scope, action, container);
+    }
+
+    /// <summary>The walk's own cause ("goto"/"follow" scope and action): only a block a walk builds with is placed while moving.</summary>
+    internal const string MovingCause = "placed while moving (bridge/pillar block)";
+
+    /// <summary>
+    /// A loss during a walk of something no walk places (seeds, bread, wheat, a shovel): the slot update of the action before it,
+    /// landing late (1.12.2 sends a placement's Set Slot a tick after the block change; a deposit's window resync comes after the
+    /// window closed). Live 11-05: "-35 Bread: placed while moving", "-1 Seeds: placed while moving" x176, "-1 Wooden Shovel: placed
+    /// while moving". Null = a block a walk may place (or not a walk).
+    /// </summary>
+    private string? NotMovementCause(DateTimeOffset at, int id, int delta, string? scope, string? action)
+    {
+        bool walking = scope == MovingCause || scope is null && action is "goto" or "follow";
+        if (delta >= 0 || !walking || MovementBlock(id)) return null;
+        if (EarlierAction(at) is { } prev) return ActionCause(prev, delta) + " (its update came while moving)";
+        return "gone while moving (not a block a walk builds with: a late update of an earlier action?)";
+    }
+
+    /// <summary>A full solid block a walk could pillar or bridge with (never an item: seeds, food, tools).</summary>
+    internal static bool MovementBlock(int id)
+    {
+        if (id <= 0 || id >= 256) return false;
+        try { return Blocks.Get(id) is { Solid: true, CollisionHeight: >= 1, Interactable: false }; }
+        catch (Exception) { return false; }
+    }
+
+    /// <summary>Actions the ledger saw lately (sampled at each snapshot and flush): the late update's real cause.</summary>
+    private readonly List<(string Action, DateTimeOffset At)> _recentActions = new();
+
+    private void NoteAction(string? action, DateTimeOffset now)
+    {
+        if (action is null or "goto" or "follow" or "click") return;
+        _recentActions.RemoveAll(a => a.Action == action || now - a.At > TimeSpan.FromSeconds(10));
+        _recentActions.Add((action, now));
+    }
+
+    /// <summary>The latest other action seen within 4 s before <paramref name="at"/>, or null.</summary>
+    private string? EarlierAction(DateTimeOffset at)
+    {
+        for (int i = _recentActions.Count - 1; i >= 0; i--)
+            if (_recentActions[i].At <= at + TimeSpan.FromMilliseconds(100) && at - _recentActions[i].At <= TimeSpan.FromSeconds(4)) return _recentActions[i].Action;
+        return null;
     }
 
     /// <summary>A gain right after a pickup of the same item (the pickup is used up).</summary>
@@ -252,8 +301,8 @@ public sealed class InventoryLedger(TimeProvider? time = null, int capacity = 60
         [("withdraw", true)] = "put back into the chest (the rest of a stack I picked up)",
         [("place", true)] = "placed as a block",
         [("build", true)] = "placed as a block",
-        [("goto", true)] = "placed while moving (bridge/pillar block)",
-        [("follow", true)] = "placed while moving (bridge/pillar block)",
+        [("goto", true)] = MovingCause,
+        [("follow", true)] = MovingCause,
         [("eat", true)] = "eaten",
         [("smelt", true)] = "put in a furnace",
         [("collect_furnace", false)] = "taken from a furnace",

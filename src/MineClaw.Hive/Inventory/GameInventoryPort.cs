@@ -191,6 +191,8 @@ public sealed class GameInventoryPort(IGameClient client, ObservationStore obser
     public async Task<(ActionResult Result, BlockPos? Chest)> PlaceLabelledChestAsync(string label, CancellationToken ct)
     {
         if (client.World.Inventory.CountItem(Blocks.Chest) <= 0) return (ActionResult.Fail("no chest item to place"), null);
+        // A Story pawn never puts a chest down by itself (its colony says storage is full and builds its own; Fox 11-05).
+        if (GameClients.Minecraft(client)?.Inner is { NoOverflowChests: true }) return (ActionResult.Fail("a colony pawn places no chest of its own"), null);
         var w = client.World;
         var me = w.Player.Position.ToBlockPos();
         foreach (var (dx, dz) in new[] { (1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (-1, -1), (1, -1), (-1, 1) })

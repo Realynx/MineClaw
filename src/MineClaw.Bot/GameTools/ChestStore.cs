@@ -137,7 +137,7 @@ public static class ChestStore
         /// </summary>
         private BlockPos? OverflowBeside(Dictionary<int, int> left)
         {
-            if (Total(left) <= 0 || _full.Count == 0 && _busy.Count == 0 || !CanMakeChest(c)) return null;
+            if (Total(left) <= 0 || _full.Count == 0 && _busy.Count == 0 || !MayPlaceChest(c)) return null;
             var near = asked is { } an && Stuck(an) ? an : _full.Count > 0 ? _full[0] : _busy.FirstOrDefault();
             return Stuck(near) ? near : null;
         }
@@ -207,6 +207,9 @@ public static class ChestStore
         if (logs >= 2) return $"craft+place a chest (have {logs} logs)";
         return "get 2 logs to craft+place a chest";
     }
+
+    /// <summary>The body may put an overflow chest down (not a Story pawn: its colony builds chests) and can make one.</summary>
+    public static bool MayPlaceChest(IGameClient c) => GameClients.Minecraft(c)?.Inner is not { NoOverflowChests: true } && CanMakeChest(c);
 
     /// <summary>A chest in the bag, or what makes one (8 planks, or 2 logs of any wood).</summary>
     private static bool CanMakeChest(IGameClient c)

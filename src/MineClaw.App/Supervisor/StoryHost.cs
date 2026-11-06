@@ -22,11 +22,13 @@ public sealed class StoryHost : IStoryHost
     private readonly Func<MineClaw.Bot.GameTools.ScriptBridge?> _scripts;
     private readonly ILogger _log;
     private readonly MineClaw.Agent.Rag.ObservationStore? _observations;
+    private readonly Func<WorldState?> _mainWorld;
 
     public StoryHost(HiveHierarchy? hierarchy, Func<BodyRegistry?> bodies, Func<WorldState?> world, IGameData data,
         Func<MineClaw.Bot.GameTools.ScriptBridge?> scripts, ILogger? log = null, MineClaw.Agent.Rag.ObservationStore? observations = null)
     {
         _observations = observations;
+        _mainWorld = world;
         _hierarchy = hierarchy;
         _bodies = bodies;
         _scripts = scripts;
@@ -123,6 +125,7 @@ public sealed class StoryHost : IStoryHost
             pc.StrictHarvest = true;
             pc.PreferHeldTool = true;
             pc.DigThroughDetours = true; // a long way round under ground is dug short through the dirt (normal world)
+            pc.NoOverflowChests = true; // a full storage is the colony's to say, never a chest put down by itself (Fox 11-05)
         }
         var v = lane.Library.Resolve(StoryColonies.PawnScript, null, out var why);
         if (v == null) return why ?? "no saved story_pawn";
@@ -205,6 +208,26 @@ public sealed class StoryHost : IStoryHost
     public void SetSpeed(string account, double multiplier)
     {
         if (PawnClient(account) is { } c) c.SpeedMultiplier = multiplier;
+    }
+
+    /// <summary>The pawn body's own temporary blocks (its walks' scaffolds, a shelter box, a clutch block) still standing.</summary>
+    public IReadOnlyList<(P3 At, int Id)> TemporaryBlocks(string account)
+    {
+        if (Find(account) is not { State: BodyState.Online } || PawnClient(account) is not { } c) return [];
+        return c.TemporaryBlocks().Where(b => b.Dimension == 0).Select(b => (new P3(b.Pos.X, b.Pos.Y, b.Pos.Z), b.BlockId)).ToList();
+    }
+
+    /// <summary>Main's and every online body's placed-block log (the hive's shared table), overworld, one row per cell.</summary>
+    public IReadOnlyList<(P3 At, int Id, string Bot)> PlacedByBots()
+    {
+        var worlds = new List<WorldState>();
+        if (_mainWorld() is { } main) worlds.Add(main);
+        worlds.AddRange((_bodies()?.All ?? []).OfType<Body>().Where(b => b.State == BodyState.Online).Select(b => b.Adapter.World));
+        var rows = new Dictionary<P3, (P3, int, string)>();
+        foreach (var w in worlds)
+            foreach (var r in w.Placed.All())
+                if (r.Dimension == 0) rows[new P3(r.Pos.X, r.Pos.Y, r.Pos.Z)] = (new P3(r.Pos.X, r.Pos.Y, r.Pos.Z), r.BlockId, r.Bot);
+        return rows.Values.ToList();
     }
 
     public void SetGrowZone(string account, Func<int, int, int, bool>? inZone)

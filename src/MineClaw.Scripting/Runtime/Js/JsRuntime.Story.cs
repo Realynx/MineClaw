@@ -59,6 +59,14 @@ internal sealed partial class JsRuntime
             var port = StoryPort ?? throw ScriptSession.Bug("story.escape(): this body isn't a Story Mode pawn");
             return new JsString(port.Stuck(s.Host.Username, Str(a, 0) ?? "stuck"));
         });
+        // A block put down for itself (a pillar step, a scaffold) or taken back: the colony's registry of temporary blocks. No-op off-colony.
+        H(h, "storyTemp", a =>
+        {
+            var cell = Str(a, 0) ?? throw ScriptSession.Bug("storyTemp(cell, placed, why) needs the cell");
+            bool placed = Jint.Runtime.TypeConverter.ToBoolean(JsConvert.Arg(a, 1));
+            StoryPort?.Temporary(s.Host.Username, cell, placed, Str(a, 2) ?? "scaffold");
+            return JsValue.Undefined;
+        });
         // story.during(job, fn): fn while the job is still this pawn's; cut at once when the director takes it back (an idle leg when
         // real work comes up) → {ok:false, cancelled:true}. Not a failure: the next story.next() has the new job.
         H(h, "storyDuring", a =>

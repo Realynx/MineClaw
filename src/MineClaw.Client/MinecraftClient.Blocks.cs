@@ -747,10 +747,11 @@ public sealed partial class MinecraftClient
     /// <summary>
     /// Blocks the bot may spend on pillaring/bridging, cheapest first: full, non-falling, non-precious cubes. Never dirt
     /// or grass (on a skyblock island every dirt block is a future tree or farm), sand/gravel (they fall), ores, wool,
-    /// glass or anything else worth keeping. Logs are allowed (and can be crafted into 4 planks each when short).
+    /// glass or anything else worth keeping. Planks and logs come last: a build's material, spent on a scaffold only when
+    /// nothing else is carried (live 11-04: pawns' boxes and pillars of oak planks left around the Story colony).
     /// </summary>
     public static readonly IReadOnlyList<int> ScaffoldBlocks =
-        [Blocks.Cobblestone, Blocks.Netherrack, Blocks.Stone, Blocks.Planks, Blocks.Log, Blocks.Sandstone, Blocks.StoneBricks];
+        [Blocks.Cobblestone, Blocks.Netherrack, Blocks.Stone, Blocks.Sandstone, Blocks.StoneBricks, Blocks.Planks, Blocks.Log];
 
     /// <summary>Scaffold block to use for bridging/pillaring: the first of <see cref="ScaffoldBlocks"/> held (never reserved items).</summary>
     private int? ScaffoldItem()
@@ -763,11 +764,14 @@ public sealed partial class MinecraftClient
     /// <summary>All scaffold blocks held (the placer moves on to the next kind when one runs out).</summary>
     private int ScaffoldCount() => ScaffoldIds.Where(id => !ReservedItems.Contains(id)).Sum(id => World.Inventory.CountItem(id));
 
-    /// <summary><see cref="ScaffoldBlocks"/>, and dirt (before the logs) in a normal world, where it is everywhere (Story Mode pawns
-    /// climb out of pits and up to high blocks with the dirt they dig).</summary>
+    /// <summary><see cref="ScaffoldBlocks"/>, and dirt first in a normal world, where it is everywhere (Story Mode pawns climb out of
+    /// pits and up to high blocks with the dirt they dig); planks and logs last.</summary>
     private static IReadOnlyList<int> ScaffoldIds => MineClaw.Data.Versioning.WorldMode.Current.ScarceTerrain ? ScaffoldBlocks : ScaffoldBlocksNormal;
+
+    /// <summary>The kinds a walk scaffolds with in this flow's world, cheapest first (<see cref="ScaffoldIds"/>).</summary>
+    public static IReadOnlyList<int> ScaffoldOrder => ScaffoldIds;
     private static readonly IReadOnlyList<int> ScaffoldBlocksNormal =
-        [Blocks.Cobblestone, Blocks.Netherrack, Blocks.Stone, Blocks.Planks, Blocks.Dirt, Blocks.Log, Blocks.Sandstone, Blocks.StoneBricks];
+        [Blocks.Dirt, Blocks.Cobblestone, Blocks.Netherrack, Blocks.Stone, Blocks.Sandstone, Blocks.StoneBricks, Blocks.Planks, Blocks.Log];
 
     /// <summary>Scaffold kinds held now, for "used 5 planks, 2 log" after a build-mode goto.</summary>
     private Dictionary<int, int> ScaffoldSnapshot() =>

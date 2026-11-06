@@ -15,7 +15,9 @@ public readonly record struct ShelterPlace(BlockPos Target, BlockFace Face)
 /// encloses its own 1×2 column from where it stands. Four sides at feet and head, the cell overhead if open; a side with
 /// nothing to click gets a support under it first (the side face of my own floor block), the roof a cap beside it (on top of
 /// a head-level wall). It never digs, never moves, never places into its own column, so it can't fall: the floor stays.
-/// Blocks: cobble first, planks, stone, then other plain full blocks, dirt last; never saplings, falling or interactable blocks.
+/// Blocks: cobble first, stone, netherrack (dirt with them in a normal world), then other plain full blocks, planks and logs (a
+/// build's material) after them, and dirt last on skyblock; never saplings, falling or interactable blocks. Live 11-04: a pawn's box
+/// of oak planks at 193,37,430 stayed when it died beside it.
 /// </summary>
 public static class Shelter
 {
@@ -90,6 +92,7 @@ public static class Shelter
         if (id <= 0 || id >= 256) return -1;
         if (NeverInBox.Contains(id)) return -1;
         if (UnfitForBox(Blocks.Get(id))) return -1;
+        if (id is Blocks.Dirt or Blocks.Grass && !MineClaw.Data.Versioning.WorldMode.Current.ScarceTerrain) return 1; // everywhere in a normal world
         return BoxRanks.TryGetValue(id, out int rank) ? rank : 6;
     }
 
@@ -99,8 +102,8 @@ public static class Shelter
     /// <summary>The box's favourites (lower is better); any other fit block ranks 6.</summary>
     private static readonly Dictionary<int, int> BoxRanks = new()
     {
-        [Blocks.Cobblestone] = 0, [Blocks.Planks] = 1, [Blocks.Stone] = 2, [Blocks.Netherrack] = 3, [Blocks.Log] = 5,
-        [Blocks.Dirt] = 9, [Blocks.Grass] = 9, // dirt last
+        [Blocks.Cobblestone] = 0, [Blocks.Stone] = 2, [Blocks.Netherrack] = 3, [Blocks.Planks] = 7, [Blocks.Log] = 8,
+        [Blocks.Dirt] = 9, [Blocks.Grass] = 9, // dirt last on skyblock
     };
 
     /// <summary>Not a full, solid, inert, opaque block.</summary>

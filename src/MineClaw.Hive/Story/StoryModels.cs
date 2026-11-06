@@ -537,4 +537,25 @@ public sealed class ColonyMeta
     public bool WaterCellsFixed { get; set; }
     /// <summary>Work roles: named priority templates (StoryColony.Roles.cs). Null = an older save: the built-in roles are seeded.</summary>
     public List<WorkRole>? Roles { get; set; }
+    /// <summary>Blocks the pawns put down for themselves and haven't taken back yet (StoryColony.TempBlocks.cs); null = none.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<TempBlockState>? TempBlocks { get; set; }
+}
+
+/// <summary>
+/// A block a pawn put down for itself (a reach or escape pillar step, a build's scaffold, a walk's pillar or bridge, a shelter box, a
+/// fall clutch): never a directive, so it never stays. Fox 11-05: "Bots should delete whatever they put down unless it was a directive
+/// to build it." Kept until the world shows the cell without it; one its pawn left behind becomes a deconstruct designation.
+/// </summary>
+public sealed class TempBlockState
+{
+    public P3 At { get; set; }
+    /// <summary>The block placed there (0 = not seen in the view yet).</summary>
+    public int Id { get; set; }
+    public string Pawn { get; set; } = "";
+    /// <summary>reach pillar | escape pillar | build scaffold | scaffold (a walk's, a shelter's, a clutch) | stray (found on load).</summary>
+    public string Kind { get; set; } = "scaffold";
+    public DateTimeOffset Since { get; set; }
+    /// <summary>The cleanup designation queued for it (null = its pawn may still take it back).</summary>
+    public string? Designation { get; set; }
 }

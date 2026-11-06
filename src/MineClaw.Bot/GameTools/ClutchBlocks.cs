@@ -13,9 +13,14 @@ public static class ClutchBlocks
 {
     /// <summary>Blocks that count as clutch blocks, cheapest first (never dirt/grass, sand/gravel fall).</summary>
     public static readonly int[] Ids =
-        [Blocks.Cobblestone, Blocks.Netherrack, Blocks.Stone, Blocks.Planks, Blocks.Sandstone, Blocks.StoneBricks, Blocks.Log];
+        [Blocks.Cobblestone, Blocks.Netherrack, Blocks.Stone, Blocks.Sandstone, Blocks.StoneBricks, Blocks.Planks, Blocks.Log];
 
     public const int Want = 4;
+
+    /// <summary>What to fetch for a clutch stock, in order: cobblestone, dirt in a normal world, planks last (a build's material).</summary>
+    private static (string Name, AcquireDepth Depth)[] Kinds() => MineClaw.Data.Versioning.WorldMode.Current.ScarceTerrain
+        ? [("cobblestone", AcquireDepth.Cheap), ("planks", AcquireDepth.Cheap)]
+        : [("cobblestone", AcquireDepth.Cheap), ("dirt", AcquireDepth.Cheap), ("planks", AcquireDepth.Cheap)];
 
     public static int Held(IGameClient c) =>
         Ids.Where(id => !c.ReservedItems.Contains(id)).Sum(id => c.World.Inventory.CountItem(id))
@@ -36,7 +41,7 @@ public static class ClutchBlocks
         int missing = want - Held(c);
         try
         {
-            foreach (var (name, depth) in new[] { ("cobblestone", AcquireDepth.Cheap), ("planks", AcquireDepth.Cheap) })
+            foreach (var (name, depth) in Kinds())
             {
                 var r = await planner.AcquireAsync(new Need(name, c.World.Inventory.CountItem(Items.ByName(name)!.Id) + missing, 0, depth), ct)
                     .ConfigureAwait(false);

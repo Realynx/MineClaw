@@ -17,6 +17,68 @@ public sealed class StorySdkTests
             Reports.Enqueue($"{body} {job} {status}{(note != null ? " " + note : "")}");
             return true;
         }
+        /// <summary>The colony's registry of temporary blocks as this pawn reported them (placed in, taken back out).</summary>
+        public HashSet<string> Temps { get; } = new();
+        public List<string> TempKinds { get; } = new();
+        public void Temporary(string body, string cell, bool placed, string why)
+        {
+            if (placed) { Temps.Add(cell); TempKinds.Add(why); } else Temps.Remove(cell);
+        }
+    }
+
+    /// <summary>
+    /// Fox 11-05: "Bots should delete whatever they put down unless it was a directive to build it." A floating cell's scaffold is dirt
+    /// when the pawn carries some (never the build's planks), registered with the colony as it goes in; the cell's placing failed and
+    /// the scaffold couldn't be dug back just then: it stays in the colony's registry (a cleanup job), never forgotten.
+    /// </summary>
+    [Fact]
+    public async Task A_scaffold_is_dirt_when_it_has_some_and_one_it_cant_dig_back_after_a_failed_cell_is_left_to_the_colony()
+    {
+        var port = new FakeDirector(
+            J("j1", "place", j =>
+            {
+                j["at"] = "2,66,1"; j["block"] = "planks"; j["want"] = "planks";
+                j["cells"] = new JsonArray("2,66,1");
+                j["scaffold"] = new JsonObject { ["2,66,1"] = "2,65,1" };
+            }),
+            J("j2", "end"));
+        using var rig = Rig.Js();
+        rig.Host.Story = port;
+        rig.World.Inventory.SetSlot(0, 36, new MineClaw.Data.ItemStack(5, 4, 0));
+        rig.World.Inventory.SetSlot(0, 37, new MineClaw.Data.ItemStack(3, 2, 0));
+        rig.On["place"] = (args, _) =>
+        {
+            var at = args.GetProperty("at").GetString()!;
+            if (at == "2,66,1") return Task.FromResult(ActResult.Fail("planks didn't appear at 2,66,1"));
+            rig.World.SetBlock(2, 65, 1, 3, 0);
+            return Task.FromResult(ActResult.Success("placed"));
+        };
+        rig.On["clear_dig"] = (_, _) => Task.FromResult(ActResult.Fail("not now: someone is standing on it"));
+        var s = await rig.Run(MineClaw.Hive.Story.StoryColonies.PawnCode(), "story_pawn");
+        Assert.True(s.Ok, s.Outcome);
+        var calls = rig.Norm();
+        int scaffold = calls.IndexOf("""place {"at":"2,65,1","block":"dirt"}"""), cell = calls.IndexOf("""place {"at":"2,66,1","block":"planks"}"""),
+            back = calls.IndexOf("""clear_dig {"at":"2,65,1"}""");
+        Assert.True(scaffold >= 0 && scaffold < cell && cell < back, string.Join("\n", calls));
+        Assert.DoesNotContain("""place {"at":"2,65,1","block":"planks"}""", calls);
+        Assert.Equal(["2,65,1"], port.Temps);
+        Assert.Equal(["build scaffold"], port.TempKinds);
+    }
+
+    /// <summary>After every job, whatever its outcome, the pawn takes back its own scaffolds, pillars and boxes (clear_temporary).</summary>
+    [Fact]
+    public async Task After_every_job_even_a_failed_one_the_pawn_takes_its_own_temporary_blocks_back()
+    {
+        var port = new FakeDirector(J("j1", "dig", j => j["at"] = "9,64,9"), J("j2", "hold", j => j["s"] = 0.1), J("j3", "end"));
+        using var rig = Rig.Js(more: [new ScriptAction("clear_temporary", [])]);
+        rig.Host.Story = port;
+        rig.On["dig"] = (_, _) => Task.FromResult(ActResult.Fail("too hard"));
+        var s = await rig.Run(MineClaw.Hive.Story.StoryColonies.PawnCode(), "story_pawn");
+        Assert.True(s.Ok, s.Outcome);
+        var calls = rig.Norm();
+        Assert.Equal(2, calls.Count(c => c == "clear_temporary {}"));
+        Assert.True(calls.FindIndex(c => c.StartsWith("dig ")) < calls.IndexOf("clear_temporary {}"), string.Join("\n", calls));
+        Assert.StartsWith("maid_chan j1 failed too hard", port.Reports.First());
     }
 
     private static JsonObject J(string id, string kind, Action<JsonObject>? more = null)

@@ -331,6 +331,7 @@ public sealed partial class MinecraftClient
         Send(s, new AnimationPacket { EntityId = World.Player.EntityId, Animation = 1 });
         World.SetBlock(p.Target.X, p.Target.Y, p.Target.Z, blockId, 0); // client-side prediction (vanilla ItemBlock.onItemUse)
         Guard.NoteClutchPlaced(p.Target);
+        MarkTemporarySoon(p.Target); // dug back once it is safe (the server's confirmation records it as ours first)
         Guard.Stats.CountClutch(p.Saves);
         _clutchPlaced++;
         Log($"safety: clutch {BlockName(blockId, 0)} at {Fmt(p.Target)} against {Fmt(a.Against)} ({(p.Saves ? $"predicted landing, fall {p.PredictedFall:0.#}" : "chaining, landing not yet assured")})");
@@ -396,8 +397,9 @@ public sealed partial class MinecraftClient
         return ground < 0 ? "a long way" : $"~{Math.Max(1, phys.Position.Y - (ground + 1)):0} blocks onto ground at y {ground + 1}{(MineClaw.Data.Versioning.WorldMode.Current.HasVoidBelow ? " (not the void)" : "")}";
     }
 
+    /// <summary>Clutch blocks by preference; planks and logs (a build's material) rank under any other fit block.</summary>
     private static readonly int[] PreferredClutchBlocks =
-        [Blocks.Cobblestone, Blocks.Dirt, Blocks.Netherrack, Blocks.Stone, Blocks.Planks, Blocks.Log];
+        [Blocks.Cobblestone, Blocks.Dirt, Blocks.Netherrack, Blocks.Stone];
 
     /// <summary>Full, solid, non-interactable, non-falling block that can be placed as itself.</summary>
     private static bool IsClutchBlock(int id)
@@ -412,7 +414,7 @@ public sealed partial class MinecraftClient
     {
         if (st.IsEmpty || !IsClutchBlock(st.Id)) return -1;
         int pref = Array.IndexOf(PreferredClutchBlocks, st.Id);
-        int score = pref >= 0 ? 100 - pref : 10;
+        int score = pref >= 0 ? 100 - pref : st.Id is Blocks.Planks or Blocks.Log ? 5 : 10;
         if (ReservedItems.Contains(st.Id)) score -= 50; // still better than the void
         return score;
     }

@@ -120,12 +120,12 @@ public sealed partial class MinecraftClient
     /// <summary>Cheap blocks a short tree pillar may use (dug back afterwards; never dirt: unrenewable on Skyblock). A log is
     /// the last resort: the bot stands on its OWN pillar, never on the tree's leaves, and a placed log is in the placed-block
     /// log, so it never reads as part of the tree (<see cref="TreeScan"/>) and is always minable afterwards (rule 1).</summary>
-    private static readonly int[] PillarBlocks = [Blocks.Cobblestone, Blocks.Netherrack, Blocks.Stone, Blocks.Planks, Blocks.Sandstone, Blocks.StoneBricks, Blocks.Log];
+    private static readonly int[] PillarBlocks = [Blocks.Cobblestone, Blocks.Netherrack, Blocks.Stone, Blocks.Sandstone, Blocks.StoneBricks, Blocks.Planks, Blocks.Log];
     /// <summary>The same in a normal world, where dirt is everywhere: any placeable junk, dirt first (the classic nerd-pole block), then
     /// stone kinds, gravel and sand (they stand on the pillar block under them and are dug back from the top), planks, and the felled
     /// logs of this very tree last. Live 11-04 story-1: "no cobble/planks to pillar" with dirt all around.</summary>
     private static readonly int[] PillarBlocksNormal = [Blocks.Dirt, Blocks.Cobblestone, Blocks.Netherrack, Blocks.Stone, Blocks.Sandstone,
-        Blocks.Gravel, Blocks.Sand, Blocks.Planks, Blocks.StoneBricks, Blocks.Log, Wood.Log2];
+        Blocks.Gravel, Blocks.Sand, Blocks.StoneBricks, Blocks.Planks, Blocks.Log, Wood.Log2];
     /// <summary>How high a tree pillar may go in a normal world (Story Mode, Fox 11-04: "it should nerd-pole up to reach those blocks").</summary>
     public const int TallTreePillar = 12;
     private static int[] TreePillarBlocks => MineClaw.Data.Versioning.WorldMode.Current.ScarceTerrain ? PillarBlocks : PillarBlocksNormal;
