@@ -49,6 +49,40 @@ public sealed class StoryReconcileTests
 
     private static string Id(JsonObject j) => j["id"]!.GetValue<string>();
 
+    [Theory, MemberData(nameof(Versions))]
+    public void Newer_pavement_supersedes_an_old_floor_without_repairing_each_other(string v)
+    {
+        var (c, _, w) = Rig(v, new Stack(3, 0, 8), new Stack(1, 0, 8));
+        w.Set(4, 64, 12, 3, 0);
+        var floor = Add(c, 3, 0, [4, 64, 12], [5, 64, 12]);
+        var pavement = Add(c, 1, 0, [4, 64, 12]);
+        Assert.Null(c.BuildsOp("reorder", null, [pavement.Id, floor.Id]).Error);
+        w.Set(4, 64, 12, 1, 0);
+        for (int i = 0; i < 4; i++) c.Reconcile(w);
+        Assert.Equal("blocked", floor.Ghosts[0].State);
+        Assert.Contains("superseded by build " + pavement.Id, floor.Ghosts[0].Reason);
+        Assert.Equal("todo", floor.Ghosts[1].State);
+        Assert.Equal("done", pavement.Ghosts[0].State);
+        Assert.Null(c.BuildsOp("remove", null, [pavement.Id]).Error);
+        c.Reconcile(w);
+        Assert.Equal("todo", floor.Ghosts[0].State);
+        Assert.Null(floor.Ghosts[0].Reason);
+    }
+
+    [Theory, MemberData(nameof(Versions))]
+    public void A_new_design_interrupts_a_leased_old_floor_batch(string v)
+    {
+        var (c, h, w) = Rig(v, new Stack(3, 0, 8), new Stack(1, 0, 8));
+        var floor = Add(c, 3, 0, [4, 64, 12]);
+        var j = Pick(c);
+        Assert.Equal("place", j["kind"]!.GetValue<string>());
+        Assert.Equal("leased", floor.Ghosts[0].State);
+        var pavement = Add(c, 1, 0, [4, 64, 12]);
+        Assert.Equal("blocked", floor.Ghosts[0].State);
+        Assert.Contains(pavement.Id, floor.Ghosts[0].Reason);
+        Assert.False(c.Report(c.P(), Id(j), "done", null, null));
+    }
+
     /// <summary>The pawn's next job; anything but a build job (idle, wander) is ended at once so the next pick is a fresh one.</summary>
     private static JsonObject Pick(StoryColony c)
     {

@@ -38,16 +38,19 @@ public sealed class StoryReachTests
         Assert.Equal(16, c.State()["options"]!["pillar_stack"]!.GetValue<int>());
     }
 
-    [Fact]
-    public void A_job_up_high_with_nothing_to_climb_with_carries_a_stack_from_storage()
+    [Theory]
+    [InlineData(71)]
+    [InlineData(59)]
+    public void A_dig_with_nothing_to_climb_with_carries_a_stack_from_storage_even_below_the_pawn(int targetY)
     {
         var (c, h, w) = StoryRig.Make(1);
         Only(c, WorkTypes.Mine);
         c.StorageOp("set", [Chest], null, null, null);
         c.AddContents(c.StorageAt(Chest)!, new Stack(4, 0, 64));
-        // A block hanging 7 above the pawn (a cave roof, a ledge): reachable only from a pillar.
-        w.Set(3, 71, 3, 3);
-        c.Designate("add", "mine", null, [new P3(3, 71, 3)], "all");
+        // The target may be above the pawn, or below it but hanging above the quarry floor.
+        w.Set(3, targetY, 3, 3);
+        w.Set(3, targetY + 1, 3, 0);
+        c.Designate("add", "mine", null, [new P3(3, targetY, 3)], "all");
         var j = c.Next();
         Assert.Equal("dig", Kind(j));
         Assert.Equal(Chest.ToString(), j["pillar"]!["from"]!.GetValue<string>());

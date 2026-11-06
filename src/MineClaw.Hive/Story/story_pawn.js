@@ -54,11 +54,11 @@ function harvestAt(j, a) {
   if (ok(r) && j.replant && inv(j.replant) > 0) place(j.replant, a)
   return r
 }
-// Each job kind's action (a: j.at); any other kind: story.work.
+// Job actions (a: j.at); fallback: story.work.
 const acts = new Map(Object.entries({
   go: (j, a) => story.go(a, j.dist || 1),
   chop: chopTree,
-  dig: (j, a) => { const t = reach(a, 3); return ok(t) ? digAt(j) : t },
+  dig: (j, a) => { story.ready(j); const t = reach(a, 3); return ok(t) ? digAt(j) : t },
   harvest: harvestAt,
   till: j => story.till(j),
   collect: (j, a) => { const t = go(a, 1), r = collect(j.r || 4); return ok(r) || ok(t) ? r : t },

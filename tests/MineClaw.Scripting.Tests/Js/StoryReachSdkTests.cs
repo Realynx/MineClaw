@@ -79,6 +79,19 @@ public sealed class StoryReachSdkTests
     private static int Count(Rig rig, int id) => rig.World.Inventory.CountItem(id);
 
     [Fact]
+    public async Task An_isolated_ledge_is_skipped_for_a_walkable_pillar_base()
+    {
+        using var rig = Make(w => w.SetBlock(3, 68, 0, Blocks.Stone, 0));
+        rig.Give(36, Blocks.Dirt, 8);
+        var s = await rig.Run($"return JSON.stringify(story.dig('{Ceiling}'))");
+        Assert.True(s.Ok, s.Outcome);
+        Assert.Contains("\"ok\":true", s.Outcome);
+        Assert.Equal(0, rig.World.GetBlock(2, 71, 0));
+        Assert.DoesNotContain(rig.Norm(), c => c.StartsWith("goto ") && c.Contains("3,69,0"));
+        Assert.Equal(8, Count(rig, Blocks.Dirt));
+    }
+
+    [Fact]
     public async Task A_target_below_the_start_can_be_approached_from_the_floor_then_reached_by_a_pillar()
     {
         using var rig = Make();

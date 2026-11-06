@@ -45,6 +45,7 @@ public sealed partial class StoryColony
     /// <summary>One pass over every unpaused build (done ones too: a finished house that changed reopens).</summary>
     internal void Reconcile(IStoryWorld w)
     {
+        BuildConflictsPass();
         PreservePass(w); // preserved zones: their changed cells become their repair builds' ghosts (StoryColony.PreserveRepair.cs)
         var seen = new HashSet<string>(StringComparer.Ordinal);
         foreach (var b in Builds.ToList())
@@ -56,7 +57,7 @@ public sealed partial class StoryColony
     {
         var drift = new Drift();
         foreach (var g in b.Ghosts)
-            if (Reconcilable(g) && w.Loaded(g.At.X, g.At.Z) && !QuarryHeld(b, g)) ReconcileCell(w, b, g, seen, ref drift);
+            if (Reconcilable(g) && !BuildConflicted(g) && w.Loaded(g.At.X, g.At.Z) && !QuarryHeld(b, g)) ReconcileCell(w, b, g, seen, ref drift);
         ConflictStatus(b); // a quarry digs what is left (StoryColony.QuarryConflicts.cs)
         if (drift.Total > 0) Reopened(b, drift);
         else if (b.Status is not ("done" or "paused") && AllBuilt(b)) { b.Status = "done"; b.Reason = null; b.Rev = Touch(); }

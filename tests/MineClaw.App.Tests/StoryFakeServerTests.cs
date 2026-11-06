@@ -1049,18 +1049,26 @@ public sealed class StoryFakeServerTests(ITestOutputHelper output)
         s.Inventory[36] = new ItemStack((short)Items.StonePickaxe, 1, 0);
     });
 
-    [Fact]
-    public Task A_quarry_removes_a_stranded_pillar_below_the_rim_and_cleans_up_its_access_blocks() => Colony("1.12.2", 1, async x =>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public Task A_quarry_removes_a_stranded_pillar_below_the_rim_and_cleans_up_its_access_blocks(bool carriesBlocks) => Colony("1.12.2", 1, async x =>
     {
         var c = x.C;
         var srv = x.Servers[x.Pawns[0]];
         Only(x, WorkTypes.Mine);
+        if (!carriesBlocks)
+        {
+            Assert.Null(c.StorageOp("set", [WoodChest], null, "normal", "Scaffolding").Error);
+            c.AddContents(c.StorageAt(WoodChest)!, new Stack(Blocks.Cobblestone, 0, 64));
+        }
         var (res, err) = c.ZoneOp("add", "mine", Area.Of(14, 63, 14, 23, 63, 23));
         Assert.Null(err);
         var zone = c.Zones.Single(z => z.Id == res!["id"]!.GetValue<string>());
         bool PillarGone() => Enumerable.Range(49, 11).All(y => srv.Blocks.GetValueOrDefault((23, y, 23)) == 0);
         Assert.True(await Until(() => PillarGone() && zone.QuarryLayer >= 15, 120_000),
-            "the stranded pillar is removed: " + x.Diag());
+            "the stranded pillar is removed: layer " + zone.QuarryLayer + "; remaining " +
+            string.Join(",", Enumerable.Range(49, 11).Select(y => $"{y}:{srv.Blocks.GetValueOrDefault((23, y, 23))}")) + "; " + x.Diag());
         Assert.True(await Until(() => !srv.Blocks.Any(b => b.Value == Blocks.Cobblestone && b.Key.Item2 > 48), 30_000),
             "temporary access blocks are taken back: " + x.Diag());
     }, s =>
@@ -1076,6 +1084,11 @@ public sealed class StoryFakeServerTests(ITestOutputHelper output)
                     if ((x, z) != (k <= 9 ? 14 + k : 23, k <= 9 ? 14 : 14 + k - 9)) s.Blocks.Remove((x, 63 - k, z));
         for (int y = 49; y <= 59; y++) s.Blocks[(23, y, 23)] = Blocks.Cobblestone;
         s.Inventory[36] = new ItemStack((short)Items.StonePickaxe, 1, 0);
+        if (!carriesBlocks)
+        {
+            s.Inventory[37] = ItemStack.Empty;
+            s.Chests[(WoodChest.X, WoodChest.Y, WoodChest.Z)][0] = new ItemStack((short)Blocks.Cobblestone, 64, 0);
+        }
     });
 
     /// <summary>The cave tunnel's first cell beside the quarry's east edge (y 53..54), the lava beside it, the opening walled on layer 9.</summary>

@@ -43,6 +43,9 @@ public sealed partial class StoryColony
 
     /// <summary>A cell blocked because a quarry digs it.</summary>
     private static bool Conflicted(GhostState g) =>
+        BuildConflicted(g) || QuarryConflicted(g);
+
+    private static bool QuarryConflicted(GhostState g) =>
         g.State == "blocked" && g.Reason?.StartsWith(QuarryConflictWords, StringComparison.Ordinal) == true;
 
     /// <summary>The quarry a placed cell of a build lies in, or null (digs never conflict: both want the cell open).</summary>
@@ -59,7 +62,7 @@ public sealed partial class StoryColony
             MarkConflict(b, g, z);
             return true;
         }
-        if (Conflicted(g)) ForgetCellFailures(b, g);
+        if (QuarryConflicted(g)) ForgetCellFailures(b, g);
         return false;
     }
 

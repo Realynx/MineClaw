@@ -27,7 +27,8 @@ public static class ReachScan
 
     private readonly record struct Column(BlockPos Stand, int Steps, double Score);
 
-    public static JsonObject Scan(WorldState w, IGameData data, Vec3d pos, BlockPos target)
+    /// <param name="walkable">Check access from the pawn before choosing a stand; false is a geometry-only scan.</param>
+    public static JsonObject Scan(WorldState w, IGameData data, Vec3d pos, BlockPos target, bool walkable = false)
     {
         var g = new ScanGround(w, data);
         var center = new Vec3d(target.X + 0.5, target.Y + 0.5, target.Z + 0.5);
@@ -36,7 +37,7 @@ public static class ReachScan
         o["block"] = block;
         o["blocks"] = blocks;
         if (o["within"]!.GetValue<bool>()) return o;
-        if (Best(g, target, center, out var why) is not { } pick)
+        if (Best(g, target, center, walkable ? pos : null, out var why) is not { } pick)
         {
             o["why"] = why;
             return o;
@@ -50,18 +51,34 @@ public static class ReachScan
     private static double Eye(double x, double feetY, double z, Vec3d center) => new Vec3d(x, feetY + 1.62, z).DistanceTo(center);
 
     /// <summary>The cheapest column, under the target first then rings 1 and 2 around it; else why none will do (the last reason seen).</summary>
-    private static Column? Best(ScanGround g, BlockPos target, Vec3d center, out string why)
+    private static Column? Best(ScanGround g, BlockPos target, Vec3d center, Vec3d? from, out string why)
     {
-        Column? best = null;
+        var columns = new List<Column>();
         why = "no ground to stand on below or beside it within " + MaxPillar + " blocks";
         for (int r = 0; r <= 2; r++)
             for (int dx = -r; dx <= r; dx++)
                 for (int dz = -r; dz <= r; dz++)
                 {
                     if (Math.Max(Math.Abs(dx), Math.Abs(dz)) != r) continue;
-                    if (TryColumn(g, target, center, r, target.X + dx, target.Z + dz, ref why) is { } col && (best is not { } b || col.Score < b.Score)) best = col;
+                    if (TryColumn(g, target, center, r, target.X + dx, target.Z + dz, ref why) is { } col) columns.Add(col);
                 }
-        return best;
+        if (columns.Count == 0) return null;
+        var best = columns.MinBy(c => c.Score);
+        if (from is not { } pos || Pathfinder.StartCellFor(g.World, pos) is not { } start) return best;
+        // A cheap column can be an isolated pocket in the quarry wall. Probe the preferred stand,
+        // then search all alternatives together: one bounded search, not 25 failed walks.
+        var options = new PathOptions { AllowPartial = false, AllowOpenDoors = true, AllowParkour = false,
+            MaxNodes = 4000, Timeout = TimeSpan.FromMilliseconds(150) };
+        if (Pathfinder.FindPath(g.World, start, new GoalBlock(best.Stand), options).Status == PathStatus.Found) return best;
+        var goals = new GoalAny(columns.Select(c => (Goal)new GoalBlock(c.Stand)).ToArray());
+        var path = Pathfinder.FindPath(g.World, start, goals, options with { MaxNodes = 8000, Timeout = TimeSpan.FromMilliseconds(350) });
+        if (path.Status == PathStatus.Found)
+        {
+            var end = path.Steps.Count == 0 ? start : path.Steps[^1].Pos;
+            return columns.First(c => c.Stand == end);
+        }
+        why = "no walkable ground below or beside it";
+        return null;
     }
 
     /// <summary>The column at cx,cz: its ground, how many blocks up until the target is in reach, and a free shaft to get there.</summary>

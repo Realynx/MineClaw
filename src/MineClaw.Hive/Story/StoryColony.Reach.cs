@@ -10,8 +10,8 @@ namespace MineClaw.Hive.Story;
 /// <list type="bullet">
 /// <item>A pawn keeps a small pillar stack (<see cref="ColonyMeta.PillarStack"/>, dirt first, then cobblestone, netherrack) out of
 /// its store trips.</item>
-/// <item>A job up high (a target more than 3 above the pawn, a tall tree) carries <c>pillar</c>: where to take a stack from storage
-/// when it is short, taken only if it really needs to climb.</item>
+/// <item>A dig, or another job up high, carries <c>pillar</c>: where to take a stack from storage when short.
+/// Diggers restock before approaching: a target below the rim may still need climbing from the quarry floor.</item>
 /// <item>A target out of reach even from a pillar rests for that pawn; once <see cref="UnreachPawns"/> pawns couldn't reach it, the
 /// designation waits with the reason instead of failing.</item>
 /// </list>
@@ -36,12 +36,13 @@ public sealed partial class StoryColony
         return -1;
     }
 
-    /// <summary>A job up high gets <c>pillar</c> (a stack from storage) when the pawn carries too few blocks to climb with.</summary>
+    /// <summary>A dig, or another job up high, gets a storage hint when short of climbing blocks. A quarry remnant can be below
+    /// the pawn at the rim but above its reachable floor, so digs cannot use the pawn's starting height to rule out a climb.</summary>
     private ActiveJob PillarHint(ActiveJob job, PawnLive live)
     {
         if (job.Kind is not ("dig" or "harvest" or "chop") || job.At is not { } at || !live.Online || Meta.PillarStack <= 0) return job;
         int top = JobTop(job, at);
-        if (top <= live.Y + 3) return job;
+        if (job.Kind != "dig" && top <= live.Y + 3) return job;
         int have = live.Inventory.Where(s => PillarAny.Contains(s.Id)).Sum(s => s.Count);
         int want = Math.Max(8, Math.Min(Meta.PillarStack, top - (int)live.Y + 2));
         if (have >= want) return job;

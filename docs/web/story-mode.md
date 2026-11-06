@@ -500,7 +500,8 @@ own and destroy the nerd pole on the way back down. Not many blocks should truly
     liquid) and must be free all the way up, with no lava beside it. A column under the target is not used when sand or gravel sits
     over the target.
   - It picks the fewest blocks to stack (at most 24, never above the build height) until the target's centre is within 4 blocks of
-    the eyes.
+    the eyes. The pawn checks a walking path to that base; an isolated ledge or wall pocket is skipped for another reachable
+    column. The preferred-path probe and combined alternative search have bounded budgets.
   - The pawn walks there and nerd-poles up: each step is `place(block, its own feet)`, a pillar step (jump, place under itself, land
     on it). It digs the target, then digs its pillar back down from the top, standing on each block it placed and collecting them
     again. Nothing is left behind.
@@ -511,8 +512,9 @@ own and destroy the nerd pole on the way back down. Not many blocks should truly
     is respected. Access blocks stay in the client's temporary ledger and are reclaimed by the pawn's post-job sweep or colony cleanup.
 - **Blocks to climb with:**
   - the cheap blocks it carries: dirt, cobblestone, netherrack, stone, sandstone, planks last (see "Temporary blocks");
-  - else the job's `pillar` stack from storage. The colony adds `{from, item, n}` to a job more than 3 blocks above the pawn, or a
-    tall tree, when the pawn carries fewer than it needs. It is taken only if the climb happens;
+  - else the job's `pillar` stack from storage. The colony adds `{from, item, n}` to digs, jobs more than 3 blocks above the pawn,
+    and tall trees when the pawn carries fewer than it needs. Digs restock before approaching when carrying fewer than four blocks,
+    because reaching a quarry remnant below the rim can itself require scaffolding; otherwise it is taken when the climb happens;
   - else dirt dug around the column (never the ground under its feet).
 - **The pillar stack:** a pawn keeps a kind of pillar block (dirt first, then cobblestone, netherrack) out of its store trips while it
   carries no more than option `pillar_stack` (default 16, 0 = none). A bigger pile is stored, and fetched back when a climb needs it.
@@ -1463,6 +1465,12 @@ up from a stand over it), `StoryRotationTests` (the director), and `StoryFakeSer
 (a pawn, both versions).
 
 ### Builds reconcile with the world (added 2026-11-05)
+
+Overlapping placement plans use the newest plan's block and orientation at each shared cell. Older, conflicting cells are held
+with `superseded by build …`, including after the newer plan finishes; queue priority does not change ownership. Unrelated cells
+continue normally. Adding a replacement plan interrupts an older batch working those cells. Removing the newer plan releases the
+older cells. This prevents an old dirt-floor plan and newer stone pavement from repeatedly replacing each other (live 11-06,
+`223,63,374`). The map's red shading and dashed circle with an X indicate blocked build cells, not a forbidden zone.
 
 Fox, 11-05: "The hologram of a house being built is failing a lot. We're not even detecting the stairs or other blocks that are
 rotated the wrong way … It's also saying there's no way to place blocks, but there definitely is. I think it's put some blocks down

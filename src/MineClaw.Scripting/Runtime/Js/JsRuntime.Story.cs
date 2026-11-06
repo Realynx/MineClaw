@@ -41,7 +41,7 @@ internal sealed partial class JsRuntime
         {
             s.SafePoint();
             var at = (Str(a, 0) is { } t ? ScriptSession.PosOf(JsonValue.Create(t)) : null) ?? throw ScriptSession.Bug("storyReach(at) needs a position");
-            return V(Story.ReachScan.Scan(s.Host.World, s.Host.Data, s.Host.World.Player.Position, at));
+            return V(Story.ReachScan.Scan(s.Host.World, s.Host.Data, s.Host.World.Player.Position, at, walkable: true));
         });
         // story.pour's eyes: the liquid at a cell -> "water" | "lava" (a source: what a poured bucket leaves), "flowing_water" |
         // "flowing_lava" (a flow level, or falling), "" (no liquid). Zero tokens, no action.

@@ -49,6 +49,7 @@ public sealed partial class StoryColony
         foreach (var n in items)
             if (ExpandBuildItem(w, n, made, warnings) is { } err) return (null, err);
         var flow = QueueBuilds(w, made);
+        BuildConflictsPass();
         BuildsInQuarries(made, warnings); // a quarry digs them: blocked now, said (StoryColony.QuarryConflicts.cs)
         BuildsOverPreserved(made, warnings); // the build's while it stands, then kept as it leaves them (StoryColony.Preserve.cs)
         WakeIdle();
@@ -127,6 +128,7 @@ public sealed partial class StoryColony
             if (b.Status != "done") b.Status = op == "pause" ? "paused" : "queued";
             b.Rev = Touch();
         }
+        BuildConflictsPass();
         return (new JsonObject { ["ids"] = new JsonArray(hit.Select(b => (JsonNode)b.Id!).ToArray()) }, null);
     }
 
@@ -257,7 +259,8 @@ public sealed partial class StoryColony
     /// </summary>
     private List<GhostState> OpenCells(BuildState b, List<GhostState> todo, bool mine)
     {
-        var left = b.Ghosts.Where(g => g.Job && g.State is "todo" or "leased" or "blocked").ToList();
+        var left = b.Ghosts.Where(g => g.Job && !Conflicted(g) && g.State is "todo" or "leased" or "blocked").ToList();
+        if (left.Count == 0) return [];
         bool digs = left.All(g => g.Remove);
         int lowest = digs ? left.Max(g => g.At.Y) : left.Min(g => g.At.Y);
         return mine ? todo.Where(g => g.State == "todo" && Exposed(g.At)).ToList() : todo.Where(g => g.State == "todo" && g.At.Y == lowest).ToList();
@@ -294,7 +297,7 @@ public sealed partial class StoryColony
     {
         var b = scan.Build;
         var key = $"g:{b.Id}|{g.At}";
-        if (!Open(key, p.Name, g.At) || Occupied(g.At) || QuarryHeld(b, g)) return null; // a quarry digs it: never placed
+        if (!Open(key, p.Name, g.At) || Occupied(g.At) || BuildConflicted(g) || QuarryHeld(b, g)) return null;
         if (g.Remove) return DigCell(w, p, live, b, g, key);
         // A liquid source: poured from a bucket filled at a still source (StoryColony.Water.cs).
         if (StoryConstruction.IsLiquid(g)) return PourCell(p, live, ref scan, g);
