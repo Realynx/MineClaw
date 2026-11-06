@@ -250,10 +250,10 @@ try {
     Invoke-Step 'npm ci' { npm ci --no-audit --no-fund }
     if (-not $SkipTests) {
         Write-Host "== web: tests" -ForegroundColor Cyan
-        Invoke-Step 'web tests' { npx turbo run test }
+        Invoke-Step 'web tests' { npx turbo run test --concurrency=2 }
     }
     Write-Host "== web: build" -ForegroundColor Cyan
-    Invoke-Step 'web build' { npx turbo run build --force --filter=@mineclaw/api --filter=@mineclaw/web }
+    Invoke-Step 'web build' { npx turbo run build --force --concurrency=2 --filter=@mineclaw/api --filter=@mineclaw/web }
 }
 finally { Pop-Location }
 if (-not $SkipTests) {
@@ -342,7 +342,7 @@ Write-Host "== publish ViewerBridge (linux-x64, self-contained)" -ForegroundColo
 $stageBridge = Join-Path $outRoot 'mineclaw-bridge'
 Remove-Tree $stageBridge
 Invoke-Step 'dotnet publish ViewerBridge' {
-    dotnet publish (Join-Path $repo 'tools/ViewerBridge/MineClaw.ViewerBridge.csproj') -c Release -r linux-x64 --self-contained true `
+    dotnet publish (Join-Path $repo 'tools/ViewerBridge/MineClaw.ViewerBridge.csproj') -c Release -r linux-x64 --self-contained true -m:1 -p:UseSharedCompilation=false `
         -p:PublishSingleFile=true -p:DebugType=none -p:GenerateDocumentationFile=false -o $stageBridge --nologo -v q
 }
 Get-ChildItem $stageBridge -Filter 'appsettings*.json' | Remove-Item -Force   # only the .example ships; config comes from /etc

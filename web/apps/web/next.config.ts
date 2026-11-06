@@ -14,6 +14,8 @@ const apiUrl = process.env.MINECLAW_API_URL ?? 'http://127.0.0.1:4000';
 
 const config: NextConfig = {
   output: 'standalone',
+  // Keep production page generation within the desktop's build resource budget.
+  experimental: { cpus: 2 },
   outputFileTracingRoot: workspaceRoot,
   turbopack: { root: workspaceRoot },
   // `npm run build:mock` / `dev:mock` build into .next-mock so a mock build never replaces the real one.

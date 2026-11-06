@@ -9,7 +9,7 @@ $out = 'deploy/out/mineclaw'
 $single = if ($Multi) { 'false' } else { 'true' }
 
 if (Test-Path $out) { Remove-Item -Recurse -Force $out }
-dotnet publish src/MineClaw.App/MineClaw.App.csproj -c Release -r linux-x64 --self-contained true `
+dotnet publish src/MineClaw.App/MineClaw.App.csproj -c Release -r linux-x64 --self-contained true -m:1 -p:UseSharedCompilation=false `
   -p:PublishSingleFile=$single -p:DebugType=none -p:GenerateDocumentationFile=false -o $out
 if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed ($LASTEXITCODE)" }
 
