@@ -350,7 +350,14 @@ export function StoryHudLayer({ c }: Props) {
       {/* bottom: inspector + the open tab's window, the tab bar, the toast, the chat */}
       <div className="absolute right-[22rem] bottom-9 left-2 flex flex-col items-start gap-2">
         <PreserveContext.Provider value={preserveWriter(c)}>
-          <div className="flex max-w-[calc(100vw-1rem)] items-end gap-2">
+          <div
+            className={
+              c.tab === 'colony'
+                ? 'pointer-events-auto flex max-w-full items-end gap-2 overflow-x-auto pb-1 [&>section]:shrink-0'
+                : 'flex max-w-[calc(100vw-1rem)] items-end gap-2'
+            }
+            data-testid="story-panel-strip"
+          >
             {selectionInspector(c)}
             {tabPanel(c)}
             {colonyZones(c)}

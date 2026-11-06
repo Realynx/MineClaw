@@ -41,7 +41,9 @@ async function openColony(page: Page) {
   await page.waitForFunction(() => (window as unknown as { __story?: StoryDebug }).__story?.ready());
   const count = page.getByLabel('Number of pawns');
   while (Number(await count.textContent()) !== 2)
-    await page.getByRole('button', { name: Number(await count.textContent()) < 2 ? 'More pawns' : 'Fewer pawns' }).click();
+    await page
+      .getByRole('button', { name: Number(await count.textContent()) < 2 ? 'More pawns' : 'Fewer pawns' })
+      .click();
   await page.getByRole('button', { name: 'Found colony' }).click();
   await expect(page.getByTestId('colonist-bar').locator('[data-kind="pawn"]')).toHaveCount(2);
   await page.waitForTimeout(1500); // the camera settles over home
@@ -59,7 +61,11 @@ async function paint(page: Page, lv: number, a: [number, number], b: [number, nu
   await page.mouse.up();
 }
 
-const colonyTab = (page: Page) => page.getByTestId('tab-bar').getByRole('button', { name: /^Colony/ }).click();
+const colonyTab = (page: Page) =>
+  page
+    .getByTestId('tab-bar')
+    .getByRole('button', { name: /^Colony/ })
+    .click();
 
 test('preserve: a Preserve zone painted with its depth, Preserve on a growing zone, its depth changed, a quarry refused', async ({
   page,
@@ -105,8 +111,9 @@ test('preserve: a Preserve zone painted with its depth, Preserve on a growing zo
   const toggle = grow.getByRole('switch', { name: 'Preserve blocks' });
   await expect(toggle).not.toBeChecked();
   const on = zonesPost(page, 'preserve');
-  await toggle.check();
+  await toggle.click(); // controlled by the server state, which arrives after the response
   expect(body((await on).request())).toEqual({ op: 'preserve', id: farm.id, on: true });
+  await expect(toggle).toBeChecked();
   await expect(grow.getByTestId('preserve-range')).toHaveText(`y ${lv - 1} → ${lv + 3}`);
   await expect(grow.getByTestId('preserve-status')).toHaveText('intact');
   await expect(grow.getByTestId('preserve-counts')).toContainText(`${12 * 5} blocks kept`);
@@ -122,8 +129,9 @@ test('preserve: a Preserve zone painted with its depth, Preserve on a growing zo
 
   // Switched off: the details go.
   const off = zonesPost(page, 'preserve');
-  await toggle.uncheck();
+  await toggle.click();
   expect(body((await off).request())).toEqual({ op: 'preserve', id: farm.id, on: false });
+  await expect(toggle).not.toBeChecked();
   await expect(grow.getByTestId('preserve-range')).toHaveCount(0);
 
   // A quarry can't preserve its blocks: the switch is disabled and says why.
@@ -140,4 +148,12 @@ test('preserve: a Preserve zone painted with its depth, Preserve on a growing zo
   const quarry = page.getByTestId('quarry-zones').getByTestId('quarry-zone');
   await expect(quarry.getByRole('switch', { name: 'Preserve blocks' })).toBeDisabled();
   await expect(quarry.getByTestId('zone-preserve')).toContainText('A quarry digs its blocks');
+  // The full row must stay within the map, with the last panel reachable by horizontal scrolling.
+  const strip = page.getByTestId('story-panel-strip');
+  const lastControl = other.getByRole('button', { name: 'Re-take snapshot' });
+  await lastControl.scrollIntoViewIfNeeded();
+  await expect(lastControl).toBeInViewport();
+  const bounds = (await strip.boundingBox())!;
+  expect(bounds.x + bounds.width).toBeLessThanOrEqual(page.viewportSize()!.width);
+  if (shots) await page.screenshot({ path: `${shots}/preserve-colony-panels.png` });
 });
