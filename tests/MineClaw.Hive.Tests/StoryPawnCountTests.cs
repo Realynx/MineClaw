@@ -155,7 +155,7 @@ public sealed class StoryPawnCountTests
     [Fact]
     public void A_group_spawn_has_no_per_spawn_cap_and_stops_only_at_the_player_cap()
     {
-        var k = new HierarchyKit { MaxPlayers = 20 };
+        var k = new HierarchyKit(maxClones: 4) { MaxPlayers = 20 };
         k.H.Subhives = new Subhives();
         k.H.MaxBodiesPerSpawn = 4; // a brain's per-spawn knob: not a colony's
         lock (k.Online) { k.Online.Remove("poofimafox"); k.Online.Remove("kiwi"); } // both regulars offline: two seats kept

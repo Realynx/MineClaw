@@ -29,6 +29,7 @@ public sealed class HiveHierarchy : IHiveAccounts
     private readonly HiveAccountsConfig _cfg;
     private readonly string _main;
     private readonly AccountAllocator _allocator;
+    private readonly AccountAllocator _pawnAllocator;
     private readonly Func<IReadOnlyCollection<string>> _regulars;
     private readonly Func<IReadOnlyCollection<string>> _knownPlayers;
     private readonly ILogger _log;
@@ -46,6 +47,7 @@ public sealed class HiveHierarchy : IHiveAccounts
         Whitelist = whitelist;
         Tree = new HiveTree(main);
         _allocator = new AccountAllocator(cfg, managed, main, maxClones, maxPlayersFallback);
+        _pawnAllocator = new AccountAllocator(cfg, managed, main, maxClones: 0, maxPlayersFallback: maxPlayersFallback);
         _maxPlayersFallback = maxPlayersFallback;
         _regulars = regulars ?? (() => []);
         _knownPlayers = knownPlayers ?? (() => []);
@@ -702,7 +704,7 @@ public sealed class HiveHierarchy : IHiveAccounts
         string? why = null;
         var want = new Queue<string>((prefer ?? []).Where(p => !string.IsNullOrWhiteSpace(p)));
         // No count cap of its own (not even Hive:Subhives:MaxPerSpawn, a brain's per-spawn knob): the player cap, the seats kept for
-        // regulars, the memory ceiling and an optional Hive:MaxClones stop it, each refusal saying which.
+        // regulars and the memory ceiling stop it, each refusal saying which. Hive:MaxClones applies to autonomous hives, not pawns.
         int target = Math.Max(1, n);
         while (got.Count < target && AddGroupBody(b, group, script, want, got, out why)) { }
         if (got.Count > 0) _log.LogInformation("hive: group {Group}: {N} script-only bodies ({Names})", group, got.Count, string.Join(", ", got));
@@ -729,7 +731,7 @@ public sealed class HiveHierarchy : IHiveAccounts
     {
         lock (_lock)
         {
-            var a = _allocator.Allocate(Facts(b));
+            var a = _pawnAllocator.Allocate(Facts(b));
             if (!a.Ok) return (null, a.Error);
             var name = PreferredAccount(b, want) ?? a.Name!;
             PutGroupMember(name, group, script);

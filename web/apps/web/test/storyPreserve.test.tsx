@@ -46,7 +46,7 @@ describe('the Preserve blocks section', () => {
   it('switches Preserve on and off with the zones route body', () => {
     const onPreserve = vi.fn();
     const { rerender } = render(<PreservePanel z={zone('farm')} canWrite onPreserve={onPreserve} />);
-    const sw = screen.getByRole('switch', { name: 'Preserve blocks' }) as HTMLInputElement;
+    const sw = screen.getByRole<HTMLInputElement>('switch', { name: 'Preserve blocks' });
     expect(sw.checked).toBe(false);
     expect(screen.queryByTestId('preserve-range')).toBeNull();
     fireEvent.click(sw);
@@ -66,13 +66,13 @@ describe('the Preserve blocks section', () => {
     expect(screen.getByTestId('preserve-counts').textContent).toBe(
       '60 blocks kept · 3 not seen yet · 2 held by your builds or designations',
     );
-    const depth = screen.getByLabelText('Depth below') as HTMLInputElement;
+    const depth = screen.getByLabelText<HTMLInputElement>('Depth below');
     expect(depth.value).toBe('4');
     fireEvent.change(depth, { target: { value: '6' } });
     expect(onPreserve).not.toHaveBeenCalled(); // typing alone sends nothing
     fireEvent.blur(depth);
     expect(onPreserve).toHaveBeenLastCalledWith(expect.anything(), { below: 6 });
-    const height = screen.getByLabelText('Height above') as HTMLInputElement;
+    const height = screen.getByLabelText<HTMLInputElement>('Height above');
     fireEvent.change(height, { target: { value: '40' } });
     fireEvent.blur(height);
     expect(height.value).toBe('3');
@@ -94,7 +94,7 @@ describe('the Preserve blocks section', () => {
 
   it('a quarry cannot preserve (the switch is disabled with the reason); a Preserve zone is always on', () => {
     render(<PreservePanel z={zone('mine')} canWrite onPreserve={vi.fn()} />);
-    expect((screen.getByRole('switch', { name: 'Preserve blocks' }) as HTMLInputElement).disabled).toBe(true);
+    expect((screen.getByRole<HTMLInputElement>('switch', { name: 'Preserve blocks' })).disabled).toBe(true);
     expect(screen.getByTestId('zone-preserve').textContent).toContain('A quarry digs its blocks');
     cleanup();
     render(<PreservePanel z={zone('preserve', P())} canWrite onPreserve={vi.fn()} />);
@@ -105,8 +105,8 @@ describe('the Preserve blocks section', () => {
 
   it('read-only without the story role; nothing outside the Story page (no writer)', () => {
     render(<PreservePanel z={zone('farm', P())} canWrite={false} onPreserve={vi.fn()} />);
-    expect((screen.getByRole('switch') as HTMLInputElement).disabled).toBe(true);
-    expect((screen.getByLabelText('Depth below') as HTMLInputElement).disabled).toBe(true);
+    expect((screen.getByRole<HTMLInputElement>('switch')).disabled).toBe(true);
+    expect((screen.getByLabelText<HTMLInputElement>('Depth below')).disabled).toBe(true);
     cleanup();
     expect(render(<ZonePreserve z={zone('farm')} />).container.innerHTML).toBe('');
     cleanup();

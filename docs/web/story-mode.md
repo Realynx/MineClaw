@@ -762,8 +762,8 @@ two real limits decide how many are in game, and both are shown, never silent:
   regular (`Hive:RegularPlayers`). The server's max-players and the regulars' reservation are the owner's: Story never changes them.
 - **The memory ceiling** (`Hive:Resources`, `ResourceCeiling.BodiesThatFit`): how many more in-process bodies fit.
 
-`Hive:MaxClones` stays an optional hard cap (0, the default, = none); Story adds no ceiling of its own, and a colony's group spawn
-isn't held to `Hive:Subhives:MaxPerSpawn` (a brain's per-spawn knob). As many as fit come now; the rest wait (`seats.pending`) and
+`Hive:MaxClones` and `Hive:Subhives:MaxPerSpawn` govern autonomous hive spawning; neither caps a colony's pawns.
+As many as fit come now; the rest wait (`seats.pending`) and
 the seat retry (every 15 s) brings them in as seats or memory free up. Accounts are allocated per pawn with no fixed roster
 (`maid_chan_101`…`9999`, quantity-like ids skipped); their `/whitelist add` lines go out one at a time through the gate's scoped
 exception, each armed only when its turn comes (40 at once used to outlive the gate's 15 s arm in main's chat queue), and a launch
