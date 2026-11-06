@@ -969,6 +969,8 @@ public partial class FakeServer : IDisposable
 
     public void Dispose()
     {
+        _hookId = 0;
+        _biteTimer?.Dispose();
         _ai?.Cancel();
         _smelter?.Cancel();
         try { _conn.Dispose(); } catch { }

@@ -1,4 +1,5 @@
 using MineClaw.Data;
+using MineClaw.Protocol.Packets;
 using MineClaw.World;
 
 namespace MineClaw.Client.Tests;
@@ -40,6 +41,66 @@ public class FishingTests
         Assert.False(r.Ok);
         Assert.Contains("no fishing rod", r.Message);
         Assert.Equal(0, s.Casts);
+    }
+
+    [Fact]
+    public async Task Modern_cast_waits_for_its_bite_sound_not_a_delayed_drop_or_another_anglers_splash()
+    {
+        var (c, s) = await Harness.StartAsync(srv =>
+        {
+            srv.Inventory[36] = Harness.Stack(MinecraftClient.FishingRodId, 1);
+            srv.Fishing = true;
+            srv.BiteAfterMs = 2200;
+        }, release1122: true);
+        await using var _ = c;
+        using var __ = s;
+        var fishing = c.FishAsync(new Vec3d(11.5, 63, 8.5), TimeSpan.FromSeconds(5), maxCatches: 1);
+        await WaitFor(() => s.HookId != 0);
+        int hook = s.HookId;
+        await Task.Delay(750); // old detector has incorrectly settled on the stationary spawn position
+        s.Send(new EntityRelativeMovePacket { EntityId = hook, DY = -10 });
+        s.Send(new SoundMessage { Sound = SoundMessage.BobberSplash, X = 15.5, Y = 63, Z = 8.5 });
+        await Task.Delay(500);
+        Assert.Equal(hook, s.HookId); // no premature reel or second cast
+        Assert.Equal(1, s.Casts);
+        Assert.Equal(0, s.FishLanded);
+        var result = await fishing;
+        Assert.True(result.Ok, result.Message);
+        Assert.Equal(1, s.FishLanded); // server sends only sound for the bite, no synthetic velocity
+        Assert.Equal(1, s.Casts);
+    }
+
+    [Theory]
+    [MemberData(nameof(Versions))]
+    public async Task Cancelled_session_reels_back_its_line_and_next_session_casts_once(bool release1122)
+    {
+        var (c, s) = await Harness.StartAsync(srv =>
+        {
+            srv.Inventory[36] = Harness.Stack(MinecraftClient.FishingRodId, 1);
+            srv.Fishing = true;
+            srv.BiteAfterMs = 10_000;
+        }, release1122: release1122);
+        await using var _ = c;
+        using var __ = s;
+        using var stop = new CancellationTokenSource();
+        var fishing = c.FishAsync(new Vec3d(11.5, 63, 8.5), TimeSpan.FromSeconds(20), ct: stop.Token);
+        await WaitFor(() => s.HookId != 0 && c.World.Entities.Get(s.HookId) != null);
+        stop.Cancel();
+        try { await fishing; } catch (OperationCanceledException) { }
+        await WaitFor(() => s.HookId == 0);
+        Assert.Equal(1, s.Casts);
+        s.BiteAfterMs = 900;
+        var result = await c.FishAsync(new Vec3d(11.5, 63, 8.5), TimeSpan.FromSeconds(4), maxCatches: 1);
+        Assert.True(result.Ok, result.Message);
+        Assert.Equal(2, s.Casts);
+        Assert.Equal(1, s.FishLanded);
+    }
+
+    private static async Task WaitFor(Func<bool> condition)
+    {
+        var until = DateTime.UtcNow.AddSeconds(3);
+        while (!condition() && DateTime.UtcNow < until) await Task.Delay(20);
+        Assert.True(condition());
     }
 
     [Fact]

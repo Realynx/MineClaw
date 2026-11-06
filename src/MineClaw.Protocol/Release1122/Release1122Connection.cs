@@ -18,7 +18,8 @@ public static class Ids1122
         UnloadChunk = 0x1D, ChangeGameState = 0x1E, KeepAlive = 0x1F, ChunkData = 0x20, JoinGame = 0x23, EntityRelMove = 0x26,
         EntityLookRelMove = 0x27, EntityLook = 0x28, OpenSignEditor = 0x2A, PlayerListItem = 0x2E, PlayerPosLook = 0x2F,
         DestroyEntities = 0x32, Respawn = 0x35, HeldItemChangeIn = 0x3A, EntityMetadata = 0x3C, EntityEquipment = 0x3F,
-        UpdateHealth = 0x41, SpawnPosition = 0x46, TimeUpdate = 0x47, CollectItem = 0x4B, EntityTeleport = 0x4C;
+        UpdateHealth = 0x41, SpawnPosition = 0x46, TimeUpdate = 0x47, SoundEffect = 0x49, CollectItem = 0x4B,
+        EntityTeleport = 0x4C;
     // play, serverbound
     public const int TeleportConfirm = 0x00, ChatOut = 0x02, ClientStatus = 0x03, ClientSettings = 0x04, ConfirmTransactionOut = 0x05,
         EnchantItem = 0x06, ClickWindow = 0x07, CloseWindowOut = 0x08, CustomPayload = 0x09, UseEntity = 0x0A, KeepAliveOut = 0x0B, Player = 0x0C,

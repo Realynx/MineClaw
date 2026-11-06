@@ -87,6 +87,19 @@ public sealed class StoryPreserveTests
 
     private void Later() => _clock.Now += TimeSpan.FromSeconds(6);
 
+    [Theory]
+    [InlineData(23, 2, 10, 3)] // dispenser trigger vs facing
+    [InlineData(33, 2, 10, 3)] // piston extension vs facing
+    [InlineData(64, 1, 5, 2)] // door open vs facing
+    [InlineData(96, 1, 5, 2)] // trapdoor open vs facing
+    [InlineData(107, 1, 5, 2)] // gate open vs facing
+    [InlineData(26, 1, 5, 2)] // bed occupancy vs facing
+    public void Normal_operation_is_ignored_but_a_changed_facing_is_repaired(int id, int original, int operating, int turned)
+    {
+        Assert.True(PreserveRules.Keeps(id, original, id, operating, modern: true));
+        Assert.False(PreserveRules.Keeps(id, original, id, turned, modern: true));
+    }
+
     [Theory, MemberData(nameof(Versions))]
     public void A_crater_in_a_preserved_wheat_field_is_filled_with_dirt_and_tilled_again(string v)
     {

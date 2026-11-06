@@ -325,7 +325,7 @@ exports[`the mock director: a golden run > designations and builds: every op and
   ],
   [
     "after adds",
-    "7f5f407f0a5fe0b0",
+    "ac48021b2c714217",
   ],
   [
     "remove ids",
@@ -361,7 +361,7 @@ exports[`the mock director: a golden run > designations and builds: every op and
   ],
   [
     "after removes",
-    "3f07edcb1018f7e5",
+    "b9b7b394de953643",
   ],
   [
     "add",
@@ -393,7 +393,7 @@ exports[`the mock director: a golden run > designations and builds: every op and
   ],
   [
     "after builds",
-    "7916cab80ec2131e",
+    "5426b7da23d12a1e",
   ],
   [
     "pause",
@@ -425,7 +425,7 @@ exports[`the mock director: a golden run > designations and builds: every op and
   ],
   [
     "after work",
-    "f7ce662ad99a1f3b",
+    "5cd55a7eb8287247",
   ],
   [
     "retry all",
@@ -433,7 +433,7 @@ exports[`the mock director: a golden run > designations and builds: every op and
   ],
   [
     "end",
-    "5aab145d478986fe",
+    "de4e61aa3985d916",
   ],
 ]
 `;
@@ -579,11 +579,11 @@ exports[`the mock director: a golden run > records every request and the colony 
   ],
   [
     "delta founded",
-    "f3893b6061df52f8",
+    "6fd9655b8d054583",
   ],
   [
     "state founded",
-    "e9c3d657af0c9d47",
+    "a9b82fa4ffaf3b2f",
   ],
   [
     "priorities",
@@ -663,7 +663,7 @@ exports[`the mock director: a golden run > records every request and the colony 
   ],
   [
     "delta designated",
-    "a1384d1ae5e28dd7",
+    "b155c9feeac3953b",
   ],
   [
     "zone farm",
@@ -747,7 +747,7 @@ exports[`the mock director: a golden run > records every request and the colony 
   ],
   [
     "delta zoned",
-    "c6cf356ec6f031dc",
+    "cead60a7a3416f2f",
   ],
   [
     "builds",
@@ -775,7 +775,7 @@ exports[`the mock director: a golden run > records every request and the colony 
   ],
   [
     "delta built",
-    "f9e964b5487c4b7e",
+    "ed6915a8e9cc47e3",
   ],
   [
     "storage area",
@@ -851,7 +851,7 @@ exports[`the mock director: a golden run > records every request and the colony 
   ],
   [
     "delta benches",
-    "09ec2c265ce2bf8a",
+    "1cf43c7d8257831e",
   ],
   [
     "draft",
@@ -959,43 +959,43 @@ exports[`the mock director: a golden run > records every request and the colony 
   ],
   [
     "delta ordered",
-    "fbde3bd24176e15a",
+    "06e35b4b80c290ae",
   ],
   [
     "state ordered",
-    "d81dd0ea9d7b7a0c",
+    "d15594137ae2a505",
   ],
   [
     "delta work 0",
-    "fc9a926c7bcfa883",
+    "8d792beacc952739",
   ],
   [
     "delta work 1",
-    "b65c68097b921a2a",
+    "7c1c93c795a9fab7",
   ],
   [
     "delta work 2",
-    "f70ee5d98100fb98",
+    "32dea91df346bd65",
   ],
   [
     "delta work 3",
-    "2954d66b941cafc0",
+    "7a39467ee9f5a251",
   ],
   [
     "delta work 4",
-    "29088adf8005ac86",
+    "da0b81a22ce5e82e",
   ],
   [
     "delta work 5",
-    "084dc1d1864d0796",
+    "de352799437e89c9",
   ],
   [
     "delta work 6",
-    "a50aaf1465fdd846",
+    "28a99d376d813f28",
   ],
   [
     "delta work 7",
-    "a807dadc049f729d",
+    "16f93c5c013151d2",
   ],
   [
     "fail",
@@ -1031,11 +1031,11 @@ exports[`the mock director: a golden run > records every request and the colony 
   ],
   [
     "delta end",
-    "9b6b93b3ecbd5c0b",
+    "697a22c5c8fdaa50",
   ],
   [
     "state end",
-    "af5c9a749b4e4edf",
+    "8a3ad6e1d5e62c49",
   ],
   [
     "list",

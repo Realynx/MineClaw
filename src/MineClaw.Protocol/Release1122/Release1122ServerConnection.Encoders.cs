@@ -36,6 +36,7 @@ public sealed partial class Release1122ServerConnection
         On<HoldingChangePacket>(t, static (s, p) => s.Emit(WireWriter.ForPacket(Ids1122.HeldItemChangeIn).WriteSByte((sbyte)p.Slot), p));
         On<ExperienceMessage>(t, static (s, p) => s.Emit(WireWriter.ForPacket(EntityIds1122.SetExperience).WriteFloat(p.Bar).WriteVarInt(p.Level).WriteVarInt(p.Total), p));
         On<DeathMessage>(t, static (s, p) => s.EncodeDeath(p));
+        On<SoundMessage>(t, static (s, p) => s.EncodeSound(p));
         On<ItemCooldownMessage>(t, static (s, p) => s.Emit(WireWriter.ForPacket(EntityIds1122.SetCooldown).WriteVarInt(p.ItemId).WriteVarInt(p.Ticks), p));
         // the world
         On<PreChunkPacket>(t, static (s, p) => s.EncodePreChunk(p));
@@ -248,6 +249,11 @@ public sealed partial class Release1122ServerConnection
             .WriteDouble(x).WriteDouble(y).WriteDouble(z).WriteUByte(0).WriteUByte(0).WriteInt(ao.ThrowerEntityId)
             .WriteShort(ao.SpeedX).WriteShort(ao.SpeedY).WriteShort(ao.SpeedZ), ao);
     }
+
+    /// <summary>Sound Effect 0x49 in the NEUTRAL category (6, <c>Entity.getSoundCategory</c>), the position ×8.</summary>
+    private void EncodeSound(SoundMessage sm) =>
+        Emit(WireWriter.ForPacket(Ids1122.SoundEffect).WriteVarInt(SoundMessage.Ids1122.Single(kv => kv.Value == sm.Sound).Key).WriteVarInt(6)
+            .WriteInt((int)(sm.X * 8)).WriteInt((int)(sm.Y * 8)).WriteInt((int)(sm.Z * 8)).WriteFloat(sm.Volume).WriteFloat(sm.Pitch), sm);
 
     private void EncodeOrbSpawn(ExperienceOrbPacket orb)
     {

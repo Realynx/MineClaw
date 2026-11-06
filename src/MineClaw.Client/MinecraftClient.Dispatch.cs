@@ -118,6 +118,9 @@ public sealed partial class MinecraftClient
                 w.Time = t.Time;
                 w.TimeFrozen = t.Frozen;
                 return true;
+            case SoundMessage sound:
+                ReceiveFishingSound(sound);
+                return true;
             case SpawnPositionPacket sp:
                 w.Spawn = new BlockPos(sp.X, sp.Y, sp.Z);
                 return true;

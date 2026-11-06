@@ -40,6 +40,19 @@ public class Release1122P4Tests
     private static T Next<T>(Release1122Connection c) where T : IPacket => Assert.IsType<T>(c.ReadPacket());
 
     [Fact]
+    public void Fishing_splash_sound_preserves_position_and_ignores_unrelated_sounds()
+    {
+        var (client, server) = InPlay();
+        server.Send(0x49, w => w.WriteVarInt(1).WriteVarInt(6).WriteInt(0).WriteInt(0).WriteInt(0).WriteFloat(1).WriteFloat(1));
+        server.Send(0x49, w => w.WriteVarInt(153).WriteVarInt(6).WriteInt(-91).WriteInt(504).WriteInt(68).WriteFloat(0.25f).WriteFloat(1.1f));
+        var sound = Next<SoundMessage>(client);
+        Assert.Equal(SoundMessage.BobberSplash, sound.Sound);
+        Assert.Equal((-11.375, 63.0, 8.5), (sound.X, sound.Y, sound.Z));
+        Assert.Equal(0.25f, sound.Volume);
+        Assert.Equal(1.1f, sound.Pitch);
+    }
+
+    [Fact]
     public void Creeper_metadata_state_powered_ignited_health_and_flags()
     {
         var (client, server) = InPlay();

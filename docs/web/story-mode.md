@@ -1145,7 +1145,7 @@ a palette and run lengths, base64 (`PreserveCodec`): a 36-column, 6-layer field 
   it (anything not on that list: a block dropped in a field, a pillar, cobblestone) is a change; it is dug out;
 - *kept*: any other block. It must be there again by the build rule (`Matches`, with the drift table `StoryDrift`): the ground family is
   one block (dirt, grass, farmland, and on 1.12.2 coarse dirt, podzol, mycelium, grass path), a lit furnace is a furnace, turned blocks
-  keep their facing, a door's or bed's second half comes with its first. Blocks whose meta is runtime state are compared by id: redstone
+  keep their facing, a door's or bed's second half comes with its first. Runtime metadata bits are ignored while facing and half are kept: redstone
   power, pressed plates and buttons, levers, a cake's bites, a cauldron's water, a record, a brewing stand's bottles, doors, trapdoors and
   gates open or shut (a b1.8.1 door's open bit reads as a turn), a bed's occupied bit, a repeater's delay, a piston's extension (its head
   in an open cell comes and goes too), a dispenser's or hopper's trigger, rails' shapes.
@@ -1234,11 +1234,14 @@ window (beside the Growing zones) shows them, with "Fish until 20 stored" / "Cat
 
 **The primitive** (`MinecraftClient.FishAsync`, the hidden `fish {at, seconds, max}` tool, scripts' `fish(at, seconds, max)`):
 hold a rod (the least worn; one under 5% is swapped for a spare when there is one), face the water, cast (use item), find our
-bobber: an object of type 90 whose spawn data is our entity id (b1.8.1's 0x17 thrower, 1.12.2's Spawn Object owner). A bite
-(`BiteDetector`): once the bobber floats (its height still for 10 ticks), a fresh downward velocity of 0.12 blocks/tick or more
-(b1.8.1 EntityFishHook: `motionY -= 0.2`; 1.12.2: `motionY = -0.4 * rand(0.6, 1)`; both velocity-tracked) or a drop 0.2 under the
-floating height; the velocity held from the cast never counts. On a bite it reels in (use item again) and waits for the fish; no
-bite in 45 s reels in and casts again. The fake server (`FakeServer.Fishing`) serves rods on both wires for the tests.
+bobber: an object of type 90 whose spawn data is our entity id (b1.8.1's 0x17 thrower, 1.12.2's Spawn Object owner).
+On 1.12.2 a bite is the server's `entity.bobber.splash` sound at our hook. A delayed flight update must not be mistaken for
+a bite, and a splash at another angler's hook is ignored. Beta uses `BiteDetector`: after floating for 10 ticks, a fresh
+downward velocity of at least 0.12 blocks/tick or a drop 0.2 under the floating height. On a bite it reels in once and waits
+for the fish; no bite in 45 s reels in and casts again. Cancellation takes the line back, and a vanished hook never causes
+an extra use (which would cast again). One diagnostic line per cast records its outcome and duration.
+The fake server (`FakeServer.Fishing`) toggles cast/reel on each use, defaults to a random 5–45 second bite delay (tests may
+override it), and awards fish only inside the bite window. Modern tests receive bite sounds without synthetic bite motion.
 
 ## Construction
 

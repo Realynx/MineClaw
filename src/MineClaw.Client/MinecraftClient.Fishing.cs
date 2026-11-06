@@ -13,6 +13,19 @@ namespace MineClaw.Client;
 public sealed partial class MinecraftClient
 {
     public const int FishingRodId = 346, RawFishId = 349, FishHookType = 90;
+    private int _fishingBiteHook;
+
+    // Read on the network thread: associate the sound with our hook, never a nearby angler's.
+    private void ReceiveFishingSound(SoundMessage sound)
+    {
+        if (sound.Sound != SoundMessage.BobberSplash) return;
+        foreach (var bob in Bobbers(World.Player.EntityId))
+        {
+            var p = bob.Position;
+            if (Math.Abs(p.X - sound.X) <= 0.5 && Math.Abs(p.Y - sound.Y) <= 0.5 && Math.Abs(p.Z - sound.Z) <= 0.5)
+                Volatile.Write(ref _fishingBiteHook, bob.Id);
+        }
+    }
 
     /// <summary>
     /// Fishes at <paramref name="target"/> (a water cell) for <paramref name="session"/> or until <paramref name="maxCatches"/> fish
@@ -53,24 +66,56 @@ public sealed partial class MinecraftClient
     private async Task<bool?> CastAndReelAsync(DateTime end, CancellationToken ct)
     {
         int me = World.Player.EntityId;
-        var before = Bobbers(me).Select(e => e.Id).ToHashSet();
+        // An interrupted session may still have a line out. Clear it before a use can mean "cast".
+        if (Bobbers(me).FirstOrDefault() is { } previous)
+        {
+            await ReelHookAsync(previous.Id, ct).ConfigureAwait(false);
+            if (World.Entities.Get(previous.Id) != null) return null;
+        }
+        Volatile.Write(ref _fishingBiteHook, 0);
         Send(PlayerBlockPlacementPacket.UseItem(HeldStack()));
         Entity? bob = null;
-        await WaitUntilAsync(() => (bob = Bobbers(me).FirstOrDefault(e => !before.Contains(e.Id))) != null, TimeSpan.FromSeconds(2), ct).ConfigureAwait(false);
-        if (bob is null) return null;
-        var detector = new BiteDetector();
-        var left = end - DateTime.UtcNow;
-        var wait = left < TimeSpan.FromSeconds(45) ? left : TimeSpan.FromSeconds(45);
-        bool bit = await WaitUntilAsync(() => World.Entities.Get(bob.Id) is not { } e || detector.Sample(e.Position.Y, e.Velocity.Y),
-            wait < TimeSpan.Zero ? TimeSpan.Zero : wait, ct).ConfigureAwait(false) && World.Entities.Get(bob.Id) != null;
-        Send(PlayerBlockPlacementPacket.UseItem(HeldStack()));
-        if (bit)
+        bool reeled = false;
+        var began = DateTime.UtcNow;
+        try
         {
+            await WaitUntilAsync(() => (bob = Bobbers(me).FirstOrDefault()) != null, TimeSpan.FromSeconds(2), ct).ConfigureAwait(false);
+            if (bob is null) { Log("fishing: cast had no visible bobber"); return null; }
+            var detector = new BiteDetector();
+            var left = end - DateTime.UtcNow;
+            var wait = left < TimeSpan.FromSeconds(45) ? left : TimeSpan.FromSeconds(45);
+            bool Bite(Entity e) => Options.Profile.Entities.BiteSounds
+                ? Volatile.Read(ref _fishingBiteHook) == e.Id
+                : detector.Sample(e.Position.Y, e.Velocity.Y);
+            bool signaled = await WaitUntilAsync(() => World.Entities.Get(bob.Id) is not { } e || Bite(e),
+                wait < TimeSpan.Zero ? TimeSpan.Zero : wait, ct).ConfigureAwait(false);
+            bool alive = World.Entities.Get(bob.Id) != null;
+            bool bit = signaled && alive;
             int had = FishCount();
-            await WaitUntilAsync(() => FishCount() > had, TimeSpan.FromSeconds(3), ct).ConfigureAwait(false);
+            if (alive)
+            {
+                reeled = true;
+                await ReelHookAsync(bob.Id, ct).ConfigureAwait(false);
+            }
+            // A vanished hook must not toggle the rod: that would cast an unobserved new line.
+            if (bit) await WaitUntilAsync(() => FishCount() > had, TimeSpan.FromSeconds(3), ct).ConfigureAwait(false);
+            Log($"fishing: hook {bob.Id}, {(bit ? "bite" : alive ? "timeout" : "gone")} after {(DateTime.UtcNow - began).TotalSeconds:0.0}s, {FishCount() - had} fish");
+            return bit;
         }
-        else await WaitTicksAsync(5, ct).ConfigureAwait(false);
-        return bit;
+        finally
+        {
+            // Cancellation still takes our line back; sending twice would cast again.
+            var remaining = bob ?? Bobbers(me).FirstOrDefault();
+            if (!reeled && remaining != null && World.Entities.Get(remaining.Id) != null)
+                await ReelHookAsync(remaining.Id, CancellationToken.None).ConfigureAwait(false);
+        }
+    }
+
+    private async Task ReelHookAsync(int id, CancellationToken ct)
+    {
+        if (HeldStack().Id != FishingRodId || World.Entities.Get(id) == null) return;
+        Send(PlayerBlockPlacementPacket.UseItem(HeldStack()));
+        await WaitUntilAsync(() => World.Entities.Get(id) == null, TimeSpan.FromSeconds(1), ct).ConfigureAwait(false);
     }
 
     private List<Entity> Bobbers(int me) =>
@@ -98,8 +143,8 @@ public sealed partial class MinecraftClient
 
 /// <summary>
 /// A bite on our bobber, from what the server tells us about it: the cast flies, lands and floats (its height settles), then a
-/// bite pulls it under. b1.8.1 (EntityFishHook: <c>motionY -= 0.2</c> on a bite, velocity tracked) and 1.12.2 (EntityFishHook:
-/// <c>motionY = -0.4 * rand(0.6, 1)</c>) both send that as a velocity packet and a drop in height. Fed one sample per tick.
+/// bite pulls it under. Used for b1.8.1 (EntityFishHook: <c>motionY -= 0.2</c> on a bite, velocity tracked).
+/// 1.12.2 uses the server's bite sound: delayed flight updates can look like a drop after settling. Fed one sample per tick.
 /// </summary>
 public sealed class BiteDetector
 {

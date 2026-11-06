@@ -15,6 +15,9 @@ public interface IEntityRules
     /// <summary>Babies (the metadata's baby flag) have half-size hitboxes (1.12.2 <c>EntityZombie.setChildSize</c>,
     /// <c>EntityAgeable.setScale</c>).</summary>
     bool HasBabies { get; }
+    /// <summary>The server plays a sound on a fish bite (1.12.2 <c>EntityFishHook.catchingFish</c>: <c>entity.bobber.splash</c> at the
+    /// hook); b1.8.1 sends no sounds, so a bite is read from the bobber's motion.</summary>
+    bool BiteSounds { get; }
 }
 
 /// <summary>b1.8.1: no stamps; every reader uses the existing tables, unchanged.</summary>
@@ -24,6 +27,7 @@ public sealed class Beta181EntityRules : IEntityRules
     public MobProfile? Mob(int type) => null;
     public string? ObjectName(int type) => null;
     public bool HasBabies => false;
+    public bool BiteSounds => false;
 }
 
 /// <summary>
@@ -123,4 +127,5 @@ public sealed class Release1122EntityRules : IEntityRules
     };
 
     public bool HasBabies => true;
+    public bool BiteSounds => true;
 }

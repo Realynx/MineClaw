@@ -200,14 +200,17 @@ internal static class PreserveRules
         0, 6, 8, 9, 10, 11, 31, 32, 34, 36, 37, 38, 39, 40, 51, 59, 78, 81, 83, 86, 103, 104, 105, 106, 111, 115, 127, 141, 142, 175, 207,
     ];
 
-    /// <summary>Blocks whose meta is runtime state, compared by id only: redstone power, pressed plates and buttons, a cake's bites, a
-    /// cauldron's water, a record, bottles, an eye; doors, trapdoors and gates open and shut (a b1.8.1 door's open bit reads as a turn),
-    /// a bed's occupied bit, a repeater's delay, a piston's extension, a dispenser's or hopper's trigger, rails' shapes.</summary>
-    private static readonly HashSet<int> RuntimeMeta =
-    [
-        23, 26, 27, 28, 29, 33, 55, 64, 66, 69, 70, 71, 72, 77, 84, 92, 93, 94, 96, 107, 117, 118, 120, 131, 132, 143, 147, 148, 149, 150,
-        151, 154, 157, 158, 167, 178, 183, 184, 185, 186, 187, 193, 194, 195, 196, 197,
-    ];
+    /// <summary>Significant metadata bits for blocks with changing state. Keep facing/half while ignoring power, opening,
+    /// occupancy, contents and other normal operation. Null delegates to the ordinary build matching rule.</summary>
+    private static int? StableMetaMask(int id, int meta, bool modern) => id switch
+    {
+        23 or 27 or 28 or 29 or 33 or 69 or 77 or 143 or 154 or 157 or 158 => 7,
+        26 or 96 or 167 => 11,
+        64 or 71 or 193 or 194 or 195 or 196 or 197 => modern && (meta & 8) != 0 ? 9 : 11,
+        93 or 94 or 107 or 120 or 131 or 149 or 150 or 183 or 184 or 185 or 186 or 187 => 3,
+        55 or 66 or 70 or 72 or 84 or 92 or 117 or 118 or 132 or 147 or 148 or 151 or 178 => 0,
+        _ => null,
+    };
 
     /// <summary>Ores that only silk touch gives back: restored as the stone they lie in (any of them still there counts as kept).</summary>
     private static readonly HashSet<int> OreToStone = [14, 15, 16, 21, 56, 73, 74, 129];
@@ -237,8 +240,8 @@ internal static class PreserveRules
     /// <summary>Does the world's block keep the snapshot's? Its own block (or what it restores to), by the build rule.</summary>
     public static bool Keeps(int snapId, int snapMeta, int id, int meta, bool modern)
     {
-        if (StoryDrift.Canon(id) == StoryDrift.Canon(snapId) && (RuntimeMeta.Contains(snapId) || MineClaw.Bot.Blueprints.DesignFacing.SecondHalf(snapId, snapMeta)))
-            return true;
+        if (StoryDrift.Canon(id) == StoryDrift.Canon(snapId) && StableMetaMask(snapId, snapMeta, modern) is { } mask)
+            return (snapMeta & mask) == (meta & mask);
         if (StoryColony.MatchesBlock(snapId, snapMeta, id, meta, modern)) return true;
         var (rid, rmeta) = Restore(snapId, snapMeta);
         return (rid != snapId || rmeta != snapMeta) && StoryColony.MatchesBlock(rid, rmeta, id, meta, modern);

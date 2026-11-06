@@ -7,7 +7,7 @@ namespace MineClaw.Sim;
 /// <summary>
 /// Opt-in vanilla fishing (<see cref="Fishing"/>), enough for the client's fish primitive: a use-item holding a rod with no hook out
 /// casts (a Spawn Object of type 90 whose thrower/owner is the player: b1.8.1 0x17, 1.12.2 Spawn Object data), the hook floats,
-/// after <see cref="BiteAfterMs"/> a bite pulls it under (an Entity Velocity with a downward y, as EntityFishHook does), and a
+/// after <see cref="BiteAfterMs"/> a bite sends a splash sound in 1.12.2 or downward motion in Beta, and a
 /// use-item within <see cref="BiteWindowMs"/> of it lands a raw fish in the inventory and the hook goes; any other reel-in just
 /// pulls the hook back.
 /// </summary>
@@ -15,12 +15,14 @@ public partial class FakeServer
 {
     /// <summary>Serve fishing rods (see the class remarks). Off by default.</summary>
     public bool Fishing { get; set; }
-    public int BiteAfterMs { get; set; } = 900;
+    /// <summary>Zero uses a random 5–45 second delay; tests can choose a short deterministic delay.</summary>
+    public int BiteAfterMs { get; set; }
     public int BiteWindowMs { get; set; } = 1500;
     /// <summary>Fish landed (each reel-in inside the bite window).</summary>
     public int FishLanded => _landed;
     /// <summary>Hooks cast.</summary>
     public int Casts => _casts;
+    public int HookId => Volatile.Read(ref _hookId);
 
     private int _hookId, _landed, _casts, _hookSeq = 9000;
     private DateTime _biteAt = DateTime.MaxValue;
@@ -46,16 +48,22 @@ public partial class FakeServer
             {
                 if (_hookId != hook) return;
                 _biteAt = DateTime.UtcNow;
-                Send(new EntityVelocityPacket { EntityId = hook, VelocityX = 0, VelocityY = -1600, VelocityZ = 0 }); // −0.2 blocks/tick
-                Send(new EntityRelativeMovePacket { EntityId = hook, DX = 0, DY = -10, DZ = 0 });
-            }, null, BiteAfterMs, Timeout.Infinite);
+                if (Modern)
+                    Send(new SoundMessage { Sound = SoundMessage.BobberSplash, X = x + 3, Y = y - 1, Z = z, Volume = 0.25f });
+                else
+                {
+                    Send(new EntityVelocityPacket { EntityId = hook, VelocityX = 0, VelocityY = -1600, VelocityZ = 0 });
+                    Send(new EntityRelativeMovePacket { EntityId = hook, DX = 0, DY = -10, DZ = 0 });
+                }
+            }, null, BiteAfterMs > 0 ? BiteAfterMs : Random.Shared.Next(5000, 45001), Timeout.Infinite);
             return true;
         }
         // Reel in: a fish when it bit a moment ago.
         int gone = _hookId;
         _hookId = 0;
         _biteTimer?.Dispose();
-        if ((DateTime.UtcNow - _biteAt).TotalMilliseconds <= BiteWindowMs)
+        double sinceBite = (DateTime.UtcNow - _biteAt).TotalMilliseconds;
+        if (sinceBite >= 0 && sinceBite <= BiteWindowMs)
         {
             Interlocked.Increment(ref _landed);
             int slot = Array.FindIndex(Inventory, 9, s => s.Id == 349 && s.Count < 64);

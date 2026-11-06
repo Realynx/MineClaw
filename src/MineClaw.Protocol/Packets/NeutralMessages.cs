@@ -128,6 +128,28 @@ public sealed class ItemCooldownMessage : IPacket
     public override string ToString() => $"ItemCooldown(item {ItemId}: {Ticks} ticks)";
 }
 
+/// <summary>A sound the server played at a spot (1.12.2 Sound Effect 0x49, <c>SPacketSoundEffect</c>, position to 1/8 block). Only
+/// the sounds in <see cref="Ids1122"/> surface: <c>entity.bobber.splash</c>, a fish biting (<c>EntityFishHook.catchingFish</c>).
+/// b1.8.1 sends none (its sounds are played by the client).</summary>
+public sealed class SoundMessage : IPacket
+{
+    public const string BobberSplash = "entity.bobber.splash";
+    /// <summary>The surfaced sounds by 1.12.2 sound id (<c>SoundEvent.registerSounds</c> order; minecraft-data sounds.json).</summary>
+    public static readonly IReadOnlyDictionary<int, string> Ids1122 = new Dictionary<int, string> { [153] = BobberSplash };
+
+    public byte Id => SoundEffectPacket.PacketId;
+    public string Sound { get; init; } = "";
+    public double X { get; init; }
+    public double Y { get; init; }
+    public double Z { get; init; }
+    public float Volume { get; init; } = 1;
+    public float Pitch { get; init; } = 1;
+
+    public void Read(MinecraftReader r, PacketDirection d) => throw new NotSupportedException("SoundMessage has no b1.8.1 wire form");
+    public void Write(MinecraftWriter w, PacketDirection d) => throw new NotSupportedException("SoundMessage has no b1.8.1 wire form");
+    public override string ToString() => $"Sound({Sound} at {X:0.##},{Y:0.##},{Z:0.##})";
+}
+
 /// <summary>
 /// A block entity's looks (1.12.2 Chunk Data block entities and Update Block Entity, <c>SPacketUpdateTileEntity</c>): beds, banners,
 /// skulls, flower pots, spawners, chests… for the viewer. <see cref="Info"/> null = the block entity is gone. Signs keep travelling

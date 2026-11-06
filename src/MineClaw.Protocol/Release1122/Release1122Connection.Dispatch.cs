@@ -5,7 +5,7 @@ namespace MineClaw.Protocol.Release1122;
 /// <summary>
 /// The play-state translator table of the 1.12.2 client connection: wire packet id → the method that turns it into a canonical
 /// message (or answers it inside the connection and returns null). Built once; a lookup per packet, no allocation. An id with no
-/// translator (sounds, particles, advancements, recipe book, boss bars, scoreboards, a leash, the tracker's bare keep-alive…) is
+/// translator (most sounds, particles, advancements, recipe book, boss bars, scoreboards, a leash, the tracker's bare keep-alive…) is
 /// recorded in the traffic log only.
 /// </summary>
 public sealed partial class Release1122Connection
@@ -75,6 +75,7 @@ public sealed partial class Release1122Connection
         t[EntityIds1122.SetExperience] = static (_, b) => TranslateSetExperience(b);
         t[EntityIds1122.CombatEvent] = static (c, b) => c.TranslateCombatEvent(b);
         t[EntityIds1122.SetCooldown] = static (_, b) => TranslateSetCooldown(b);
+        t[Ids1122.SoundEffect] = static (_, b) => TranslateSoundEffect(b);
         // EntityIds1122.Entity (SPacketEntity with no move: a keep-alive of the tracker) and EntityIds1122.AttachEntity (a leash,
         // not riding) have no translator: they surface nothing.
         return t;
@@ -108,5 +109,16 @@ public sealed partial class Release1122Connection
     {
         var r = new WireReader(body);
         return new ItemCooldownMessage { ItemId = r.ReadVarInt(), Ticks = r.ReadVarInt() };
+    }
+
+    /// <summary>Sound Effect 0x49 (<c>SPacketSoundEffect</c>: sound id, category, x·8, y·8, z·8, volume, pitch): only the sounds a
+    /// reader needs (<see cref="SoundMessage.Ids1122"/>) surface; the rest stay in the traffic log.</summary>
+    private static IPacket? TranslateSoundEffect(ReadOnlySpan<byte> body)
+    {
+        var r = new WireReader(body);
+        if (!SoundMessage.Ids1122.TryGetValue(r.ReadVarInt(), out var name)) return null;
+        r.ReadVarInt(); // category
+        double x = r.ReadInt() / 8.0, y = r.ReadInt() / 8.0, z = r.ReadInt() / 8.0;
+        return new SoundMessage { Sound = name, X = x, Y = y, Z = z, Volume = r.ReadFloat(), Pitch = r.ReadFloat() };
     }
 }
