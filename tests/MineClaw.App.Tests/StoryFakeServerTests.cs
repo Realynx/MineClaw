@@ -1049,6 +1049,35 @@ public sealed class StoryFakeServerTests(ITestOutputHelper output)
         s.Inventory[36] = new ItemStack((short)Items.StonePickaxe, 1, 0);
     });
 
+    [Fact]
+    public Task A_quarry_removes_a_stranded_pillar_below_the_rim_and_cleans_up_its_access_blocks() => Colony("1.12.2", 1, async x =>
+    {
+        var c = x.C;
+        var srv = x.Servers[x.Pawns[0]];
+        Only(x, WorkTypes.Mine);
+        var (res, err) = c.ZoneOp("add", "mine", Area.Of(14, 63, 14, 23, 63, 23));
+        Assert.Null(err);
+        var zone = c.Zones.Single(z => z.Id == res!["id"]!.GetValue<string>());
+        bool PillarGone() => Enumerable.Range(49, 11).All(y => srv.Blocks.GetValueOrDefault((23, y, 23)) == 0);
+        Assert.True(await Until(() => PillarGone() && zone.QuarryLayer >= 15, 120_000),
+            "the stranded pillar is removed: " + x.Diag());
+        Assert.True(await Until(() => !srv.Blocks.Any(b => b.Value == Blocks.Cobblestone && b.Key.Item2 > 48), 30_000),
+            "temporary access blocks are taken back: " + x.Diag());
+    }, s =>
+    {
+        // Live 11-06: the quarry floor is y48, but a cobble pillar reaches y59, four below the rim.
+        // A walk-only approach fails before story.dig ever gets to try its reach recovery.
+        for (int x = -4; x <= 27; x++)
+            for (int z = -4; z <= 27; z++)
+                for (int y = 40; y <= 63; y++) s.Blocks[(x, y, z)] = Blocks.Stone;
+        for (int k = 0; k < 15; k++)
+            for (int x = 14; x <= 23; x++)
+                for (int z = 14; z <= 23; z++)
+                    if ((x, z) != (k <= 9 ? 14 + k : 23, k <= 9 ? 14 : 14 + k - 9)) s.Blocks.Remove((x, 63 - k, z));
+        for (int y = 49; y <= 59; y++) s.Blocks[(23, y, 23)] = Blocks.Cobblestone;
+        s.Inventory[36] = new ItemStack((short)Items.StonePickaxe, 1, 0);
+    });
+
     /// <summary>The cave tunnel's first cell beside the quarry's east edge (y 53..54), the lava beside it, the opening walled on layer 9.</summary>
     private static readonly P3 HazardCave = new(QuarryX + QuarrySize, 63 - QuarryLayer, QuarryZ + 3);
     private static readonly P3 HazardLava = new(QuarryX + QuarrySize, 63 - QuarryLayer, QuarryZ + 1);

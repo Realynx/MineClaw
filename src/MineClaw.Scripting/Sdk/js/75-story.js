@@ -356,20 +356,27 @@
     return escStuck(s, climb, e.why);
   };
   const NO_WAY = /no path|no route|unreachable|partway|stuck/i;
-  // go(at, d, opts?): the usual go; when it finds no way and the pawn is in a pit, cave or water, it gets out first and goes again.
+  // go(at, d, opts?): try walking first. A route the planner says needs scaffolding gets one build-mode retry;
+  // the client's temporary ledger and the pawn's post-job sweep take those access blocks back.
+  // Otherwise, when the pawn is in a pit, cave or water, it gets out first and goes again.
   const go = (at, d, o) => {
     const g = globalThis, walk = () => (o ? g.go(at, d, o) : g.go(at, d));
-    const r = walk();
+    let r = walk();
     if (g.ok(r) || r.cancelled || !NO_WAY.test(r.msg || '')) return r;
+    if ((!o || o.build == null) && /reachable by building/i.test(r.msg || '')) {
+      r = g.go(at, d, { ...o, build: true });
+      if (g.ok(r) || r.cancelled || !NO_WAY.test(r.msg || '')) return r;
+    }
     const e = escape(at);
     if (!g.ok(e)) return { ok: false, stuck: true, msg: r.msg + '; ' + e.msg };
     if (e.out) return walk();
     return standBelow(at) || r;
   };
-  // A target high above (a crown log, a ledge, a ceiling): stand below it; story.dig pillars up from there. -> null: no such spot.
+  // Stand below a target that has no walkable approach; story.dig pillars up from there. The target may be below our current
+  // position (a remnant in a deep quarry): what matters is its height above the ground we can walk to, not above the pawn now.
   const standBelow = at => {
     const g = globalThis, t = typeof at === 'string' ? at.split(',').map(Number) : null;
-    if (!t || t.length !== 3 || !(t[1] > H.me('pos').y + 2)) return null;
+    if (!t || t.length !== 3) return null;
     const s = H.storyReach(at);
     if (s.within) return { ok: true, msg: 'in reach' };
     if (!s.stand) return null;

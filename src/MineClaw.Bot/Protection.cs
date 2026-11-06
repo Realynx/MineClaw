@@ -146,17 +146,20 @@ public sealed partial class Protection
     /// view, so its own lease is never "another hive bot" (live 11-03: a Story pawn's dig took its lease on the block under its own
     /// name, then the shared policy looked through main's view, saw the pawn's lease and refused every cut "claimed").
     /// </summary>
-    public bool IsProtected(BlockPos p, int blockId, IClaimBoard? claims)
+    public bool IsProtected(BlockPos p, int blockId, IClaimBoard? claims, PlacedBlockLog? localPlaced = null)
     {
         int dim = Dim;
         if (Marks is { HasNever: true } marks && marks.NeverAt(p, dim) != null) return true;
         if (!AnySoft(p, blockId, dim, claims)) return false;
         if (IsDigCell?.Invoke(p) == true) return false;
-        return !Overridden(p, blockId, dim);
+        return !Overridden(p, blockId, dim, localPlaced);
     }
 
     /// <summary>Rule 1/3 for this block: a hive bot placed it, or a trusted player permitted it (containers: exact permits only).</summary>
     public bool OverridesSoft(BlockPos p, int blockId) => Overridden(p, blockId, Dim);
+
+    /// <summary>A body's fresh placements count immediately, before the shared placement store has flushed.</summary>
+    public bool OverridesSoft(BlockPos p, int blockId, PlacedBlockLog localPlaced) => Overridden(p, blockId, Dim, localPlaced);
 
     /// <summary>
     /// A trusted player punched this column just now (<c>BotHost</c>: the gesture tracker, 3 min): pointing at the block to break is
@@ -165,10 +168,10 @@ public sealed partial class Protection
     /// </summary>
     public Func<BlockPos, bool>? PointedByTrusted { get; set; }
 
-    private bool Overridden(BlockPos p, int id, int dim)
+    private bool Overridden(BlockPos p, int id, int dim, PlacedBlockLog? localPlaced = null)
     {
         bool container = IsContainer(id);
-        if (!container && Placed?.IsPlaced(p, dim, id) == true) return true;
+        if (!container && (localPlaced?.IsPlaced(p, dim, id) == true || Placed?.IsPlaced(p, dim, id) == true)) return true;
         if (!container && PointedByTrusted?.Invoke(p) == true) return true;
         return Marks is { HasPermits: true } m && m.PermitAt(p, dim, exactOnly: container) != null;
     }
@@ -211,13 +214,13 @@ public sealed partial class Protection
     public ProtectionVerdict Check(BlockPos p, int blockId) => Check(p, blockId, Claims);
 
     /// <summary><see cref="Check(BlockPos, int)"/> with hive leases seen through one body's claim view.</summary>
-    public ProtectionVerdict Check(BlockPos p, int blockId, IClaimBoard? claims)
+    public ProtectionVerdict Check(BlockPos p, int blockId, IClaimBoard? claims, PlacedBlockLog? localPlaced = null)
     {
         int dim = Dim;
         if (Marks?.NeverAt(p, dim) is { } never)
             return new ProtectionVerdict(ProtectionLevel.Hard, "never_break",
                 $"{never.By} marked {(string.IsNullOrWhiteSpace(never.Label) ? "it" : never.Label)} never-break");
-        if (!AnySoft(p, blockId, dim, claims) || IsDigCell?.Invoke(p) == true || Overridden(p, blockId, dim)) return ProtectionVerdict.None;
+        if (!AnySoft(p, blockId, dim, claims) || IsDigCell?.Invoke(p) == true || Overridden(p, blockId, dim, localPlaced)) return ProtectionVerdict.None;
         return SoftReason(p, blockId, dim, claims);
     }
 
@@ -225,9 +228,9 @@ public sealed partial class Protection
     public ProtectionVerdict Explain(BlockPos p, int blockId) => Explain(p, blockId, Claims);
 
     /// <summary><see cref="Explain(BlockPos, int)"/> with hive leases seen through one body's claim view.</summary>
-    public ProtectionVerdict Explain(BlockPos p, int blockId, IClaimBoard? claims)
+    public ProtectionVerdict Explain(BlockPos p, int blockId, IClaimBoard? claims, PlacedBlockLog? localPlaced = null)
     {
-        var v = Check(p, blockId, claims);
+        var v = Check(p, blockId, claims, localPlaced);
         if (!v.Protected) return v;
         var now = _time.GetUtcNow();
         var key = (v.Reason, p.X, p.Z);

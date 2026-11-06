@@ -79,6 +79,21 @@ public sealed class StoryReachSdkTests
     private static int Count(Rig rig, int id) => rig.World.Inventory.CountItem(id);
 
     [Fact]
+    public async Task A_target_below_the_start_can_be_approached_from_the_floor_then_reached_by_a_pillar()
+    {
+        using var rig = Make();
+        rig.Give(36, Blocks.Dirt, 8);
+        rig.World.Player.ServerTeleport(new Vec3d(0.5, 76, 0.5), 77.62, 0, 0, true);
+        var s = await rig.Run($"const r = story.go('{Ceiling}', 3); return JSON.stringify(ok(r) ? story.dig('{Ceiling}') : r)");
+        Assert.True(s.Ok, s.Outcome);
+        Assert.Contains("\"ok\":true", s.Outcome);
+        Assert.Equal(0, rig.World.GetBlock(2, 71, 0));
+        Assert.Contains(rig.Norm(), c => c.StartsWith("place "));
+        Assert.Equal(8, Count(rig, Blocks.Dirt));
+        Assert.Equal(65, (int)Math.Floor(rig.World.Player.Position.Y));
+    }
+
+    [Fact]
     public async Task A_ceiling_block_is_dug_from_a_pillar_that_comes_down_again_with_its_blocks_collected()
     {
         using var rig = Make();

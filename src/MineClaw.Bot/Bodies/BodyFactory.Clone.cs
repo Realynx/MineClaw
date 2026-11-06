@@ -68,9 +68,10 @@ public static partial class BodyFactory
         // Hive leases through THIS body's claim view: its own lease (ClaimAwareGameClient takes one on the block it digs, under its own
         // name) is free to it. Through main's view (protection.Claims) every body was refused by its own lease (live 11-03).
         var view = claims ?? protection.Claims;
-        adapter.IsProtected = (p, id) => protection.IsProtected(p, id, view);
-        c.ExplainProtection = (p, id) => protection.Explain(p, id, view);
-        c.SoftOverride = protection.OverridesSoft;
+        // Its fresh pillar/scaffold is already in this body's log, before main's periodic placement-store flush.
+        adapter.IsProtected = (p, id) => protection.IsProtected(p, id, view, c.World.Placed);
+        c.ExplainProtection = (p, id) => protection.Explain(p, id, view, c.World.Placed);
+        c.SoftOverride = (p, id) => protection.OverridesSoft(p, id, c.World.Placed);
         c.EditYields = protection.EditYields; // the editing context: requested digs on an open design (one EditContext per process)
         if (brain.ProtectionTelemetry is { } telemetry) c.CountRefusal = r => telemetry.Count(r);
         if (brain.ProtectionMarks is { } marks) c.NeverBreak = p => marks.HasNever && marks.NeverAt(p, c.World.Dimension) != null;

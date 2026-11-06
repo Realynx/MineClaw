@@ -125,6 +125,24 @@ public class ProtectionPolicyTests
 
     // ------------------------------------------------------------------ rule 1: persistence + hive
 
+    [Fact]
+    public void A_bodys_unflushed_placements_override_soft_protection_but_not_hard_marks_or_containers()
+    {
+        var (h, _) = Host();
+        using var host = h;
+        var local = new PlacedBlockLog();
+        Assert.True(h.Protection.IsProtected(Wall, Blocks.Planks, null, local));
+        local.Note(Wall, 0, Blocks.Planks, "maid_chan_101", DateTimeOffset.UtcNow);
+        Assert.False(h.Protection.IsProtected(Wall, Blocks.Planks, null, local));
+        Assert.True(h.Protection.OverridesSoft(Wall, Blocks.Planks, local));
+        Assert.True(h.Protection.IsProtected(Wall, Blocks.Cobblestone, null, local)); // replaced by somebody else
+        local.Note(Wall, 0, Blocks.Chest, "maid_chan_101", DateTimeOffset.UtcNow);
+        Assert.True(h.Protection.IsProtected(Wall, Blocks.Chest, null, local));
+        local.Note(Wall, 0, Blocks.Planks, "maid_chan_101", DateTimeOffset.UtcNow);
+        h.ProtectionMarks!.Add(MarkKind.Never, 0, [(Wall, Wall)], "keep", "PoofimaFox", null, false);
+        Assert.True(h.Protection.IsProtected(Wall, Blocks.Planks, null, local));
+    }
+
     private sealed class HouseBox : IProtectedRegionSource
     {
         public IReadOnlyList<(BlockPos Min, BlockPos Max)> ProtectedRegions() => [(new BlockPos(0, 63, -16), new BlockPos(15, 71, -1))];

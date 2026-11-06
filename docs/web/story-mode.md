@@ -504,7 +504,11 @@ own and destroy the nerd pole on the way back down. Not many blocks should truly
   - The pawn walks there and nerd-poles up: each step is `place(block, its own feet)`, a pillar step (jump, place under itself, land
     on it). It digs the target, then digs its pillar back down from the top, standing on each block it placed and collecting them
     again. Nothing is left behind.
-  - A walk that can't get within reach of a block high above stops below it instead (`story.go`), and the dig climbs from there.
+  - A walk that can't get within reach stops on ground below the target instead (`story.go`), and the dig climbs from there.
+    This also applies when the pawn starts above the target, such as a quarry remnant below the rim but high above the floor.
+  - When the walking planner finds a route that needs temporary blocks (`reachable by building`), `story.go` retries once with
+    building enabled. This also reaches quarry remnants below the rim that a normal walk cannot approach. An explicit `build: false`
+    is respected. Access blocks stay in the client's temporary ledger and are reclaimed by the pawn's post-job sweep or colony cleanup.
 - **Blocks to climb with:**
   - the cheap blocks it carries: dirt, cobblestone, netherrack, stone, sandstone, planks last (see "Temporary blocks");
   - else the job's `pillar` stack from storage. The colony adds `{from, item, n}` to a job more than 3 blocks above the pawn, or a
@@ -537,6 +541,8 @@ Now:
 - **Only a directive stays.** A build's cell, a quarry's stair steps and hazard seals, a sown crop: the owner asked for them. Everything
   else a pawn puts down for itself is temporary: reach and escape pillars, a build's scaffold, a walk's pillar or bridge, a shelter box,
   a fall clutch, a tree pillar.
+- **Immediate ownership.** A pawn's local placement log overrides soft protection as soon as its block is confirmed, so cleanup
+  need not wait for the shared store's next flush. Never-break marks and container protection still apply.
 - **Cheap blocks.** Temporary blocks are dirt or cobblestone when the pawn has them (on skyblock: cobblestone and stone kinds, never
   dirt); planks and logs, a build's material, only when it carries nothing else. A build scaffold is cobblestone or dirt it carries,
   else one of the batch's blocks. The pillar stack never counts planks.

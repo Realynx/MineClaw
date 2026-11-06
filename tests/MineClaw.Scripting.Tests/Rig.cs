@@ -30,13 +30,13 @@ public sealed class Rig : IDisposable
     /// <summary>A rig whose scripts are JavaScript.</summary>
     public static Rig Js(ScriptOptions? options = null, Crew.ICrewPort? crew = null, IScriptCheckpointStore? checkpoints = null,
         Func<string, string?>? storedParams = null, string? body = null, MineClaw.Data.Versioning.IGameData? data = null,
-        IReadOnlyList<ScriptAction>? more = null) =>
-        new(options, crew, checkpoints, storedParams, body, data, more) { Lang = ScriptLanguage.Js };
+        IReadOnlyList<ScriptAction>? more = null, IReadOnlyList<ScriptAction>? actions = null) =>
+        new(options, crew, checkpoints, storedParams, body, data, more, actions) { Lang = ScriptLanguage.Js };
 
     /// <param name="more">Script actions besides the usual ones (a hidden tool a test needs, e.g. clear_temporary).</param>
     public Rig(ScriptOptions? options = null, Crew.ICrewPort? crew = null, IScriptCheckpointStore? checkpoints = null,
         Func<string, string?>? storedParams = null, string? body = null, MineClaw.Data.Versioning.IGameData? data = null,
-        IReadOnlyList<ScriptAction>? more = null)
+        IReadOnlyList<ScriptAction>? more = null, IReadOnlyList<ScriptAction>? actions = null)
     {
         World.ApplyChunkRegion(-16, 0, -16, 32, 128, 32, new byte[32 * 128 * 32], null, null, null);
         for (int x = -6; x <= 6; x++)
@@ -49,7 +49,7 @@ public sealed class Rig : IDisposable
             World = World,
             Username = "maid_chan",
             Data = data ?? MineClaw.Data.Versioning.Beta181GameData.Instance,
-            Actions =
+            Actions = actions ??
             [
                 new ScriptAction("goto", ["to", "dist"]),
                 new ScriptAction("mine", ["block", "count", "radius"]),

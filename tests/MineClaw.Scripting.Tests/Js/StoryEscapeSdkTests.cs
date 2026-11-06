@@ -167,6 +167,31 @@ public sealed class StoryEscapeSdkTests
     }
 
     [Fact]
+    public async Task A_route_reachable_by_scaffolding_retries_in_build_mode()
+    {
+        using var rig = Rig.Js(actions: [new ScriptAction("goto", ["to", "dist", "build"])]);
+        rig.On["goto"] = (a, _) => Task.FromResult(a.TryGetProperty("build", out var b) && b.GetBoolean()
+            ? ActResult.Success("arrived using one temporary block")
+            : ActResult.Fail("no path to within 3 of (40, 59, 0); reachable by building: need 1 blocks to pillar/bridge, have 16 - retry with build mode (allow_place)"));
+        var outcome = await Run(rig, "return JSON.stringify(story.go('40,59,0', 3))");
+        Assert.Contains("\"ok\":true", outcome);
+        Assert.Equal(2, rig.Norm().Count);
+        Assert.Contains("\"build\":true", rig.Norm()[1]);
+    }
+
+    [Theory]
+    [InlineData("{build:false}")]
+    [InlineData("{build:true}")]
+    public async Task An_explicit_build_option_is_respected_without_repeating_the_failed_walk(string options)
+    {
+        using var rig = Rig.Js(actions: [new ScriptAction("goto", ["to", "dist", "build"])]);
+        rig.On["goto"] = (_, _) => Task.FromResult(ActResult.Fail("no path; reachable by building: need 1 blocks"));
+        var outcome = await Run(rig, $"return JSON.stringify(story.go('40,59,0', 3, {options}))");
+        Assert.Contains("\"ok\":false", outcome);
+        Assert.Single(rig.Norm());
+    }
+
+    [Fact]
     public async Task Out_of_the_water_onto_the_nearest_bank()
     {
         var (rig, port) = Pit(w =>
