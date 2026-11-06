@@ -166,6 +166,7 @@ public sealed partial class StoryColony
         var b = RepairBuildOf(z);
         if (b == null && damage.Count == 0) return;
         b ??= NewRepairBuild(z);
+        if (b.Label != $"repairs: {ZoneTitle(z)}") { b.Label = $"repairs: {ZoneTitle(z)}"; b.Rev = Touch(); } // the zone was renamed
         var want = new Dictionary<P3, Damage>();
         foreach (var d in damage) want[d.At] = d;
         int fresh = 0;
