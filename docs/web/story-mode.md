@@ -549,6 +549,10 @@ dirt, and a Story job never ran the client's clean-up of them at all). Seeds, wh
 ledger's mislabel (a sowing's or deposit's slot update landing during the next walk), not placements.
 
 Now:
+- **Owner cancellation wins.** The map's Cancel tool cancels exactly the designation markers in its preview at every height,
+  including underground cleanup. It interrupts assigned pawns immediately. A cancelled temporary-block cleanup is saved as cancelled
+  and removed from the body's own sweep ledger, so neither a later tick nor a restart queues it again. A new explicit mining or
+  deconstruction mark can still remove that block.
 - **Only a directive stays.** A build's cell, a quarry's stair steps and hazard seals, a sown crop: the owner asked for them. Everything
   else a pawn puts down for itself is temporary: reach and escape pillars, a build's scaffold, a walk's pillar or bridge, a shelter box,
   a fall clutch, a tree pillar.

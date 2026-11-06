@@ -565,4 +565,7 @@ public sealed class TempBlockState
     public string? Designation { get; set; }
     /// <summary>Cleanups that couldn't reach it: the first rests it long, the second leaves it to the owner.</summary>
     public int Misses { get; set; }
+    /// <summary>The owner cancelled cleanup: keep the block and do not rediscover it on reload.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool Cancelled { get; set; }
 }

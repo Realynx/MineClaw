@@ -98,6 +98,10 @@ internal sealed class FakeStoryHost(FakeStoryWorld world) : IStoryHost
     /// <summary>Each body's own temporary blocks (its client's walk scaffolds, shelter box, clutch blocks).</summary>
     public Dictionary<string, List<(P3 At, int Id)>> Temps { get; } = new(StringComparer.OrdinalIgnoreCase);
     public IReadOnlyList<(P3 At, int Id)> TemporaryBlocks(string account) => Temps.TryGetValue(account, out var t) ? t.ToList() : [];
+    public void KeepTemporaryBlock(string account, P3 at)
+    {
+        if (Temps.TryGetValue(account, out var t)) t.RemoveAll(b => b.At == at);
+    }
     /// <summary>The hive's placed-block log: every block a bot placed that still stands, and who.</summary>
     public List<(P3 At, int Id, string Bot)> Placed { get; } = new();
     public IReadOnlyList<(P3 At, int Id, string Bot)> PlacedByBots() => Placed.ToList();

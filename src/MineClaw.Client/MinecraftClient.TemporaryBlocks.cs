@@ -11,6 +11,13 @@ public sealed partial class MinecraftClient
     // A predicted placement (a clutch block) waits here until the server's block change records it as ours.
     private readonly ConcurrentDictionary<(int Dim, BlockPos Pos), long> _pendingTemporary = new();
 
+    /// <summary>Keep an existing placement after its cleanup was cancelled; future placements may be temporary again.</summary>
+    public void KeepTemporaryBlock(BlockPos pos, int dimension)
+    {
+        _pendingTemporary.TryRemove((dimension, pos), out _);
+        _temporaryBlocks.TryRemove((dimension, pos), out _);
+    }
+
     private void RememberTemporaryBlock(BlockPos pos)
     {
         if (World.Placed.Get(pos, World.Dimension) is { } placed && placed.Bot == Options.Username)

@@ -96,6 +96,8 @@ public interface IStoryHost
     /// <summary>The blocks a pawn's body put down for itself and still holds as its own (a walk's pillar or bridge, a shelter box, a
     /// fall clutch: the client's temporary blocks), for the colony's registry (StoryColony.TempBlocks.cs).</summary>
     IReadOnlyList<(P3 At, int Id)> TemporaryBlocks(string account) => [];
+    /// <summary>The owner cancelled cleanup of this block: forget it in the body's automatic cleanup ledger.</summary>
+    void KeepTemporaryBlock(string account, P3 at) { }
     /// <summary>Every block a hive bot placed that still stands (the shared placed-block log, overworld): who placed it. The colony's
     /// one-time look for pawns' stray blocks.</summary>
     IReadOnlyList<(P3 At, int Id, string Bot)> PlacedByBots() => [];

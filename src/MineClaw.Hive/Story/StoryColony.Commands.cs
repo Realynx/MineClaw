@@ -268,7 +268,19 @@ public sealed partial class StoryColony
         lock (_lock)
         {
             var gone = Designations.Where(d => RemovalHits(d, kind, area, blocks, ids)).ToList();
-            foreach (var d in gone) { Designations.Remove(d); Removed("designation", d.Id); }
+            foreach (var d in gone)
+            {
+                CancelTempCleanup(d);
+                Designations.Remove(d);
+                Removed("designation", d.Id);
+            }
+            var cancelled = gone.Select(d => d.Id).ToHashSet();
+            foreach (var p in Pawns.Values)
+                if (_current.TryGetValue(p.Name, out var job) && job.Source == "designation" && job.SourceId is { } id && cancelled.Contains(id))
+                {
+                    Supersede(p, "task cancelled by owner");
+                    p.Rev = Bump();
+                }
             return (new JsonObject { ["count"] = gone.Count, ["removed"] = new JsonArray(gone.Select(d => (JsonNode)d.Id!).ToArray()) }, null);
         }
     }

@@ -5,6 +5,7 @@
 import { isWaterTool, materialKey, normArea } from '@mineclaw/contracts';
 import { errorText } from '@/lib/api/client';
 import { growPlantNow } from '../GrowingZones';
+import { designationInRect } from '../mapDragDraw';
 import type { DragResult, MapTool } from '../StoryMap';
 import {
   buildItem,
@@ -91,6 +92,15 @@ async function designateArea(c: Story, tool: Designate, r: DragResult) {
 }
 
 async function releaseDesignate(c: Story, tool: Designate, r: DragResult) {
+  if (tool.id === 'cancel') {
+    const ids = (c.state?.designations ?? []).filter((d) => designationInRect(d, r.rect)).map((d) => d.id);
+    return c.run(
+      { route: 'story.designations', body: { op: 'cancel', ids } },
+      null,
+      'cancelled',
+      (out) => `Cancelled ${countOf(out, ids.length)}`,
+    );
+  }
   if (tool.id === 'retry') return retryBox(c, r);
   if (hasHeight(tool.id) && r.height) return designateCells(c, tool.id, r, r.height.cells);
   return designateArea(c, tool, r);

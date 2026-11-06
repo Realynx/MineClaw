@@ -231,6 +231,9 @@ public sealed class StoryHost : IStoryHost
         return c.TemporaryBlocks().Where(b => b.Dimension == 0).Select(b => (new P3(b.Pos.X, b.Pos.Y, b.Pos.Z), b.BlockId)).ToList();
     }
 
+    public void KeepTemporaryBlock(string account, P3 at) =>
+        PawnClient(account)?.KeepTemporaryBlock(new BlockPos(at.X, at.Y, at.Z), 0);
+
     /// <summary>Main's and every online body's placed-block log (the hive's shared table), overworld, one row per cell.</summary>
     public IReadOnlyList<(P3 At, int Id, string Bot)> PlacedByBots()
     {

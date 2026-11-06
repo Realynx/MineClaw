@@ -35,6 +35,25 @@ public sealed partial class StoryColony
 
     private List<TempBlockState> Temps => Meta.TempBlocks ??= new();
 
+    private void CancelTempCleanup(DesignationState d)
+    {
+        if (Meta.TempBlocks == null) return;
+        foreach (var t in Meta.TempBlocks.Where(t => t.Designation == d.Id))
+        {
+            t.Cancelled = true;
+            t.Designation = null;
+            _tempQueued.Remove(t);
+            KeepTemp(t);
+            _dirty = true;
+        }
+    }
+
+    // Forget the body's own cleanup ledger too, so its post-job sweep cannot undo the cancellation.
+    private void KeepTemp(TempBlockState t)
+    {
+        foreach (var p in Pawns.Keys) Host.KeepTemporaryBlock(p, t.At);
+    }
+
     /// <summary>The SDK's report: a block put down for itself (or taken back). See <see cref="Scripting.Story.IStoryPort.Temporary"/>.</summary>
     public void Temporary(string body, string cell, bool placed, string why)
     {
@@ -100,6 +119,7 @@ public sealed partial class StoryColony
         int now = w.Block(t.At.X, t.At.Y, t.At.Z).Id;
         AdoptSeen(t, now);
         if (Gone(t, now) || buildCells.Contains(t.At)) { ForgetTemp(t); return; }
+        if (t.Cancelled) { KeepTemp(t); return; }
         if (t.Designation == null && t.Id != 0 && LeftBehind(t)) QueueTemp(t);
     }
 

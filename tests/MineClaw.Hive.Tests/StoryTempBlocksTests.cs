@@ -20,6 +20,70 @@ public sealed class StoryTempBlocksTests
     private static List<DesignationState> Cleanups(StoryColony c) =>
         c.Designations.Where(d => d.Kind == "deconstruct" && d.Auto && (d.Label ?? "").Contains("temporary")).ToList();
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Cancelling_cleanup_interrupts_its_pawn_and_keeps_the_block_across_ticks_and_reload(bool byArea)
+    {
+        var clock = new ManualTime();
+        var (c, h, w) = StoryRig.Make(1, time: clock);
+        Only(c, WorkTypes.Build);
+        var pawn = c.P();
+        var at = new P3(5, 64, 5);
+        w.Set(at.X, at.Y, at.Z, 4);
+        h.Temps[pawn] = [(at, 4)];
+        h.Placed.Add((at, 4, pawn));
+        c.Temporary(pawn, at.ToString(), true, "scaffold");
+        h.Lives[pawn] = FakeStoryHost.Live(40, 64, 40);
+        clock.Now += TimeSpan.FromSeconds(50);
+        c.Tick();
+        var mark = Assert.Single(Cleanups(c));
+        var job = c.Next();
+        Assert.Equal("dig", job["kind"]!.GetValue<string>());
+
+        var result = c.Designate("cancel", null, byArea ? Area.Of(5, 64, 5, 5, 64, 5) : null,
+            null, null, byArea ? null : [mark.Id]);
+        Assert.Null(result.Error);
+        Assert.Equal(1, result.Result!["count"]!.GetValue<int>());
+        Assert.Null(c.CurrentOf(pawn));
+        Assert.Contains(h.Interrupted, s => s.StartsWith(pawn + ": task cancelled"));
+        Assert.Empty(c.Leases());
+        Assert.Empty(h.Temps[pawn]);
+        Assert.True(Assert.Single(c.Meta.TempBlocks!).Cancelled);
+        Assert.False(c.Report(pawn, job["id"]!.GetValue<string>(), "done", null, null));
+        clock.Now += TimeSpan.FromMinutes(2);
+        c.Tick();
+        Assert.Empty(Cleanups(c));
+        Assert.Equal(4, w.Block(at.X, at.Y, at.Z).Id);
+
+        var saved = System.Text.Json.JsonSerializer.Serialize(c.Meta);
+        var meta = System.Text.Json.JsonSerializer.Deserialize<ColonyMeta>(saved)!;
+        var reloaded = new StoryColony(meta, h, clock);
+        reloaded.Joined([pawn]);
+        reloaded.Tick();
+        Assert.Empty(Cleanups(reloaded)); // the placed-block scan cannot recreate the cancelled job
+        Assert.True(Assert.Single(reloaded.Meta.TempBlocks!).Cancelled);
+        // An explicit new order can still remove it.
+        reloaded.Designate("add", "mine", null, [at], "all");
+        Assert.Contains(reloaded.Designations, d => d.At == at && !d.Auto);
+    }
+
+    [Fact]
+    public void Cancelling_manual_mining_stops_the_active_dig_and_leaves_other_tasks_alone()
+    {
+        var (c, h, w) = StoryRig.Make();
+        Only(c, WorkTypes.Mine);
+        w.Set(2, 64, 2, 3);
+        w.Set(4, 64, 4, 3);
+        c.Designate("add", "mine", null, [new P3(2, 64, 2), new P3(4, 64, 4)], "all");
+        var job = c.Next();
+        var current = c.CurrentOf(c.P())!;
+        c.Designate("cancel", null, null, null, null, [current.SourceId!]);
+        Assert.Null(c.CurrentOf(c.P()));
+        Assert.Single(c.Designations);
+        Assert.NotEqual(job["at"]!.GetValue<string>(), c.Next()["at"]!.GetValue<string>());
+    }
+
     [Fact]
     public void A_pillar_left_by_a_cut_job_becomes_a_cleanup_job_said_once_and_goes_with_its_blocks()
     {
