@@ -90,6 +90,7 @@ public sealed partial class StoryColony
     {
         if (p.Queue.Count > 0 && OrderJob(p, live) is { } order) return order;
         if (Urgent(p, live) is { } need) return need;
+        if (QuarryLavaDelivery(p, live) is { } lava) return lava;
         // A back-off rests the failed targets; the pawn itself rests only when nothing else is there (Fox 11-04: never idle with work).
         if (RestLeft(p) != null && Work(p, live) == null && Resting(p, live) is { } rest) return rest;
         if (Deliver(p, live) is { } deliver) return deliver;

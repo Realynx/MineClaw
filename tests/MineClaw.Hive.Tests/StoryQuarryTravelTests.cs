@@ -5,8 +5,10 @@ namespace MineClaw.Hive.Tests;
 
 public sealed class StoryQuarryTravelTests
 {
-    [Fact]
-    public void A_miner_enters_by_the_stairs_then_exits_by_them_only_when_its_bag_fills()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void A_miner_enters_by_the_stairs_then_exits_when_its_bag_or_lava_buckets_fill(bool lavaBucket)
     {
         var (c, h, w) = StoryRig.Make();
         c.DoneGrace = TimeSpan.Zero;
@@ -40,10 +42,16 @@ public sealed class StoryQuarryTravelTests
         Assert.Null(job["quarry_exit"]);
         Assert.Null(job["quarry_approach"]); // already at the work floor, no trip to the entrance for each block
         Finish(job);
-        h.Lives[pawn] = h.Lives[pawn] with { FreeSlots = 2 };
+        if (lavaBucket)
+        {
+            c.Pawns[pawn].QuarryLava = true;
+            h.Lives[pawn] = FakeStoryHost.Live(28, 49, 18, inv: [new Stack(4, 0, 8), new Stack(327, 0, 1)]);
+        }
+        else h.Lives[pawn] = h.Lives[pawn] with { FreeSlots = 2 };
         job = c.Next();
         Assert.Equal("go", job["kind"]!.GetValue<string>());
         Assert.NotNull(job["stash"]);
+        if (lavaBucket) Assert.Contains("lava_bucket", job["stash"]!.ToJsonString());
         route = job["quarry_exit"]!.AsArray().Select(n => n!.GetValue<string>()).ToArray();
         Assert.Equal("25,49,10", route[0]);
         Assert.Equal("10,64,10", route[^1]);

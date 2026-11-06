@@ -148,6 +148,32 @@ public sealed class StorySdkTests
         Assert.DoesNotContain(calls, c => c.Contains("\"build\":true"));
     }
 
+    [Theory]
+    [InlineData("ok")]
+    [InlineData("failed")]
+    [InlineData("unchanged")]
+    [InlineData("source_remains")]
+    public async Task Quarry_lava_requires_a_filled_bucket_and_a_removed_source_and_never_plugs_on_failure(string outcome)
+    {
+        var port = new FakeDirector(J("j1", "scoop_lava", j => j["at"] = "1,63,1"), J("j2", "end"));
+        using var rig = Rig.Js();
+        rig.Host.Story = port;
+        rig.World.SetBlock(1, 63, 1, 11, 0);
+        rig.World.Inventory.SetSlot(0, 36, new MineClaw.Data.ItemStack(325, 1, 0));
+        rig.On["skill:fill_bucket"] = (_, _) =>
+        {
+            if (outcome == "failed") return Task.FromResult(ActResult.Fail("no dry stand in reach"));
+            if (outcome is "ok" or "source_remains") rig.World.Inventory.SetSlot(0, 36, new MineClaw.Data.ItemStack(327, 1, 0));
+            if (outcome == "ok") rig.World.SetBlock(1, 63, 1, 0, 0);
+            return Task.FromResult(ActResult.Success("filled"));
+        };
+        var s = await rig.Run(MineClaw.Hive.Story.StoryColonies.PawnCode(), "story_pawn");
+        Assert.True(s.Ok, s.Outcome);
+        Assert.Contains("""skill:fill_bucket {"liquid":"lava","pos":"1,63,1"}""", rig.Norm());
+        Assert.StartsWith("maid_chan j1 " + (outcome == "ok" ? "done" : "failed"), port.Reports.First());
+        Assert.DoesNotContain(rig.Norm(), c => c.StartsWith("place ") || c.StartsWith("dig ") || c.StartsWith("skill:move_lava"));
+    }
+
     [Fact]
     public async Task The_pawn_script_runs_each_job_with_the_usual_primitives_and_reports()
     {

@@ -13,8 +13,8 @@ namespace MineClaw.Hive.Story;
 /// it is dug and the cave's cell beside it gets the block instead, so the stair stays walkable. A missing step over cave air is placed
 /// by the stair repair as before.</item>
 /// <item><b>Lava and water.</b> A cell with lava or water on any of its 6 sides (flowing down from above too) is never dug: it is left
-/// standing as a seal. Lava or water in the zone itself gets a block placed in it (cobblestone, stone or dirt: never planks) before the
-/// cells round it are dug; a cell sealed that way with no liquid left beside it is dug later like any other.</item>
+/// standing as a seal. Lava sources in the zone are collected into buckets for storage. Water and flowing lava get a block placed
+/// in them (cobblestone, stone or dirt: never planks); once no liquid remains beside that plug it is mined like any other cell.</item>
 /// <item><b>Falling blocks.</b> A cell under sand or gravel left standing (a seal, beside water) is left standing too: nothing falls
 /// into the pit onto a pawn.</item>
 /// <item><b>Monster spawners</b> in or beside the working layer stop the quarry, with an alert, until the spawner is gone.</item>
@@ -175,6 +175,7 @@ public sealed partial class StoryColony
         foreach (var (at, kind) in q.SealFix.OrderByDescending(f => f.At.Y))
         {
             if (!Open("b:" + at, p.Name, at)) continue;
+            if (World is { } w && IsSourceAt(w, at, lava: true)) return QuarryLavaJob(p, live, z, at);
             return QuarryBlockJob(live, z, at, false, live.Block, SealAny, $"sealing the quarry ({SealWords(kind)}, y {at.Y})");
         }
         return null;
@@ -197,6 +198,7 @@ public sealed partial class StoryColony
         if (q.Spawner is { } sp) return $"stopped: a monster spawner at {sp} (break it, or move the quarry)";
         if (!SealPending(q)) return null;
         var f = q.SealFix.Where(s => !QuarryResting(s.At)).OrderByDescending(s => s.At.Y).First();
+        if (World is { } w && IsSourceAt(w, f.At, lava: true)) return $"collecting a lava source at y {f.At.Y}";
         return $"sealing {SealWords(f.Kind)} at y {f.At.Y}";
     }
 

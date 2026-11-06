@@ -201,13 +201,15 @@ public sealed class StoryQuarryHazardTests
     }
 
     [Theory]
-    [InlineData(11, "lava")]
-    [InlineData(9, "water")]
-    public void Lava_or_water_in_the_quarry_is_covered_with_a_block_that_doesnt_burn_before_its_cells_are_dug_and_said_once(int liquid, string word)
+    [InlineData(11, 2, "lava")]
+    [InlineData(10, 8, "lava")]
+    [InlineData(9, 0, "water")]
+    [InlineData(8, 0, "water")]
+    public void Flowing_lava_or_water_is_covered_with_a_nonburning_block_before_its_cells_are_dug(int liquid, int meta, string word)
     {
         var (c, _, w, _) = Rig(new Stack(5, 0, 64), new Stack(4, 0, 64)); // planks first in the inventory: never used for a seal
         var pool = new P3(X0 + 2, 45, Z0 + 2);
-        w.Set(pool.X, pool.Y, pool.Z, liquid);
+        w.Set(pool.X, pool.Y, pool.Z, liquid, meta);
         var outside = new P3(X0 + Size, 40, Z0 + 2); // and a pocket just outside the east edge
         w.Set(outside.X, outside.Y, outside.Z, liquid);
         bool sealedPool = false;
@@ -244,6 +246,119 @@ public sealed class StoryQuarryHazardTests
         Assert.NotEqual(0, w.Block(sand.X, sand.Y - 1, sand.Z).Id);
         Assert.Contains(c.Alerts, a => a.Text.Contains("under sand or gravel"));
         Assert.True(c.Zones.Single().QuarryLayer > 60);
+    }
+
+    [Theory]
+    [InlineData(10)]
+    [InlineData(11)]
+    public void A_lava_source_is_bucketed_and_its_filled_bucket_goes_to_storage_before_mining_resumes(int id)
+    {
+        var (c, h, w, _) = Rig(new Stack(325, 0, 1), new Stack(4, 0, 16));
+        var chest = new P3(0, 64, 9);
+        c.StorageOp("set", [chest], null, null, null);
+        var at = new P3(X0 + 2, 63, Z0 + 2);
+        w.Set(at.X, at.Y, at.Z, id, 0);
+        var job = c.Next();
+        Assert.Equal("scoop_lava", job["kind"]!.GetValue<string>());
+        Assert.Equal(at, At(job));
+        Assert.True(c.Pawns[c.P()].QuarryLava);
+        w.Set(at.X, at.Y, at.Z, 0);
+        h.Lives[c.P()] = FakeStoryHost.Live(12, 64, 12, inv: [new Stack(327, 0, 1), new Stack(4, 0, 16)]);
+        c.Report(c.P(), job["id"]!.GetValue<string>(), "done", null, null);
+        job = c.Next();
+        Assert.Equal("go", job["kind"]!.GetValue<string>());
+        Assert.Contains("lava_bucket", job["stash"]!.ToJsonString());
+        h.Lives[c.P()] = FakeStoryHost.Live(0, 64, 9, inv: new Stack(4, 0, 16));
+        c.Report(c.P(), job["id"]!.GetValue<string>(), "done", null, null);
+        Assert.Contains(c.StorageAt(chest)!.Contents, s => s.Id == 327 && s.Count == 1);
+        Assert.Equal("dig", c.Next()["kind"]!.GetValue<string>());
+        Assert.False(c.Pawns[c.P()].QuarryLava);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void A_lava_source_including_one_on_the_stair_waits_for_an_empty_bucket(bool onStair)
+    {
+        var (c, _, w, _) = Rig();
+        c.Zones.Single().QuarryTop = 63;
+        c.StorageOp("set", [new P3(0, 64, 9)], null, null, null);
+        w.Set(1, 64, 9, 58);
+        Assert.Null(c.WorkbenchOp("designate", new P3(1, 64, 9)).Error);
+        var at = new P3(X0 + (onStair ? 0 : 2), 63, Z0 + (onStair ? 0 : 2));
+        w.Set(at.X, at.Y, at.Z, 11);
+        var job = c.Next();
+        Assert.DoesNotContain(job["kind"]!.GetValue<string>(), new[] { "dig", "place", "scoop_lava" });
+        Assert.Equal(11, w.Block(at.X, at.Y, at.Z).Id);
+        var craft = Assert.Single(c.Benches.Single().Tasks);
+        Assert.Equal("craft:bucket", craft.Recipe);
+        Assert.True(c.Immediate(craft));
+    }
+
+    [Fact]
+    public void A_refilling_water_pool_is_plugged_before_any_of_its_plugs_are_mined()
+    {
+        var (c, _, w, _) = Rig();
+        var pool = new HashSet<P3>();
+        for (int x = 12; x <= 13; x++) for (int z = 12; z <= 13; z++)
+        {
+            var at = new P3(x, 63, z);
+            pool.Add(at);
+            w.Set(x, 63, z, 9);
+        }
+        var plugged = new HashSet<P3>();
+        var mined = new HashSet<P3>();
+        Work(c, w, check: job =>
+        {
+            var at = At(job);
+            if (!pool.Contains(at)) return;
+            if (job["kind"]!.GetValue<string>() == "place") plugged.Add(at);
+            else { Assert.Equal(4, plugged.Count); mined.Add(at); }
+        }, until: job => At(job).Y < 63);
+        Assert.Equal(pool, plugged);
+        Assert.Equal(pool, mined);
+        Assert.All(pool, at => Assert.Equal(0, w.Block(at.X, at.Y, at.Z).Id));
+    }
+
+    [Fact]
+    public void Stored_empty_buckets_are_fetched_and_filled_before_one_storage_trip()
+    {
+        var (c, h, w, _) = Rig();
+        var chest = new P3(0, 64, 9);
+        c.StorageOp("set", [chest], null, null, null);
+        c.AddContents(c.StorageAt(chest)!, new Stack(325, 0, 2));
+        w.Set(12, 63, 12, 11);
+        w.Set(13, 63, 12, 10);
+        var job = c.Next();
+        Assert.Equal("scoop_lava", job["kind"]!.GetValue<string>());
+        Assert.Equal("bucket", job["fetch"]![0]!["item"]!.GetValue<string>());
+        Assert.Equal(2, job["fetch"]![0]!["n"]!.GetValue<int>());
+        var at = At(job);
+        w.Set(at.X, at.Y, at.Z, 0);
+        h.Lives[c.P()] = FakeStoryHost.Live(12, 64, 12, inv: [new Stack(325, 0, 1), new Stack(327, 0, 1)]);
+        c.Report(c.P(), job["id"]!.GetValue<string>(), "done", null, null);
+        job = c.Next();
+        Assert.Equal("scoop_lava", job["kind"]!.GetValue<string>());
+        Assert.Null(job["fetch"]);
+        at = At(job);
+        w.Set(at.X, at.Y, at.Z, 0);
+        h.Lives[c.P()] = FakeStoryHost.Live(12, 64, 12, inv: [new Stack(327, 0, 1), new Stack(327, 0, 1)]);
+        // Even an interrupted report after filling must keep the collected lava as cargo, not forget it as a tool.
+        c.Report(c.P(), job["id"]!.GetValue<string>(), "failed", "interrupted after filling", null);
+        var saved = System.Text.Json.JsonSerializer.Serialize(c.Pawns[c.P()]);
+        c.Pawns[c.P()] = System.Text.Json.JsonSerializer.Deserialize<PawnState>(saved)!;
+        job = c.Next();
+        Assert.Equal("go", job["kind"]!.GetValue<string>());
+        Assert.Contains("lava_bucket", job["stash"]!.ToJsonString());
+    }
+
+    [Fact]
+    public void Lava_collection_waits_when_no_chest_can_store_the_filled_bucket()
+    {
+        var (c, _, w, _) = Rig(new Stack(325, 0, 1), new Stack(4, 0, 16));
+        w.Set(12, 63, 12, 11);
+        Assert.DoesNotContain(c.Next()["kind"]!.GetValue<string>(), new[] { "place", "dig", "scoop_lava" });
+        Assert.Equal(11, w.Block(12, 63, 12).Id);
     }
 
     [Fact]

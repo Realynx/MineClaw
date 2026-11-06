@@ -1052,7 +1052,8 @@ step under the working layer is checked against the world each scan; a missing s
 step at or above the working layer is missing nothing deeper is dug. Why a quarry offers nothing ("stair broken at y 59: placing
 a step", "3 cell(s) on y 57 resting after failures", "waiting for the stair step over y 57") is in its status and the idle audit. Mine work; only exposed cells (a face open), never one someone stands on, the pickaxe its material needs (tool
 floors and rules, StoryColony.Gear.cs), loot batched like any gathering. A cell beside lava or water is
-left standing as a seal; lava or water in the zone is covered first; caves, falling blocks and spawners too (see "Quarry hazards").
+left standing as a seal; lava sources in the zone are collected in buckets, water and flowing lava covered first; caves, falling
+blocks and spawners too (see "Quarry hazards").
 
 **The stair.** Along the inside of the zone's edge: the edge cells in a ring, clockwise from the north-west-most one; layer k
 (y = top − k) leaves ring cell k mod n standing as a step. So the steps go down one block per cell around the ring, a helix from
@@ -1099,8 +1100,12 @@ and lava and other dangerous things." Each cell of the working layer is judged a
   through it) gets a block placed. Where the edge cell is the stair's head room (up to 3 over a step) it is dug and the cave's cell
   beside it gets the block instead, so the stair stays walkable. Sealing walls mobs out too.
 - **Lava and water.** A cell with lava or water on any of its 6 sides (flowing down from over it too) is never dug: it stands as a
-  seal. Lava or water in the zone itself gets a block placed in it (cobblestone, stone or dirt: never anything that burns) before the
-  cells round it are dug; with no liquid left beside them they are dug later like any other.
+  seal. Lava sources inside the quarry, including stair cells, are scooped into empty buckets from dry ground. Empty buckets are
+  fetched from storage or requested as an immediate craft task (3 iron ingots at a crafting table). Carried empty buckets are filled
+  before a storage trip; filled lava buckets are cargo and use the quarry stairs to reach an accepting chest. Delivery remains
+  pending across interruptions and restarts. No empty bucket or accepting storage means waiting, never plugging a lava source.
+  Water and flowing lava get a nonburning block placed in them (cobblestone, stone or dirt). The plug is mined once no liquid remains
+  beside it; a refilling water pool is plugged before its plugs are removed, so its sources cannot regenerate between digs.
 - **Falling blocks.** A cell under sand or gravel left standing (beside water) is left standing too: nothing falls into the pit.
 - **Monster spawners** in or beside the working layer (the zone's box and 4 round it, 4 under to 1 over) stop the quarry ("stopped:
   a monster spawner at …"), with one alert, until the spawner is gone.
@@ -1123,7 +1128,7 @@ working floor, and stays there between nearby jobs. A storage or supply trip fol
 The route uses standing steps with clear headroom; it never digs or places a shortcut to a chest.
 
 Tests: `StoryQuarryHazardTests` (a breached cave walled off and never walked into, the quarry to bedrock; a cave by the stair's head
-room sealed outside; a cave inside the zone already dug with its steps placed; lava and water in the zone covered with cobblestone,
+room sealed outside; a cave inside the zone already dug with its steps placed; lava sources bucketed and stored, water and flowing lava covered with cobblestone,
 never planks, never a cell dug beside them, said once a hazard; nothing dug from under standing sand; a spawner stops the quarry
 until it is gone; a cell where a pawn met lava left standing) and `StoryFakeServerTests.A_quarry_walls_off_a_breached_cave_and_leaves_a_seal_by_lava_and_moves_on`
 (a pawn, both versions).

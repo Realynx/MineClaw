@@ -191,6 +191,7 @@
     return H.skill('brew', { potion: j.potion, form: j.form, count: j.n, pos: j.at });
   };
   const WORK = new Map([
+    ['scoop_lava', j => scoopLava(j)],
     ['brew', brew],
     ['enchant', j => H.skill('enchant_item', { item: j.item, option: j.option || 3, prefer: j.prefer || '', prefer_only: !!j.prefer_only, pos: j.at })],
     ['anvil', j => H.skill('use_anvil', { item: j.item, mode: j.mode || 'repair', pos: j.at })],
@@ -199,6 +200,14 @@
     ['pour', j => pour(j)],
   ]);
   const work = j => (WORK.get(j.kind) || run)(j); // any other kind: run (escape, dump: below)
+  // Collect the exact source from a dry stand. A failed collection never falls back to destroying it with a block.
+  const scoopLava = j => {
+    if (H.storyLiquid(j.at) !== 'lava') return { ok: false, msg: 'no lava source at ' + j.at };
+    const before = H.inv('lava_bucket'), r = H.skill('fill_bucket', { liquid: 'lava', pos: j.at });
+    if (!good(r)) return r;
+    return H.inv('lava_bucket') > before && H.storyLiquid(j.at) !== 'lava'
+      ? r : { ok: false, msg: 'lava collection not confirmed at ' + j.at };
+  };
   // Gear (Story Mode's tools and drafting): the hidden equip(item, mode, from, ench); never a null argument (its schema wants strings).
   const equip = (item, mode, from, ench, keep) => mode === 'store'
     ? globalThis.equip(item, mode, from || '', ench || '', keep || 0) : globalThis.equip(item, mode, from || '', ench || '');

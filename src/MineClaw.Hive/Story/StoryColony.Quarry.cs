@@ -207,7 +207,8 @@ public sealed partial class StoryColony
     }
 
     private ActiveJob? StepBlockJob(PawnState p, PawnLive live, ZoneState z, P3 at, bool clear, P3 from) =>
-        QuarryBlockJob(live, z, at, clear, from, PillarAny, $"building the quarry stair (y {at.Y})");
+        World is { } w && IsSourceAt(w, at, lava: true) ? QuarryLavaJob(p, live, z, at)
+            : QuarryBlockJob(live, z, at, clear, from, PillarAny, $"building the quarry stair (y {at.Y})");
 
     /// <summary>A block placed for the quarry (a step, a seal) from what the pawn carries, else fetched; none: an alert.</summary>
     private ActiveJob? QuarryBlockJob(PawnLive live, ZoneState z, P3 at, bool clear, P3 from, int[] ids, string label)

@@ -197,6 +197,9 @@ public sealed class PawnState
     public List<Order> Queue { get; set; } = new();
     /// <summary>Its gear policy, what it held before a draft, its post, pending gear work (StoryColony.Gear.cs).</summary>
     public PawnGear Gear { get; set; } = new();
+    /// <summary>Lava collected by quarry work is cargo, including across an interrupted job or restart.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool QuarryLava { get; set; }
     public long Rev { get; set; }
 }
 
