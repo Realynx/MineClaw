@@ -131,7 +131,7 @@ public static class TuiFrame
     /// <summary>Bot strip: as much detail as fits (task → hp/food → short names), so every hive member stays visible; then the clock.</summary>
     private static string StripLine(FrameInput f, int w)
     {
-        string clock = DateTimeOffset.Now.ToString("HH:mm:ss");
+        string clock = f.Now.ToString("HH:mm:ss");
         List<string> entries = [];
         for (int detail = 3; detail >= 0; detail--)
         {
