@@ -776,6 +776,34 @@ public sealed class StoryFakeServerTests(ITestOutputHelper output)
     });
 
     /// <summary>
+    /// Preserve zones (docs/web/story-mode.md "Preserve zones"; Fox 11-06: "my wheat field has taken some hits — craters from creepers"):
+    /// a flat grass field is preserved, a creeper's crater opens in it, and the pawn fills it with dirt from storage (grass can't be
+    /// placed: the dirt is the field's ground) until the zone is intact again.
+    /// </summary>
+    [Fact]
+    public Task A_pawn_fills_a_crater_in_a_preserved_flat_field() => Colony("1.12.2", 1, async x =>
+    {
+        var c = x.C;
+        var srv = x.Servers[x.Pawns[0]];
+        Only(x, WorkTypes.Build);
+        Assert.Null(c.StorageOp("set", [WoodChest], null, "normal", "Dirt").Error);
+        c.AddContents(c.StorageAt(WoodChest)!, new Stack(Blocks.Dirt, 0, 8));
+        var (res, err) = c.ZoneOp("add", "preserve", Area.Of(14, 63, 14, 19, 63, 19), name: "Field", grow: new JsonObject { ["below"] = 1, ["above"] = 1 });
+        Assert.True(err == null, err);
+        var zone = c.Zones.Single(z => z.Id == res!["id"]!.GetValue<string>());
+        Assert.Equal(36 * 3, zone.Preserve!.Data!.Cells);
+        var crater = new[] { (16, 16), (17, 16), (16, 17), (17, 17) };
+        foreach (var os in x.Servers.Values.Where(o => o.LoggedIn))
+            lock (OneWorld) foreach (var (cx, cz) in crater) os.SetBlock(cx, 63, cz, 0, 0);
+        Assert.True(await Until(() => c.Builds.Any(b => b.Kind == "preserve" && b.Ghosts.Count > 0), 30_000), "the crater is seen: " + x.Diag());
+        Assert.True(await Until(() => crater.All(p => srv.Blocks.GetValueOrDefault((p.Item1, 63, p.Item2)) is Blocks.Dirt or Blocks.Grass), 120_000),
+            "filled: " + string.Join(" ", crater.Select(p => srv.Blocks.GetValueOrDefault((p.Item1, 63, p.Item2)))) + " | " + x.Diag());
+        Assert.True(await Until(() => c.State()["zones"]!.AsArray().Single(z => z!["id"]!.GetValue<string>() == zone.Id)!["preserve"]!["status"]!.GetValue<string>() == "intact", 30_000),
+            "intact again: " + x.Diag());
+        Assert.DoesNotContain(c.Builds.Where(b => b.Kind == "preserve").SelectMany(b => b.Ghosts), g => g.State == "blocked");
+    }, s => s.Chests[(WoodChest.X, WoodChest.Y, WoodChest.Z)][0] = new ItemStack((short)Blocks.Dirt, 8, 0));
+
+    /// <summary>
     /// Live 11-06 (story-1): "chest at 216,64,400 didn't open (blocked above, or protected?)" ×146: oak planks lay on the nearest seed
     /// chest and every sowing fetched there. The colony sees the block on the lid, takes the seeds from the other chest, and says once
     /// which chest can't open and why; the pawn never walks to the shut one.
