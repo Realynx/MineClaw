@@ -53,7 +53,7 @@ There is one per colony. It holds:
   The hour comes from the world time, at 1000 ticks per hour, with 0 = 06:00.
 - **Zones,** painted on the map RimWorld-style as cell sets (see "Zones"): chop, mine, farm (growing zones), fish (see
   "Fishing") are work zones;
-  home, forbidden and dump (the drop spot when the colony has no storage, see "Hauling") are overlay layers. Storage is chests with their own settings (see "Storage").
+  home, forbidden, dump (the drop spot when the colony has no storage, see "Hauling") and preserve (see "Preserve zones") are overlay layers. Storage is chests with their own settings (see "Storage").
 - **Designations,** per block or area: chop this tree, mine these blocks, harvest, haul these drops, build design N here,
   deconstruct.
 - **Orders,** per pawn or group: move to, attack, chop, mine, haul, build, hold position, stop, and queued orders
@@ -96,7 +96,7 @@ work, so viewers can watch). JSON is snake_case with nulls written. Errors are `
 | POST | `/api/story/colonies/{id}/schedule` | `{pawns:[name], hours:{"0".."23": "work"|"sleep"|"anything"|"free"}}` → `{ok}` |
 | POST | `/api/story/colonies/{id}/draft` | `{pawns:[name], drafted}` → `{ok}` |
 | POST | `/api/story/colonies/{id}/orders` | `{pawns:[name], order:{kind: move|attack|chop|mine|haul|build|hold|stop, target?:{x,y,z}|{entity:id}|{player:name}|{area:[x1,y1,z1,x2,y2,z2]}, design?:id, confirm?:bool}, queue?:bool}` → `{ids:[order id]}`; an attack on a player or bot without `confirm:true` → 409 `{error, confirm:{entity, name, kind}}` (see "Drafted combat") |
-| POST | `/api/story/colonies/{id}/zones` | `{op: add, kind: chop|mine|farm|fish|home|forbidden|dump, area, into?, mode? (mine: quarry|ores), name?, plant?, sow?, harvest?}` paints the area (see "Zones"); `{op: remove, kind?: kind|any, area}` erases its cells; both → `{id?, created, merged:[{into, from}], grown, shrunk, split:[{from, into}], deleted, removed (= deleted), warnings?}`; `{op: remove, id}` → `{removed:[id], deleted:[id]}` (the whole zone); `{op: rename, id, name}` → `{id, name}` (name ≤ 40 chars, empty clears it); `{op: update, id, plant?, sow?, harvest?}` → `{id, warnings}`; `{op: seek_seeds, id}` → `{count, kind: cut|bill}`; `{op: irrigation, id}` → `{id, cells, dig, axis, lines, note}` (see "Water"); `{op: bill_add, id, plant, mode?, target?, paused?}` → `{id, bill, ids, active_bill, warnings}`, `bill_update {id, bill, plant?, mode?, target?, paused?}`, `bill_remove|bill_pause|bill_resume {id, bill}`, `bill_reorder {id, ids}` (see "Farming") |
+| POST | `/api/story/colonies/{id}/zones` | `{op: add, kind: chop|mine|farm|fish|home|forbidden|dump|preserve, area, into?, mode? (mine: quarry|ores), name?, plant?, sow?, harvest?, below?, above? (preserve)}` paints the area (see "Zones"); `{op: remove, kind?: kind|any, area}` erases its cells; both → `{id?, created, merged:[{into, from}], grown, shrunk, split:[{from, into}], deleted, removed (= deleted), warnings?}`; `{op: remove, id}` → `{removed:[id], deleted:[id]}` (the whole zone); `{op: rename, id, name}` → `{id, name}` (name ≤ 40 chars, empty clears it); `{op: update, id, plant?, sow?, harvest?}` → `{id, warnings}`; `{op: seek_seeds, id}` → `{count, kind: cut|bill}`; `{op: irrigation, id}` → `{id, cells, dig, axis, lines, note}` (see "Water"); `{op: bill_add, id, plant, mode?, target?, paused?}` → `{id, bill, ids, active_bill, warnings}`, `bill_update {id, bill, plant?, mode?, target?, paused?}`, `bill_remove|bill_pause|bill_resume {id, bill}`, `bill_reorder {id, ids}` (see "Farming"); `{op: preserve, id, on?, below?, above?, retake?}` → `{id, preserve, warnings?}` (see "Preserve zones") |
 | POST | `/api/story/colonies/{id}/beds` | `{op:"assign", bed:{x,y,z}, pawn}` or `{op:"unassign", bed:{x,y,z}}` → `{beds:[Bed]}`; 400 on a bad body or no bed there, 404 for an unknown colony or pawn. See "Homes and beds" |
 | POST | `/api/story/colonies/{id}/designations` | See "Designations" → `{count, targets}` or `{count, removed}` |
 | POST | `/api/story/colonies/{id}/builds` | See "Construction" |
@@ -117,11 +117,11 @@ storage is chests (see "Storage").
 ```
 {id, rev, since, full, at, time_of_day, time_frozen, hour, paused, active, home:[x,y,z]|null, tie_break: "column"|"skill", version,
  work_types:[guard, doctor, cook, hunt, build, farm, mine, chop, craft, haul],
- pawns:[Pawn], seats:{online, wanted, cap_free, kept_for_regulars, pending}, zones:[{id, kind, area, rows, cells, name, plant?, active_plant?, bills?, active_bill?, sow?, harvest?, status?, seeds?, needs_hoe?}], plants:[Plant] (full only), beds:[{pos:[x,y,z], dim, pawn, zone}], designations:[Designation], orders:[{id, pawn, kind, target, design, given, left}],
+ pawns:[Pawn], seats:{online, wanted, cap_free, kept_for_regulars, pending}, zones:[{id, kind, area, rows, cells, name, plant?, active_plant?, bills?, active_bill?, sow?, harvest?, status?, seeds?, needs_hoe?, preserve?}], plants:[Plant] (full only), beds:[{pos:[x,y,z], dim, pawn, zone}], designations:[Designation], orders:[{id, pawn, kind, target, design, given, left}],
  alerts:[{at, level: info|warn, text, pawn}], builds:[Build], ghosts:{rev, blocks:[[x,y,z,id,meta,build_id,state,kind]]},
  storages:[Storage], workbenches:[Workbench], categories:[Category] (full only), ai:[Ai], directives:[Directive],
  time_control:{available: bool, by: account|null}, policies:[Policy], material_rules:[MaterialRule], materials:[MaterialInfo] (full only),
- removed:{zones:[id], designations:[id], builds:[id], storages:["x,y,z"]} (delta only)}
+ removed:{zones:[id], designations:[id], builds:[id], storages:["x,y,z"], ghosts:["build|x,y,z"]} (delta only)}
 ```
 
 A delta (`since=rev`) carries only the objects with a newer revision, plus every pawn (they move all the time) and `removed`.
@@ -867,7 +867,7 @@ saved as rows at once; a growing zone's single `plant` becomes a one-bill list.
   its type and it keeps its id.
 - Work zones (farm, chop, mine, fish) are mutually exclusive: the painted cells leave every other work zone (`shrunk`; a zone left empty
   is `deleted`, a zone cut in two `split`).
-- Home areas and keep-out areas are **overlay layers** (RimWorld's home area and allowed areas are layers too): painting one never
+- Home areas, keep-out areas, drop spots and Preserve zones are **overlay layers** (RimWorld's home area and allowed areas are layers too): painting one never
   overwrites anything and work zones never overwrite them. A house can cover a field; a keep-out area can cover a quarry. Each
   layer merges only with itself.
 
@@ -1084,6 +1084,92 @@ stair: [[x,y,z], …] (top first), status}` ("layer 3 of 61 (y 61), 34 cell(s) l
 stair ring as numbered steps (step 1 at the top) and the label says how many steps a turn and about how deep it goes. Quarry zones
 draw their ring with the step being worked highlighted. The Colony tab's Quarries window: progress (a bar, the status), from y to y,
 the stair's length, steps waiting for a block, sealed cells, and the mode (switchable).
+
+## Preserve zones (added 2026-11-06)
+
+Fox 11-06: "A zone that protects the current state of the blocks, and it can be a three-dimensional zone. You select it 2D, and then in
+the settings you can change how deep it goes. This will keep the state the same: if a creeper blows up or something changes, one of the
+pawns gets queued to fix it to the original state. I want to be able to toggle it on for any other zone as well in that zone's settings.
+For example my wheat field has taken some hits — craters from creepers. If I could protect its state with the same mechanic, the pawns
+would keep the flat land it farms on."
+
+**Model.** Preserve is a setting any zone can have (`ZoneState.Preserve`: on, `below`, `above`, the snapshot), and a zone kind of its
+own, `preserve`: an overlay layer like the home area and keep-out (painted 2D with the zone tools, never overwrites or is overwritten,
+merges only with itself, always on). A mine zone refuses it ("a mine zone digs its blocks: it can't preserve them (paint a Preserve zone
+beside it instead)"). The kept region is the zone's columns from `below` blocks under its painted level (its lowest) to `above` blocks
+over it (its highest): defaults 1 and 3, each 0..32, at most 262 144 blocks per zone (`StoryColony.Preserve.cs`).
+
+**Snapshot.** Switching Preserve on (or "Re-take snapshot", `retake`) records the block id and meta of every kept cell from the colony's
+view. A column not loaded yet is recorded as unknown and filled the first time a pass sees it loaded; a pawn's registered temporary
+block is recorded as air (it is cleaned by the temporary-block rule, never kept). Changing the range or the zone's cells (painting more,
+erasing, a split, a merge) keeps what the snapshot had for the cells still in and takes the new cells from the world at that moment; a
+preserved zone merged into another gives its values over. Saved with the zone (`preserve.snap`): the snapshot's own columns as row runs,
+a palette and run lengths, base64 (`PreserveCodec`): a 36-column, 6-layer field is a few hundred characters.
+
+**What counts as a change** (`PreserveRules`). Each snapshot cell is one of:
+- *ignored*: leaves (they decay), and in a growing zone or a woodlot logs too (trees grow and are felled there);
+- *open*: air, or what comes and goes in an open cell by itself: tall grass, flowers, ferns, saplings, mushrooms, vines, lily pads,
+  crops at any stage, stems, sugar cane, cactus, pumpkins and melons, cocoa, snow layers, fire, water and lava. Only a *foreign* block in
+  it (anything not on that list: a block dropped in a field, a pillar, cobblestone) is a change; it is dug out;
+- *kept*: any other block. It must be there again by the build rule (`Matches`, with the drift table `StoryDrift`): the ground family is
+  one block (dirt, grass, farmland, and on 1.12.2 coarse dirt, podzol, mycelium, grass path), a lit furnace is a furnace, turned blocks
+  keep their facing, a door's or bed's second half comes with its first. Blocks whose meta is runtime state (redstone wire's power, a
+  pressed plate, a cake's bites, a cauldron's water, a jukebox's record, a brewing stand's bottles, a daylight sensor) are compared by id.
+
+So in a preserved growing zone, harvesting, replanting, growth stages, tilling (dirt ↔ farmland ↔ grass), trampling and the air above
+the crops are never changes; only the soil's shape (craters, missing or foreign blocks) and blocks outside the crop layer are restored.
+Containers' contents are not tracked (only the block); mobs, items and other entities never are.
+
+**Repair = reconcile.** Every reconcile pass (5 s, before the builds' own: `StoryColony.PreserveRepair.cs`) compares each kept cell with
+the world. The cells that differ are the ghosts of the zone's **repair build** (kind `preserve`, label "repairs: <zone>", one per zone,
+first in the queue, Build work like any build):
+- a kept block missing → placed. What goes back is `PreserveRules.Restore`: the ground family as dirt (grass can't be placed: dirt grows
+  it, and farmland is tilled again by the growing zone, never placed), ores as stone (only silk touch gives them back), a runtime twin as
+  its block; any of them standing counts as kept;
+- another block in a kept cell → cleared first (the build's `clear`), then placed; its block turned wrong → taken back and placed again;
+- a foreign block in an open cell → a dig ghost, done with the owner's ordered clear (`ordered: true` on the dig job, `clear_dig`);
+- a block pawns can't place (a sign, a skull) → an unsupported ghost, shown and never a job.
+
+From there the build machinery does it all: batches, stands, the support rule and scaffolds, the material from storage, craft tasks and
+the materials pass ("waiting for 6 dirt"), blocked-cell alerts once per reason, misrotation. A cell that matches again leaves the build
+(the delta's `removed.ghosts: ["<build>|x,y,z"]`); a done cell damaged again reopens. The repair build's "is done" alert is never said
+(repairs come and go); the zone says it instead: one alert per zone every 10 minutes at most with the counts ("Preserved zone Wheat
+field: 12 blocks changed (9 missing, 3 foreign): queued for repair (b31)"), the cells found between are counted into the next one. It
+can be paused like any build; it can't be removed (400 "… switch Preserve off in that zone's settings instead"); switching Preserve off
+drops it with the snapshot. A cell two preserved zones share is repaired by the oldest.
+
+**Owner directives win.** A build's cells (any status: a finished build keeps its own through its reconcile), the owner's mine, chop and
+deconstruct designations (not the colony's own cleanups) and a quarry's columns from its top down are *held*: never repaired while the
+directive stands, and taken again from the world as the directive leaves them once it ends (a dug block's hole, a built wall become what
+the zone keeps). Each meeting is said where it is made: a build queued over preserved cells ("build b9: 12 blocks lie in preserved zone
+Wheat field: the build's while it stands, then kept as it leaves them"), designations (`warnings` on the answer), a quarry painted or
+switched on over a preserved zone ("overlaps preserved zone …: the quarry digs its columns there (not repaired)"), and Preserve switched
+on over builds, quarries or designations. A pawn's own temporary blocks in a preserved zone are cleaned by the temporary-block rule and
+never restored.
+
+**Never dug for other work.** Each pawn body gets the colony's preserved blocks as a filter (`IStoryHost.SetPreserved`, rebuilt when a
+snapshot is replaced, handed over with the speed each tick): a kept cell that holds its block. The client refuses it to every dig
+(`DigRefusal`: a pick, a script's dig, a pillar's, a clutch's or a shelter's dig: "won't dig dirt at …: a preserved block (the colony
+keeps it; only its repairs dig there)"), the pathfinder's dig moves (`CanBreak`) and autonomous `mine` (`IsMineSource`). Only an ordered
+clear (`DigForBuildAsync`, the repairs') passes. Open cells, held cells and changed blocks aren't kept, so a foreign block or a pawn's
+pillar in a preserved zone is still anyone's to dig.
+
+**API.** `POST …/zones {op:"add", kind:"preserve", area, name?, below?, above?}` paints one; `{op:"preserve", id, on?, below?, above?,
+retake?}` → `{id, preserve, warnings?}` on any zone. The zone's state carries `preserve: {on, below, above, y1, y2, cells, taken_at,
+build, unknown, held, damage:{missing, foreign, turned}, to_repair, status}` ("intact", "12 blocks to repair: 9 missing, 3 foreign;
+waiting for 6 dirt", "…; repairs paused").
+
+**Web.** The Zones toolbar has a Preserve kind; every zone's settings show "Preserve blocks" (on/off, Depth below, Height above, Re-take
+snapshot, the y range and the status); the map draws the preserved region's outline, and the cells that differ are the repair build's
+holograms (missing, clear, misrotated).
+
+Tests: `StoryPreserveTests` (a crater in a preserved wheat field, both versions: dirt placed from storage, then tilled by farming;
+harvest, replanting, tilling, trampling, grass, tall grass and snow over three growth cycles are never changes; a foreign block cleared
+and the plank put back, one in an open cell dug by an ordered clear; the range taking cells in and dropping them; a build said, held and
+kept as it leaves the cells; a quarry said and its columns unrepaired; the bodies' dig filter; the repair build never removed by hand,
+paused, gone with Preserve; temporary blocks never kept and unloaded columns taken once loaded; the snapshot saved compactly and
+reloaded; the codec), `PreservedBlockBuildDigTests` (the client: a preserved block refused to a plain dig, dug by an ordered clear) and
+`StoryFakeServerTests.A_pawn_fills_a_crater_in_a_preserved_flat_field` (a pawn, 1.12.2).
 
 ## Fishing (added 2026-11-03)
 
