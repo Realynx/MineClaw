@@ -241,6 +241,8 @@
     return null;
   };
   const fetch = j => {
+    const exit = route(j);
+    if (!globalThis.ok(exit)) return exit;
     const t = fetchItems(j);
     if ('stop' in t) return t.stop;
     if (t.got && j.cells) report(j, 'progress', 'fetched');
@@ -466,6 +468,16 @@
     if (j && j.pillar && g.inv(j.pillar.item) < 4) g.take(j.pillar.item, j.pillar.n, j.pillar.from);
     return { ok: true };
   };
+  // The director's existing quarry stairs: exit before fetching, approach after supplies. Every leg is walk-only.
+  const route = (j, approach) => {
+    const steps = j[approach ? 'quarry_approach' : 'quarry_exit'];
+    if (steps && approach) ready(j);
+    for (const at of steps || []) {
+      const r = globalThis.go(at, 0);
+      if (!globalThis.ok(r)) return r;
+    }
+    return { ok: true };
+  };
   // run(job): the colony's own kinds (story.work hands them over). escape: the colony saw it stuck (a pit, a cave, a run of
   // unreachable targets): out by itself, else to j.at (home); help is asked for when nothing works. dump: no storage takes these:
   // carry them to the drop spot and put them down.
@@ -519,6 +531,7 @@
     escape,
     dig,
     ready,
+    route,
     work,
     till,
     fetch,

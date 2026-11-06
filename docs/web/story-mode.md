@@ -579,7 +579,8 @@ Now:
 - **Cleanups that fail** (live 11-06, the first sweep). A cleanup digs from a stand beside its block (never "won't dig the dirt I'm
   standing on"). One refused as protected is not the pawns' block any more (live: a stonebrick where a pawn's dirt had been): it is
   never dug, only listed ("Left for you to remove … not the pawns' block any more"). One out of reach (old boxes in a cave nobody can
-  path to) rests 30 minutes; a second miss leaves it to the owner, listed the same way (one alert every 5 minutes at most). A pawn's
+  path to) rests 30 minutes; a second miss leaves it to the owner, listed the same way (one alert every 5 minutes at most).
+  The rest deadline and deferred record survive reloads, so a restart cannot rediscover the same block as fresh cleanup work. A pawn's
   own blocks are always minable in the same session too: an in-process body's placements join main's placed-block log (the one the
   protection reads) at the store's next flush, not only after a restart.
 - **Never on a lid.** No temporary block goes on a chest, a furnace, a crafting table or another container or workstation (a chest
@@ -1115,6 +1116,10 @@ one ("Quarry z3: breached a cave at y 52: 4 opening cell(s) walled off"). The st
 An opening found above an already-dug floor can require temporary access: the pawn walks to a reachable base, places from a
 removable pillar, and takes the pillar back down. A failed seal is retried after back-off; an otherwise empty upper layer does not
 hold every lower layer while that seal rests.
+
+Quarry jobs carry short walking legs along the existing perimeter stair. A miner enters at the top, follows the stair to the
+working floor, and stays there between nearby jobs. A storage or supply trip follows the same stair back up before opening a chest.
+The route uses standing steps with clear headroom; it never digs or places a shortcut to a chest.
 
 Tests: `StoryQuarryHazardTests` (a breached cave walled off and never walked into, the quarry to bedrock; a cave by the stair's head
 room sealed outside; a cave inside the zone already dug with its steps placed; lava and water in the zone covered with cobblestone,

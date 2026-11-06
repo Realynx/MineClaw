@@ -568,4 +568,9 @@ public sealed class TempBlockState
     /// <summary>The owner cancelled cleanup: keep the block and do not rediscover it on reload.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public bool Cancelled { get; set; }
+    /// <summary>A cleanup left to the owner after failures: retained so the stray scan cannot recreate it on restart.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? DeferredReason { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public DateTimeOffset? RetryAfter { get; set; }
 }

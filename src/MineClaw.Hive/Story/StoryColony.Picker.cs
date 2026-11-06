@@ -48,7 +48,7 @@ public sealed partial class StoryColony
         PurgeToolFailuresOnce(); // after a load: tool/record failures of old never hold a target back
         try
         {
-            var job = PillarHint(PickCore(p, live), live); // a job up high: blocks to climb with (StoryColony.Reach.cs)
+            var job = QuarryTravel(PillarHint(PickCore(p, live), live), live);
             // Idle after an empty search: the wanderers' wake check need not search again until something changes (StoryColony.IdleAudit.cs).
             if (job.Source is "none" or "wander" && _looks.TryGetValue(p.Name, out var look) && look.At == Now && !look.Found) _probed[p.Name] = (Now, WorkStamp());
             return job;
@@ -432,6 +432,7 @@ public sealed partial class StoryColony
     /// failure).</summary>
     private bool MarkWorkable(PawnState p, PawnLive live, DesignationState d, P3 at, MarkSearch s, ref HashSet<P3>? stoodOn)
     {
+        if (d.Auto && Meta.TempBlocks?.Any(t => t.Designation == d.Id && (t.RetryAfter > Now || t.DeferredReason != null)) == true) return false;
         if (MarkPassedOver(p.Name, d, at, s, ref stoodOn) is { } pass) { PassedMark(pass, s.Kind, at); return false; }
         // No tool for its material (carried or stored): the target waits, said on the map, no failure.
         if (s.Tooled && s.W is { } w && PlanTool(p, live, w.Block(at.X, at.Y, at.Z).Id) is { Wait: { } why }) { NoteWait(d, why); return false; }

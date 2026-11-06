@@ -119,7 +119,9 @@ public sealed partial class StoryColony
         int now = w.Block(t.At.X, t.At.Y, t.At.Z).Id;
         AdoptSeen(t, now);
         if (Gone(t, now) || buildCells.Contains(t.At)) { ForgetTemp(t); return; }
-        if (t.Cancelled) { KeepTemp(t); return; }
+        if (t.Cancelled || t.DeferredReason != null) { KeepTemp(t); return; }
+        if (t.RetryAfter > Now && Designations.FirstOrDefault(d => d.Id == t.Designation) is { } resting)
+            _skip[DesignationKey(resting)] = t.RetryAfter.Value;
         if (t.Designation == null && t.Id != 0 && LeftBehind(t)) QueueTemp(t);
     }
 
@@ -142,11 +144,17 @@ public sealed partial class StoryColony
         Temps.Remove(t);
         if (Temps.Count == 0) Meta.TempBlocks = null;
         _dirty = true;
+        RemoveTempDesignation(t);
+    }
+
+    private void RemoveTempDesignation(TempBlockState t)
+    {
         if (t.Designation is { } id && Designations.FirstOrDefault(d => d.Id == id) is { Auto: true } des)
         {
             Designations.Remove(des);
             Removed("designation", des.Id);
         }
+        t.Designation = null;
     }
 
     /// <summary>Its pawn won't take it back: offline or gone from the colony, or away from it for <see cref="LeftAfter"/>.</summary>
@@ -222,6 +230,7 @@ public sealed partial class StoryColony
         if (why.Contains("protected", StringComparison.OrdinalIgnoreCase)) { LeaveTemp(t, "not the pawns' block any more"); return true; }
         if (!Unreachable(why) && !OutOfReach(why) && !ReachOnly(why)) return false;
         if (++t.Misses >= 2) { LeaveTemp(t, "out of reach"); return true; }
+        t.RetryAfter = Now + TempUnreachRest;
         _dirty = true;
         if (Designations.FirstOrDefault(d => d.Id == t.Designation) is { } des) _skip[DesignationKey(des)] = Now + TempUnreachRest;
         _log.LogInformation("story {Colony}: temporary {Block} at {At} out of reach for {Pawn} ({Why}): resting {Min} min", Id, BlockLabel(t.Id), t.At,
@@ -232,7 +241,10 @@ public sealed partial class StoryColony
     /// <summary>The cleanup is dropped and the cell listed for the owner (one alert every few minutes with every cell since).</summary>
     private void LeaveTemp(TempBlockState t, string why)
     {
-        ForgetTemp(t);
+        RemoveTempDesignation(t);
+        t.DeferredReason = why;
+        KeepTemp(t);
+        _dirty = true;
         _tempLeft.Add((t.At, why));
         _log.LogInformation("story {Colony}: temporary block at {At} left for the owner: {Why}", Id, t.At, why);
         AlertLeftTemps();

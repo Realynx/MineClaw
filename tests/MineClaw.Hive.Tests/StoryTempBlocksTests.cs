@@ -241,6 +241,12 @@ public sealed class StoryTempBlocksTests
         Assert.NotEqual(at1, at2);
         c.Report(pawn, j2["id"]!.GetValue<string>(), "failed", $"no path to within 3 of ({at2.Replace(",", ", ")}) (not from under the ground) (timeout); unreachable even by pillaring/bridging", null);
         Assert.Single(Cleanups(c));
+        var saved = System.Text.Json.JsonSerializer.Serialize(c.Meta);
+        var loaded = new StoryColony(System.Text.Json.JsonSerializer.Deserialize<ColonyMeta>(saved)!, h, clock);
+        loaded.Joined([pawn]);
+        Only(loaded, WorkTypes.Build);
+        loaded.Designations.AddRange(c.Designations);
+        Assert.NotEqual(at2, loaded.Next()["at"]?.GetValue<string>()); // restart cannot bypass the cleanup's rest
         var other = c.Next();
         Assert.NotEqual(at2, other["at"]?.GetValue<string>()); // resting: not offered again at once
         c.Report(pawn, other["id"]!.GetValue<string>(), "done", null, null);
@@ -252,6 +258,13 @@ public sealed class StoryTempBlocksTests
         Assert.Empty(Cleanups(c));
         Assert.Contains(c.Alerts, a => a.Text.StartsWith("Left for you to remove") && a.Text.Contains(at2) && a.Text.Contains("out of reach"));
         Assert.DoesNotContain(c.Alerts, a => a.Level == "warn" && a.Text.Contains("deconstruct"));
+        foreach (var t in c.Meta.TempBlocks!) h.Placed.Add((t.At, t.Id, pawn));
+        saved = System.Text.Json.JsonSerializer.Serialize(c.Meta);
+        loaded = new StoryColony(System.Text.Json.JsonSerializer.Deserialize<ColonyMeta>(saved)!, h, clock);
+        loaded.Joined([pawn]);
+        loaded.Tick();
+        Assert.Empty(Cleanups(loaded)); // the next startup's stray scan must not recreate the failed cave jobs
+        Assert.All(loaded.Meta.TempBlocks!, t => Assert.NotNull(t.DeferredReason));
     }
 
     [Fact]

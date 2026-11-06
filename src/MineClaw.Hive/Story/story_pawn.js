@@ -83,6 +83,7 @@ function work(j) {
 function runJob(j) {
   let r = story.fetch(j)
   if (ok(r)) r = each(j.craft, c => { if (c.at) { const g = go(c.at, 2); if (!ok(g)) return g } return craft(c.item, c.n) })
+  if (ok(r)) r = story.route(j, true)
   if (ok(r)) r = work(j)
   if (ok(r) && j.stash) r = each(j.stash, s => deposit(s.to, s.items))
   return r

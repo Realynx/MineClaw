@@ -126,6 +126,29 @@ public sealed class StorySdkTests
     }
 
     [Fact]
+    public async Task A_quarry_job_walks_out_before_fetching_then_down_the_stairs_before_work()
+    {
+        var port = new FakeDirector(J("j1", "place", j =>
+        {
+            j["at"] = "1,64,1"; j["block"] = "planks";
+            j["quarry_exit"] = new JsonArray("1,60,1", "2,64,1");
+            j["fetch"] = new JsonArray(new JsonObject { ["from"] = "5,64,5", ["item"] = "planks", ["n"] = 4 });
+            j["quarry_approach"] = new JsonArray("3,64,1", "4,60,1");
+        }), J("j2", "end"));
+        using var rig = Rig.Js();
+        rig.Host.Story = port;
+        var s = await rig.Run(MineClaw.Hive.Story.StoryColonies.PawnCode(), "story_pawn");
+        Assert.True(s.Ok, s.Outcome);
+        var calls = rig.Norm();
+        int exit = calls.FindIndex(c => c.StartsWith("goto ") && c.Contains("2,64,1"));
+        int fetch = calls.FindIndex(c => c.StartsWith("withdraw "));
+        int approach = calls.FindIndex(c => c.StartsWith("goto ") && c.Contains("4,60,1"));
+        int place = calls.FindIndex(c => c.StartsWith("place "));
+        Assert.True(exit >= 0 && exit < fetch && fetch < approach && approach < place, string.Join(" | ", calls));
+        Assert.DoesNotContain(calls, c => c.Contains("\"build\":true"));
+    }
+
+    [Fact]
     public async Task The_pawn_script_runs_each_job_with_the_usual_primitives_and_reports()
     {
         var port = new FakeDirector(
