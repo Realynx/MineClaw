@@ -96,6 +96,26 @@ public sealed class StoryQuarryHazardTests
         c.State()["zones"]!.AsArray().Single()!["quarry"]!["status"]!.GetValue<string>();
 
     [Fact]
+    public void An_open_cave_wall_starts_at_a_supported_cell_instead_of_a_floating_upper_cell()
+    {
+        var (c, _, w, _) = Rig();
+        c.Zones.Single().QuarryTop = 63;
+        Carve(w, X0, 59, Z0, X0 + Size - 1, 63, Z0 + Size - 1);
+        var ring = Ring(c);
+        for (int k = 0; k <= 4; k++)
+        {
+            var s = StoryQuarry.Step(ring, 63, k);
+            w.Set(s.X, s.Y, s.Z, 1);
+        }
+        Carve(w, X0 + Size, 59, Z0 + 3, X0 + Size, 63, Z0 + 3);
+        Carve(w, X0 + Size, 64, Z0 + 3, X0 + Size, 66, Z0 + 3, 1);
+        var job = c.Next();
+        Assert.Equal("place", job["kind"]!.GetValue<string>());
+        Assert.Equal(59, At(job).Y);
+        Assert.NotEqual(0, w.Block(At(job).X, 58, At(job).Z).Id);
+    }
+
+    [Fact]
     public void A_failed_seal_above_the_floor_does_not_hold_every_lower_layer_and_is_retried()
     {
         var (c, _, w, clock) = Rig();

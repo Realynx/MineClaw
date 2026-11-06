@@ -58,7 +58,11 @@ public sealed partial class StoryColony
     private QuarryCell OpenQuarryCell(IStoryWorld w, ZoneState z, QuarryScan q, P3 at)
     {
         if (CaveOutside(w, z, at) is not { } n) return QuarryCell.Skip;
-        return NoteHazard(q, at, "cave", n, seal: Headroom(q, at) ? n : at);
+        var seal = Headroom(q, at) ? n : at;
+        // An old opening high above the floor may float in air on all six sides. Start where a block can attach;
+        // the upper cells become placeable as the wall grows, rather than repeatedly sending miners to an impossible placement.
+        bool supported = Neighbours(seal).Any(p => Ground(w.Block(p.X, p.Y, p.Z).Id));
+        return NoteHazard(q, at, "cave", n, seal: supported ? seal : null);
     }
 
     /// <summary>A block of the layer: left standing beside a liquid, under a standing falling block, where a pawn met danger, or as the

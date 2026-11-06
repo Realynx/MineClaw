@@ -1116,6 +1116,7 @@ one ("Quarry z3: breached a cave at y 52: 4 opening cell(s) walled off"). The st
 An opening found above an already-dug floor can require temporary access: the pawn walks to a reachable base, places from a
 removable pillar, and takes the pillar back down. A failed seal is retried after back-off; an otherwise empty upper layer does not
 hold every lower layer while that seal rests.
+An opening with air on all six sides waits for a neighboring support block: sealing starts at an attached cell, then grows the wall.
 
 Quarry jobs carry short walking legs along the existing perimeter stair. A miner enters at the top, follows the stair to the
 working floor, and stays there between nearby jobs. A storage or supply trip follows the same stair back up before opening a chest.
