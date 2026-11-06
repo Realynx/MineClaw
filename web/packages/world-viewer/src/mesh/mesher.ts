@@ -4,8 +4,9 @@
 // - culled by its cull face against an opaque cube neighbour (and same-id glass, ice and slime);
 // - lit per vertex from the payload's sky/block light: axis-aligned quads take the smooth light + ambient occlusion of the
 //   face plane they lie in (the four cells in front of each corner, bilinearly interpolated to the vertex), flush faces from
-//   the neighbour cell, inner faces from the brighter of their own cell and the cell they face; rotated quads (plants) take
-//   their cell's light flat. Model `ambientocclusion: false` and light-emitting blocks skip the occlusion;
+//   the neighbour cell, inner faces from the brighter of their own cell and the cell they face; rotated quads (plants) and
+//   the inner quads of models without ambient occlusion (crops, torches, rails: vanilla's flat path) take their cell's light
+//   flat. Model `ambientocclusion: false` and light-emitting blocks skip the occlusion;
 // - tinted (biome grass/foliage/water blended over 3×3 columns, or a fixed colour), shaded by its face, and written with its
 //   atlas cell (or untextured, the tile's average colour).
 // Light is stored per vertex as raw sky/block levels, so day and night are a shader uniform and never a remesh.
@@ -13,6 +14,7 @@
 import { cellIndex, lightPacked } from '../wire/chunk';
 import { F_EMISSIVE, F_OPAQUE, F_SELF_CULL, Layer } from '../world/blocks';
 import type { ColumnStore, StoredColumn } from './columns';
+import { neighbourLit } from './light';
 import type { Nb } from './models/states';
 import { CUBE_CORNERS, FACE_N, FACE_SHADE, TINT_FIXED, faceUv, type Quad } from './quad';
 import type { StateTable } from './states';
@@ -59,6 +61,14 @@ const metas = new Uint8Array(PN);
 const sky = new Int8Array(PN);
 const blk = new Int8Array(PN);
 const cutMark = new Uint8Array(PN);
+/** The cells of slabs, stairs, farmland… (light.ts neighbourLit) in the neighbourhood, and their light read from around. */
+const nbCells = new Int32Array(PN);
+const nbSky = new Int8Array(PN);
+const nbBlk = new Int8Array(PN);
+let nbCount = 0;
+let nbLit = neighbourLit('b1.8.1');
+/** Neighbour steps: the four sides, above, and (1.12.2 only) below. */
+const NB_STEP = [-1, 1, -PX, PX, PX * PZ, -PX * PZ];
 const bio = new Int16Array(18 * 18);
 const tintCache = new Int32Array(3 * 256);
 const solid = new VertexSink();
@@ -94,6 +104,8 @@ function fill(store: ColumnStore, dim: number, cx: number, sy: number, cz: numbe
   baseX = cx * 16;
   baseZ = cz * 16;
   baseY = sy * 16;
+  nbCount = 0;
+  nbLit = neighbourLit(T.version);
   const cols: Array<StoredColumn | undefined> = [];
   for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) cols.push(store.get(dim, cx + dx, cz + dz));
   for (let pz = -2; pz < 18; pz++) {
@@ -102,6 +114,43 @@ function fill(store: ColumnStore, dim: number, cx: number, sy: number, cz: numbe
       const cDx = px < 0 ? -1 : px > 15 ? 1 : 0;
       fillColumn(cols[(cDz + 1) * 3 + (cDx + 1)], px, pz, cut);
     }
+  }
+  if (nbCount) lightFromNeighbours();
+}
+
+/** Slabs, stairs, farmland…: their light is the brightest of their own and their neighbours' (read before any is changed,
+ * as vanilla reads the stored light), so their faces and the corners that sample them aren't black. */
+function lightFromNeighbours(): void {
+  const steps = T.version === '1.12.2' ? 6 : 5;
+  for (let i = 0; i < nbCount; i++) brightestAround(i, nbCells[i], steps);
+  for (let i = 0; i < nbCount; i++) {
+    sky[nbCells[i]] = nbSky[i];
+    blk[nbCells[i]] = nbBlk[i];
+  }
+}
+
+function brightestAround(i: number, p: number, steps: number): void {
+  let s = sky[p], b = blk[p];
+  const x = p % PX, z = ((p / PX) | 0) % PZ, y = (p / (PX * PZ)) | 0;
+  for (let k = 0; k < steps; k++) {
+    if (!inPad(k, x, y, z)) continue;
+    const n = p + NB_STEP[k];
+    if (sky[n] > s) s = sky[n];
+    if (blk[n] > b) b = blk[n];
+  }
+  nbSky[i] = s;
+  nbBlk[i] = b;
+}
+
+/** Whether neighbour step k of padded cell (x, y, z) stays inside the padded neighbourhood. */
+function inPad(k: number, x: number, y: number, z: number): boolean {
+  switch (k) {
+    case 0: return x > 0;
+    case 1: return x < PX - 1;
+    case 2: return z > 0;
+    case 3: return z < PZ - 1;
+    case 4: return y < PY - 1;
+    default: return y > 0;
   }
 }
 
@@ -142,6 +191,7 @@ function fillCell(c: StoredColumn | undefined, p: number, y: number, lx: number,
   ids[p] = id;
   metas[p] = id === 0 ? 0 : c.meta[i];
   cellLight(c, p, y, lx, lz);
+  if (nbLit[id] && sky[p] >= 0) nbCells[nbCount++] = p;
   if (cutMark[p]) {
     sky[p] = 15;
     blk[p] = Math.max(0, blk[p]);
@@ -288,9 +338,11 @@ function culled(n: number, id: number, sflags: number): boolean {
   return (T.flags[(nid << 4) | metas[n]] & F_OPAQUE) !== 0 || ((sflags & F_SELF_CULL) !== 0 && nid === id);
 }
 
-/** Fills `vl` with the quad's per-vertex light; returns its light flags. */
+/** Fills `vl` with the quad's per-vertex light; returns its light flags. Rotated quads and the inner quads of a model without
+ * ambient occlusion (crops, torches, rails…) take their cell's light flat, as vanilla's renderModelFlat does (a smooth
+ * plane would also average the cells beside and below: a crop's lower half took the farmland's light, which is 0). */
 function lightQuad(q: Quad, p: number, lf: number, emissive: boolean): number {
-  return q.dir >= 0 ? faceLight(q, p, lf, emissive) : flatLight(p, lf);
+  return q.dir >= 0 && (q.ao || q.flush) ? faceLight(q, p, lf, emissive) : flatLight(p, lf);
 }
 
 /** An axis-aligned quad: the smooth light + AO of the face plane it lies in, interpolated to each vertex. */

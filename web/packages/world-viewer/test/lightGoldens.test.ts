@@ -42,6 +42,7 @@ describe('relight golden', () => {
     }
     d.add(JSON.stringify(relight(store, 0, [])));
     d.add(JSON.stringify(relight(store, 0, [[1000, 60, 1000]])));
-    expect(d.hex()).toBe('87842f946066f3f67eb94b09cf52fb8b');
+    // 11-05: lava (11, in PLACE) takes all light now, as vanilla's does. Was 87842f946066f3f67eb94b09cf52fb8b.
+    expect(d.hex()).toBe('9fd46a466d6df3ff5c067cae1ab13afc');
   });
 });

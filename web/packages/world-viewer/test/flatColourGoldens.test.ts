@@ -15,6 +15,8 @@ describe('flat colour golden', () => {
         for (let meta = 0; meta < 16; meta++) row.push(flatColour(v, id, meta, true), flatColour(v, id, meta, false));
         d.add(`${v} ${id} ${row.join(',')} ${opacity(v, id)} ${emission(id)}`);
       }
-    expect(d.hex()).toBe('52909cc4c97d027c2b6a29961a42d9cf');
+    // 11-05: opacity follows vanilla (lava, farmland, slabs, stairs, grass path 15; pistons and 1.12.2 cauldron, anvil, hopper,
+    // chorus, end gateway, shulker boxes 0; b1.8.1 locked chest 15). Was 52909cc4c97d027c2b6a29961a42d9cf.
+    expect(d.hex()).toBe('9d670bb7423b308047f00b69b40b48cd');
   });
 });
