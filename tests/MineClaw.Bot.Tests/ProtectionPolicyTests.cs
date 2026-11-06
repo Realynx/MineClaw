@@ -228,6 +228,32 @@ public class ProtectionPolicyTests
         finally { Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools(); TryDelete(path); }
     }
 
+    /// <summary>
+    /// Live 11-06: an in-process body's placements went to the shared table but never into main's log (the protection reads main's), so
+    /// another body (or the same one) was refused its own pillar as "someone's floor" until the next restart. "A hive bot's own block is
+    /// always minable" holds in the same session now.
+    /// </summary>
+    [Fact]
+    public void An_in_process_bodys_placement_is_in_mains_log_at_the_next_flush()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"mineclaw-placed-{Guid.NewGuid():N}.db");
+        try
+        {
+            using var db = AgentDb.Open(path);
+            var main = new PlacedBlockLog();
+            var pawn = new PlacedBlockLog();
+            using var store = new PlacedBlockStore(db, main);
+            store.Watch(pawn);
+            pawn.Note(new BlockPos(3, 66, 3), 0, Blocks.Dirt, "maid_chan_114", DateTimeOffset.UtcNow);
+            Assert.False(main.IsPlaced(new BlockPos(3, 66, 3), 0, Blocks.Dirt));
+            store.Flush();
+            Assert.True(main.IsPlaced(new BlockPos(3, 66, 3), 0, Blocks.Dirt));
+            Assert.Equal("maid_chan_114", main.Get(new BlockPos(3, 66, 3), 0)!.Bot);
+            Assert.False(main.IsPlaced(new BlockPos(3, 66, 3), 0, Blocks.StoneBricks)); // a stonebrick there now is someone else's
+        }
+        finally { Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools(); TryDelete(path); }
+    }
+
     private static void TryDelete(string path)
     {
         foreach (var f in new[] { path, path + "-wal", path + "-shm" })

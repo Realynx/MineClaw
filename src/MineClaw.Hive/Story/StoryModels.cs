@@ -558,4 +558,6 @@ public sealed class TempBlockState
     public DateTimeOffset Since { get; set; }
     /// <summary>The cleanup designation queued for it (null = its pawn may still take it back).</summary>
     public string? Designation { get; set; }
+    /// <summary>Cleanups that couldn't reach it: the first rests it long, the second leaves it to the owner.</summary>
+    public int Misses { get; set; }
 }

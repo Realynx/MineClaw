@@ -140,6 +140,56 @@ public sealed class StoryTempBlocksTests
         Assert.Contains(c.Alerts, a => a.Text.Contains("left for you to remove") && a.Text.Contains("23,65,0"));
     }
 
+    /// <summary>
+    /// Live 11-06, the first sweep: "deconstruct at 243,64,359 failed 3 times: stonebrick … is protected (a placed stonebrick)" (a pawn's
+    /// dirt had been replaced by someone's stonebrick), "won't dig the dirt I'm standing on at 243,63,360", and old boxes in a cave
+    /// "unreachable even by pillaring/bridging" retried every minute. A cleanup digs from beside its block; one refused as protected is
+    /// never dug (not ours any more) but listed for the owner; one out of reach rests 30 minutes, and a second miss leaves it to the owner.
+    /// </summary>
+    [Fact]
+    public void A_cleanup_digs_from_beside_one_refused_as_protected_is_listed_and_one_out_of_reach_rests_then_is_left_to_the_owner()
+    {
+        var clock = new ManualTime();
+        var (c, h, w) = StoryRig.Make(1, time: clock);
+        Only(c, WorkTypes.Build);
+        var pawn = c.P();
+        w.Set(5, 64, 5, 3);
+        w.Set(9, 64, 9, 3);
+        c.Temporary(pawn, "5,64,5", true, "reach pillar");
+        c.Temporary(pawn, "9,64,9", true, "reach pillar");
+        h.Lives[pawn] = PawnLive.Offline;
+        clock.Now += TimeSpan.FromSeconds(4);
+        c.Tick();
+        Assert.Equal(2, Cleanups(c).Count);
+        h.Lives[pawn] = FakeStoryHost.Live(20, 64, 20);
+        // The first: refused as someone's block.
+        var j1 = c.Next();
+        Assert.Equal("dig", j1["kind"]!.GetValue<string>());
+        var at1 = j1["at"]!.GetValue<string>();
+        var stand = j1["stand"]!.GetValue<string>();
+        Assert.NotEqual(at1, stand); // from beside it, never on top of it
+        c.Report(pawn, j1["id"]!.GetValue<string>(), "failed", $"dirt at {at1} is protected (a placed dirt (someone's floor, wall or path))", null);
+        Assert.Single(Cleanups(c));
+        Assert.Contains(c.Alerts, a => a.Text.StartsWith("Left for you to remove") && a.Text.Contains(at1) && a.Text.Contains("not the pawns' block"));
+        // The second: out of reach. It rests, then a second miss leaves it to the owner.
+        var j2 = c.Next();
+        var at2 = j2["at"]!.GetValue<string>();
+        Assert.NotEqual(at1, at2);
+        c.Report(pawn, j2["id"]!.GetValue<string>(), "failed", $"no path to within 3 of ({at2.Replace(",", ", ")}) (not from under the ground) (timeout); unreachable even by pillaring/bridging", null);
+        Assert.Single(Cleanups(c));
+        var other = c.Next();
+        Assert.NotEqual(at2, other["at"]?.GetValue<string>()); // resting: not offered again at once
+        c.Report(pawn, other["id"]!.GetValue<string>(), "done", null, null);
+        clock.Now += TimeSpan.FromMinutes(31);
+        c.Tick();
+        var j3 = c.Next();
+        Assert.Equal(at2, j3["at"]!.GetValue<string>());
+        c.Report(pawn, j3["id"]!.GetValue<string>(), "failed", $"no path to within 3 of ({at2.Replace(",", ", ")}) (no route); unreachable even by pillaring/bridging", null);
+        Assert.Empty(Cleanups(c));
+        Assert.Contains(c.Alerts, a => a.Text.StartsWith("Left for you to remove") && a.Text.Contains(at2) && a.Text.Contains("out of reach"));
+        Assert.DoesNotContain(c.Alerts, a => a.Level == "warn" && a.Text.Contains("deconstruct"));
+    }
+
     [Fact]
     public void A_stuck_pawn_on_its_pillar_is_teleported_and_the_pillar_left_is_the_colonys_cleanup()
     {
