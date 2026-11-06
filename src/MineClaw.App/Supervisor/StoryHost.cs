@@ -125,6 +125,7 @@ public sealed class StoryHost : IStoryHost
             pc.StrictHarvest = true;
             pc.PreferHeldTool = true;
             pc.DigThroughDetours = true; // a long way round under ground is dug short through the dirt (normal world)
+            pc.NoOverflowChests = true; // a full storage is the colony's to say, never a chest put down by itself (Fox 11-05)
         }
         var v = lane.Library.Resolve(StoryColonies.PawnScript, null, out var why);
         if (v == null) return why ?? "no saved story_pawn";

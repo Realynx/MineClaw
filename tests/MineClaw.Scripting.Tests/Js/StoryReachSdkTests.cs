@@ -136,6 +136,19 @@ public sealed class StoryReachSdkTests
         Assert.Contains("stranded on its pillar", why);
     }
 
+    /// <summary>A pillar never stands on a chest (a chest under a block won't open: live 11-06, planks on two storage chests' lids).</summary>
+    [Fact]
+    public async Task A_pillar_never_goes_up_on_a_chest()
+    {
+        using var rig = Make(w => w.SetBlock(2, 64, 0, Blocks.Chest, 0));
+        rig.Give(36, Blocks.Dirt, 8);
+        var s = await rig.Run($"return JSON.stringify(story.dig('{Ceiling}'))");
+        Assert.Contains("\"ok\":true", s.Outcome);
+        Assert.DoesNotContain(rig.Norm(), c => c.StartsWith("place ") && c.Contains("\"2,65,0\""));
+        Assert.Equal(Blocks.Chest, rig.World.GetBlock(2, 64, 0));
+        Assert.Equal(0, rig.World.GetBlock(2, 65, 0));
+    }
+
     /// <summary>A pillar comes down even when the work at its top is cut short (the dig there throws): try/finally, not luck.</summary>
     [Fact]
     public async Task The_pillar_comes_down_and_is_unregistered_even_when_the_work_at_the_top_fails()

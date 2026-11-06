@@ -116,6 +116,30 @@ public sealed class StoryTempBlocksTests
         Assert.Single(c.Alerts, a => a.Text.Contains("stray block(s)")); // once
     }
 
+    /// <summary>
+    /// Live 11-06: oak planks on the lids of storage chests 216,64,400 and 223,64,400 kept them shut (241 failed opens in 7 hours). A
+    /// lid block a pawn of this colony placed is queued for removal; one the placed-block log can't put on a pawn may be a player's: it
+    /// is only listed, never removed.
+    /// </summary>
+    [Fact]
+    public void On_load_a_pawns_block_on_a_storage_chests_lid_is_queued_and_one_no_pawn_placed_is_only_listed()
+    {
+        var (c, h, w) = StoryRig.Make(1);
+        var pawn = c.P();
+        w.Set(15, 64, 0, 54);
+        w.Set(23, 64, 0, 54);
+        Assert.Null(c.StorageOp("set", [new P3(15, 64, 0)], null, null, null).Error);
+        Assert.Null(c.StorageOp("set", [new P3(23, 64, 0)], null, null, null).Error);
+        w.Set(15, 65, 0, 5);
+        h.Placed.Add((new P3(15, 65, 0), 5, pawn));
+        w.Set(23, 65, 0, 5); // nobody's record: a player's, as far as the colony knows
+        c.Tick();
+        var mark = Assert.Single(Cleanups(c));
+        Assert.Equal(new P3(15, 65, 0), mark.At);
+        Assert.DoesNotContain(c.Designations, d => d.At == new P3(23, 65, 0));
+        Assert.Contains(c.Alerts, a => a.Text.Contains("left for you to remove") && a.Text.Contains("23,65,0"));
+    }
+
     [Fact]
     public void A_stuck_pawn_on_its_pillar_is_teleported_and_the_pillar_left_is_the_colonys_cleanup()
     {

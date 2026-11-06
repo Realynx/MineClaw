@@ -28,14 +28,45 @@ public sealed partial class StoryColony
         IReadOnlyList<(P3 At, int Id, string Bot)> placed;
         try { placed = Host.PlacedByBots(); } catch (Exception) { return; }
         var cand = StrayCandidates(w, home, placed);
-        if (cand.Count == 0) return;
         var builds = BuildCellSet();
         var found = Clusters(cand.Keys).Where(g => LooksTemporary(g, builds)).SelectMany(g => g).Take(StrayMax).Select(at => cand[at]).ToList();
-        if (found.Count == 0) return;
+        var (lids, unproven) = LidStrays(w, placed, builds, found);
+        found.AddRange(lids);
         foreach (var t in found) { Temps.Add(t); QueueTemp(t, said: true); }
+        if (found.Count > 0 || unproven.Count > 0) Alert("info", StraysLine(found, unproven));
+    }
+
+    /// <summary>"Found 12 stray block(s) the pawns left near home (11 wooden planks, 1 dirt; at …): queued for removal", and the lid
+    /// blocks no pawn is known to have placed (left for the owner).</summary>
+    private string StraysLine(List<TempBlockState> found, List<P3> unproven)
+    {
         var kinds = found.GroupBy(t => BlockLabel(t.Id)).OrderByDescending(g => g.Count()).Select(g => $"{g.Count()} {g.Key}");
-        Alert("info", $"Found {found.Count} stray block(s) the pawns left near home ({string.Join(", ", kinds)}; at "
-            + $"{string.Join(", ", found.Select(t => t.At.ToString()).Take(5))}{(found.Count > 5 ? ", …" : "")}): queued for removal");
+        string line = found.Count == 0 ? "" : $"Found {found.Count} stray block(s) the pawns left near home ({string.Join(", ", kinds)}; at "
+            + $"{string.Join(", ", found.Select(t => t.At.ToString()).Take(5))}{(found.Count > 5 ? ", …" : "")}): queued for removal. ";
+        if (unproven.Count > 0)
+            line += $"Blocks on storage chests' lids that no pawn is known to have placed (left for you to remove): {string.Join(", ", unproven.Take(6))}";
+        return line.TrimEnd();
+    }
+
+    /// <summary>
+    /// A block shutting a storage chest's lid (<see cref="LidBlocked"/>): one a pawn of this colony placed is a stray whatever its cluster
+    /// (never a build's cell); one the placed-block log can't put on a pawn is only listed (it may be a player's).
+    /// </summary>
+    private (List<TempBlockState> Queued, List<P3> Unproven) LidStrays(IStoryWorld w, IReadOnlyList<(P3 At, int Id, string Bot)> placed,
+        HashSet<P3> builds, List<TempBlockState> found)
+    {
+        var queued = new List<TempBlockState>();
+        var unproven = new List<P3>();
+        var taken = found.Select(t => t.At).Concat((Meta.TempBlocks ?? []).Select(t => t.At)).ToHashSet();
+        foreach (var lid in Storages.Select(s => LidBlocked(s.Chest)).OfType<P3>().Distinct())
+        {
+            if (taken.Contains(lid) || builds.Contains(lid)) continue;
+            int id = w.Block(lid.X, lid.Y, lid.Z).Id;
+            var by = placed.FirstOrDefault(p => p.At == lid && Pawns.ContainsKey(p.Bot) && SameTempBlock(p.Id, id));
+            if (by.Bot != null) queued.Add(new TempBlockState { At = lid, Id = id, Pawn = by.Bot, Kind = "on a chest's lid", Since = Now });
+            else unproven.Add(lid);
+        }
+        return (queued, unproven);
     }
 
     /// <summary>The colony's pawns' standing scaffold-kind blocks near home that nothing else claims (not registered, not designated, not

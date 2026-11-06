@@ -97,6 +97,23 @@ public class ChestContentionTests
         Assert.True(Math.Abs(placed.Value.X - LogChest.X) >= 2 || Math.Abs(placed.Value.Z - LogChest.Z) >= 2);
     }
 
+    /// <summary>
+    /// Live 11-05/06 story-1: pawns' clients put overflow chests down the colony never knew of (223,65,404 on top of a storage chest,
+    /// 218,64,395, 239,64,397…). Fox 11-05: "Bots should delete whatever they put down unless it was a directive to build it." A Story
+    /// pawn's body (NoOverflowChests) never places one, chest in the bag or not; any other body still may.
+    /// </summary>
+    [Fact]
+    public void A_story_pawn_never_puts_an_overflow_chest_down_by_itself()
+    {
+        var client = new MineClaw.Client.MinecraftClient(new MineClaw.Client.ClientOptions { Host = "127.0.0.1", Port = 1, Username = "maid_chan_113", AutoReconnect = false });
+        client.World.Inventory.SetSlot(0, 36, new ItemStack(Blocks.Chest, 1, 0));
+        var game = new MineClaw.Bot.Game.MinecraftGameClient(client);
+        Assert.True(ChestStore.MayPlaceChest(game));
+        client.NoOverflowChests = true;
+        Assert.False(ChestStore.MayPlaceChest(game));
+        Assert.False(ChestStore.MayPlaceChest(new ClaimAwareGameClient(game, new TestLeases().ViewFor("maid_chan_113"))));
+    }
+
     [Fact]
     public async Task A_deposit_behind_an_exclusive_user_waits_a_moment_then_reports_busy_with_the_holder()
     {

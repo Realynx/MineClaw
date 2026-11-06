@@ -75,6 +75,7 @@ public static class ReachScan
         while (feet - gy <= MaxPillar && Eye(cx + 0.5, feet, cz + 0.5, center) > Reach) feet++;
         if (feet - gy > MaxPillar) { why = "more than " + MaxPillar + " blocks up"; return null; }
         if (feet + 1 >= g.Height - 1) { why = "above the build height"; return null; }
+        if (feet > gy && OnALid(g, cx, gy - 1, cz, ref why)) return null; // a pillar never stands on a chest's lid
         if (!ClearShaft(g, cx, cz, gy, feet)) { why = "no free column to pillar up beside it"; return null; }
         return new Column(new BlockPos(cx, gy, cz), feet - gy, (feet - gy) + 0.3 * r);
     }
@@ -93,6 +94,16 @@ public static class ReachScan
             if (g.Liquid(cx, y - 1, cz)) { why = LiquidGround; return -1; }
         }
         return -1;
+    }
+
+    /// <summary>Containers and workstations a pillar never stands on (a chest under a block won't open).</summary>
+    private static readonly HashSet<int> LidIds = [54, 146, 130, 61, 62, 58, 23, 158, 154, 117, 116, 145];
+
+    private static bool OnALid(ScanGround g, int x, int y, int z, ref string why)
+    {
+        if (!LidIds.Contains(g.World.GetBlock(x, y, z))) return false;
+        why = "a chest or workstation under the column";
+        return true;
     }
 
     /// <summary>Free from the ground to a head over the pillar's top, with no lava beside it.</summary>

@@ -552,13 +552,23 @@ Now:
   planks, stone kinds, logs, sand and gravel that still stand, in a small cluster (12 or fewer: a box, a stub, a lone block) or one
   column (a pillar), not a build's cell, not in or beside a quarry, not already designated, become cleanup jobs with one alert ("Found 23 stray
   block(s) the pawns left near home (14 oak wood planks, …)"). Never a player's block, never main's, never a wall or a floor.
+- **Never on a lid.** No temporary block goes on a chest, a furnace, a crafting table or another container or workstation (a chest
+  under a full block won't open; live 11-06: oak planks on storage chests 216,64,400 and 223,64,400, 241 failed opens in 7 hours): the
+  walk's scaffold veto, the reach pillar's column and the build scaffold's spot all skip them. On load, a block on a storage chest's
+  lid that a pawn placed is queued with the strays; one the placed-block log can't put on a pawn is listed in the alert ("left for you
+  to remove"), never removed.
+- **No chests of its own.** A pawn's deposit that finds every chest full never puts an overflow chest down (client option
+  `NoOverflowChests`, set for Story pawns; the logout deposit too): the colony says storage is full and lists chests near home that
+  aren't storage yet (see "Storage full"). Live 11-05/06: overflow chests at 223,65,404 (on a storage chest), 218,64,395, 218,64,392,
+  239,64,397, 226,64,429 the colony never knew of.
 - **The ledger** books "placed while moving" only for a block a walk builds with; any other loss during a walk goes to the action
   before it ("placed as a block (its update came while moving)"), else "gone while moving".
 
 Tests: `StoryTempBlocksTests` (a left pillar becomes a cleanup job said once and goes with its blocks; one taken back leaves nothing;
 an offline pawn's box from its client is queued and a build cell never is; strays on load in one alert, never a wall, main's block or
-a far one; a stranded pawn is teleported and its pillar is cleaned up), `StoryReachSdkTests` (stranded on its pillar: teleported, the
-block it couldn't dig is the colony's; the pillar comes down when the work at the top fails), `StorySdkTests` (a dirt scaffold left
+a far one; a pawn's lid block is queued and an unknown one only listed; a stranded pawn is teleported and its pillar is cleaned up),
+`StoryReachSdkTests` (stranded on its pillar: teleported, the block it couldn't dig is the colony's; the pillar comes down when the work
+at the top fails; never on a chest), `ChestContentionTests` (a Story pawn places no overflow chest), `StorySdkTests` (a dirt scaffold left
 after a failed cell stays registered; `clear_temporary` after every job), `PillarMaterialTests` (a normal world's walk pillars with dirt,
 not planks, and the clean-up digs it back), `InventoryLedgerTests` (a sowing's late update isn't a movement placement).
 

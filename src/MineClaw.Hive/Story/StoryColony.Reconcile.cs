@@ -209,8 +209,8 @@ public sealed partial class StoryColony
         return set;
     }
 
-    /// <summary>Where a scaffold block can go for a floating cell: an open spot beside it (under it first), no build's cell, with
-    /// something to click against itself.</summary>
+    /// <summary>Where a scaffold block can go for a floating cell: an open spot beside it (under it first), no build's cell, never on a
+    /// container's lid or a workstation (it would shut it), with something to click against itself.</summary>
     private P3? ScaffoldSpot(P3 cell)
     {
         if (World is not { } w) return null;
@@ -218,10 +218,15 @@ public sealed partial class StoryColony
         foreach (var n in Neighbours(cell))
         {
             var (id, _) = w.Block(n.X, n.Y, n.Z);
-            if (id == 0 && w.Loaded(n.X, n.Z) && !cells.Contains(n) && HasSupport(n)) return n;
+            if (id == 0 && w.Loaded(n.X, n.Z) && !cells.Contains(n) && !OnALid(w, n) && HasSupport(n)) return n;
         }
         return null;
     }
+
+    /// <summary>Containers and workstations a temporary block never stands on: a chest under a block won't open.</summary>
+    internal static readonly HashSet<int> LidBlocks = [54, 146, 130, 61, 62, 58, 23, 158, 154, 117, 116, 145];
+
+    private static bool OnALid(IStoryWorld w, P3 n) => LidBlocks.Contains(w.Block(n.X, n.Y - 1, n.Z).Id);
 
     /// <summary>The six neighbours, under first.</summary>
     private static IEnumerable<P3> Neighbours(P3 p)
