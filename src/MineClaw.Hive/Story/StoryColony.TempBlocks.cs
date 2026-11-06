@@ -1,0 +1,175 @@
+using Microsoft.Extensions.Logging;
+
+namespace MineClaw.Hive.Story;
+
+/// <summary>
+/// Temporary blocks (docs/web/story-mode.md "Temporary blocks"). Fox 11-05: "I'm seeing a lot of stray planks have been placed down as
+/// well" and "Bots should delete whatever they put down unless it was a directive to build it. So, nerd poles, other blocks. If a bot
+/// can't navigate something without deleting its nerd pole, then it should teleport." Live 11-04: maid_chan_67 boxed itself in with 9
+/// oak planks at 193,37,430, died beside the box a minute later and was teleported home; the box stayed (the client's own clean-up only
+/// runs when the body is idle by it), like 2-high plank stubs from tree pillars and walks' pillars and bridges (a Story job never ran the
+/// client's clean-up at all).
+/// <list type="bullet">
+/// <item>Every block a pawn puts down for itself is registered (<see cref="ColonyMeta.TempBlocks"/>): the SDK's reach and escape pillars and
+/// build scaffolds as they go up (<see cref="Temporary"/>), the body's own walk scaffolds, shelter boxes and clutch blocks from its client
+/// (<see cref="IStoryHost.TemporaryBlocks"/>). A build's cell is a directive, never temporary.</item>
+/// <item>The pawn takes them back itself (the pillar on the way down, the scaffold once its cell stands, <c>clear_temporary</c> after every
+/// job). A cell is forgotten once the world shows it without that block.</item>
+/// <item>One left behind (its pawn offline, or <see cref="LeftAfter"/> on and more than <see cref="LeftRange"/> away: a failed or cut job, a
+/// teleport home) becomes a deconstruct designation any builder takes (self-placed: always minable), said in one alert per minute.</item>
+/// <item>On load the colony looks once for its pawns' stray blocks near home (<see cref="SweepStrays"/>).</item>
+/// </list>
+/// </summary>
+public sealed partial class StoryColony
+{
+    /// <summary>A temporary block its pawn hasn't taken back this long, while away from it, is a cleanup job.</summary>
+    public static readonly TimeSpan LeftAfter = TimeSpan.FromSeconds(45);
+    /// <summary>How far its pawn is from it when it counts as left behind.</summary>
+    public const double LeftRange = 8;
+    /// <summary>A registered placement the view never showed is dropped after this.</summary>
+    private static readonly TimeSpan NeverSeen = TimeSpan.FromSeconds(20);
+
+    private DateTimeOffset _tempTick = DateTimeOffset.MinValue, _tempAlertAt = DateTimeOffset.MinValue;
+    private readonly List<TempBlockState> _tempQueued = new();
+    private bool _straysSwept;
+
+    private List<TempBlockState> Temps => Meta.TempBlocks ??= new();
+
+    /// <summary>The SDK's report: a block put down for itself (or taken back). See <see cref="Scripting.Story.IStoryPort.Temporary"/>.</summary>
+    public void Temporary(string body, string cell, bool placed, string why)
+    {
+        if (ParseCell(cell) is not { } at) return;
+        lock (_lock)
+        {
+            if (!Pawns.ContainsKey(body) || !placed && Meta.TempBlocks == null) return;
+            Temps.RemoveAll(t => t.At == at && t.Designation == null);
+            if (placed) Temps.Add(new TempBlockState { At = at, Id = SeenId(body, at), Pawn = body, Kind = why, Since = Now });
+            else if (Temps.Count == 0) Meta.TempBlocks = null;
+            _dirty = true;
+        }
+    }
+
+    /// <summary>The block at a cell as its pawn's own view shows it (the server's answer reaches the pawn first), else the colony's view.</summary>
+    private int SeenId(string pawn, P3 at)
+    {
+        IStoryWorld? w = null;
+        try { w = Host.ViewOf(pawn); } catch (Exception) { /* main's view */ }
+        w ??= World;
+        return w != null && w.Loaded(at.X, at.Z) ? w.Block(at.X, at.Y, at.Z).Id : 0;
+    }
+
+    /// <summary>Every few seconds (the colony tick, under the lock): adopt the bodies' own temporary blocks, forget the ones gone, queue the
+    /// ones left behind, look once for strays.</summary>
+    private void TempTick()
+    {
+        if (Now - _tempTick < TimeSpan.FromSeconds(3) || World is not { } w) return;
+        _tempTick = Now;
+        var cells = BuildCellSet();
+        AdoptBodyTemps(cells);
+        if (Meta.TempBlocks is { Count: > 0 } temps)
+            foreach (var t in temps.ToList()) TempCheck(w, t, cells);
+        if (!_straysSwept) SweepStrays(w);
+        AlertQueuedTemps();
+    }
+
+    /// <summary>The pawns' clients' own temporary blocks (walk scaffolds, shelter boxes, clutch blocks) join the registry.</summary>
+    private void AdoptBodyTemps(HashSet<P3> buildCells)
+    {
+        foreach (var p in Pawns.Values)
+        {
+            IReadOnlyList<(P3 At, int Id)> mine;
+            try { mine = Host.TemporaryBlocks(p.Name); } catch (Exception) { continue; }
+            foreach (var (at, id) in mine)
+                if (!buildCells.Contains(at) && !(Meta.TempBlocks?.Any(t => t.At == at) ?? false)) { Temps.Add(new TempBlockState { At = at, Id = id, Pawn = p.Name, Kind = "scaffold", Since = Now }); _dirty = true; }
+        }
+    }
+
+    /// <summary>Every build's cell: a directive, never a temporary block.</summary>
+    private HashSet<P3> BuildCellSet()
+    {
+        var set = new HashSet<P3>();
+        foreach (var b in Builds) foreach (var g in b.Ghosts) set.Add(g.At);
+        return set;
+    }
+
+    /// <summary>One registered cell: gone (forgotten, its cleanup mark too), a build's cell (not ours to take), left behind (queued).</summary>
+    private void TempCheck(IStoryWorld w, TempBlockState t, HashSet<P3> buildCells)
+    {
+        if (!w.Loaded(t.At.X, t.At.Z)) return;
+        int now = w.Block(t.At.X, t.At.Y, t.At.Z).Id;
+        AdoptSeen(t, now);
+        if (Gone(t, now) || buildCells.Contains(t.At)) { ForgetTemp(t); return; }
+        if (t.Designation == null && t.Id != 0 && LeftBehind(t)) QueueTemp(t);
+    }
+
+    /// <summary>A placement registered before the view showed it: its block, once it does.</summary>
+    private void AdoptSeen(TempBlockState t, int now)
+    {
+        if (t.Id != 0 || now == 0 || StoryBlocks.Liquids.Contains(now)) return;
+        t.Id = now;
+        _dirty = true;
+    }
+
+    /// <summary>The block isn't there any more (dug, replaced), or the view never showed it at all.</summary>
+    private bool Gone(TempBlockState t, int now) => t.Id == 0 ? Now - t.Since > NeverSeen : !SameTempBlock(t.Id, now);
+
+    /// <summary>The block placed there still (dirt that grew grass is the same dirt).</summary>
+    private static bool SameTempBlock(int placed, int now) => placed == now || placed == 3 && now == 2;
+
+    private void ForgetTemp(TempBlockState t)
+    {
+        Temps.Remove(t);
+        if (Temps.Count == 0) Meta.TempBlocks = null;
+        _dirty = true;
+        if (t.Designation is { } id && Designations.FirstOrDefault(d => d.Id == id) is { Auto: true } des)
+        {
+            Designations.Remove(des);
+            Removed("designation", des.Id);
+        }
+    }
+
+    /// <summary>Its pawn won't take it back: offline or gone from the colony, or away from it for <see cref="LeftAfter"/>.</summary>
+    private bool LeftBehind(TempBlockState t)
+    {
+        if (!Pawns.ContainsKey(t.Pawn)) return true;
+        var live = Host.Live(t.Pawn);
+        if (!live.Online) return true;
+        return Now - t.Since >= LeftAfter && t.At.Dist(live.X, live.Y, live.Z) > LeftRange;
+    }
+
+    /// <summary>A deconstruct designation (the colony's own, Auto) for a block left behind; one already on the cell is reused.
+    /// <paramref name="said"/>: the caller says it (the stray look), not the minute's alert.</summary>
+    private void QueueTemp(TempBlockState t, bool said = false)
+    {
+        var des = Designations.FirstOrDefault(d => d.At == t.At && d.Kind is "deconstruct" or "mine");
+        if (des == null)
+        {
+            des = new DesignationState
+            {
+                Id = NextId("d"), Kind = "deconstruct", At = t.At, Created = Now, Auto = true, Rev = Touch(),
+                Label = $"removing a temporary {BlockLabel(t.Id)} ({t.Kind}) left by {PawnDisplay(t.Pawn)}",
+            };
+            Designations.Add(des);
+            WakeIdle();
+        }
+        t.Designation = des.Id;
+        _dirty = true;
+        if (!said) _tempQueued.Add(t);
+        _log.LogInformation("story {Colony}: temporary {Block} at {At} ({Kind}) left by {Pawn}: queued for removal", Id, BlockLabel(t.Id), t.At, t.Kind, t.Pawn);
+    }
+
+    private string BlockLabel(int id) => World is { } w && w.Data.BlockExists(id) ? w.Data.Block(id).DisplayName.ToLowerInvariant() : "block";
+
+    private string PawnDisplay(string pawn) => Pawns.TryGetValue(pawn, out var p) ? p.Display : pawn;
+
+    /// <summary>The blocks queued since the last alert, said at most once a minute: how many, of what, where (a few).</summary>
+    private void AlertQueuedTemps()
+    {
+        if (_tempQueued.Count == 0 || Now - _tempAlertAt < TimeSpan.FromMinutes(1)) return;
+        _tempAlertAt = Now;
+        var kinds = _tempQueued.GroupBy(t => BlockLabel(t.Id)).OrderByDescending(g => g.Count()).Select(g => $"{g.Count()} {g.Key}");
+        var where = string.Join(", ", _tempQueued.Select(t => t.At.ToString()).Distinct().Take(4));
+        Alert("info", $"{_tempQueued.Count} temporary block(s) the pawns left behind ({string.Join(", ", kinds)}; at {where}{(_tempQueued.Count > 4 ? ", …" : "")}): queued for removal");
+        _tempQueued.Clear();
+    }
+}

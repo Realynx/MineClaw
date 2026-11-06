@@ -44,8 +44,9 @@ public sealed partial class StoryColony
     /// <summary>Blocks a rescuer brings.</summary>
     public const int RescueBlocks = 8;
 
-    /// <summary>Blocks a pawn pillars with (cobblestone, dirt, planks, stone, netherrack, sandstone, stone bricks, logs).</summary>
-    internal static readonly int[] PillarIds = [4, 3, 5, 1, 87, 24, 98, 17, 162];
+    /// <summary>Blocks a pawn pillars with (cobblestone, dirt, stone, netherrack, sandstone, stone bricks, then planks and logs: a build's
+    /// material, last).</summary>
+    internal static readonly int[] PillarIds = [4, 3, 1, 87, 24, 98, 5, 17, 162];
 
     private sealed class StuckState
     {

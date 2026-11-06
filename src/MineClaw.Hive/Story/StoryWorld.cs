@@ -90,6 +90,12 @@ public interface IStoryHost
         accounts.Select(a => (a, (string?)"bringing pawns online isn't available here")).ToList();
     /// <summary>Is this player name one of the hive's own bots (main, a hive, a body): an attack on it is an attack on a bot.</summary>
     bool IsBot(string name) => false;
+    /// <summary>The blocks a pawn's body put down for itself and still holds as its own (a walk's pillar or bridge, a shelter box, a
+    /// fall clutch: the client's temporary blocks), for the colony's registry (StoryColony.TempBlocks.cs).</summary>
+    IReadOnlyList<(P3 At, int Id)> TemporaryBlocks(string account) => [];
+    /// <summary>Every block a hive bot placed that still stands (the shared placed-block log, overworld): who placed it. The colony's
+    /// one-time look for pawns' stray blocks.</summary>
+    IReadOnlyList<(P3 At, int Id, string Bot)> PlacedByBots() => [];
     /// <summary>
     /// The owner's confirmed order lets this pawn's body fight exactly that player entity (on), or no longer (off). Bodies never fight
     /// a player without it (the client's hard gate).

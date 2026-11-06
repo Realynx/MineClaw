@@ -21,7 +21,7 @@ public static class ReachScan
     /// <summary>Reach for planning (survival 4.5, less a margin for the face's offset and the aim).</summary>
     public const double Reach = 4.0;
 
-    private static readonly int[] PillarIds = [3, 4, 87, 5, 1, 24];
+    private static readonly int[] PillarIds = [3, 4, 87, 1, 24, 5]; // planks last: a build's material
 
     private const string LiquidGround = "only liquid to stand on under it";
 

@@ -79,6 +79,39 @@ public class PillarMaterialTests(Xunit.Abstractions.ITestOutputHelper log)
         Assert.DoesNotContain(s.Blocks, kv => kv.Value == Blocks.Dirt);
     }
 
+    /// <summary>
+    /// Fox 11-05: "Bots should delete whatever they put down unless it was a directive to build it." In a normal world a walk pillars
+    /// with dirt, never the planks it carries for a build; the pillar is the body's temporary blocks (what its colony registers), and
+    /// once the body is down beside it the clean-up digs it all back.
+    /// </summary>
+    [Fact]
+    public async Task A_walks_pillar_is_dirt_not_planks_and_the_clean_up_digs_it_back()
+    {
+        using var world = MineClaw.Data.Versioning.WorldMode.Override(MineClaw.Data.Versioning.WorldMode.Normal);
+        var (c, s) = await Harness.StartAsync(srv =>
+        {
+            Floor(srv);
+            srv.Inventory[36] = Harness.Stack(Blocks.Planks, 10);
+            srv.Inventory[37] = Harness.Stack(Blocks.Dirt, 10);
+        }, Logged);
+        await using var _ = c;
+        using var __ = s;
+        var r = await c.GotoAsync(new GoalBlock(8, 67, 8), GotoOptions.Default with { AllowPlace = true, AllowPartial = false });
+        Assert.True(r.Ok, r.ToString());
+        Assert.Equal(10, c.World.Inventory.CountItem(Blocks.Planks));
+        Assert.DoesNotContain(s.Blocks, kv => kv.Value == Blocks.Planks);
+        var pillar = c.TemporaryBlocks().Select(b => b.Pos).ToList();
+        Assert.NotEmpty(pillar);
+        Assert.All(pillar, p => Assert.Equal(Blocks.Dirt, s.Blocks.GetValueOrDefault((p.X, p.Y, p.Z))));
+        var down = await c.GotoAsync(new GoalBlock(5, 64, 8), GotoOptions.Default with { AllowPartial = false });
+        Assert.True(down.Ok, down.ToString());
+        var clean = await c.CleanupTemporaryBlocksAsync();
+        Assert.True(clean.Ok, clean.ToString());
+        Assert.Contains("left 0", clean.Message);
+        Assert.All(pillar, p => Assert.False(s.Blocks.TryGetValue((p.X, p.Y, p.Z), out var id) && id != 0, $"{p} still stands"));
+        Assert.Empty(c.TemporaryBlocks());
+    }
+
     [Fact]
     public async Task Crafts_planks_from_a_log_when_short_of_blocks()
     {
@@ -133,5 +166,25 @@ public class PillarMaterialTests(Xunit.Abstractions.ITestOutputHelper log)
         Assert.DoesNotContain(Blocks.Sand, MinecraftClient.ScaffoldBlocks);
         Assert.Contains(Blocks.Log, MinecraftClient.ScaffoldBlocks);
         Assert.Contains(Blocks.Planks, MinecraftClient.ScaffoldBlocks);
+    }
+
+    /// <summary>
+    /// Live 11-04/11-05 (Fox: "a lot of stray planks"): a walk's pillars and bridges, a shelter box and a fall clutch spent a pawn's oak
+    /// planks (a build's material) before its dirt. Temporary blocks are dirt or cobblestone when it has them; planks and logs last.
+    /// </summary>
+    [Fact]
+    public void Temporary_blocks_are_dirt_or_cobblestone_when_there_are_any_planks_and_logs_last()
+    {
+        using (MineClaw.Data.Versioning.WorldMode.Override(MineClaw.Data.Versioning.WorldMode.Normal))
+        {
+            var order = MinecraftClient.ScaffoldOrder.ToList();
+            Assert.Equal([Blocks.Dirt, Blocks.Cobblestone], order.Take(2));
+            Assert.Equal([Blocks.Planks, Blocks.Log], order.TakeLast(2));
+            Assert.True(MineClaw.Client.Survival.Shelter.BlockRank(Blocks.Dirt) < MineClaw.Client.Survival.Shelter.BlockRank(Blocks.Planks));
+            Assert.True(MineClaw.Client.Survival.Shelter.BlockRank(Blocks.Cobblestone) < MineClaw.Client.Survival.Shelter.BlockRank(Blocks.Planks));
+        }
+        // Skyblock: never dirt; cobble and stone kinds before planks and logs.
+        Assert.Equal([Blocks.Planks, Blocks.Log], MinecraftClient.ScaffoldOrder.TakeLast(2));
+        Assert.True(MineClaw.Client.Survival.Shelter.BlockRank(Blocks.Stone) < MineClaw.Client.Survival.Shelter.BlockRank(Blocks.Planks));
     }
 }

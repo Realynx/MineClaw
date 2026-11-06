@@ -32,13 +32,26 @@
     if (!good(r) && ON_IT.test(why(r)) && j.stand) { call('go', j.stand, 0); r = clearDig(c); }
     return good(r) ? null : { ok: false, msg: "can't clear the cell " + c + ': ' + why(r) };
   };
-  // A floating cell's scaffold (j.scaffold {cell: spot}: nothing to click against there yet): one of the batch's blocks at the spot,
-  // dug back once the cell is in -> the spot, null (none), or the failure.
+  // A block put down for itself (a pillar step, a scaffold) or taken back: the colony keeps every one until the world shows it gone,
+  // and one left behind (a failed or cut job, a pawn gone) becomes a cleanup job. Fox 11-05: "Bots should delete whatever they put
+  // down unless it was a directive to build it."
+  const temp = (c, placed, kind) => H.storyTemp(String(c), !!placed, kind);
+  // A scaffold block: cobblestone or dirt it carries (cheap, plainly temporary), else one of the batch's blocks.
+  const CHEAP = ['cobblestone', 'dirt'];
+  const scaffoldBlock = j => CHEAP.find(b => H.inv(b) > 0) || j.block;
+  // A floating cell's scaffold (j.scaffold {cell: spot}: nothing to click against there yet): a block at the spot, dug back once the
+  // cell is in (or the placing failed) -> the spot, null (none), or the failure.
   const scaffoldUp = (j, c) => {
     const s = j.scaffold && j.scaffold[c];
     if (!s) return null;
-    const r = call('place', j.block, s);
-    return good(r) ? s : { ok: false, msg: 'no scaffold at ' + s + ' for ' + c + ': ' + why(r) };
+    const r = call('place', scaffoldBlock(j), s);
+    if (!good(r)) return { ok: false, msg: 'no scaffold at ' + s + ' for ' + c + ': ' + why(r) };
+    temp(s, true, 'build scaffold');
+    return s;
+  };
+  const scaffoldDown = s => {
+    const r = clearDig(s);
+    if (good(r) || H.block(s) == 'air') temp(s, false, 'build scaffold');
   };
   // The placing, tried once more after stepping closer (or back to the stand).
   const putCell = (j, c, put) => {
@@ -57,9 +70,7 @@
     if (eyes(c) > 4) call('go', c, 2);
     const s = scaffoldUp(j, c);
     if (s && s.ok === false) return s;
-    const r = putCell(j, c, put);
-    if (s) clearDig(s);
-    return r;
+    try { return putCell(j, c, put); } finally { if (s) scaffoldDown(s); }
   };
   // A cell of place(): already built -> BUILT; a batch out of items -> null (the rest go back); else the placing's result.
   const placeOne = (j, c, m, clear) => {
@@ -264,15 +275,31 @@
     return globalThis.ok(r) ? globalThis.go(st.to, 0) : r;
   };
   const canPole = s => s.pillar && s.blocks > 0;
-  const pole = s => globalThis.place(s.block, s.feet);
+  // A pillar step out: the cell joins e.poles (taken back once it is out, from where it stands; the rest is the colony's cleanup).
+  const pole = (e, s) => {
+    const r = globalThis.place(s.block, s.feet);
+    if (globalThis.ok(r)) { e.poles.push(s.feet); temp(s.feet, true, 'escape pillar'); }
+    return r;
+  };
+  // Out: its escape pillar dug back, top first, as far as it reaches from where it stands; never the column under its own feet (it
+  // would fall back in): what is left is the colony's cleanup.
+  const column = c => String(c).split(',').filter((_, k) => k != 1).join(',');
+  const unpoleEscape = e => {
+    const mine = column(feet());
+    for (let i = e.poles.length - 1; i >= 0; i--) {
+      const c = e.poles[i];
+      if (column(c) != mine && (globalThis.ok(escDig(c)) || H.block(c) == 'air')) temp(c, false, 'escape pillar');
+    }
+    e.poles = [];
+  };
   // A step's moves in order, [applies, key, move]: the approach to the wall nearest home, the exit, in a pit a pillar step first
   // when it carries blocks (no digging at all), the stair (a ravine's wall is climbed by its stair), then a pillar step.
-  const escMoves = (s, climb) => [
+  const escMoves = (e, s, climb) => [
     [!!s.approach, 'a' + s.approach, () => globalThis.go(s.approach, 0)],
     [!!s.exit, 'e' + s.exit, () => globalThis.go(s.exit, 0)],
-    [!climb && canPole(s), 'p' + s.feet, () => pole(s)],
+    [!climb && canPole(s), 'p' + s.feet, () => pole(e, s)],
     [!!s.stair, s.stair && s.stair.to, () => escStair(s.stair)],
-    [canPole(s), 'p' + s.feet, () => pole(s)],
+    [canPole(s), 'p' + s.feet, () => pole(e, s)],
   ];
   // A move not tried here yet: -> true when it worked (the body moved).
   const escTry = (e, key, move) => {
@@ -294,7 +321,7 @@
   };
   // One step out -> false when there is nothing left to try.
   const escStep = (e, s, climb) => {
-    for (const [on, key, move] of escMoves(s, climb)) if (on && escTry(e, key, move)) return true;
+    for (const [on, key, move] of escMoves(e, s, climb)) if (on && escTry(e, key, move)) return true;
     return escGather(e, s);
   };
   // Out (or level with home when climbing) -> the result; null = still in.
@@ -313,12 +340,12 @@
   const str = v => (v == null ? null : String(v));
   const escape = (toward, climb) => {
     // e: the moves tried (each once per spot), the last refusal, whether it moved.
-    const e = { tried: {}, why: '', moved: false }, ty = toward == null ? null : +String(toward).split(',')[1];
+    const e = { tried: {}, why: '', moved: false, poles: [] }, ty = toward == null ? null : +String(toward).split(',')[1];
     let s = null;
     for (let i = 0; i < (climb ? 64 : 40); i++) {
       s = H.storyPit(str(toward), !!climb);
       const out = escOut(s, climb, ty, e.moved);
-      if (out) return out;
+      if (out) { unpoleEscape(e); return out; }
       if (!escStep(e, s, climb)) break;
     }
     return escStuck(s, climb, e.why);
@@ -372,10 +399,27 @@
       const f = feet(), p = globalThis.place(now.block, f);
       if (!globalThis.ok(p)) break;
       placed.push(f);
+      temp(f, true, 'reach pillar');
     }
     return placed;
   };
-  const poleDown = placed => { for (let i = placed.length - 1; i >= 0; i--) if (!globalThis.ok(globalThis.dig(placed[i]))) break; };
+  // Dig the pillar back down from the top, standing on each block it placed -> the cells it couldn't take back.
+  const poleDown = placed => {
+    const left = [];
+    for (let i = placed.length - 1; i >= 0; i--) {
+      const c = placed[i];
+      if (globalThis.ok(globalThis.dig(c)) || H.block(c) == 'air') temp(c, false, 'reach pillar'); else left.push(c);
+    }
+    return left;
+  };
+  // Still up on what is left of its pillar (a block under it it couldn't take back): no way down without it, so the colony takes it
+  // home (the rescue teleport) and the rest of the pillar is a cleanup job; never left standing on purpose.
+  const unpole = (placed, stand) => {
+    const left = poleDown(placed);
+    if (!left.length || !(H.me('pos').y > +String(stand).split(',')[1] + 1.5)) return;
+    try { H.storyStuck('stranded on its pillar at ' + feet() + ': ' + left.length + ' block(s) under it it could not take back'); }
+    catch (e) { /* not a colony pawn: nobody to ask */ }
+  };
   const reachUp = (at, fn, j) => {
     let s = reachScan(at);
     if (s.within) return fn();
@@ -386,9 +430,7 @@
     const w = globalThis.go(s.stand, 0);
     if (!globalThis.ok(w)) return { ok: false, msg: 'out of reach: ' + w.msg };
     const placed = poleUp(at, s.steps);
-    const r = fn();
-    poleDown(placed);
-    return r;
+    try { return fn(); } finally { unpole(placed, s.stand); }
   };
   // dig(at, job?): the usual dig; a block out of reach is reached from a pillar (reachUp), never just given up on.
   const dig = (at, j) => {
@@ -439,7 +481,13 @@
     return { ok: true, msg: 'dropped ' + (j.drop || []).map(d => d.item).join(', ') };
   };
   const run = j => (j.kind === 'escape' ? runEscape(j) : j.kind === 'dump' ? runDump(j) : { ok: true });
-  /** story.next(s)|report(job, status, note?)|during|idle|work|fetch|go|dig|escape - the job loop */
+  // sweep(): after every job, whatever its outcome, the pawn digs back its own scaffolds, pillars and boxes in reach (the hidden
+  // clear_temporary); what it can't reach is the colony's cleanup.
+  const sweep = () => {
+    const g = globalThis;
+    return typeof g.clear_temporary === 'function' ? g.clear_temporary() : { ok: true, msg: 'temporary blocks: none' };
+  };
+  /** story.next(s)|report(job, status, note?)|during|idle|work|fetch|go|dig|escape|sweep - the job loop */
   def('story', Object.freeze({
     next: s => H.storyNext(s == null ? 0 : s),
     report,
@@ -454,5 +502,6 @@
     fetch,
     place,
     pour,
+    sweep,
   }));
 }

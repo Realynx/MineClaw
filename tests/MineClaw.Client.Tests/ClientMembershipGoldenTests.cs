@@ -23,7 +23,7 @@ public class ClientMembershipGoldenTests
     }
 
     [Fact]
-    public void Id_membership_rules_match_the_golden() => SimRulesGoldenTests.Check("client-membership", "EE376511F978E34EFA44AAB87FE005F527626E301009CB17D2997259E9EFB5D0", sb =>
+    public void Id_membership_rules_match_the_golden() => SimRulesGoldenTests.Check("client-membership", "8B46C49B7F6503069CDC32DC3EABBC2A5F553B1C088E0246AABE0BA73A9CFEE4", sb =>
     {
         foreach (IGameData data in new IGameData[] { Beta181GameData.Instance, Release1122GameData.Instance })
         using (GameData.Override(data))

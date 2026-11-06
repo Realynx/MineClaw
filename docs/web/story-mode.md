@@ -503,7 +503,7 @@ own and destroy the nerd pole on the way back down. Not many blocks should truly
     again. Nothing is left behind.
   - A walk that can't get within reach of a block high above stops below it instead (`story.go`), and the dig climbs from there.
 - **Blocks to climb with:**
-  - the cheap blocks it carries: dirt, cobblestone, netherrack, planks, stone, sandstone;
+  - the cheap blocks it carries: dirt, cobblestone, netherrack, stone, sandstone, planks last (see "Temporary blocks");
   - else the job's `pillar` stack from storage. The colony adds `{from, item, n}` to a job more than 3 blocks above the pawn, or a
     tall tree, when the pawn carries fewer than it needs. It is taken only if the climb happens;
   - else dirt dug around the column (never the ground under its feet).
@@ -517,6 +517,50 @@ own and destroy the nerd pole on the way back down. Not many blocks should truly
   (`wait`). It is not counted as a failure and raises no alert.
 - Not yet: several targets from one pillar top (each high block is its own climb; a tree is one job), a short staircase instead of a
   pillar, the night-outside rule while climbing.
+
+### Temporary blocks (added 2026-11-05)
+
+Fox 11-05: "I'm seeing a lot of stray planks have been placed down as well." and the rule: **"Bots should delete whatever they put
+down unless it was a directive to build it. So, nerd poles, other blocks. If a bot can't navigate something without deleting its nerd
+pole, then it should teleport."**
+
+Where the planks came from (live, the hive's placed-block log and the ledger): shelter boxes (the night / low-hp box-in ranked planks
+second, after cobblestone: maid_chan_67's box of 9 oak planks at 193,37,430 on 11-04 stayed when it died beside it a minute later),
+2-high plank tree pillars from the 11-03 deforest runs, and walks' own pillars and bridges (a normal world's walk spent planks before
+dirt, and a Story job never ran the client's clean-up of them at all). Seeds, wheat and bread booked as "placed while moving" were the
+ledger's mislabel (a sowing's or deposit's slot update landing during the next walk), not placements.
+
+Now:
+- **Only a directive stays.** A build's cell, a quarry's stair steps and hazard seals, a sown crop: the owner asked for them. Everything
+  else a pawn puts down for itself is temporary: reach and escape pillars, a build's scaffold, a walk's pillar or bridge, a shelter box,
+  a fall clutch, a tree pillar.
+- **Cheap blocks.** Temporary blocks are dirt or cobblestone when the pawn has them (on skyblock: cobblestone and stone kinds, never
+  dirt); planks and logs, a build's material, only when it carries nothing else. A build scaffold is cobblestone or dirt it carries,
+  else one of the batch's blocks. The pillar stack never counts planks.
+- **Taken back, whatever the outcome.** A reach pillar is dug back from the top even when the work up there failed or threw; a
+  scaffold once its cell stands or the placing failed; an escape pillar from the rim once it is out (never the column it stands on).
+  After every job, done or failed, the pawn runs the hidden `clear_temporary` (its client's own scaffolds, boxes and clutch blocks in
+  reach).
+- **Stranded: teleport.** A pawn still up on what is left of its pillar (a block under it it couldn't dig back) asks the colony
+  (`stranded on its pillar …`): the rescue teleport takes it home. The block stays registered and becomes a cleanup job.
+- **The registry** (`ColonyMeta.TempBlocks`, saved): every temporary cell with its pawn and kind, from the SDK (`H.storyTemp`) and the
+  pawns' clients. A cell is forgotten once the world shows it without that block; a build's cell is never registered. One its pawn left
+  behind (offline, or 45 s on and more than 8 blocks away: a failed or cut job, a death, a teleport) becomes a deconstruct designation
+  ("removing a temporary oak wood planks (reach pillar) left by …", the colony's own) for any builder: self-placed blocks are always
+  minable. At most one alert a minute says how many were queued.
+- **Strays, once per load.** The colony looks at the hive's placed-block log within 200 of home: its own pawns' dirt, cobblestone,
+  planks, stone kinds, logs, sand and gravel that still stand, in a small cluster (12 or fewer: a box, a stub, a lone block) or one
+  column (a pillar), not a build's cell, not in or beside a quarry, not already designated, become cleanup jobs with one alert ("Found 23 stray
+  block(s) the pawns left near home (14 oak wood planks, …)"). Never a player's block, never main's, never a wall or a floor.
+- **The ledger** books "placed while moving" only for a block a walk builds with; any other loss during a walk goes to the action
+  before it ("placed as a block (its update came while moving)"), else "gone while moving".
+
+Tests: `StoryTempBlocksTests` (a left pillar becomes a cleanup job said once and goes with its blocks; one taken back leaves nothing;
+an offline pawn's box from its client is queued and a build cell never is; strays on load in one alert, never a wall, main's block or
+a far one; a stranded pawn is teleported and its pillar is cleaned up), `StoryReachSdkTests` (stranded on its pillar: teleported, the
+block it couldn't dig is the colony's; the pillar comes down when the work at the top fails), `StorySdkTests` (a dirt scaffold left
+after a failed cell stays registered; `clear_temporary` after every job), `PillarMaterialTests` (a normal world's walk pillars with dirt,
+not planks, and the clean-up digs it back), `InventoryLedgerTests` (a sowing's late update isn't a movement placement).
 
 ### Tree farming and routes under ground (added 2026-11-04)
 

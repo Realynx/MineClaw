@@ -21,7 +21,8 @@ public sealed partial class StoryColony
     /// <summary>What a pawn may pillar with, cheapest first: dirt, cobblestone, netherrack (planks, stone and sandstone it uses
     /// when it has them, but never keeps back from storage).</summary>
     internal static readonly int[] PillarKeep = [3, 4, 87];
-    private static readonly int[] PillarAny = [3, 4, 87, 5, 1, 24];
+    // Planks a pawn carries are a build's material: never counted as blocks to climb with (it fetches dirt or cobble instead).
+    private static readonly int[] PillarAny = [3, 4, 87, 1, 24];
 
     /// <summary>The pillar kind a pawn keeps out of its store trip (the first it carries no more than the stack of), or -1.</summary>
     internal int PillarKeepKind(PawnLive live)

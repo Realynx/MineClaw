@@ -25,7 +25,7 @@ public static class PitScan
     public const int PitCells = 30;
 
     /// <summary>Blocks a pawn pillars with, best first (cobblestone, dirt, planks, stone, netherrack, sandstone, stone bricks, logs).</summary>
-    private static readonly int[] PillarIds = [4, 3, 5, 1, 87, 24, 98, 17, 162];
+    private static readonly int[] PillarIds = [4, 3, 1, 87, 24, 98, 5, 17, 162]; // planks and logs last: a build's material
     /// <summary>Natural ground (a cave's roof), never a build's: stone, grass, dirt, bedrock, sand, gravel, ores, sandstone, obsidian,
     /// clay, netherrack, terracotta…</summary>
     private static readonly HashSet<int> Terrain = [1, 2, 3, 7, 12, 13, 14, 15, 16, 21, 24, 48, 49, 56, 73, 74, 82, 87, 88, 97, 110, 121, 129, 153, 159, 172, 179, 243];
