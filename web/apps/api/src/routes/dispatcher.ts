@@ -19,6 +19,7 @@ import {
   type RouteDef,
   type RouteId,
   type WebAuditKind,
+  type WebHostingSaveRequest,
 } from '@mineclaw/contracts';
 import type { z } from 'zod';
 import type { AuditService } from '../audit/audit.service.js';
@@ -35,12 +36,14 @@ import { ApiHttpError, Errors, sendApiError, sendJson } from '../common/errors.j
 import { contextOf, header, parseQuery, readBody, type RequestContext } from '../common/http.js';
 import type { Logger } from '../common/logger.js';
 import type { LiveHub } from '../live/live-hub.js';
+import type { WebHostingSettings } from '../config/web-hosting.js';
 import { VERSION } from '../version.js';
 import { encodeShardUpload, parseShardUpload, type ShardUpload } from './multipart.js';
 
 export type RoutedRequest = IncomingMessage & { params?: Record<string, string | string[]> };
 
 export interface DispatcherDeps {
+  hosting: WebHostingSettings;
   auth: AuthService;
   setup: SetupService;
   audit: AuditService;
@@ -114,6 +117,28 @@ export class RouteDispatcher {
     this.origins = new Set(d.allowedOrigins.map(normOrigin));
     const signed = (state: AuthState): Signed => state as Signed;
     this.native = {
+      'admin.webHosting': () => Promise.resolve(d.hosting.read()),
+      'admin.webHostingSave': (_req, _res, ctx, state, input) => {
+        const body = input.body as WebHostingSaveRequest;
+        let ok = false;
+        try {
+          const result = d.hosting.save(body.tls);
+          ok = true;
+          return Promise.resolve(result);
+        } finally {
+          d.audit.record({
+            kind: 'admin_settings',
+            ok,
+            ip: ctx.ip,
+            username: state.user?.username,
+            route: '/api/admin/hosting',
+            method: 'POST',
+            target: 'web-https',
+            requestId: ctx.requestId,
+            summary: `HTTPS settings ${ok ? 'saved; web API restart required' : 'rejected'}: ${clip(body.reason, 300)}`,
+          });
+        }
+      },
       health: async () => {
         const h = await d.health.check();
         return { ok: true, version: VERSION, bridge: h.up ? 'up' : 'down' };
@@ -195,13 +220,16 @@ export class RouteDispatcher {
     const query = route.query ? (parsed(route.query, parseQuery(req.url)) as Record<string, unknown>) : undefined;
     if (route.method === 'GET' || !route.body) return { params, query, body: undefined };
     if (route.bodyKind === 'multipart') return parseUpload(route.body, req, params, query);
-    const json = await this.readJsonBody(req);
+    const json = await this.readJsonBody(
+      req,
+      route.path === '/api/designer/sessions/:id/save' ? 8 * 1024 * 1024 : undefined,
+    );
     return { params, query, body: parsed(route.body, json) };
   }
 
   /** The JSON request body ({} when empty); a body needs `application/json` and has to parse. */
-  private async readJsonBody(req: RoutedRequest): Promise<unknown> {
-    const raw = await readBody(req, this.d.bodyLimitBytes);
+  private async readJsonBody(req: RoutedRequest, limit = this.d.bodyLimitBytes): Promise<unknown> {
+    const raw = await readBody(req, limit);
     if (raw.length === 0) return {};
     const type = header(req, 'content-type') ?? '';
     if (!/^application\/json\b/i.test(type)) throw Errors.badRequest(undefined, 'expected application/json');

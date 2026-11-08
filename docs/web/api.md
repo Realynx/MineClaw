@@ -328,6 +328,8 @@ Notes on specific routes:
 | `admin.compact` | `POST /api/admin/activity/compact` | admin | body `CompactRequest` | `ActivityCompactionReport` | `POST /v1/sup/admin/activity/compact` | /api/admin/activity/compact | compact |
 | `admin.shardImport` | `POST /api/admin/shard/import` | admin | multipart `ShardImportOptions` | `ShardImportResult` | `POST /v1/sup/admin/shard/import` | /api/admin/shard/import (bridge sends JSON {shard: base64, …options, who}) | shard_import |
 | `groom.preview` | `POST /api/groom/preview` | admin | body `GroomPreviewRequest` | `GroomPreviewResponse` | `POST /v1/groom/preview` | bridge-native | admin_other |
+| `admin.webHosting` | `GET /api/admin/hosting` | admin | – | `WebHostingResponse` | Nest-native | – | – |
+| `admin.webHostingSave` | `POST /api/admin/hosting` | admin + step-up | body `WebHostingSaveRequest` | `WebHostingResponse` | Nest-native | – | admin_settings |
 
 ### Live hive (supervisor pass-through)
 
@@ -836,6 +838,16 @@ of the ground, so a large underground strip mine can be drawn once and placed in
   "lapis and gold" (b1.8.1) "strip mine at y 16" (4 apart); a design made from one is saved with `preferred_for <version>`.
   The panel's dig estimate shows each ore's "per 100" (ore seen, mined + in the walls, per 100 blocks mined: `seenPer100`,
   the bot's `MineStats.SeenPer100`) to compare layouts by.
+- **Editable components.** The preset **Use** button inserts separate shaft and branch components into the outliner. Their
+  positions, dimensions, turns, lighting, landings and combined groups are saved in optional `mine_authoring` JSON text
+  (at most 2 million characters) with the exact design revision, alongside the ordinary excavation cells. Reopening on
+  another browser restores them; older cell-only designs still open. A short layout hash in the DSL gives metadata-only
+  changes their own revision. The outliner's eye toggles hide wireframes and canvas picking, without changing excavation
+  or mining jobs. Large plans use a coarse wireframe; saved cells remain exact. Saved camera pictures include the visible
+  mining wireframes while excluding editor handles, selection and placement previews.
+  `design_revision` identifies the opened saved revision separately from the canvas edit `rev`. For older saves, a matching
+  browser-local component layout can be recovered only after its owned cells match the loaded canvas; the next Save migrates
+  it to server storage. Components cannot be inferred reliably when neither saved nor browser-local metadata remains.
 - **Routes.** `POST sessions {kind?, seed?, rev?, …}`: a new mine canvas (a random seed when none), or revision `rev` of a design
   (saving it again makes it the newest revision: a revert). `POST sessions/{id}/version {version, kind?, seed?, preferred_for?,
   apply?}`: `kind` switches an empty canvas at once and answers `needs_clear: true` for a full one (`apply` clears it and

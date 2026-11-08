@@ -75,6 +75,7 @@ describe('the Story map overlay painter (mapDraw.ts)', () => {
 
   it('chests: a registered double chest draws once with its priority pips; a bench shows its bill count; selection boxes', () => {
     const { pt, log } = painter({ cell: 10 });
+    pt.vw = 1000; // this fixture tests all four marks; keep their identity-projected x positions on screen
     const st = {
       storages: [{ chest: [0, 0, 0], doubleWith: [1, 0, 0], priority: 'important', filter: { allow: [], deny: [] } }],
       workbenches: [{ pos: [2, 0, 0], bills: [{}, {}] }],

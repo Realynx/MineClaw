@@ -24,6 +24,8 @@ const ease = (t: number) => (t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2
 
 export interface RigInput {
   keys: Set<string>;
+  /** Controller reserves E/Q for its palette/tool wheel. */
+  controller?: boolean;
 }
 
 const FORWARD = ['KeyW', 'ArrowUp'], BACK = ['KeyS', 'ArrowDown'], RIGHT = ['KeyD', 'ArrowRight'], LEFT = ['KeyA', 'ArrowLeft'];
@@ -36,15 +38,15 @@ function held(keys: Set<string>, codes: readonly string[]): boolean {
 }
 
 /** The fly camera's unnormalised move this frame: along its heading `fwd`, sideways and straight up or down. */
-function flyMove(fwd: THREE.Vector3, k: Set<string>): THREE.Vector3 {
+function flyMove(fwd: THREE.Vector3, k: Set<string>, controller = false): THREE.Vector3 {
   const right = new THREE.Vector3(-fwd.z, 0, fwd.x);
   const mv = new THREE.Vector3();
   if (held(k, FORWARD)) mv.add(fwd);
   if (held(k, BACK)) mv.sub(fwd);
   if (held(k, RIGHT)) mv.add(right);
   if (held(k, LEFT)) mv.sub(right);
-  if (held(k, RISE)) mv.y += 1;
-  if (held(k, SINK)) mv.y -= 1;
+  if (held(k, controller ? ['Space', 'PageUp'] : RISE)) mv.y += 1;
+  if (held(k, controller ? ['ControlLeft', 'ControlRight', 'PageDown'] : SINK)) mv.y -= 1;
   return mv;
 }
 
@@ -118,16 +120,16 @@ export class CameraRig {
 
   /** The pose the current mode wants this frame. */
   desired(dt: number, input: RigInput): Pose {
-    if (this.mode === 'fly') return this.flyPose(dt, input.keys);
+    if (this.mode === 'fly') return this.flyPose(dt, input.keys, input.controller);
     if (this.mode === 'iso' || this.mode === 'top') return this.isoPose(dt, input.keys);
     return this.followPose();
   }
 
   /** Fly: WASD / arrows move across, E Space PageUp up, Q PageDown down (Shift 4× faster); the mouse looks. */
-  private flyPose(dt: number, k: Set<string>): Pose {
+  private flyPose(dt: number, k: Set<string>, controller = false): Pose {
     const fast = held(k, FAST) ? 4 : 1;
     const v = this.speed * fast * dt;
-    const mv = flyMove(lookDir(this.flyYaw, 0), k);
+    const mv = flyMove(lookDir(this.flyYaw, 0), k, controller);
     if (mv.lengthSq() > 0) this.flyPos.addScaledVector(mv.normalize(), v);
     this.flyPos.y = Math.max(-64, Math.min(320, this.flyPos.y));
     const dir = lookDir(this.flyYaw, this.flyPitch);

@@ -29,6 +29,7 @@ export interface ModulePaletteProps {
   onDuplicateModule?: (id: string) => void;
   onPasteModule?: () => void;
   onCombineModules?: (ids: string[]) => void;
+  onVisibilityModule?: (id: string, visible: boolean) => void;
 }
 const icons: Record<MineModuleKind, string> = {
   tunnel: 'M6 19h52v10H6z',
@@ -112,7 +113,11 @@ export function ModuleSettings(p: ModulePaletteProps & { disabled: boolean }) {
         {spec.kind !== 'spiral' && spec.kind !== 'stairs' && spec.kind !== 'custom' ? <Field label="Clearance" value={spec.height} min={2} max={spec.kind === 'chamber' ? 6 : 3} disabled={p.disabled} onChange={(height) => update({ height })} /> : null}
         {spec.kind === 'branches' ? <><Field label="Branch reach" value={spec.branchLength} min={2} max={MINE_MODULE_MAX_BRANCH} disabled={p.disabled} onChange={(branchLength) => update({ branchLength })} /><Field label="Solid gap" value={spec.spacing} min={1} max={8} disabled={p.disabled} onChange={(spacing) => update({ spacing })} /></> : null}
         {spec.kind === 'spiral' || spec.kind === 'stairs' ? <Field label="Descent" value={spec.depth} min={1} max={plotMode().maxY - plotMode().minY - 1} disabled={p.disabled} onChange={(depth) => update({ depth })} /> : null}
-        {spec.kind === 'spiral' ? <Field label="Shaft size" value={spec.size} min={3} max={6} disabled={p.disabled} onChange={(size) => update({ size })} /> : null}
+        {spec.kind === 'spiral' ? <><Field label="Shaft size" value={spec.size} min={3} max={6} disabled={p.disabled} onChange={(size) => update({ size })} />
+          <Field label="Core size" value={spec.core ?? spec.size - 2} min={1} max={spec.size - 2} disabled={p.disabled} onChange={(core) => update({ core })} />
+          <label className="flex items-center justify-between text-[11px] text-muted">Turn direction<select aria-label="Turn direction" disabled={p.disabled} value={spec.clockwise === false ? 'ccw' : 'cw'} onChange={(event) => update({ clockwise: event.target.value === 'cw' })} className="h-7 rounded border border-border bg-surface px-1"><option value="cw">Clockwise</option><option value="ccw">Counterclockwise</option></select></label>
+          <label className="flex items-center gap-2 text-[11px] text-muted"><input type="checkbox" checked={spec.landingDepths?.includes(spec.depth) ?? false} disabled={p.disabled} onChange={(event) => update({ landingDepths: event.target.checked ? [...(spec.landingDepths ?? []), spec.depth] : (spec.landingDepths ?? []).filter((d) => d !== spec.depth) })} />Bottom landing</label></> : null}
+        {['spiral', 'tunnel', 'branches'].includes(spec.kind) ? <Field label="Torch interval (0 off)" value={spec.torchEvery ?? 0} min={0} max={96} disabled={p.disabled} onChange={(torchEvery) => update({ torchEvery })} /> : null}
       </div>
       {selected && !p.placingModule ? <><div className="mt-2 flex gap-1.5">
         <button type="button" disabled={!p.onCopyModule} onClick={() => p.onCopyModule?.(selected.id)} title="Copy component (Ctrl/Cmd+C)" className="flex flex-1 items-center justify-center gap-1 rounded border border-border py-1 text-[11px]"><Copy className="size-3" />Copy</button>

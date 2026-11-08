@@ -103,6 +103,8 @@ export class Studio {
   private saved = new Map<number, number>();
   /** Keys of the touched cells whose state differs from the saved one. */
   private diverged = new Set<number>();
+  private mineAuthoring: string | undefined;
+  private savedMineAuthoring: string | undefined;
   /** A mine session's generated terrain (null for a build). */
   readonly terrain: MineTerrain | null;
 
@@ -166,13 +168,21 @@ export class Studio {
       designId: this.designId,
       name: this.name,
       error: this.error,
-      dirty: this.diverged.size > 0,
+      dirty: this.dirty,
     };
   }
 
   /** Whether leaving now would lose canvas changes. */
   get dirty(): boolean {
-    return this.diverged.size > 0;
+    return this.diverged.size > 0 || this.mineAuthoring !== this.savedMineAuthoring;
+  }
+
+  /** Includes metadata-only edits (grouping, settings and visibility) in Save and the navigation guard. */
+  setMineAuthoring(data: string, initialize = false): void {
+    if (initialize) this.savedMineAuthoring = data;
+    if (this.mineAuthoring === data) return;
+    this.mineAuthoring = data;
+    this.changed();
   }
 
   /** Records an applied change against the saved state (forward[i] and backward[i] are the same cell). */
@@ -414,10 +424,12 @@ export class Studio {
       ...(summary?.trim() ? { summary: summary.trim() } : {}),
       ...(asNew ? { asNew: true } : {}),
       ...(previewPng ? { previewPng } : {}),
+      ...(this.mineAuthoring !== undefined ? { mineAuthoring: this.mineAuthoring } : {}),
     };
     // What is on the canvas as the save goes out is what the save holds (edits made meanwhile stay unsaved).
     const at = new Map([...this.diverged].map((k) => [k, this.stateAt(k)]));
     const r = await this.api.save(this.id, body);
+    this.savedMineAuthoring = body.mineAuthoring;
     for (const [k, v] of at) {
       const now = this.stateAt(k);
       this.saved.set(k, v);

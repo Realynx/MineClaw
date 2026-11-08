@@ -13,6 +13,7 @@
     "SessionIdleHours": 12,
     "SessionAbsoluteDays": 7,
     "CookieSecure": "auto",
+    "Tls": { "Enabled": false, "Hostname": "", "Port": 8443, "CertFile": "", "KeyFile": "" },
     "LogLevel": "info",
     "ValidateResponses": "off",
     "BodyLimitBytes": 1048576,

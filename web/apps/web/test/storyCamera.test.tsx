@@ -1,23 +1,32 @@
 import { act, fireEvent, render, screen } from '@testing-library/react';
-import { forwardRef, useEffect, useImperativeHandle, useState } from 'react';
+import { createRef, forwardRef, useEffect, useImperativeHandle, useState } from 'react';
+import { PerspectiveCamera } from 'three';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { WorldViewerHandle, WorldViewerProps } from '@mineclaw/world-viewer';
 import { ControlCluster } from '@/features/story/StoryHud';
-import { StoryMap, type StoryMapProps } from '@/features/story/StoryMap';
+import { StoryMap, type StoryMapHandle, type StoryMapProps } from '@/features/story/StoryMap';
 import { useStoryKeys } from '@/features/story/mode/keys';
 import type { Story } from '@/features/story/mode/commands';
+import type * as ChestBadges from '@/features/story/chestBadges';
 
 const viewer = vi.hoisted(() => ({
   mounts: 0,
   mode: '',
   focus: vi.fn(),
+  lock: vi.fn(),
   engine: {},
   source: {},
   locked: false,
   aimClick: undefined as WorldViewerProps['onAimClick'],
   resolveAim: undefined as WorldViewerProps['resolveAim'],
+  beforeFrame: undefined as WorldViewerProps['onBeforeFrame'],
+  afterFrame: undefined as WorldViewerProps['onAfterFrame'],
 }));
-vi.mock('@/features/story/chestBadges', () => ({ useContainerBadges: () => ({ current: new Map() }) }));
+vi.mock('@/features/story/chestBadges', async (importOriginal) => ({
+  ...await importOriginal<typeof ChestBadges>(),
+  useContainerBadges: () => ({ current: new Map() }),
+}));
+vi.mock('@/features/story/StoryAudio', () => ({ StoryAudio: () => null }));
 vi.mock('@/features/world/integration', () => ({
   useWorldHost: () => ({ ready: true, source: viewer.source, mod: { WorldViewer: MockViewer } }),
 }));
@@ -25,6 +34,8 @@ const MockViewer = forwardRef<WorldViewerHandle, WorldViewerProps>(function Mock
   viewer.mode = props.cameraMode ?? '';
   viewer.aimClick = props.onAimClick;
   viewer.resolveAim = props.resolveAim;
+  viewer.beforeFrame = props.onBeforeFrame;
+  viewer.afterFrame = props.onAfterFrame;
   useEffect(() => {
     viewer.mounts++;
   }, []);
@@ -36,8 +47,9 @@ beforeEach(() => {
   viewer.mounts = 0;
   viewer.locked = false;
   viewer.focus.mockClear();
+  viewer.lock.mockClear();
   viewer.engine = {
-    surface: { focus: viewer.focus },
+    surface: { focus: viewer.focus }, lock: viewer.lock,
     rig: { target: { x: 8, y: 64, z: 12 }, isoZoom: 44, flyPos: { set: vi.fn() } },
   };
   vi.stubGlobal('requestAnimationFrame', () => 1);
@@ -75,7 +87,7 @@ it('switches the same mounted viewer to free cam and back, giving mouse control 
   expect(viewer.mode).toBe('fly');
   expect(canvas.style.pointerEvents).toBe('none');
   expect(canvas.tabIndex).toBe(-1);
-  expect(viewer.focus).toHaveBeenCalledOnce();
+  expect(viewer.lock).toHaveBeenCalledOnce();
   const rig = (viewer.engine as { rig: { flyPos: { set: ReturnType<typeof vi.fn> }; target: object; isoZoom: number } })
     .rig;
   expect(rig.flyPos.set).toHaveBeenCalledWith(8, 76, 28);
@@ -101,6 +113,7 @@ it('moves free cam to the colony when its first home position arrives after the 
     const pending = [...frames.values()];
     frames.clear();
     for (const cb of pending) cb(16);
+    viewer.beforeFrame?.(viewer.engine as Parameters<NonNullable<WorldViewerProps['onBeforeFrame']>>[0], 16, 0);
   };
   const target = {
     x: 0,
@@ -116,7 +129,7 @@ it('moves free cam to the colony when its first home position arrives after the 
   const setBotBadges = vi.fn();
   const matrix = { elements: new Array<number>(16).fill(0) };
   viewer.engine = {
-    surface: { focus: viewer.focus },
+    surface: { focus: viewer.focus }, lock: viewer.lock,
     rig: { target, isoZoom: 44, flyPos: { set: position } },
     camera: { matrixWorldInverse: matrix, projectionMatrix: matrix, matrixWorld: matrix, projectionMatrixInverse: matrix },
     setBotLabels: vi.fn(),
@@ -295,6 +308,7 @@ it('hides freecam tools while looking around and opens blocks with B while editi
   fireEvent.click(screen.getByRole('button', { name: 'Freecam tools' }));
   fireEvent.click(screen.getByRole('button', { name: 'Edit plan' }));
   Object.defineProperty(document, 'pointerLockElement', { configurable: true, value: screen.getByTestId('fake-viewer') });
+  viewer.locked = true;
   fireEvent(document, new Event('pointerlockchange'));
   expect(screen.queryByTestId('fly-editor')).not.toBeInTheDocument();
   expect(screen.queryByRole('button', { name: 'Freecam tools' })).not.toBeInTheDocument();
@@ -303,8 +317,40 @@ it('hides freecam tools while looking around and opens blocks with B while editi
   expect(key.defaultPrevented).toBe(true);
   expect(screen.getByRole('dialog', { name: 'Block palette' })).toBeInTheDocument();
   Object.defineProperty(document, 'pointerLockElement', { configurable: true, value: null });
+  viewer.locked = false;
   fireEvent(document, new Event('pointerlockchange'));
   fireEvent.click(screen.getByRole('button', { name: 'Close the palette' }));
   expect(screen.getByRole('button', { name: 'Freecam tools' })).toBeInTheDocument();
   expect(screen.queryByTestId('fly-editor')).not.toBeInTheDocument();
+});
+
+it.each(['cancel', 'tool', 'view', 'level', 'unchanged'] as const)('a deferred release pick respects %s before issuing an angled build', async (change) => {
+  const now = vi.spyOn(performance, 'now').mockReturnValue(0); // no unrelated throttled hover pick
+  const camera = new PerspectiveCamera(60, 800 / 600, 0.1, 500);
+  camera.position.set(0.5, 90, 30.5); camera.lookAt(0.5, 64, 0.5); camera.updateMatrixWorld();
+  let resolve!: (hit: { x: number; y: number; z: number; id: number; meta: number; face: number }) => void;
+  const pick = vi.fn(() => new Promise<{ x: number; y: number; z: number; id: number; meta: number; face: number }>((done) => { resolve = done; }));
+  viewer.engine = {
+    camera, pickCut: () => null, lock: viewer.lock,
+    surface: { focus: viewer.focus },
+    rig: { target: { x: 0, y: 64, z: 0 }, isoZoom: 44, flyPos: { set: vi.fn() } },
+    runtime: { host: { pick, scan: () => Promise.resolve([]) }, store: { entities: () => [], bots: () => [] } },
+  };
+  const ref = createRef<StoryMapHandle>(), props = { ...mapProps(), tool: { kind: 'build', id: 'block' } as const };
+  const rendered = render(<StoryMap ref={ref} {...props} view="angled" canEdit />);
+  const canvas = screen.getByLabelText<HTMLCanvasElement>(/Colony map/);
+  Object.defineProperties(canvas, { clientWidth: { value: 800 }, clientHeight: { value: 600 }, setPointerCapture: { value: vi.fn() } });
+  vi.spyOn(canvas, 'getContext').mockReturnValue(null);
+  viewer.afterFrame?.(viewer.engine as Parameters<NonNullable<WorldViewerProps['onAfterFrame']>>[0], 0, 0);
+  fireEvent.pointerDown(canvas, { pointerId: 1, clientX: 400, clientY: 300, button: 0, buttons: 1 });
+  fireEvent.pointerUp(canvas, { pointerId: 1, clientX: 450, clientY: 300, button: 0, buttons: 0 });
+  expect(pick).toHaveBeenCalledOnce(); expect(props.onTool).not.toHaveBeenCalled();
+  if (change === 'cancel') act(() => { expect(ref.current?.cancelDrag()).toBe(true); });
+  if (change === 'tool') rendered.rerender(<StoryMap ref={ref} {...props} tool={{ kind: 'select' }} view="angled" canEdit />);
+  if (change === 'view') rendered.rerender(<StoryMap ref={ref} {...props} view="top" canEdit />);
+  if (change === 'level') rendered.rerender(<StoryMap ref={ref} {...props} view="angled" level={64} canEdit />);
+  await act(async () => { resolve({ x: 9, y: 70, z: 11, id: 1, meta: 0, face: 1 }); await Promise.resolve(); });
+  if (change === 'unchanged') expect(props.onTool).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ b: [9, 71, 11], moved: true }), false);
+  else expect(props.onTool).not.toHaveBeenCalled();
+  now.mockRestore();
 });

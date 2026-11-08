@@ -135,7 +135,14 @@ public sealed class SoundMessage : IPacket
 {
     public const string BobberSplash = "entity.bobber.splash";
     /// <summary>The surfaced sounds by 1.12.2 sound id (<c>SoundEvent.registerSounds</c> order; minecraft-data sounds.json).</summary>
-    public static readonly IReadOnlyDictionary<int, string> Ids1122 = new Dictionary<int, string> { [153] = BobberSplash };
+    public static readonly IReadOnlyDictionary<int, string> Ids1122 = LoadSoundIds();
+
+    private static IReadOnlyDictionary<int, string> LoadSoundIds()
+    {
+        using var stream = typeof(SoundMessage).Assembly.GetManifestResourceStream("mcdata.1.12.2.sounds.json")!;
+        using var json = System.Text.Json.JsonDocument.Parse(stream);
+        return json.RootElement.EnumerateArray().ToDictionary(e => e.GetProperty("id").GetInt32(), e => e.GetProperty("name").GetString()!);
+    }
 
     public byte Id => SoundEffectPacket.PacketId;
     public string Sound { get; init; } = "";

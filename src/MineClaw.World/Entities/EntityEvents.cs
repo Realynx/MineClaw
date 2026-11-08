@@ -7,7 +7,8 @@ namespace MineClaw.World;
 /// <see cref="Kind"/> swing | swing_off | hurt | death | crit | magic_crit | eat | teleport | lightning. <see cref="Position"/> is
 /// set for lightning (the bolt's spot).
 /// </summary>
-public readonly record struct EntityEvent(int EntityId, string Kind, DateTime At, Vec3d? Position = null);
+public readonly record struct EntityEvent(int EntityId, string Kind, DateTime At, Vec3d? Position = null,
+    string? Sound = null, float? Volume = null, float? Pitch = null);
 
 /// <summary>
 /// A short ring of <see cref="EntityEvent"/>s (the last <see cref="Retention"/>, at most <see cref="Capacity"/>): enough for a

@@ -100,3 +100,16 @@ export function volumeOutline(cells: Iterable<readonly [number, number, number]>
   }
   return new Float32Array(out);
 }
+
+/** Bound overlay work for huge plans: coarse occupied 8-block cells retain the route shape without millions of edges. */
+export function previewOutline(cells: readonly V3[]): Float32Array {
+  if (cells.length <= 12_000) return volumeOutline(cells);
+  const coarse = new Map<string, V3>();
+  for (const p of cells) {
+    const q = p.map((n) => Math.floor(n / 8)) as V3;
+    coarse.set(q.join(','), q);
+  }
+  const positions = volumeOutline(coarse.values());
+  for (let i = 0; i < positions.length; i++) positions[i]! *= 8;
+  return positions;
+}

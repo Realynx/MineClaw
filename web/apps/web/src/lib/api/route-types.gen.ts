@@ -52,6 +52,8 @@ export interface RouteTypes {
   'admin.compact': { params: never; query: never; body: z.input<typeof C.CompactRequest>; response: z.output<typeof C.ActivityCompactionReport> };
   'admin.shardImport': { params: never; query: never; body: z.input<typeof C.ShardImportOptions>; response: z.output<typeof C.ShardImportResult> };
   'groom.preview': { params: never; query: never; body: z.input<typeof C.GroomPreviewRequest>; response: z.output<typeof C.GroomPreviewResponse> };
+  'admin.webHosting': { params: never; query: never; body: never; response: z.output<typeof C.WebHostingResponse> };
+  'admin.webHostingSave': { params: never; query: never; body: z.input<typeof C.WebHostingSaveRequest>; response: z.output<typeof C.WebHostingResponse> };
   'admin.nodes': { params: never; query: never; body: never; response: z.output<typeof C.AdminNodesResponse> };
   'admin.settings': { params: z.input<typeof C.AdminNodeParams>; query: never; body: never; response: z.output<typeof C.AdminSettingsResponse> };
   'admin.settingsSave': { params: z.input<typeof C.AdminNodeParams>; query: never; body: z.input<typeof C.AdminSettingsSaveRequest>; response: z.output<typeof C.AdminSettingsSaveResponse> };

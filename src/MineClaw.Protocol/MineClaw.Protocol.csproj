@@ -2,6 +2,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\MineClaw.Data\MineClaw.Data.csproj" />
+    <EmbeddedResource Include="..\..\third_party\minecraft-data\pc\1.12.2\sounds.json" LogicalName="mcdata.1.12.2.sounds.json" />
   </ItemGroup>
 
   <PropertyGroup>

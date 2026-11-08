@@ -31,6 +31,15 @@ function mountPanel(options: { canWrite?: boolean; busy?: boolean; acceptMoves?:
 }
 
 describe('Mine Designer components', () => {
+  it('toggles each component wireframe independently while preserving selection and inspector access', () => {
+    const onVisibility = vi.fn(), onSelect = vi.fn();
+    const { rerender } = render(<MineComponents modules={modules} onVisibilityModule={onVisibility} onSelectModule={onSelect} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Hide Tunnel 1' }));
+    expect(onVisibility).toHaveBeenCalledWith('tunnel', false); expect(onSelect).not.toHaveBeenCalled();
+    rerender(<MineComponents modules={modules.map((m) => m.id === 'tunnel' ? { ...m, visible: false } : m)} onVisibilityModule={onVisibility} onSelectModule={onSelect} />);
+    fireEvent.click(screen.getByRole('option', { name: 'Tunnel 1' })); expect(onSelect).toHaveBeenCalledWith('tunnel');
+    fireEvent.click(screen.getByRole('button', { name: 'Show Tunnel 1' })); expect(onVisibility).toHaveBeenLastCalledWith('tunnel', true);
+  });
   it('keeps the outliner above the scrolling inspector and palette and selects or frames existing pieces', () => {
     const { onSelect, onFrame } = mountPanel();
     const outliner = screen.getByTestId('mine-components'), properties = screen.getByTestId('mine-properties');

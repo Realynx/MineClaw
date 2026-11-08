@@ -11,6 +11,9 @@ export { registerThumbnail, ThumbnailView, type ThumbnailViewOptions, type Thumb
 export { BubbleLayer, ChatBubbles, BUBBLE, wrapText, cleanText, holdMs, bubbleAlpha, findSpeaker, linePx, stackOffsets, type BubbleKind, type BubbleMode, type BubbleMessage, type ShownBubble, type Speaker } from './render/bubbles';
 export * from './types';
 export { loadBundle, bundleUrls, type AssetBundle, type Pack, type Pack1122, type PackBeta, type PackAnim, type PackBiome } from './assets/bundle';
+export { importGameJar, importSoundFolder } from './assets/importPack';
+export { readLocalPack, removeLocalPack, ASSETS_CHANGED, type LocalPack } from './assets/localStore';
+export { ControllerAudio, type SoundListener } from './audio/controllerAudio';
 export { normalizeIndex, normalizeEntities, normalizeOverlays, camelize } from './wire/normalize';
 export { decodeMcwc, McwcError, type McwcEntry, type McwcPayload } from './wire/mcwc';
 export { cellIndex, unpackSnapshot, parseLight, lightPacked } from './wire/chunk';

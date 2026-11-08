@@ -373,4 +373,34 @@ describe('frame golden', () => {
     // Includes badge-era label cache keys and speech-bubble ordering; matches the isolated 21cf234 baseline trace.
     expect(a).toBe('4409f6464d20b00f2f7f430c32397317');
   }, 30000);
+
+  it('pans before the world frame and projects the overlay after that same camera is rendered', () => {
+    const src = createFixtureSource({ mobs: 0 });
+    const rt = new WorldRuntime(src, { inlineMesher: true, quality: 'gpu', textures: false, pixelRatio: 1 });
+    const events: string[] = [];
+    let rendered: number[] | undefined;
+    const engine = new WorldViewerEngine(container(800, 500), {
+      source: src, runtime: rt, cameraMode: 'top', pixelRatio: 1,
+      onBeforeFrame: (view) => { events.push('input'); view.rig.target.x = 40; },
+      onAfterFrame: (view) => {
+        events.push('overlay');
+        expect([...view.camera.matrixWorldInverse.elements, ...view.camera.projectionMatrix.elements]).toEqual(rendered);
+        expect(rt.canvas.style.visibility).toBe('visible');
+      },
+    });
+    (rt as unknown as { pause(): void }).pause();
+    hooks.render = (_scene, cam) => {
+      if (cam !== engine.camera) return;
+      events.push('world');
+      rendered = [...engine.camera.matrixWorldInverse.elements, ...engine.camera.projectionMatrix.elements];
+    };
+    try {
+      expect(rt.canvas.style.visibility).toBe('hidden');
+      rt.step(clock + 100, 0.016);
+      expect(events[0]).toBe('input');
+      expect(events.at(-1)).toBe('overlay');
+      expect(events).toContain('world');
+      expect(engine.camera.position.x).toBeCloseTo(40);
+    } finally { hooks.render = undefined; engine.dispose(); }
+  });
 });

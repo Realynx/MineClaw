@@ -22,16 +22,23 @@ import { StoryDialogs, StoryHudLayer, StoryMapSlot } from './mode/StoryModeView'
 import { colonyKey } from './useStory';
 import { setItemIconSource } from './visuals';
 
-/** Item icons from the committed textures, once the viewer module is here. */
-function useItemIcons() {
+/** Item icons from the browser's local game pack, once the viewer module is here. */
+function useItemIcons(version: '1.12.2' | 'b1.8.1') {
   useEffect(() => {
-    void loadWorldViewer().then((m) => m && setItemIconSource(m.itemIconResolver()));
-  }, []);
+    let alive = true, generation = 0;
+    const load = () => {
+      const current = ++generation;
+      void loadWorldViewer().then(async (m) => { if (m) { const source = await m.itemIconResolver(version); if (alive && current === generation) setItemIconSource(source); } }).catch(() => undefined);
+    };
+    load();
+    window.addEventListener('mineclaw-assets-changed', load);
+    return () => { alive = false; window.removeEventListener('mineclaw-assets-changed', load); };
+  }, [version]);
 }
 
 export function StoryMode() {
   const c = useStory();
-  useItemIcons();
+  useItemIcons(c.state?.version === '1.12.2' ? '1.12.2' : 'b1.8.1');
   useStoryKeys(c);
   useDesignParam(c);
   const { attach, el, on } = c.fullscreen;

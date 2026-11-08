@@ -181,6 +181,9 @@ export interface EntityDto {
 
 /** A one-off thing that happened to an entity (or at a place: lightning). */
 export interface EntityEvent {
+  sound?: string | null;
+  volume?: number | null;
+  pitch?: number | null;
   /** The entity (absent for lightning). */
   id?: number | null;
   /** [entity models] A hive bot the event is about (bots carry no entity id on the wire). */

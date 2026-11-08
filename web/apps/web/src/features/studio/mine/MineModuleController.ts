@@ -1,4 +1,4 @@
-/** Layout ownership is local authoring metadata; the server still receives ordinary, undoable canvas edits. */
+/** Editable layouts are saved with each design revision; executable work remains ordinary canvas edits. */
 import { DEPTH, inside, keyOf, plotMode, posOf, type Cell, type V3 } from '../canvas';
 import type { Studio } from '../studio';
 import { defaultModule, moduleCells, moduleName, normalizeModule, type MineModuleInstance, type MineModuleSpec } from './modules';
@@ -26,12 +26,14 @@ export class MineModuleController {
   private applying = false;
   private serial = 0;
   private readonly storageKey: string;
+  recoveredLocal = false;
   lastError: string | null = null;
 
   constructor(private readonly studio: Studio, private readonly storage: StorageLike | null = browserStorage()) {
     this.storageKey = `mineclaw.mine-modules.v1:${studio.session.owner}:${studio.id}:${studio.session.version}:${studio.session.seed}`;
     this.restore();
     this.owned = union(this.state.modules);
+    studio.setMineAuthoring(this.serialize(), !this.recoveredLocal);
     this.unsubscribe = studio.onCells((cells) => {
       if (this.applying) return;
       const owned = this.owned;
@@ -59,6 +61,24 @@ export class MineModuleController {
     if (!normalized) { this.lastError = 'Unknown mine layout.'; return null; }
     const instance = { id: `module-${Date.now().toString(36)}-${++this.serial}`, spec: normalized, at: [...at] as V3 };
     return this.change([...this.state.modules, instance], `Add ${moduleName(spec.kind)}`) ? instance : null;
+  }
+  /** Presets become a single undoable insertion of independently editable pieces. */
+  addMany(pieces: readonly { spec: MineModuleSpec; at: V3 }[], label: string): readonly MineModuleInstance[] | null {
+    if (this.state.modules.length + pieces.length > 100) { this.lastError = 'A mine can contain up to 100 editable layouts.'; return null; }
+    const items: MineModuleInstance[] = [];
+    for (const piece of pieces) {
+      const spec = normalizeModule(piece.spec);
+      if (!spec) { this.lastError = 'Unknown mine layout.'; return null; }
+      items.push({ id: `module-${Date.now().toString(36)}-${++this.serial}`, spec, at: [...piece.at] as V3 });
+    }
+    return this.change([...this.state.modules, ...items], label) ? items : null;
+  }
+  /** Visibility only affects editor overlays and picking, never the excavation or jobs. */
+  setVisible(id: string, visible: boolean): void {
+    if (!this.state.modules.some((m) => m.id === id && (m.visible !== false) !== visible)) return;
+    this.state = { ...this.state, modules: this.state.modules.map((m) => m.id === id ? { ...m, visible } : m) };
+    this.persist();
+    for (const listener of this.listeners) listener();
   }
   update(id: string, spec: MineModuleSpec): boolean {
     const normalized = normalizeModule(spec);
@@ -159,19 +179,32 @@ export class MineModuleController {
       base: [...this.state.base].filter(([, v]) => v !== -1), overrides: [...this.state.overrides] });
   }
   private persist(): void {
+    const data = this.serialize();
+    this.studio.setMineAuthoring(data);
     try {
-      this.storage?.setItem(this.storageKey, this.serialize());
+      this.storage?.setItem(this.storageKey, data);
     } catch { /* Storage restrictions never block canvas authoring. */ }
   }
   private restore(): void {
     const session = this.studio.session;
-    const keys = [this.storageKey, ...(session.designId ? session.revisions.slice(0, 40).map((r) => this.designKey(session.designId!, r.rev)) : [])];
-    for (const key of keys) if (this.restoreFrom(key)) break;
+    // Saved metadata is authoritative. Legacy browser-only layouts may be recovered after exact cell validation.
+    if (session.mineAuthoring) {
+      this.restoreText(session.mineAuthoring);
+      this.lastError = null;
+      return;
+    }
+    // Old servers did not report the opened design revision. Their historical fallback stays compatible, but current
+    // replies never borrow an identically-shaped component configuration from a different saved revision.
+    const revisions = typeof session.designRevision === 'number' ? [session.designRevision] : session.mineAuthoring === undefined ? session.revisions.slice(0, 40).map((r) => r.rev) : [];
+    const keys = [this.storageKey, ...(session.designId ? revisions.map((rev) => this.designKey(session.designId!, rev)) : [])];
+    for (const key of keys) if (this.restoreFrom(key)) { this.recoveredLocal = true; break; }
     this.lastError = null;
   }
   private restoreFrom(key: string): boolean {
+    try { return this.restoreText(this.storage?.getItem(key)); } catch { return false; }
+  }
+  private restoreText(text: string | null | undefined): boolean {
     try {
-      const text = this.storage?.getItem(key);
       if (!text || text.length > 20_000_000) return false;
       const parsed = JSON.parse(text) as { size?: unknown; modules?: unknown; baseDefault?: unknown; base?: unknown; overrides?: unknown };
       const size = parsed.size ?? 64; // Original component metadata used a 64-column key stride.
@@ -181,7 +214,7 @@ export class MineModuleController {
       for (const raw of parsed.modules) {
         const m = raw as Partial<MineModuleInstance>, spec = normalizeModule(m.spec);
         if (!spec || typeof m.id !== 'string' || !Array.isArray(m.at) || m.at.length !== 3 || !m.at.every(Number.isInteger)) return false;
-        modules.push({ id: m.id, at: m.at, spec });
+        modules.push({ id: m.id, at: m.at, spec, ...(m.visible === false ? { visible: false } : {}) });
       }
       if (new Set(modules.map((m) => m.id)).size !== modules.length || !this.validate(modules)) return false;
       const read = (raw: unknown): Values => {

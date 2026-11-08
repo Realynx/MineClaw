@@ -1,7 +1,8 @@
-// The packed Minecraft assets that ship with the package (generated/<version>/ by scripts/pack-assets.mjs from the committed
-// assets/<version>/). URLs are written out literally so bundlers (Vite, webpack, Turbopack) emit and rewrite every file.
+// Browser-local Minecraft resources imported from the user's own game installation.
 
 import type { GameVersion } from '../world/blocks';
+import { ASSETS_CHANGED, readLocalPack } from './localStore';
+import { fallbackBundle } from './fallback';
 
 /** One animated texture (.mcmeta): its atlas cell, its frames (index into its strip in anim.png, time in ticks). */
 export interface PackAnim {
@@ -75,6 +76,8 @@ export interface PackBeta {
 export type Pack = Pack1122 | PackBeta;
 
 export interface AssetBundle {
+  /** True for the original flat-colour placeholders when no local game JAR is installed. */
+  fallback?: boolean;
   version: GameVersion;
   pack: Pack;
   /** Block atlas: 1.12.2 blocks.png (32 columns) or beta terrain.png (16×16). */
@@ -88,79 +91,55 @@ export interface AssetBundle {
   font?: ImageBitmap | null;
 }
 
-const URLS: Record<GameVersion, () => Record<string, URL>> = {
-  '1.12.2': () => ({
-    pack: new URL('../../generated/1.12.2/pack.json', import.meta.url),
-    blocks: new URL('../../generated/1.12.2/blocks.png', import.meta.url),
-    items: new URL('../../generated/1.12.2/items.png', import.meta.url),
-    anim: new URL('../../generated/1.12.2/anim.png', import.meta.url),
-    entity: new URL('../../generated/1.12.2/entity.png', import.meta.url),
-    font: new URL('../../generated/1.12.2/font.png', import.meta.url),
-    'env/sun': new URL('../../generated/1.12.2/env/sun.png', import.meta.url),
-    'env/moon_phases': new URL('../../generated/1.12.2/env/moon_phases.png', import.meta.url),
-    'env/clouds': new URL('../../generated/1.12.2/env/clouds.png', import.meta.url),
-    'env/rain': new URL('../../generated/1.12.2/env/rain.png', import.meta.url),
-    'env/snow': new URL('../../generated/1.12.2/env/snow.png', import.meta.url),
-    'env/colormap_grass': new URL('../../generated/1.12.2/env/colormap_grass.png', import.meta.url),
-    'env/colormap_foliage': new URL('../../generated/1.12.2/env/colormap_foliage.png', import.meta.url),
-    'env/glint': new URL('../../generated/1.12.2/env/glint.png', import.meta.url),
-  }),
-  'b1.8.1': () => ({
-    pack: new URL('../../generated/b1.8.1/pack.json', import.meta.url),
-    blocks: new URL('../../generated/b1.8.1/terrain.png', import.meta.url),
-    items: new URL('../../generated/b1.8.1/items.png', import.meta.url),
-    entity: new URL('../../generated/b1.8.1/entity.png', import.meta.url),
-    font: new URL('../../generated/b1.8.1/font.png', import.meta.url),
-    'env/clouds': new URL('../../generated/b1.8.1/env/clouds.png', import.meta.url),
-    'env/rain': new URL('../../generated/b1.8.1/env/rain.png', import.meta.url),
-    'env/snow': new URL('../../generated/b1.8.1/env/snow.png', import.meta.url),
-    'env/sun': new URL('../../generated/b1.8.1/env/sun.png', import.meta.url),
-    'env/moon': new URL('../../generated/b1.8.1/env/moon.png', import.meta.url),
-  }),
-};
-
-/** The URL of each bundled file (for apps that preload or serve them elsewhere). */
-export function bundleUrls(version: GameVersion): Record<string, string> {
-  return Object.fromEntries(Object.entries(URLS[version]()).map(([k, u]) => [k, u.href]));
-}
-
-async function image(url: URL | string): Promise<ImageBitmap> {
-  const r = await fetch(url);
-  if (!r.ok) throw new Error(`asset ${String(url)}: HTTP ${r.status}`);
-  return createImageBitmap(await r.blob(), { premultiplyAlpha: 'none', colorSpaceConversion: 'none' });
-}
-
 const cache = new Map<GameVersion, Promise<AssetBundle>>();
+const urls = new Map<GameVersion, Record<string, string>>();
+let generation = 0;
+if (typeof window !== 'undefined') window.addEventListener(ASSETS_CHANGED, () => {
+  generation++;
+  cache.clear();
+  for (const old of urls.values()) for (const url of Object.values(old)) URL.revokeObjectURL(url);
+  urls.clear();
+});
 
-/** Loads (once per page) the bundled assets of a version. */
+/** Object URLs of the installed pack, available after loadBundle. Never points at a server or bundled game artwork. */
+export function bundleUrls(version: GameVersion): Record<string, string> { return urls.get(version) ?? {}; }
+
+/** Loads the browser's own pack once, or renders original placeholders until a JAR is imported in Settings. */
 export function loadBundle(version: GameVersion): Promise<AssetBundle> {
-  let p = cache.get(version);
-  if (!p) {
-    p = (async () => {
-      const u = URLS[version]();
-      const packP = fetch(u.pack).then((r) => {
-        if (!r.ok) throw new Error(`asset pack.json: HTTP ${r.status}`);
-        return r.json() as Promise<Pack>;
-      });
-      const envKeys = Object.keys(u).filter((k) => k.startsWith('env/'));
-      const [pack, blocks, items, anim, entity, font, ...env] = await Promise.all([
-        packP,
-        image(u.blocks),
-        image(u.items),
-        u.anim ? image(u.anim) : Promise.resolve(null),
-        image(u.entity),
-        u.font ? image(u.font).catch(() => null) : Promise.resolve(null),
-        ...envKeys.map((k) => image(u[k]).catch(() => null)),
-      ]);
-      const envMap: Record<string, ImageBitmap> = {};
-      envKeys.forEach((k, i) => {
-        const b = env[i];
-        if (b) envMap[k.slice(4)] = b;
-      });
-      return { version, pack, blocks, items, anim, entity, env: envMap, font };
+  let promise = cache.get(version);
+  if (!promise) {
+    const started = generation;
+    promise = (async () => {
+      const local = await readLocalPack(version).catch(() => null);
+      if (started !== generation) return loadBundle(version);
+      if (!local) {
+        const fallback = await fallbackBundle(version);
+        if (started === generation) return fallback;
+        for (const image of [fallback.blocks, fallback.items, fallback.entity]) image.close();
+        return loadBundle(version);
+      }
+      const images: Record<string, ImageBitmap> = {}, objectUrls: Record<string, string> = {};
+      const discard = () => {
+        for (const image of Object.values(images)) image.close();
+        for (const url of Object.values(objectUrls)) URL.revokeObjectURL(url);
+      };
+      try {
+        for (const [name, file] of Object.entries(local.images)) {
+          images[name] = await createImageBitmap(file, { premultiplyAlpha: 'none', colorSpaceConversion: 'none' });
+          if (started !== generation) { discard(); return loadBundle(version); }
+          objectUrls[name] = URL.createObjectURL(file);
+        }
+        urls.set(version, objectUrls);
+        const env = Object.fromEntries(Object.entries(images).filter(([k]) => k.startsWith('env/')).map(([k, image]) => [k.slice(4), image]));
+        return { version, pack: local.pack, blocks: images.blocks, items: images.items, entity: images.entity, anim: images.anim ?? null, font: images.font ?? null, env };
+      } catch (error) {
+        discard();
+        if (started !== generation) return loadBundle(version);
+        throw error;
+      }
     })();
-    p.catch(() => cache.delete(version));
-    cache.set(version, p);
+    void promise.catch(() => { if (cache.get(version) === promise) cache.delete(version); });
+    cache.set(version, promise);
   }
-  return p;
+  return promise;
 }

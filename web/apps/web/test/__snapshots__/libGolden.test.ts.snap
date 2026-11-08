@@ -359,6 +359,8 @@ exports[`lib helpers (golden) > stale time per route 1`] = `
   "admin.settingsSave": "30000",
   "admin.settingsTest": "30000",
   "admin.shardImport": "30000",
+  "admin.webHosting": "30000",
+  "admin.webHostingSave": "30000",
   "audit.list": "30000",
   "auth.csrf": "30000",
   "auth.login": "30000",

@@ -1,7 +1,9 @@
 import type * as THREE from 'three';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Canvas, EARTH, keyOf, setPlotMode, type V3 } from '@/features/studio/canvas';
-import { minePreview, oreFamily, volumeOutline, type PreviewTerrain } from '@/features/studio/mine/minePreview';
+import { minePreview, oreFamily, previewOutline, volumeOutline, type PreviewTerrain } from '@/features/studio/mine/minePreview';
+import { visibleMinePreview } from '@/features/studio/mine/visiblePreview';
+import { defaultModule, moduleCells } from '@/features/studio/mine/modules';
 import { mineStats } from '@/features/studio/mine/mineStats';
 import type { MineTerrain } from '@/features/studio/mine/mineTerrain';
 import { oreTable } from '@/features/studio/mine/oreTable';
@@ -176,6 +178,47 @@ describe('authored mine air', () => {
 });
 
 describe('excavation volume wireframes', () => {
+  it('preserves mining wireframes in thumbnails, hides handles and restores visibility even when capture fails', async () => {
+    const overlay = new Overlay3D(256);
+    overlay.setMinePreview({ planned: [[1, 20, 1]], veins: [[2, 20, 1]] });
+    overlay.setMinePlacement([[3, 20, 1]]);
+    overlay.setSelection({ min: [1, 20, 1], max: [2, 21, 1] });
+    const before = overlay.group.children.map((child) => child.visible);
+    await expect(overlay.withoutGuides(() => {
+      expect(overlay.group.visible).toBe(true);
+      expect(overlay.group.children.filter((child) => child.visible).map((child) => child.name)).toEqual(['mine-planned', 'mine-veins']);
+      return Promise.reject(new Error('capture failed'));
+    }, true)).rejects.toThrow('capture failed');
+    expect(overlay.group.children.map((child) => child.visible)).toEqual(before);
+    await overlay.withoutGuides(() => { expect(overlay.group.children.every((child) => !child.visible)).toBe(true); return Promise.resolve(); });
+    expect(overlay.group.children.map((child) => child.visible)).toEqual(before);
+    overlay.dispose();
+  });
+  it('hides one component without hiding an overlapping shown route, unrelated manual digs or their exposed veins', () => {
+    setPlotMode({ kind: 'mine', terrain: terrain([]) });
+    const hidden = { id: 'a', spec: { ...defaultModule('tunnel'), length: 7 }, at: [30, 20, 30] as V3, visible: false };
+    const shown = { id: 'b', spec: { ...defaultModule('tunnel'), length: 3 }, at: [30, 20, 30] as V3 };
+    const planned = moduleCells(hidden.spec, hidden.at).cells.map((p) => p.slice(0, 3) as V3);
+    planned.push([50, 20, 50]);
+    const original = { planned, veins: [[26, 20, 30], [30, 19, 30], [50, 19, 50]] as V3[] };
+    const visible = visibleMinePreview(original, [hidden, shown]);
+    expect(visible.planned).toHaveLength(7);
+    expect(visible.planned).toContainEqual([50, 20, 50]);
+    expect(visible.veins).toEqual(expect.arrayContaining([[30, 19, 30], [50, 19, 50]]));
+    expect(visible.veins).not.toContainEqual([26, 20, 30]);
+    expect(original.planned).toHaveLength(15);
+    expect(visibleMinePreview(original, [shown])).toBe(original);
+  });
+  it('bounds huge plan overlays without allocating twelve edges per authored block', () => {
+    const cells: V3[] = [];
+    for (let x = 0; x < 192; x++) for (let z = 0; z < 96; z++) for (let y = 16; y < 22; y++) cells.push([x, y, z]);
+    const positions = previewOutline(cells);
+    expect(cells.length).toBe(110592);
+    expect(positions.length).toBeLessThan(2000);
+    expect(Math.min(...positions)).toBe(0);
+    expect(Math.max(...positions)).toBe(192);
+    expect(previewOutline([[0, 20, 0]])).toEqual(volumeOutline([[0, 20, 0]]));
+  });
   it('keeps exterior edges while removing shared faces and coplanar seams', () => {
     expect(volumeOutline([[0, 0, 0]])).toHaveLength(12 * 6);
     // A 2×2×2 box has twelve outer edges, each two unit segments, with no internal seams.

@@ -7,6 +7,7 @@
  */
 import 'reflect-metadata';
 import type { IncomingMessage, Server, ServerResponse } from 'node:http';
+import { createServer as createHttpsServer } from 'node:https';
 import { randomUUID } from 'node:crypto';
 import type { AddressInfo, Socket } from 'node:net';
 import { Module, type DynamicModule } from '@nestjs/common';
@@ -28,6 +29,7 @@ import { ApiExceptionFilter } from './common/exception.filter.js';
 import { contextOf, setContext } from './common/http.js';
 import { createLogger, PinoNestLogger, type Logger } from './common/logger.js';
 import { dbPathOf, type ApiConfig } from './config/config.js';
+import { tlsMaterial, tlsOrigin, WebHostingSettings } from './config/web-hosting.js';
 import { WebDb } from './db/web-db.js';
 import { LiveHub, type LiveHubOptions } from './live/live-hub.js';
 import { startMockBridge, type MockBridge } from './mock/mock-bridge.js';
@@ -72,6 +74,13 @@ export interface ApiApp {
 type Next = (err?: unknown) => void;
 
 export async function createApp(config: ApiConfig, opts: CreateAppOptions = {}): Promise<ApiApp> {
+  const tlsOptions = tlsMaterial(config.web.tls, config.web.port);
+  const httpsOrigin = tlsOrigin(config.web.tls);
+  if (httpsOrigin)
+    config = {
+      ...config,
+      web: { ...config.web, allowedOrigins: [...new Set([...config.web.allowedOrigins, httpsOrigin])] },
+    };
   const log = opts.logger ?? createLogger(config.web.logLevel);
   const clock = opts.clock ?? systemClock;
 
@@ -116,6 +125,7 @@ export async function createApp(config: ApiConfig, opts: CreateAppOptions = {}):
   const trusted = new TrustedProxies(config.web);
   const setup = new SetupService(users, sessions, auth, audit, trusted, config.web.setup, clock, log);
   const dispatcher = new RouteDispatcher({
+    hosting: new WebHostingSettings(config),
     auth,
     setup,
     audit,
@@ -202,7 +212,7 @@ export async function createApp(config: ApiConfig, opts: CreateAppOptions = {}):
   server.requestTimeout = 300_000;
   // Upgraded sockets leave the HTTP server's bookkeeping; track them so shutdown can end them.
   const upgraded = new Set<Socket>();
-  server.on('upgrade', (req: IncomingMessage, socket: Socket, head: Buffer) => {
+  const onUpgrade = (req: IncomingMessage, socket: Socket, head: Buffer) => {
     upgraded.add(socket);
     socket.on('close', () => upgraded.delete(socket));
     context(req, undefined);
@@ -215,7 +225,15 @@ export async function createApp(config: ApiConfig, opts: CreateAppOptions = {}):
       (ok) => (ok ? nextProxy.upgrade(req, socket, head) : socket.destroy()),
       () => socket.destroy(),
     );
-  });
+  };
+  server.on('upgrade', onUpgrade);
+  const tlsServer = tlsOptions ? createHttpsServer(tlsOptions, app.getHttpAdapter().getInstance()) : undefined;
+  if (tlsServer) {
+    tlsServer.keepAliveTimeout = server.keepAliveTimeout;
+    tlsServer.headersTimeout = server.headersTimeout;
+    tlsServer.requestTimeout = server.requestTimeout;
+    tlsServer.on('upgrade', onUpgrade);
+  }
 
   const gc = setInterval(() => sessions.gc(), 10 * 60_000);
   gc.unref();
@@ -229,6 +247,15 @@ export async function createApp(config: ApiConfig, opts: CreateAppOptions = {}):
     services: { db, users, sessions, auth, setup, audit, bridge, hub, mock },
     async listen(port = config.web.port, host = config.web.bind) {
       await app.listen(port, host);
+      if (tlsServer)
+        await new Promise<void>((resolve, reject) => {
+          const failed = (error: Error) => reject(error);
+          tlsServer.once('error', failed);
+          tlsServer.listen(config.web.tls.port, host, () => {
+            tlsServer.off('error', failed);
+            resolve();
+          });
+        });
       const addr = server.address() as AddressInfo;
       return `http://${addr.address.includes(':') ? `[${addr.address}]` : addr.address}:${addr.port}`;
     },
@@ -238,6 +265,10 @@ export async function createApp(config: ApiConfig, opts: CreateAppOptions = {}):
       clearInterval(gc);
       hub.close();
       for (const s of upgraded) s.destroy();
+      if (tlsServer) {
+        tlsServer.closeAllConnections();
+        await new Promise<void>((resolve) => tlsServer.close(() => resolve()));
+      }
       server.closeAllConnections?.();
       await app.close();
       await mock?.close();

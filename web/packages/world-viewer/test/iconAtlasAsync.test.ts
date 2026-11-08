@@ -28,3 +28,28 @@ it('builds icons in bounded idle slices and shares the same work and result acro
   expect(blockIconAtlas(bundle, entries, 29)).toBe(atlas);
   expect(create).toHaveBeenCalledOnce();
 });
+
+it('does not let a pre-import idle job overwrite or remove the replacement atlas job', async () => {
+  vi.resetModules();
+  const events = new EventTarget(), callbacks: Array<() => void> = [];
+  vi.stubGlobal('window', events);
+  vi.stubGlobal('requestIdleCallback', (callback: () => void) => { callbacks.push(callback); return callbacks.length; });
+  let count = 0;
+  vi.stubGlobal('document', { createElement: () => {
+    const url = `atlas-${++count}`;
+    return { getContext: () => ({}), toDataURL: () => url };
+  } });
+  const { blockIconAtlasAsync: build } = await import('../src/render/icons');
+  const bundle = { version: 'b1.8.1', pack: {} } as AssetBundle;
+  const old = build(bundle, []);
+  events.dispatchEvent(new Event('mineclaw-assets-changed'));
+  const fresh = build(bundle, []);
+  callbacks.shift()!(); await old;
+  expect(build(bundle, [])).toBe(fresh);
+  callbacks.shift()!();
+  expect((await fresh).url).toBe('atlas-2');
+  expect(await build(bundle, [])).toBe(await fresh);
+  const other = build({ ...bundle }, []);
+  callbacks.shift()!();
+  expect((await other).url).toBe('atlas-3');
+});

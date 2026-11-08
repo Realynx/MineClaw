@@ -501,3 +501,10 @@ src/MineClaw.App/appsettings.*.json
 # Agent worktrees and Turborepo cache
 .claude/worktrees/
 .turbo/
+
+# Game artwork belongs to the user's local Minecraft installation. Browser imports live in IndexedDB.
+# Offline extraction scripts may leave private working copies here; neither source nor generated images are distributed.
+/web/packages/world-viewer/assets/**/*.png
+/web/packages/world-viewer/generated/**/*.png
+/web/packages/world-viewer/assets/**/*.ogg
+/web/packages/world-viewer/generated/**/*.ogg

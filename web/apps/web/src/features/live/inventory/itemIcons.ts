@@ -35,6 +35,7 @@ function load(version: GameVersion) {
 
 const SIZE = 32;
 const cache = new Map<string, string | null>();
+if (typeof window !== 'undefined') window.addEventListener('mineclaw-assets-changed', () => { bundles.clear(); cache.clear(); });
 
 function gridOf(bundle: AssetBundle, atlas: 'items' | 'blocks'): [number, number] {
   const p = bundle.pack;

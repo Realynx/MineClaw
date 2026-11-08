@@ -27,11 +27,13 @@ import {
   useViewerStatus,
 } from './store';
 import { recommendedPreset } from '@mineclaw/world-viewer/settings';
+import { GameAssets } from './GameAssets';
 
 export function SettingsPage() {
   return (
     <PageBody className="max-w-5xl">
       <PageHeader title="Settings" subtitle="Saved on this device only: graphics depend on the machine." />
+      <GameAssets />
       <ViewerQualitySection />
     </PageBody>
   );

@@ -12,6 +12,7 @@ export * from './raptor.js';
 export * from './personality.js';
 export * from './admin.js';
 export * from './adminSettings.js';
+export * from './webHosting.js';
 export * from './shards.js';
 export * from './scripts.js';
 export * from './designs.js';

@@ -7,6 +7,7 @@ import {
   hasRole,
   ROUTES,
   STEP_UP_MS,
+  WebTlsSettings,
   type CloudArrangement,
   type MemoryKindKey,
   type Me,
@@ -23,6 +24,17 @@ import * as raptor from './data/raptor';
 import * as scripts from './data/scripts';
 import { designer } from './data/designer';
 import { seedStory, storySim } from './data/story';
+
+let mockTls = WebTlsSettings.parse({});
+const mockHosting = () => ({
+  running: WebTlsSettings.parse({}),
+  saved: mockTls,
+  pendingRestart: mockTls.enabled,
+  editable: true,
+  overridePath: '/var/lib/mineclaw-web/hosting.override.json',
+  httpsOrigin: null,
+  savedOrigin: mockTls.enabled ? `https://${mockTls.hostname}:${mockTls.port}` : null,
+});
 
 export class MockError extends Error {
   constructor(
@@ -433,8 +445,10 @@ export const resolvers: Partial<Record<RouteId, Resolver>> = {
     }
   },
 
-  'memoryActivity.heat': ({ query }) => live.memoryHeat(query.brain as string | undefined, num(query.windowS), raptor.STATE_KEY),
-  'memoryActivity.cloud': ({ query }) => cloud.memoryCloud((query.arrangement as CloudArrangement | undefined) ?? 'mds'),
+  'memoryActivity.heat': ({ query }) =>
+    live.memoryHeat(query.brain as string | undefined, num(query.windowS), raptor.STATE_KEY),
+  'memoryActivity.cloud': ({ query }) =>
+    cloud.memoryCloud((query.arrangement as CloudArrangement | undefined) ?? 'mds'),
   'memoryActivity.cloudDistance': ({ query }) => {
     const d = cloud.cloudDistance(num(query.a), num(query.b));
     if (!d) throw new MockError(404, 'No such memory', 'not_found');
@@ -494,6 +508,11 @@ export const resolvers: Partial<Record<RouteId, Resolver>> = {
   'admin.shardImport': () => {
     misc.startJob('job-import-1');
     return misc.importResult();
+  },
+  'admin.webHosting': () => mockHosting(),
+  'admin.webHostingSave': ({ body }) => {
+    mockTls = WebTlsSettings.parse((body as { tls: unknown }).tls);
+    return mockHosting();
   },
   'admin.nodes': () => admin.nodes(),
   'admin.settings': ({ params }) => {
@@ -627,16 +646,14 @@ export const resolvers: Partial<Record<RouteId, Resolver>> = {
   },
   feed: ({ query }) => live.feedSince(num(query.since)),
   'blueprints.list': () => ({
-    designs: misc
-      .designList()
-      .items.map((d) => ({
-        id: d.id,
-        name: d.name,
-        status: d.status,
-        requester: d.requester,
-        rev: d.rev,
-        updated: d.updated,
-      })),
+    designs: misc.designList().items.map((d) => ({
+      id: d.id,
+      name: d.name,
+      status: d.status,
+      requester: d.requester,
+      rev: d.rev,
+      updated: d.updated,
+    })),
   }),
   'blueprints.get': ({ params }) => ({
     id: num(params.id),
@@ -775,6 +792,7 @@ export const SAMPLE_CALLS: Partial<Record<RouteId, Ctx>> = {
   'admin.compact': { params: {}, query: {}, body: { dryRun: true } },
   'auth.stepUp': { params: {}, query: {}, body: { code: '123456' } },
   'admin.settings': { params: { node: 'local' }, query: {}, body: null },
+  'admin.webHostingSave': { params: {}, query: {}, body: { tls: WebTlsSettings.parse({}), reason: 'fixture test' } },
   'admin.settingsSave': {
     params: { node: 'local' },
     query: {},

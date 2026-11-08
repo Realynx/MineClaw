@@ -403,11 +403,14 @@ export type WorldEntity = z.infer<typeof WorldEntity>;
 export const WorldEntityEvent = z.looseObject({
   id: z.number().int().nullish(),
   dim: DimId.nullish(),
-  kind: z.string().describe('swing | swing_off | hurt | death | crit | magic_crit | eat | teleport | lightning'),
+  kind: z.string().describe('swing | swing_off | hurt | death | crit | magic_crit | eat | teleport | lightning | sound'),
   at: UnixMs,
   x: z.number().nullish(),
   y: z.number().nullish(),
   z: z.number().nullish(),
+  sound: z.string().nullish(),
+  volume: z.number().nullish(),
+  pitch: z.number().nullish(),
 });
 export type WorldEntityEvent = z.infer<typeof WorldEntityEvent>;
 

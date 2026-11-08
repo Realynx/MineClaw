@@ -7,7 +7,7 @@
  */
 import * as THREE from 'three';
 import { plotMode, type Cell, type V3 } from './canvas';
-import { MINE_PREVIEW_COLORS, volumeOutline, type MinePreview } from './mine/minePreview';
+import { MINE_PREVIEW_COLORS, previewOutline, volumeOutline, type MinePreview } from './mine/minePreview';
 
 const MAX_GHOSTS = 4096;
 /** X-ray cubes at most (the rest of a crowded window is left out). */
@@ -50,8 +50,8 @@ function mineLines(name: string, color: number, order: number): THREE.LineSegmen
 }
 
 /** Reuse GPU capacity across edits; when it grows, dispose the old geometry and its buffer together. */
-function setMineLines(lines: THREE.LineSegments, cells: Iterable<readonly [number, number, number]> | null): void {
-  const positions = cells ? volumeOutline(cells) : new Float32Array();
+function setMineLines(lines: THREE.LineSegments, cells: V3[] | null): void {
+  const positions = cells ? previewOutline(cells) : new Float32Array();
   setMinePositions(lines, positions);
 }
 
@@ -198,13 +198,13 @@ export class Overlay3D {
   }
 
   /** Keep editor handles, selection, grid and temporary ghosts out of a saved camera picture. */
-  async withoutGuides<T>(capture: () => Promise<T>): Promise<T> {
-    const visible = this.group.visible;
-    this.group.visible = false;
+  async withoutGuides<T>(capture: () => Promise<T>, keepMine = false): Promise<T> {
+    const children = this.group.children.map((child) => ({ child, visible: child.visible }));
+    for (const { child } of children) if (!keepMine || (child !== this.planned && child !== this.veins)) child.visible = false;
     try {
       return await capture();
     } finally {
-      this.group.visible = visible;
+      for (const { child, visible } of children) child.visible = visible;
     }
   }
 
@@ -288,7 +288,7 @@ export class Overlay3D {
   /** A violet module footprint at its proposed placement, distinct from committed cyan digs and amber veins. */
   setMinePlacement(cells: Iterable<readonly [number, number, number]> | null): void {
     this.placementPositions = null;
-    setMineLines(this.placement, cells);
+    setMinePositions(this.placement, cells ? volumeOutline(cells) : new Float32Array());
   }
 
   /** A prepared local outline uploads once; moving it updates only the object's translation. */

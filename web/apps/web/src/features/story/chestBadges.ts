@@ -44,6 +44,24 @@ export function chestBadge(
   return { text, fill: fill === null ? null : Math.max(0, Math.min(1, fill)) };
 }
 
+/** Filters and timestamps are resolved once per changed chest, not once per rendered frame. */
+export class ChestBadgeCache {
+  private readonly entries = new Map<string, {
+    storage: StoryStorage | undefined; summary: ContainerSummary | undefined;
+    categories: readonly StoryCategory[] | null | undefined; badge: ChestBadge | null;
+  }>();
+
+  get(key: string, storage: StoryStorage | undefined, summary: ContainerSummary | undefined,
+    categories: readonly StoryCategory[] | null | undefined): ChestBadge | null {
+    const old = this.entries.get(key);
+    if (old && old.storage === storage && old.summary === summary && old.categories === categories) return old.badge;
+    const badge = chestBadge(storage, summary, categories);
+    if (this.entries.size >= 1024) this.entries.clear();
+    this.entries.set(key, { storage, summary, categories, badge });
+    return badge;
+  }
+}
+
 /** The hive's look into the chest counts when it is at least as fresh as the colony's ledger (or the chest isn't storage). */
 function summaryCounts(storage: StoryStorage | undefined, summary: ContainerSummary | undefined): boolean {
   return !!summary && summary.source !== 'unknown' && summary.size > 0 && (!storage || ms(summary.seenAt) >= ms(storage?.knownAt));
@@ -64,6 +82,38 @@ function shortCategory(s: string): string {
 
 /** Draws a badge under a chest mark at `at` (canvas px). */
 export function drawChestBadge(ctx: CanvasRenderingContext2D, at: { x: number; y: number }, b: ChestBadge): void {
+  const sprite = badgeSprite(b);
+  if (sprite) {
+    ctx.drawImage(sprite.canvas, at.x - sprite.width / 2, at.y + 11, sprite.width, sprite.height);
+    return;
+  }
+  paintChestBadge(ctx, at, b);
+}
+
+type BadgeSprite = { canvas: HTMLCanvasElement; width: number; height: number };
+const badgeSprites = new Map<string, BadgeSprite | null>();
+function badgeSprite(b: ChestBadge): BadgeSprite | null {
+  if (typeof document === 'undefined') return null;
+  const dpr = Math.min(2, Math.max(1, window.devicePixelRatio || 1));
+  const key = `${dpr}|${b.text ?? ''}|${b.fill ?? '?'}`;
+  if (badgeSprites.has(key)) return badgeSprites.get(key)!;
+  const canvas = document.createElement('canvas'), ctx = canvas.getContext('2d');
+  let sprite: BadgeSprite | null = null;
+  if (ctx) {
+    ctx.font = '600 9px system-ui, sans-serif';
+    const width = Math.ceil(Math.max(26, b.text ? ctx.measureText(b.text).width + 10 : 26)) + 2;
+    const height = (b.text ? 15 : 6) + 2;
+    canvas.width = Math.ceil(width * dpr); canvas.height = Math.ceil(height * dpr);
+    ctx.scale(dpr, dpr);
+    paintChestBadge(ctx, { x: width / 2, y: -11 }, b);
+    sprite = { canvas, width, height };
+  }
+  if (badgeSprites.size >= 256) badgeSprites.clear();
+  badgeSprites.set(key, sprite);
+  return sprite;
+}
+
+function paintChestBadge(ctx: CanvasRenderingContext2D, at: { x: number; y: number }, b: ChestBadge): void {
   ctx.save();
   ctx.font = '600 9px system-ui, sans-serif';
   ctx.textAlign = 'center';

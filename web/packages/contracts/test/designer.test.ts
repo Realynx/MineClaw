@@ -2,6 +2,20 @@ import { describe, expect, it } from 'vitest';
 import * as C from '../src/index.js';
 
 describe('Design Studio contract', () => {
+  it('keeps component metadata with each mock revision instead of borrowing the latest layout when opening old cells', () => {
+    const m = C.createDesignerMock(100), s = m.create({ kind: 'mine', seed: '1', version: '1.12.2' }, 'fox');
+    m.canvas(s.id, { ops: [{ kind: 'dig', cells: [[30, 20, 30, 0, 0]] }] });
+    const first = JSON.stringify({ size: 256, modules: [{ id: 'a', visible: true }], base: [], overrides: [] });
+    const second = first.replace('true', 'false');
+    expect(C.DesignerSaveRequest.parse({ name: 'mine', mineAuthoring: first }).mineAuthoring).toBe(first);
+    const r1 = m.save(s.id, { name: 'mine', mineAuthoring: first }, 'fox');
+    m.save(s.id, { name: 'mine', mineAuthoring: second }, 'fox');
+    expect(m.create({ designId: r1.designId }, 'fox').mineAuthoring).toBe(second);
+    const old = m.create({ designId: r1.designId, rev: r1.rev }, 'fox');
+    expect(old.mineAuthoring).toBe(first);
+    const copy = m.save(old.id, { name: 'copy', asNew: true }, 'fox');
+    expect(m.create({ designId: copy.designId }, 'fox').mineAuthoring).toBe(first);
+  });
   it('design role: admin implies it, nothing else does', () => {
     expect(C.hasRole(['admin'], 'design')).toBe(true);
     expect(C.hasRole(['design'], 'design')).toBe(true);

@@ -28,6 +28,40 @@ Everything goes the way the bot's deploy goes: `ssh alice`, then `pct push` / `p
 Both key files are root-only. systemd hands them to the services as credentials (`LoadCredential=`), so neither service user can
 read the other's copy, and the key never shows up in env, argv or a log.
 
+## HTTPS and app installation
+
+The header's **Install MineClaw** button uses the browser's install prompt when available and otherwise explains the
+browser's install menu. Installation needs a secure context: use HTTPS with a certificate trusted by that device, or
+localhost for development. A certificate-warning bypass is not sufficient. Chrome may wait for user engagement before
+offering installation; see its [installation criteria](https://web.dev/articles/install-criteria). iOS Safari uses
+Share → Add to Home Screen. An existing trusted HTTPS reverse proxy works without enabling the built-in TLS listener.
+
+For direct HTTPS:
+
+1. Choose the intended hostname, resolve it to the gateway, and obtain a certificate whose SAN covers that exact name.
+   A self-signed certificate is suitable for an internal deployment only when each client trusts its public certificate.
+   Keep the private key on the server. For example, place the PEM chain/key under `/etc/mineclaw-web/tls/`; use a
+   root-owned directory readable by group `mineclaw-web`, and key mode 0600 owned by `mineclaw-web`.
+2. In Administration → **Web HTTPS and certificates**, enter that name, a free port (default 8443), and the absolute
+   certificate/key paths. Enable HTTPS, review the diff, enter a reason and confirm with password/TOTP. Saving validates
+   the certificate, expiry, hostname and matching unencrypted key. It saves a restart-pending override and does not change
+   the running listener. The gateway uses [Node's HTTPS server](https://nodejs.org/api/https.html) with TLS 1.2 minimum.
+3. Permit the chosen port from the intended client network. On CT 114, add a rule equivalent to the existing 8080 LAN rule
+   above the `isolated` firewall group, substituting 8443. Do not expose the internal Next/bridge/Supervisor ports.
+4. Restart only `mineclaw-web-api`: `ssh alice pct exec 114 -- systemctl restart mineclaw-web-api`.
+   The saved listener serves `https://<hostname>:8443`; HTTP health checks continue on 8080. The HTTPS origin is added
+   automatically to the gateway allowlist. Verify HTTPS `/api/health`, then sign in on the new origin. Cookies are Secure
+   on HTTPS; browser sessions and locally imported Minecraft assets belong to the origin, so import assets again there.
+5. Install from the header or browser menu. The installed app opens Controller. Live data and commands require a network
+   connection. The service worker caches only a generic offline page and public icons; it never caches authenticated HTML,
+   API replies, commands, world chunks or imported assets. Old caches are removed only within its own `mineclaw-pwa-` prefix.
+   Worker updates use the normal [service worker lifecycle](https://developer.mozilla.org/en-US/docs/Web/API/Service_Worker_API/Using_Service_Workers)
+   without forcing a running session to reload.
+
+Certificate renewal requires replacing the PEM files and restarting the web API again. An expired/invalid certificate
+causes startup validation to fail; recover by restoring `hosting.override.json.bak` or setting `tls.enabled` false in
+`/var/lib/mineclaw-web/hosting.override.json`, then restart the web API. No bot or Minecraft restart is needed.
+
 ## Scripts
 
 | From the dev box | Does |

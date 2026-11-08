@@ -18,10 +18,15 @@ export interface MineModuleSpec {
   spacing: number;
   depth: number;
   size: number;
+  clockwise?: boolean;
+  core?: number;
+  torchEvery?: number;
+  landingDepths?: number[];
+  sides?: 'both' | 'left' | 'right' | 'none';
   label?: string;
   parts?: Array<{ spec: MineModuleSpec; at: V3 }>;
 }
-export interface MineModuleInstance { id: string; spec: MineModuleSpec; at: V3 }
+export interface MineModuleInstance { id: string; spec: MineModuleSpec; at: V3; visible?: boolean }
 export interface MineModulePort { at: V3; out: V3 }
 export const MINE_MODULE_MIME = 'application/x-mineclaw-mine-module';
 export const MINE_MODULES: readonly { kind: MineModuleKind; name: string; detail: string; hint: string }[] = [
@@ -57,10 +62,16 @@ export function normalizeModule(value: unknown, depth = 0, budget = { parts: 0, 
   }
   if (!MINE_MODULES.some((m) => m.kind === v.kind)) return null;
   const d = defaultModule(v.kind!);
-  const spec = { kind: d.kind, rotation: integer(v.rotation, 0, 3, 0), length: integer(v.length, 3, MINE_MODULE_MAX_LENGTH, d.length),
+  const spec: MineModuleSpec = { kind: d.kind, rotation: integer(v.rotation, 0, 3, 0), length: integer(v.length, 3, MINE_MODULE_MAX_LENGTH, d.length),
     width: integer(v.width, 1, d.kind === 'chamber' ? MINE_MODULE_MAX_ROOM : 2, d.width), height: integer(v.height, 2, 6, d.height),
     branchLength: integer(v.branchLength, 2, MINE_MODULE_MAX_BRANCH, d.branchLength), spacing: integer(v.spacing, 1, 8, d.spacing),
     depth: integer(v.depth, 1, 126, d.depth), size: integer(v.size, 3, 6, d.size) };
+  if (typeof v.clockwise === 'boolean') spec.clockwise = v.clockwise;
+  if (v.core !== undefined) spec.core = integer(v.core, 1, spec.size - 2, spec.size - 2);
+  if (v.torchEvery !== undefined) spec.torchEvery = integer(v.torchEvery, 0, 96, 0);
+  if (Array.isArray(v.landingDepths)) spec.landingDepths = [...new Set(v.landingDepths.filter((n) => Number.isInteger(n) && n >= 0 && n <= 126))].slice(0, 127);
+  if (v.sides && ['both', 'left', 'right', 'none'].includes(v.sides)) spec.sides = v.sides;
+  if (typeof v.label === 'string' && v.label.trim()) spec.label = v.label.trim().slice(0, 48);
   const volume = spec.kind === 'branches' ? (spec.length + 2 * Math.ceil(spec.length / (spec.spacing + 1)) * spec.branchLength) * spec.width * spec.height
     : spec.kind === 'spiral' ? (spec.depth + 1) * spec.size * 3
     : spec.kind === 'stairs' ? (spec.depth + 1) * spec.width * 3
@@ -90,12 +101,13 @@ function local(spec: MineModuleSpec): MineCells {
   if (spec.kind === 'tunnel' || spec.kind === 'branches')
     return strip({ x: -half, y: 0, z: -Math.floor((spec.width - 1) / 2), length: spec.length,
       width: spec.width, height: spec.height, branchLength: spec.kind === 'branches' ? spec.branchLength : 0,
-      spacing: spec.spacing, sides: spec.kind === 'branches' ? 'both' : 'none' });
+      spacing: spec.spacing, sides: spec.kind === 'branches' ? spec.sides ?? 'both' : 'none', torchEvery: spec.torchEvery });
   if (spec.kind === 'chamber') return room(-half, 0, -Math.floor((spec.width - 1) / 2), spec.length, spec.width, spec.height);
   if (spec.kind === 'spiral') {
     const offset = Math.floor((spec.size - 1) / 2);
     // Generate at a positive level, then translate: the shared generator clamps its absolute bottom to Y1.
-    const result = spiral({ x: -offset, z: -offset, top: spec.depth + 1, bottom: 1, size: spec.size, core: spec.size - 2 });
+    const result = spiral({ x: -offset, z: -offset, top: spec.depth + 1, bottom: 1, size: spec.size, core: spec.core ?? spec.size - 2,
+      cw: spec.clockwise, torchEvery: spec.torchEvery, landings: spec.landingDepths?.filter((d) => d <= spec.depth).map((d) => spec.depth + 1 - d) });
     result.cells = result.cells.map(([x, y, z, id, meta]) => [x, y - spec.depth - 1, z, id, meta]);
     result.path = result.path.map(([x, y, z]) => [x, y - spec.depth - 1, z]);
     result.entry = result.path[0]!;
@@ -114,7 +126,16 @@ function local(spec: MineModuleSpec): MineCells {
   const b = strip({ x: 0, y: 0, z: -half, axis: 'z', length: spec.length, width: spec.width, height: spec.height, branchLength: 0 });
   return { ...a, cells: [...a.cells, ...b.cells] };
 }
+// A bounded LRU: history retains old specs, so a WeakMap alone would also retain all their large geometry arrays.
+const shapeCache = new Map<MineModuleSpec, { key: string; shape: MineCells }>();
+let cachedCells = 0;
+const MAX_CACHED_CELLS = 800_000;
 export function moduleCells(input: MineModuleSpec, at: V3): MineCells {
+  const key = at.join(','), cached = shapeCache.get(input);
+  if (cached?.key === key) {
+    shapeCache.delete(input); shapeCache.set(input, cached);
+    return cached.shape;
+  }
   const spec = normalizeModule(input);
   if (!spec) return { cells: [], path: [], entry: at, label: 'Invalid component' };
   const shape = local(spec);
@@ -124,7 +145,15 @@ export function moduleCells(input: MineModuleSpec, at: V3): MineCells {
     const p = point([x, y, z]);
     unique.set(p.join(','), [...p, id, rotateMeta(id, meta, spec.rotation, '1.12.2')]);
   }
-  return { cells: [...unique.values()], entry: point(shape.entry), path: shape.path.map(point), label: spec.label ?? moduleName(spec.kind) };
+  const result = { cells: [...unique.values()], entry: point(shape.entry), path: shape.path.map(point), label: spec.label ?? moduleName(spec.kind) };
+  cachedCells -= shapeCache.get(input)?.shape.cells.length ?? 0;
+  shapeCache.delete(input);
+  shapeCache.set(input, { key, shape: result }); cachedCells += result.cells.length;
+  while (cachedCells > MAX_CACHED_CELLS || shapeCache.size > 256) {
+    const first = shapeCache.keys().next().value!;
+    cachedCells -= shapeCache.get(first)!.shape.cells.length; shapeCache.delete(first);
+  }
+  return result;
 }
 
 const portCache = new WeakMap<MineModuleSpec, readonly MineModulePort[]>();

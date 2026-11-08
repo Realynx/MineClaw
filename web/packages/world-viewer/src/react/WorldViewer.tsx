@@ -31,6 +31,8 @@ export interface WorldViewerProps {
   /** A left click with the mouse locked, on the crosshair's target (replaces the plain pick while locked). */
   onAimClick?: (t: AimTarget | null, mods: { shift: boolean; ctrl: boolean; button?: number }) => void;
   resolveAim?: (physical: AimTarget | null, ray: AimRay) => AimTarget | null;
+  onBeforeFrame?: EngineOptions['onBeforeFrame'];
+  onAfterFrame?: EngineOptions['onAfterFrame'];
   /** A target block marker drawn in the world. */
   marker?: [number, number, number] | null;
   /** Bots outlined in the world (a selection). */
@@ -113,6 +115,8 @@ export const WorldViewer = forwardRef<WorldViewerHandle, WorldViewerProps>(funct
       onAim: (t) => cbs.current.onAim?.(t),
       onAimClick: (t, m) => (cbs.current.onAimClick ? cbs.current.onAimClick(t, m) : undefined),
       resolveAim: (t, ray) => cbs.current.resolveAim ? cbs.current.resolveAim(t, ray) : t,
+      onBeforeFrame: (e, now, dt) => cbs.current.onBeforeFrame?.(e, now, dt),
+      onAfterFrame: (e, now, dt) => cbs.current.onAfterFrame?.(e, now, dt),
     });
     if (!props.onAimClick) e.setCallbacks({ onAimClick: undefined });
     engine.current = e;
@@ -164,7 +168,7 @@ export const WorldViewer = forwardRef<WorldViewerHandle, WorldViewerProps>(funct
   return (
     <div className={props.className} style={{ position: 'relative', overflow: 'hidden', width: '100%', height: '100%', ...props.style }}>
       <div ref={host} style={{ position: 'absolute', inset: 0 }} />
-      <FlyHint mode={mode} locked={locked} hidden={props.hideHint || props.controls === 'editor'} />
+      <FlyHint mode={mode} locked={locked} hidden={props.hideHint || props.controls === 'editor'} controller={props.controls === 'controller'} />
       <PerfOverlay engine={engine} />
       <WorldNotes notes={notes} layers={props.layers} />
     </div>
@@ -172,13 +176,14 @@ export const WorldViewer = forwardRef<WorldViewerHandle, WorldViewerProps>(funct
 });
 
 /** Free cam with the mouse not yet locked: how to look around and move. */
-function FlyHint({ mode, locked, hidden }: { mode: CameraMode; locked: boolean; hidden?: boolean }) {
+function FlyHint({ mode, locked, hidden, controller }: { mode: CameraMode; locked: boolean; hidden?: boolean; controller?: boolean }) {
   if (mode !== 'fly' || locked || hidden) return null;
   return (
     <div
       style={{ position: 'absolute', left: '50%', top: 12, transform: 'translateX(-50%)', padding: '4px 10px', font: '12px system-ui, sans-serif', color: '#fff', background: 'rgba(0,0,0,0.55)', borderRadius: 6, pointerEvents: 'none', whiteSpace: 'nowrap' }}
     >
-      Click to look around · WASD move · Space/E up · Q down · Shift fast · Esc releases the mouse
+      {controller ? 'Click to look around · WASD move · Space up · Ctrl down · Q tools · E blocks · Esc releases the mouse'
+        : 'Click to look around · WASD move · Space/E up · Q down · Shift fast · Esc releases the mouse'}
     </div>
   );
 }

@@ -1,9 +1,10 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MOCK_DESIGNER_PALETTE, type DesignerSession } from '@mineclaw/contracts';
 import { DEPTH, keyOf, posOf, setPlotMode, type V3 } from '@/features/studio/canvas';
 import { Studio, type StudioApi } from '@/features/studio/studio';
 import { MineModuleController } from '@/features/studio/mine/MineModuleController';
 import { decodeModuleDrag, defaultModule, encodeModule, MINE_MODULES, moduleCells, modulePorts, snapModuleAt } from '@/features/studio/mine/modules';
+import { MINE_PRESETS, presetCells, presetModules } from '@/features/studio/mine/presets';
 
 const sessions: Studio[] = [], controllers: MineModuleController[] = [];
 const api: StudioApi = { canvas: () => Promise.resolve({ rev: 1, applied: 1 }), message: () => Promise.reject(new Error('unused')), save: () => Promise.reject(new Error('unused')) };
@@ -18,6 +19,21 @@ const at: V3 = [30, 20, 30];
 const tunnel = () => ({ ...defaultModule('tunnel'), length: 7 });
 
 describe('composable mine geometry', () => {
+  it.each(MINE_PRESETS)('$id preserves the existing preset excavation, lighting and direction as editable components', (preset) => {
+    const { s, c } = make(null, { version: preset.version });
+    const expected = new Map(presetCells(preset, s.terrain).cells.map((cell) => [cell.slice(0, 3).join(','), cell]));
+    const pieces = presetModules(preset, s.terrain);
+    const actual = new Map(pieces.flatMap((piece) => moduleCells(piece.spec, piece.at).cells).map((cell) => [cell.slice(0, 3).join(','), cell]));
+    expect(actual).toEqual(expected);
+    const inserted = c.addMany(pieces, preset.name)!;
+    expect(inserted).toHaveLength(preset.steps.length);
+    expect(c.snapshot()).toHaveLength(2);
+    s.undo(); expect(c.snapshot()).toHaveLength(0); expect(s.canvas.holes()).toHaveLength(0);
+    s.redo(); expect(c.snapshot()).toHaveLength(2);
+    const branch = c.snapshot()[1]!;
+    expect(c.update(branch.id, { ...branch.spec, spacing: 3 })).toBe(true);
+    expect(c.remove(branch.id)).toBe(true); expect(c.snapshot()).toHaveLength(1);
+  });
   it.each(MINE_MODULES)('$kind fits around a central click and every entrance has two-block headroom', ({ kind }) => {
     for (let rotation = 0; rotation < 4; rotation++) {
       const spec = { ...defaultModule(kind), rotation }, shape = moduleCells(spec, at);
@@ -52,6 +68,60 @@ describe('composable mine geometry', () => {
 });
 
 describe('mine module edits and ownership', () => {
+  it('saves metadata with cells and restores a fresh browser including groups, settings, visibility and removal baselines', async () => {
+    const first = make(), { s, c } = first;
+    s.edit([[30, 20, 30, 0, 0]], 'dig', 'existing');
+    const a = c.add({ ...defaultModule('spiral'), clockwise: false, torchEvery: 6, landingDepths: [6] }, [30, 30, 30])!;
+    const b = c.add(tunnel(), [30, 20, 30])!;
+    const group = c.combine([a.id, b.id])!;
+    c.setVisible(group.id, false);
+    const save = vi.spyOn(api, 'save').mockResolvedValue({ designId: 111, rev: 4, name: 'saved', blocks: s.canvas.size, created: true, text: 'saved' });
+    await s.save('saved');
+    const mineAuthoring = save.mock.calls[0]![1].mineAuthoring!;
+    expect(mineAuthoring).toBeTruthy(); expect(s.dirty).toBe(false);
+    const reopened = make(null, { id: 100, designId: 111, mineAuthoring, blocks: s.canvas.cells(), dug: s.canvas.holes() });
+    expect(reopened.c.snapshot()).toEqual(c.snapshot());
+    expect(reopened.c.snapshot()[0]!.spec.parts![0]!.spec).toMatchObject({ clockwise: false, torchEvery: 6, landingDepths: [6] });
+    reopened.c.setVisible(group.id, true); expect(reopened.s.dirty).toBe(true);
+    reopened.c.setVisible(group.id, false); expect(reopened.s.dirty).toBe(false);
+    reopened.c.remove(group.id);
+    expect(reopened.s.canvas.holes()).toEqual([[30, 20, 30]]);
+    save.mockRestore();
+  });
+  it('prefers exact server revision metadata over conflicting local metadata and never adopts another revision for legacy cells', () => {
+    const data = new Map<string, string>(), storage = { getItem: (k: string) => data.get(k) ?? null, setItem: (k: string, v: string) => { data.set(k, v); } };
+    const first = make(storage); first.c.add(tunnel(), at);
+    const raw = [...data.values()][0]!;
+    const original = JSON.parse(raw) as { modules: Array<{ visible?: boolean }> }; original.modules[0]!.visible = false;
+    const restored = make(storage, { mineAuthoring: JSON.stringify(original), dug: first.s.canvas.holes() });
+    expect(restored.c.snapshot()[0]!.visible).toBe(false);
+    const legacy = make(storage, { id: 999, mineAuthoring: null, dug: first.s.canvas.holes() });
+    expect(legacy.c.snapshot()).toHaveLength(0);
+  });
+  it('recovers compatible legacy browser components for the exact opened revision and marks them for server migration', () => {
+    const data = new Map<string, string>(), storage = { getItem: (k: string) => data.get(k) ?? null, setItem: (k: string, v: string) => { data.set(k, v); } };
+    const first = make(storage), a = first.c.add({ ...tunnel(), label: 'old revision' }, at)!;
+    first.c.rememberDesign(12, 3);
+    first.c.update(a.id, { ...a.spec, label: 'new revision' }); first.c.rememberDesign(12, 4);
+    const saved = { blocks: first.s.canvas.cells(), dug: first.s.canvas.holes(), designId: 12, mineAuthoring: null, designRevision: 3, revisions: [{ rev: 4, created: 0, n: 14 }, { rev: 3, created: 0, n: 14 }] };
+    const restored = make(storage, { ...saved, id: 77 });
+    expect(restored.c.snapshot()[0]!.spec.label).toBe('old revision');
+    expect(restored.c.recoveredLocal).toBe(true); expect(restored.s.dirty).toBe(true);
+    const wrongRevision = make(storage, { ...saved, id: 78, designRevision: 2 });
+    expect(wrongRevision.c.snapshot()).toHaveLength(0);
+    const differentCells = make(storage, { ...saved, id: 79, dug: [] });
+    expect(differentCells.c.snapshot()).toHaveLength(0);
+    const wrongOwner = make(storage, { ...saved, id: 80, owner: 'someone else' });
+    expect(wrongOwner.c.snapshot()).toHaveLength(0);
+  });
+  it('hides a large component without changing cells, rebuilding geometry or affecting exact selection from the outliner', () => {
+    const { s, c } = make(), a = c.add({ ...defaultModule('chamber'), length: 96, width: 80 }, [100, 20, 100])!;
+    const shape = moduleCells(a.spec, a.at), holes = s.canvas.holes();
+    c.setVisible(a.id, false);
+    expect(moduleCells(c.snapshot()[0]!.spec, c.snapshot()[0]!.at)).toBe(shape);
+    expect(s.canvas.holes()).toEqual(holes);
+    expect(c.atCell([100, 20, 100])?.id).toBe(a.id);
+  });
   it('refuses layout changes while the designer is busy without changing metadata, cells or history', () => {
     const { s, c } = make(), a = c.add(tunnel(), at)!;
     const snapshot = c.snapshot(), history = s.history.peekUndo(), holes = s.canvas.holes();

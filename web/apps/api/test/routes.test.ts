@@ -1,5 +1,5 @@
 /**
- * Every route in the contracts table × every access level, against the in-process mock bridge with strict response
+ * Every route in the contracts table Ã— every access level, against the in-process mock bridge with strict response
  * validation: callers without the role get 401/403 before anything reaches the bridge; callers with it get a 2xx whose
  * body matches the contract (the dispatcher turns a mismatch into 502). New routes are covered automatically: inputs are
  * generated from their schemas (overrides below only where a generated sample would not be meaningful).
@@ -31,6 +31,7 @@ const OVERRIDES: Partial<
   // Optional PNGs are binary camera captures, not meaningful generated strings; preview-only has its own save flow.
   'designer.save': { body: { name: 'route test design', asNew: true } },
   'auth.stepUp': { body: { password: 'correct horse battery staple' } },
+  'admin.webHostingSave': { body: { tls: { enabled: false }, reason: 'route table test' } },
   'admin.settingsSave': { params: { node: 'local' }, body: { changes: [{ key: 'Supervisor:Viewer:PerMinute', value: 20 }], reason: 'route table test' } },
   // Story Mode: the mock bridge's colony `story-1` (Mock Hollow, founded at start) and its first pawn.
   ...storyOverrides(),

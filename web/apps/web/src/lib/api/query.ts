@@ -62,7 +62,8 @@ export function makeQueryClient(): QueryClient {
         staleTime: 30_000,
         gcTime: 5 * MIN,
       },
-      mutations: { retry: false },
+      // Commands must fail now, never wait offline and execute unexpectedly after reconnection.
+      mutations: { retry: false, networkMode: 'always' },
     },
   });
 }
@@ -100,5 +101,6 @@ export function useApiMutation<K extends RouteId>(
   return useMutation<RouteResponse<K>, ApiError, MutationVars<K>>({
     mutationFn: (vars) => api(id, { params: vars.params, body: vars.body, file: vars.file }),
     ...options,
+    networkMode: 'always',
   });
 }

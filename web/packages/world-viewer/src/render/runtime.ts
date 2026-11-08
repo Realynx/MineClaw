@@ -28,6 +28,7 @@ import { SkyLayer } from './sky';
 import { AidsLayer } from './aids';
 import { BubbleLayer, type BubbleKind, type BubbleMode, type ShownBubble } from './bubbles';
 import { loadBundle, type AssetBundle } from '../assets/bundle';
+import { ASSETS_CHANGED } from '../assets/localStore';
 import { PROFILES, QualityController, probeRendererOnce, type QualityName, type QualityProfile, type RendererProbe } from './quality';
 import { effectiveProfile, entityReach, FrameLimiter, getViewerQuality, reportViewerStatus, viewerQualityRev, type ViewerQuality } from './viewerQuality';
 import { ChangeFlash } from './changeFlash';
@@ -68,6 +69,8 @@ export interface RuntimeOptions {
 
 /** What one view draws this frame. */
 export interface ViewSetup {
+  /** Draw application overlays after this view's world has been rendered with its final camera matrices. */
+  afterRender?: () => void;
   dim: Dim;
   camera: THREE.PerspectiveCamera;
   /** Fog and section-visibility centre (the camera, or what it looks at). */
@@ -273,6 +276,7 @@ export class WorldRuntime {
   readonly blockEntityLayer: BlockEntityLayer;
   private readonly beCentre = new THREE.Vector3();
   private atlasFor: GameVersion | null = null;
+  private assetGeneration = 0;
   private configKey = '';
   private overlayData = new Map<Dim, Overlays>();
   private readonly botsBuf: BotView[] = [];
@@ -312,6 +316,7 @@ export class WorldRuntime {
   readonly gpu: string;
 
   constructor(source: WorldSource, opts: RuntimeOptions = {}) {
+    if (typeof window !== 'undefined') window.addEventListener(ASSETS_CHANGED, this.reloadAssets);
     this.source = source;
     this.opts = opts;
     // Software WebGL (hardware acceleration off) gets its own profile: no MSAA, 1× pixels, shorter draw distance, 25 ms target.
@@ -522,6 +527,8 @@ export class WorldRuntime {
   attachPrimary(v: RuntimeView, container: HTMLElement): boolean {
     if (this.primary && this.primary.view !== v) return false;
     this.primary = { view: v, container };
+    // Persistent canvases still contain the previous view's pixels until this camera draws its first frame.
+    this.canvas.style.visibility = 'hidden';
     container.appendChild(this.canvas);
     return true;
   }
@@ -609,6 +616,7 @@ export class WorldRuntime {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    if (typeof window !== 'undefined') window.removeEventListener(ASSETS_CHANGED, this.reloadAssets);
     if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', this.onVisibility);
     cancelAnimationFrame(this.raf);
     this.sync.stop();
@@ -824,6 +832,7 @@ export class WorldRuntime {
   /** (Re)configures the mesher when the version changed: flat at once, then textured when the version's bundle has loaded
    * (the bundled atlas replaces the bridge's; `source.atlas` is not read). Every section is meshed again. */
   private async configure(): Promise<void> {
+    const generation = this.assetGeneration;
     const c = this.meshConfig();
     const { v, ready, fastLeaves } = c;
     // While the version's textures load, sections wait instead of meshing flat first and textured again.
@@ -834,8 +843,10 @@ export class WorldRuntime {
     // The version's bundled assets: sky and entities here, the block atlas in loadBlockAtlas (one fetch, cached).
     this.loadSkyBundle(v);
     this.loadEntityBundle(v); // [entity models]
-    this.uniforms.uTextured.value = ready ? 1 : 0;
-    await this.host.configure(v, ready ? meshAssets(this.blockAtlas!.bundle.pack) : null, ready, fastLeaves);
+    const textured = ready && !this.blockAtlas!.bundle.fallback;
+    this.uniforms.uTextured.value = textured ? 1 : 0;
+    await this.host.configure(v, textured ? meshAssets(this.blockAtlas!.bundle.pack) : null, textured, fastLeaves);
+    if (this.disposed || generation !== this.assetGeneration || this.version !== v) return;
     for (const s of this.sections.values()) s.clear();
     for (const h of this.holoViews.values()) h.refresh(); // [holograms] the new atlas cells
     if (c.want && !ready && this.atlasFor !== v) void this.loadBlockAtlas(v);
@@ -854,39 +865,53 @@ export class WorldRuntime {
   }
 
   private loadSkyBundle(v: GameVersion): void {
+    const generation = this.assetGeneration;
     loadBundle(v)
       .then((b) => {
-        if (this.disposed || this.version !== v) return;
+        if (this.disposed || generation !== this.assetGeneration || this.version !== v) return;
         this.bundle = b;
         this.sky.setBundle(b);
       })
       .catch((e) => this.opts.onError?.('assets', e));
   }
 
+  private readonly reloadAssets = (): void => {
+    this.assetGeneration++;
+    this.atlasFor = null;
+    this.entityBundle = null;
+    this.blockAtlas?.dispose();
+    this.blockAtlas = null;
+    this.configKey = '';
+    void this.configure().catch((e) => this.opts.onError?.('assets', e));
+  };
+
   // [entity models] The entity layer textures its models from the bundled sheets of the world's version.
   private entityBundle: GameVersion | null = null;
   private loadEntityBundle(v: GameVersion): void {
+    const generation = this.assetGeneration;
     this.entities.setVersion(v);
     if (this.entityBundle === v) return;
     this.entityBundle = v;
     loadBundle(v)
       .then((b) => {
-        if (!this.disposed && this.entityBundle === v) this.entities.setBundle(b);
+        if (!this.disposed && generation === this.assetGeneration && this.entityBundle === v) this.entities.setBundle(b);
       })
       .catch((e) => this.opts.onError?.('bundle', e));
   }
 
   private async loadBlockAtlas(v: GameVersion): Promise<void> {
+    const generation = this.assetGeneration;
     this.atlasFor = v;
     try {
       const bundle = await loadBundle(v);
-      if (this.disposed || this.atlasFor !== v) return;
+      if (this.disposed || generation !== this.assetGeneration || this.atlasFor !== v) return;
       this.blockAtlas?.dispose();
       this.blockAtlas = new BlockAtlas(bundle);
       this.blockAtlas.bind(this.uniforms);
       this.blockEntityLayer.setBundle(bundle); // [blocks] banner pattern textures
       await this.configure();
     } catch (e) {
+      if (this.disposed || generation !== this.assetGeneration || this.atlasFor !== v) return;
       this.atlasFor = null;
       this.setMeshHold(false); // no textures: mesh flat rather than nothing
       this.opts.onError?.('atlas', e);
@@ -1210,6 +1235,8 @@ export class WorldRuntime {
     this.showViewLayers(s, now);
     this.showBubbles(s, this.vpH);
     this.draw(s, primary, now, reach.radius);
+    if (primary) this.canvas.style.visibility = 'visible';
+    s.afterRender?.();
   }
 
   /** The drawn size of the view in the canvas (set by fitViewport). */

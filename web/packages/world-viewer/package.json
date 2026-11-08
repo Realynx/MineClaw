@@ -24,9 +24,7 @@
     }
   },
   "files": [
-    "dist",
-    "assets",
-    "generated"
+    "dist"
   ],
   "scripts": {
     "dev": "vite --config vite.demo.config.ts",
@@ -36,6 +34,7 @@
     "test:watch": "vitest",
     "assets:extract": "node scripts/extract-assets.mjs --find",
     "assets:pack": "node scripts/pack-assets.mjs",
+    "assets:test-import": "node scripts/test-import.mjs",
     "perf": "node scripts/perf.mjs"
   },
   "peerDependencies": {

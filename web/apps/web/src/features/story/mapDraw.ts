@@ -8,7 +8,7 @@
 import { designationCells, targetPos, type ContainerSummary, type StoryColonyState } from '@mineclaw/contracts';
 import { getViewerQuality } from '@mineclaw/world-viewer/settings';
 import type { BodyLook } from './bodyLook';
-import { chestBadge, drawChestBadge } from './chestBadges';
+import { ChestBadgeCache, drawChestBadge } from './chestBadges';
 import { clusterFailed, type FailedCluster, type FailedMark } from './failedLabels';
 import { project, type Pt, type V3, type ViewMats } from './math';
 import { failedCells, type FailedCell } from './tools';
@@ -489,7 +489,7 @@ export class MapPainter {
     for (const { pos, id } of cells) {
       if (this.hiddenByCut(pos[1])) continue;
       const at = this.at(pos[0] + 0.5, pos[1] + 1, pos[2] + 0.5);
-      if (!at) continue;
+      if (!at || at.x < -100 || at.y < -40 || at.x > this.vw + 100 || at.y > this.vh + 40) continue;
       if (id === 54 || id === 146) this.drawChestCell(at, pos, st, this.cell > labelZoom ? badges : null);
       else this.drawBench(at, pos, st, selection.bench);
     }
@@ -497,18 +497,27 @@ export class MapPainter {
 
   /** Registered storages by each of their chest blocks (a double chest's both halves), the selected chests; this frame's. */
   private readonly storages = new Map<string, Storage>();
+  private storageList: StoryColonyState['storages'] | undefined;
+  private selectedChests: readonly V3[] | undefined;
+  private readonly badgeCache = new ChestBadgeCache();
   private readonly selChests = new Set<string>();
   /** Storages already drawn this frame (a double chest draws once). */
   private readonly seenChests = new Set<string>();
 
   private indexStorages(st: StoryColonyState | undefined, selected: readonly V3[]): void {
-    this.storages.clear();
-    for (const s of st?.storages ?? []) {
-      this.storages.set(k3(s.chest), s);
-      if (s.doubleWith) this.storages.set(k3(s.doubleWith), s);
+    if (this.storageList !== st?.storages) {
+      this.storageList = st?.storages;
+      this.storages.clear();
+      for (const s of st?.storages ?? []) {
+        this.storages.set(k3(s.chest), s);
+        if (s.doubleWith) this.storages.set(k3(s.doubleWith), s);
+      }
     }
-    this.selChests.clear();
-    for (const c of selected) this.selChests.add(k3(c));
+    if (this.selectedChests !== selected) {
+      this.selectedChests = selected;
+      this.selChests.clear();
+      for (const c of selected) this.selChests.add(k3(c));
+    }
     this.seenChests.clear();
   }
 
@@ -556,7 +565,7 @@ export class MapPainter {
     categories: StoryColonyState['categories'],
   ): void {
     if (!(s || !known || k3(known.pos) === k3(pos))) return;
-    const badge = chestBadge(s, known, categories);
+    const badge = this.badgeCache.get(k3(pos), s, known, categories);
     if (badge) drawChestBadge(this.ctx, at, badge);
   }
 

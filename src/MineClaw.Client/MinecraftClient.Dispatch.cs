@@ -120,6 +120,13 @@ public sealed partial class MinecraftClient
                 return true;
             case SoundMessage sound:
                 ReceiveFishingSound(sound);
+                if (double.IsFinite(sound.X) && double.IsFinite(sound.Y) && double.IsFinite(sound.Z)
+                    && float.IsFinite(sound.Volume) && float.IsFinite(sound.Pitch) && sound.Volume > 0)
+                    w.Entities.Events.Add(new EntityEvent(0, "sound", DateTime.UtcNow,
+                        new(sound.X, sound.Y, sound.Z), sound.Sound, Math.Clamp(sound.Volume, 0, 16), Math.Clamp(sound.Pitch, 0.25f, 4)));
+                return true;
+            case SoundEffectPacket effect:
+                ReceiveWorldSound(effect, w);
                 return true;
             case SpawnPositionPacket sp:
                 w.Spawn = new BlockPos(sp.X, sp.Y, sp.Z);

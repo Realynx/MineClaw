@@ -76,6 +76,8 @@ public sealed partial class Release1122Connection
         t[EntityIds1122.CombatEvent] = static (c, b) => c.TranslateCombatEvent(b);
         t[EntityIds1122.SetCooldown] = static (_, b) => TranslateSetCooldown(b);
         t[Ids1122.SoundEffect] = static (_, b) => TranslateSoundEffect(b);
+        t[0x19] = static (_, b) => TranslateNamedSound(b);
+        t[0x21] = static (_, b) => TranslateWorldEffect(b);
         // EntityIds1122.Entity (SPacketEntity with no move: a keep-alive of the tracker) and EntityIds1122.AttachEntity (a leash,
         // not riding) have no translator: they surface nothing.
         return t;
@@ -120,5 +122,22 @@ public sealed partial class Release1122Connection
         r.ReadVarInt(); // category
         double x = r.ReadInt() / 8.0, y = r.ReadInt() / 8.0, z = r.ReadInt() / 8.0;
         return new SoundMessage { Sound = name, X = x, Y = y, Z = z, Volume = r.ReadFloat(), Pitch = r.ReadFloat() };
+    }
+
+    private static IPacket TranslateNamedSound(ReadOnlySpan<byte> body)
+    {
+        var r = new WireReader(body);
+        string name = r.ReadString(256);
+        r.ReadVarInt();
+        return new SoundMessage { Sound = name.StartsWith("minecraft:", StringComparison.Ordinal) ? name[10..] : name,
+            X = r.ReadInt() / 8.0, Y = r.ReadInt() / 8.0, Z = r.ReadInt() / 8.0, Volume = r.ReadFloat(), Pitch = r.ReadFloat() };
+    }
+
+    private static IPacket TranslateWorldEffect(ReadOnlySpan<byte> body)
+    {
+        var r = new WireReader(body);
+        int effect = r.ReadInt();
+        var p = r.ReadPosition();
+        return new SoundEffectPacket { EffectId = effect, X = p.X, Y = p.Y, Z = p.Z, Data = r.ReadInt() };
     }
 }

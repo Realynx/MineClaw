@@ -29,6 +29,7 @@ import { RestartNotice } from './RestartPanel';
 import { ReviewBar } from './ReviewBar';
 import { SettingField } from './SettingField';
 import { StepUpCancelled, useStepUp } from './useStepUp';
+import { WebHostingCard } from './WebHostingCard';
 
 function groupSections(list: readonly AdminSetting[]): Array<[string, AdminSetting[]]> {
   const m = new Map<string, AdminSetting[]>();
@@ -128,9 +129,10 @@ export function AdministrationView() {
     <AdminFormContext.Provider value={form}>
       <PageHeader
         title="Administration"
-        subtitle="The bot's own settings. Changes go to the node's override file; secrets are write-only and never come back."
+        subtitle="Configure web access and the bot's settings. Changes are reviewed before saving; secret contents stay on the server."
         actions={<NodePicker node={node} setNode={setNode} nodeList={nodeList} />}
       />
+      <WebHostingCard />
       {q.isPending ? (
         <Card className="p-5">
           <SkeletonLines lines={8} />

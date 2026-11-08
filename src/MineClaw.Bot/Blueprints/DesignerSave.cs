@@ -241,6 +241,8 @@ public static partial class DesignerSave
         List<IGrouping<string, (int Id, int Meta)>> names, Drawing drawn, string what, string anchor, string versionTail)
     {
         bool created = existing == null;
+        if (session.Canvas.Mine && session.MineAuthoring is { } metadata)
+            drawn = drawn with { Dsl = DesignerMineAuthoring.Marker(metadata) + drawn.Dsl };
         var rec = existing ?? s.Store.Insert(new BlueprintRecord
         {
             Name = req.Name, Description = req.Description(what), Requester = req.Requester, Bot = req.Bot, Dsl = drawn.Dsl,

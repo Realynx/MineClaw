@@ -1,12 +1,12 @@
 'use client';
 
-import { Focus, Group, Layers3 } from 'lucide-react';
+import { Eye, EyeOff, Focus, Group, Layers3 } from 'lucide-react';
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { cn } from '@/lib/utils';
 import { ModuleGlyph, moduleLabel, type ModulePaletteProps } from './ModulePalette';
 
 /** A persistent outliner: component selection is independent of terrain visibility and edit permissions. */
-export function MineComponents(p: Pick<ModulePaletteProps, 'modules' | 'selectedModule' | 'onSelectModule' | 'onFrameModule' | 'onCopyModule' | 'onPasteModule' | 'onDuplicateModule' | 'onCombineModules' | 'canPasteModule'> & { disabled?: boolean }) {
+export function MineComponents(p: Pick<ModulePaletteProps, 'modules' | 'selectedModule' | 'onSelectModule' | 'onFrameModule' | 'onCopyModule' | 'onPasteModule' | 'onDuplicateModule' | 'onCombineModules' | 'canPasteModule' | 'onVisibilityModule'> & { disabled?: boolean }) {
   const modules = p.modules ?? [];
   const selected = modules.find((m) => m.id === p.selectedModule);
   const selectedId = selected?.id;
@@ -65,16 +65,20 @@ export function MineComponents(p: Pick<ModulePaletteProps, 'modules' | 'selected
     </div>
     {modules.length ? <>
       <div ref={list} role="listbox" aria-label="Mine components" className="relative max-h-48 space-y-0.5 overflow-y-auto rounded border border-border bg-surface-2/40 p-1">
-        {modules.map((item, index) => <button key={item.id} type="button" role="option" aria-selected={selected?.id === item.id}
+        {modules.map((item, index) => <div key={item.id} className="flex items-center gap-1"><button type="button" role="option" aria-selected={selected?.id === item.id}
           aria-label={`${moduleLabel(item.spec)} ${index + 1}`} title={`${moduleLabel(item.spec)} · ${item.at.join(', ')}. Double-click to frame.`}
           tabIndex={selected ? (selected.id === item.id ? 0 : -1) : index === 0 ? 0 : -1}
           ref={(node) => { if (node) rows.current.set(item.id, node); else rows.current.delete(item.id); }}
           onClick={() => p.onSelectModule?.(item.id)} onDoubleClick={() => { p.onSelectModule?.(item.id); p.onFrameModule?.(item.id); }} onKeyDown={(event) => key(event, index)}
-          className={cn('flex w-full items-center gap-1.5 rounded px-1.5 py-1.5 text-left focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent', selected?.id === item.id ? 'bg-accent/20 text-fg' : 'text-muted hover:bg-surface-2')}>
+          className={cn('flex min-w-0 flex-1 items-center gap-1.5 rounded px-1.5 py-1.5 text-left focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent', selected?.id === item.id ? 'bg-accent/20 text-fg' : 'text-muted hover:bg-surface-2', item.visible === false && 'opacity-50')}>
           <ModuleGlyph kind={item.spec.kind} compact />
           <span className="min-w-0 flex-1"><span className="block truncate text-[11px]">{moduleLabel(item.spec)} <span className="text-subtle">{index + 1}</span></span>
             <span className="block font-mono text-[9px] text-subtle">{item.at[0]}, {item.at[1]}, {item.at[2]}</span></span>
-        </button>)}
+        </button><button type="button" aria-label={`${item.visible === false ? 'Show' : 'Hide'} ${moduleLabel(item.spec)} ${index + 1}`} aria-pressed={item.visible !== false}
+          title="Show or hide this component's wireframe. The saved excavation and mining tasks stay unchanged."
+          onClick={() => p.onVisibilityModule?.(item.id, item.visible === false)} className="shrink-0 rounded p-1 text-muted hover:bg-surface-2">
+          {item.visible === false ? <EyeOff className="size-3.5" /> : <Eye className="size-3.5" />}
+        </button></div>)}
       </div>
       <p className="mt-1.5 text-[10px] text-subtle">Select here or in the mine. Double-click to frame.</p>
     </> : <div className="rounded border border-dashed border-border px-2 py-3 text-[10px] text-subtle">

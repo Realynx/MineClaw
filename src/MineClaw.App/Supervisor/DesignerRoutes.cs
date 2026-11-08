@@ -32,6 +32,7 @@ public sealed class DesignerRoutes
     public const string Prefix = "/api/designer";
     /// <summary>A message with a canvas edit batch, or a canvas post (the bridge caps JSON bodies at 256 KB too).</summary>
     public const int MaxBodyBytes = 256 * 1024;
+    public const int MaxSaveBodyBytes = 8 * 1024 * 1024;
     public const int MaxText = 2000;
 
     private static readonly JsonSerializerOptions Json = new()
@@ -78,7 +79,8 @@ public sealed class DesignerRoutes
     {
         if (!req.HttpMethod.Equals("POST", StringComparison.OrdinalIgnoreCase) || !IsDesignerPath(req.Url?.AbsolutePath ?? "/") || !req.HasEntityBody) return null;
         if (!o.Viewer.Enabled || !TokenOk(req.Headers["X-Supervisor-Token"], o.Token)) return null;
-        return await SupervisorAdminRoutes.ReadCappedAsync(req, MaxBodyBytes, 16384, ct).ConfigureAwait(false);
+        var cap = req.Url?.AbsolutePath.TrimEnd('/').EndsWith("/save", StringComparison.OrdinalIgnoreCase) == true ? MaxSaveBodyBytes : MaxBodyBytes;
+        return await SupervisorAdminRoutes.ReadCappedAsync(req, cap, 16384, ct).ConfigureAwait(false);
     }
 
     private static bool TokenOk(string? given, string? token)
@@ -263,9 +265,11 @@ public sealed class DesignerRoutes
         s.Canvas = canvas;
         s.Offset = l.Offset;
         s.DesignId = did;
+        s.DesignRevision = l.Rev;
         s.Name = l.Design?.Name ?? s.Name;
         s.Anchor = l.Anchor;
         s.PreferredFor = l.PreferredFor;
+        s.MineAuthoring = canvas.Mine ? _store.MineAuthoring(did, l.Rev) : null;
         note = l.Why ?? (rev is { } rv && l.Rev != 0 ? $"Opened r{rv} of #{did}: saving it makes it the newest revision again (a revert)." : null);
         if (convertTo != null && convertTo != canvas.Version) compat = Convert(s, convertTo);
         using (DesignVersions.Use(s.Version)) Settle(s);
@@ -440,8 +444,8 @@ public sealed class DesignerRoutes
         if (s.Version != server && s.Canvas.Count > 0) serverCompat = ReportJson(DesignConvert.Convert(s.Canvas.Blocks, s.Version, server).Report);
         return new
         {
-            id = s.Id, owner = s.Owner, model = s.Model, design_id = s.DesignId, name = s.Name, rev = s.Canvas.Rev, blocks = s.Canvas.Wire(), dug = s.Canvas.DugWire(),
-            kind = s.Canvas.Kind, seed = s.Canvas.Mine ? s.Canvas.Seed : null, preferred_for = s.PreferredFor,
+            id = s.Id, owner = s.Owner, model = s.Model, design_id = s.DesignId, design_revision = s.DesignRevision, name = s.Name, rev = s.Canvas.Rev, blocks = s.Canvas.Wire(), dug = s.Canvas.DugWire(),
+            kind = s.Canvas.Kind, seed = s.Canvas.Mine ? s.Canvas.Seed : null, preferred_for = s.PreferredFor, mine_authoring = s.Canvas.Mine ? s.MineAuthoring : null,
             anchor = s.Anchor is { } a ? new[] { a.X, a.Y, a.Z } : null,
             messages = _store.Messages(s.Id).Select(MessageJson),
             cost_usd = (double)s.CostUsd, calls = s.Calls, version = s.Version, server_version = server, versions = DesignVersions.All,
@@ -476,7 +480,7 @@ public sealed class DesignerRoutes
     private sealed record Selection(int[]? Min, int[]? Max);
     private sealed record MessageBody(string? Text, string? Model, CanvasRef? Canvas, Selection? Selection, string? Player, string? Who);
     private sealed record CanvasBody(int Rev, OpBody[]? Ops, int[]? Anchor, bool? ClearAnchor, string? Player, string? Who);
-    private sealed record SaveBody(string? Name, string? Summary, bool? AsNew, string? Player, string? Who, string? PreviewPng, bool? PreviewOnly);
+    private sealed record SaveBody(string? Name, string? Summary, bool? AsNew, string? Player, string? Who, string? PreviewPng, bool? PreviewOnly, string? MineAuthoring);
 
     /// <summary>The user's edits applied in order; null = nothing malformed. Each changed cell is summarised for the AI's next turn.</summary>
     private static string? ApplyEdits(DesignerSessionRecord s, OpBody[]? ops, out int applied) => ApplyEdits(s, ops, out applied, out _);
@@ -604,6 +608,7 @@ public sealed class DesignerRoutes
         var b = Parse<SaveBody>(r.Body);
         if (b == null || string.IsNullOrWhiteSpace(b.Name)) return Reply(400, new { error = "body must be JSON {name, summary?, as_new?}" });
         if (b.Summary is { Length: > 120 }) return Reply(400, new { error = "summary over 120 chars" });
+        if (!DesignerMineAuthoring.Valid(b.MineAuthoring)) return Reply(400, new { error = "mine_authoring must be a valid layout envelope up to 2000000 characters" });
         if (!TryPicture(b.PreviewPng, out var picture)) return Reply(400, new { error = "preview_png must be a PNG up to 384 by 256 pixels and 190000 base64 characters" });
         if (b.PreviewOnly == true)
         {
@@ -612,8 +617,11 @@ public sealed class DesignerRoutes
             svc.Store.Update(existing, picture);
             return Reply(200, new { design_id = did, rev = existing.Rev, name = existing.Name, blocks = s.Canvas.Count, created = false, text = $"Updated picture for {existing.Name}." });
         }
+        s.MineAuthoring = s.Canvas.Mine ? b.MineAuthoring ?? s.MineAuthoring : null;
         var res = DesignerSave.Save(svc, s, b.Name, b.Summary, Requester(b.Player, b.Who), b.AsNew == true, _bot());
         if (!res.Ok) return Reply(400, new { error = res.Text });
+        s.DesignRevision = res.Rev;
+        _store.SaveMineAuthoring(res.DesignId, res.Rev, s.MineAuthoring);
         if (picture != null && svc.Store.Get(res.DesignId) is { } record) svc.Store.Update(record, picture);
         _store.Update(s);
         _store.AddMessage(s.Id, "assistant", res.Text);

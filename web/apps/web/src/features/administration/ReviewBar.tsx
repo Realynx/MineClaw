@@ -19,6 +19,7 @@ export function ReviewBar({
   error,
   open,
   onOpenChange,
+  description,
 }: {
   rows: readonly DiffRow[];
   invalid: number;
@@ -30,6 +31,7 @@ export function ReviewBar({
   error: unknown;
   open: boolean;
   onOpenChange: (o: boolean) => void;
+  description?: string;
 }) {
   const [touched, setTouched] = useState(false);
   if (rows.length === 0 && invalid === 0) return null;
@@ -63,7 +65,10 @@ export function ReviewBar({
         onOpenChange={onOpenChange}
         size="lg"
         title="Review changes"
-        description="Saved to the node's override file (the previous one is kept as a backup). Live settings apply at once; the rest after a restart."
+        description={
+          description ??
+          "Saved to the node's override file (the previous one is kept as a backup). Live settings apply at once; the rest after a restart."
+        }
         footer={
           <>
             <Button variant="ghost" onClick={() => onOpenChange(false)}>

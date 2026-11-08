@@ -7,6 +7,7 @@
  * (`/v1/sup/viewer/now?bot={bot}`); Nest appends the request's own query, keys converted with `camelToSnake`.
  */
 import type { z } from 'zod';
+import { WebHostingResponse, WebHostingSaveRequest } from './webHosting.js';
 import {
   ActivityCompactionReport,
   AdminAuditQuery,
@@ -767,6 +768,26 @@ export const ROUTES = {
   }),
 
   // ---------- administration: the bot's own settings, per node (supervisor through the bridge's node proxy) ----------
+  'admin.webHosting': get('/api/admin/hosting', {
+    access: 'admin',
+    response: WebHostingResponse,
+    responseKind: 'json',
+    bridge: null,
+    supervisor: null,
+    audit: null,
+    summary: 'Gateway HTTPS settings, with saved and running values; certificate contents never leave the server.',
+  }),
+  'admin.webHostingSave': post('/api/admin/hosting', {
+    access: 'admin',
+    stepUp: true,
+    body: WebHostingSaveRequest,
+    response: WebHostingResponse,
+    responseKind: 'json',
+    bridge: null,
+    supervisor: null,
+    audit: 'admin_settings',
+    summary: 'Validate hostname/certificate/key and save gateway HTTPS settings; activate by restarting the web API.',
+  }),
   'admin.nodes': get('/api/admin/nodes', {
     access: 'admin',
     response: AdminNodesResponse,
@@ -1438,7 +1459,8 @@ export const ROUTES = {
     bridge: b('/v1/sup/story/colonies/{id}/builds', 'POST'),
     supervisor: '/api/story/colonies/{id}/builds',
     audit: 'story',
-    summary: 'The build queue: add, edit exact plan cells, remove, pause, resume, reorder, or unprotect selected cells from builds and Preserve.',
+    summary:
+      'The build queue: add, edit exact plan cells, remove, pause, resume, reorder, or unprotect selected cells from builds and Preserve.',
   }),
   'story.storage': post('/api/story/colonies/:id/storage', {
     access: 'story',
@@ -1449,7 +1471,8 @@ export const ROUTES = {
     bridge: b('/v1/sup/story/colonies/{id}/storage', 'POST'),
     supervisor: '/api/story/colonies/{id}/storage',
     audit: 'story',
-    summary: 'Chest storage settings: set, add/exclude filter entries, remove, copy, assign an area. Attached filter signs take precedence until removed.',
+    summary:
+      'Chest storage settings: set, add/exclude filter entries, remove, copy, assign an area. Attached filter signs take precedence until removed.',
   }),
   'story.bills': post('/api/story/colonies/:id/bills', {
     access: 'story',
@@ -1504,7 +1527,8 @@ export const ROUTES = {
     bridge: b('/v1/sup/story/colonies/{id}/material-rules', 'POST'),
     supervisor: '/api/story/colonies/{id}/material-rules',
     audit: 'story',
-    summary: "Per material tool rules (tool, tier >= the material's floor, enchantment, fallback); 400 below the floor.",
+    summary:
+      "Per material tool rules (tool, tier >= the material's floor, enchantment, fallback); 400 below the floor.",
   }),
   'story.gear': post('/api/story/colonies/:id/gear', {
     access: 'story',

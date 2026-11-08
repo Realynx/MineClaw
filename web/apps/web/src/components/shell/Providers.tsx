@@ -5,6 +5,7 @@ import { useEffect, useState, type ReactNode } from 'react';
 import { TooltipProvider } from '@/components/ui/overlays';
 import { makeQueryClient } from '@/lib/api/query';
 import { applyTheme, usePrefs } from '@/lib/prefs';
+import { PwaProvider } from '@/features/pwa/PwaProvider';
 
 const MOCK = process.env.NEXT_PUBLIC_MOCK === '1';
 
@@ -45,7 +46,9 @@ export function Providers({ children }: { children: ReactNode }) {
     <QueryClientProvider client={qc}>
       <TooltipProvider>
         <ThemeSync />
-        <MockGate>{children}</MockGate>
+        <PwaProvider>
+          <MockGate>{children}</MockGate>
+        </PwaProvider>
       </TooltipProvider>
     </QueryClientProvider>
   );

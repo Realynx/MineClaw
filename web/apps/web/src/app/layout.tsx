@@ -9,6 +9,10 @@ export const metadata: Metadata = {
   title: { default: 'MineClaw Explorer', template: '%s · MineClaw' },
   description: 'Live hive, memory and scripts of the MineClaw bots.',
   robots: { index: false, follow: false },
+  manifest: '/manifest.webmanifest',
+  applicationName: 'MineClaw',
+  appleWebApp: { capable: true, title: 'MineClaw', statusBarStyle: 'default' },
+  icons: { icon: '/icons/mineclaw-192.png', apple: '/icons/mineclaw-192.png' },
 };
 
 export const viewport: Viewport = {

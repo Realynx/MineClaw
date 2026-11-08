@@ -87,6 +87,7 @@ appsettings; env overrides are `MINECLAW_WEB_<Section>__<Key>`.
 | `Web:DbPath`                           | `<DataDir>/web.db`               | full path override |
 | `Web:SessionIdleHours` / `Web:SessionAbsoluteDays` | 12 / 7               | |
 | + `Web:CookieSecure`                   | auto                             | `auto`: Secure + `__Host-mcx` only on HTTPS; `always` / `never` force it |
+| + `Web:Tls:{Enabled,Hostname,Port,CertFile,KeyFile}` | false, empty, 8443, empty, empty | optional additional HTTPS listener; PEM full chain and matching unencrypted private key are absolute server paths; port 1024–65535 |
 | + `Web:LogLevel`                       | info                             | pino levels, `silent` |
 | + `Web:ValidateResponses`              | off (dev warn, tests strict)     | check bridge replies and SSE frames against the contracts schemas |
 | + `Web:BodyLimitBytes`                 | 1048576                          | JSON bodies; shard uploads are capped at 48 MB |
@@ -101,6 +102,19 @@ appsettings; env overrides are `MINECLAW_WEB_<Section>__<Key>`.
 | + `Bridge:Mock`                        | false                            | dev only (`--mock-bridge`); refused when NODE_ENV=production |
 
 ## Cookies on plain HTTP vs HTTPS
+
+Administration → **Web HTTPS and certificates** reviews and saves these settings to
+`<Web:DataDir>/hosting.override.json` (0600, previous file `.bak`). Restart **mineclaw-web-api** to apply them;
+the Administration bot restart action does not restart this service. The override loads after config files and before
+environment variables. Any `MINECLAW_WEB_Web__Tls__*` override makes the editor read-only. Startup and saving validate
+certificate dates, SAN hostname, key match and file readability. The private key is never returned by the API or stored
+in the audit. This editor does not issue or renew certificates.
+
+HTTP remains available on its original port for health checks/recovery. HTTPS uses the same authentication, routes,
+WebSocket proxy and SSE streams. The configured `https://hostname:port` is added to allowed origins at startup.
+Keep `CookieSecure: auto`; do not force insecure cookies. The service stays unprivileged, so use a reverse proxy for
+port 443 or choose a free unprivileged port. Configure the firewall/DNS separately. See
+[`docs/web/deploy.md`](../../../docs/web/deploy.md#https-and-app-installation) for the certificate/install workflow.
 
 Browsers only accept a `__Host-` cookie when it is `Secure`, and they drop `Secure` cookies set over plain HTTP. So:
 

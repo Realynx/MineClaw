@@ -289,7 +289,7 @@ export function glyph(id: string): Path2D | null {
 // ------------------------------------------------------------------ item icons
 
 /** b1.8.1 gui/items.png cells of items 256+ and terrain.png cells of blocks: set by the viewer module once it loads. */
-let iconSource: ((id: number, meta: number) => { url: string; cell: number } | null) | null = null;
+let iconSource: ((id: number, meta: number) => { url: string; cell: number; columns?: number; rows?: number } | null) | null = null;
 const iconListeners = new Set<() => void>();
 
 export function setItemIconSource(f: typeof iconSource): void {
@@ -337,8 +337,9 @@ export function ItemIcon({
       </span>
     );
   }
-  const x = hit.cell % 16,
-    y = Math.floor(hit.cell / 16);
+  const columns = hit.columns ?? 16, rows = hit.rows ?? 16;
+  const x = hit.cell % columns,
+    y = Math.floor(hit.cell / columns);
   return (
     <span
       className={cn('inline-block shrink-0', className)}
@@ -349,7 +350,7 @@ export function ItemIcon({
         width: size,
         height: size,
         backgroundImage: `url(${hit.url})`,
-        backgroundSize: `${size * 16}px ${size * 16}px`,
+        backgroundSize: `${size * columns}px ${size * rows}px`,
         backgroundPosition: `-${x * size}px -${y * size}px`,
         imageRendering: 'pixelated',
       }}

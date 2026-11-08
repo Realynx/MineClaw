@@ -1,14 +1,15 @@
 'use client';
 
-import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from 'react';
-import { SlidersHorizontal, X } from 'lucide-react';
-import type { AimRay, AimTarget } from '@mineclaw/world-viewer';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from 'react';
+import { Eye, Boxes, Hammer, RotateCw, SlidersHorizontal, X } from 'lucide-react';
+import type { AimRay, AimTarget, WorldViewerHandle } from '@mineclaw/world-viewer';
 import type { StoryArchitectEntry, StoryColonyState } from '@mineclaw/contracts';
 import { loadWorldViewer } from '@/features/world/integration';
 import { PaletteDrawer, type IconSheet } from '../studio/BlockBar';
 import { rotateMeta, type Version } from '../studio/facing';
 import { pushRecent, type PaletteEntry } from '../studio/palette';
 import { hologramCells } from './bodyLook';
+import { bindControllerInput, CONTROLLER_TOOLS, type ControllerTool, type ToolWheel } from './controllerInput';
 import {
   aimEdit,
   editCells,
@@ -168,40 +169,56 @@ export function StoryFlyEditor({
   flying,
   canEdit,
   onStart,
+  viewer,
 }: {
   editor: StoryFlyEditorState;
   state: StoryColonyState | undefined;
   flying: boolean;
   canEdit: boolean;
   onStart?: () => void;
+  viewer: RefObject<WorldViewerHandle | null>;
 }) {
   const [open, setOpen] = useState(false);
   const [locked, setLocked] = useState(false);
+  const [wheel, setWheel] = useState<ToolWheel | null>(null);
+  const current = useRef({ e, canEdit, onStart });
+  useLayoutEffect(() => { current.current = { e, canEdit, onStart }; });
   useEffect(() => {
     const changed = () => {
-      const next = !!document.pointerLockElement;
+      const next = viewer.current?.locked() ?? false;
       setLocked(next);
       if (next) setOpen(false);
     };
     document.addEventListener('pointerlockchange', changed);
     changed();
     return () => document.removeEventListener('pointerlockchange', changed);
-  }, []);
+  }, [viewer]);
   useEffect(() => {
-    const key = (ev: KeyboardEvent) => {
-      if (!flying || !canEdit || !e.enabled || !document.pointerLockElement || !['KeyR', 'KeyB'].includes(ev.code))
-        return;
-      ev.preventDefault();
-      ev.stopImmediatePropagation();
-      if (ev.code === 'KeyR') e.rotate();
+    if (!flying) return;
+    const choose = (tool: ControllerTool) => {
+      const { e, canEdit, onStart } = current.current;
+      if (!canEdit && tool !== 'inspect') return;
+      if (tool === 'rotate') e.rotate();
       else {
-        document.exitPointerLock?.();
-        e.setPaletteOpen(true);
+        e.setEnabled(tool !== 'inspect');
+        if (tool !== 'inspect') onStart?.();
+        if (tool === 'blocks') {
+          document.exitPointerLock?.();
+          setOpen(false);
+          e.setPaletteOpen(true);
+        }
       }
     };
-    window.addEventListener('keydown', key, true);
-    return () => window.removeEventListener('keydown', key, true);
-  }, [flying, canEdit, e]);
+    return bindControllerInput({
+      active: () => current.current.canEdit && !!viewer.current?.locked(),
+      editable: () => current.current.canEdit,
+      editing: () => current.current.e.enabled,
+      pause: (paused) => viewer.current?.engine()?.setInputPaused(paused),
+      wheel: setWheel,
+      choose,
+      release: () => document.exitPointerLock?.(),
+    });
+  }, [flying, viewer]);
   if (!flying || !canEdit) return null;
   const unlock = () => document.exitPointerLock?.();
   const title = (id: string) => {
@@ -210,6 +227,7 @@ export function StoryFlyEditor({
   };
   return (
     <>
+      {wheel ? <ControllerToolWheel wheel={wheel} /> : null}
       {!open && !locked ? (
         <button
           type="button"
@@ -260,7 +278,7 @@ export function StoryFlyEditor({
           </div>
           {e.enabled ? (
             <>
-              <p>Left removes · Right places · R rotates · B opens blocks. Pawns build these holograms.</p>
+              <p>Left removes · Right places · R rotates · E opens blocks · Hold Q for tools. Pawns build these holograms.</p>
               <p className="text-muted">Doors, beds, signs and rails use the Architect tools.</p>
               <button
                 className="w-full rounded border border-border bg-surface-2 px-2 py-1 text-left"
@@ -349,10 +367,31 @@ export function StoryFlyEditor({
           version={e.version}
           current={e.entry}
           sheet={e.sheet}
-          onChoose={e.choose}
+          onChoose={(entry) => { e.choose(entry); viewer.current?.lock(); }}
           onClose={e.closePalette}
         />
       ) : null}
     </>
+  );
+}
+
+const WHEEL_ICONS = [Eye, Hammer, Boxes, RotateCw];
+
+function ControllerToolWheel({ wheel }: { wheel: ToolWheel }) {
+  return (
+    <div className="pointer-events-none absolute inset-0 z-40 grid place-items-center bg-black/15" data-testid="controller-tool-wheel">
+      <div className="relative size-80 rounded-full border border-white/20 bg-black/75 text-white shadow-2xl" role="menu" aria-label="Freecam tools">
+        {CONTROLLER_TOOLS.map((tool, i) => {
+          const angle = i * Math.PI / 2 - Math.PI / 2, Icon = WHEEL_ICONS[i]!;
+          return <div key={tool.id} role="menuitem" aria-current={wheel.selected === tool.id}
+            className={`absolute flex w-28 -translate-x-1/2 -translate-y-1/2 flex-col items-center gap-1 rounded-xl px-2 py-3 text-center text-xs ${wheel.selected === tool.id ? 'bg-accent text-white' : 'text-white/75'}`}
+            style={{ left: 160 + Math.cos(angle) * 101, top: 160 + Math.sin(angle) * 101 }}>
+            <Icon className="size-5" />{tool.label}
+          </div>;
+        })}
+        <div className="absolute inset-0 grid place-items-center text-center text-[10px] text-white/60">Release Q<br />to select</div>
+        <div className="absolute size-2 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white shadow" style={{ left: 160 + wheel.x, top: 160 + wheel.y }} />
+      </div>
+    </div>
   );
 }

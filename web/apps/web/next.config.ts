@@ -26,6 +26,23 @@ const config: NextConfig = {
   // Next 16 writes an AGENTS.md into the app on `next dev`; this repo keeps agent guidance elsewhere.
   agentRules: false,
   rewrites: () => Promise.resolve([{ source: '/api/:path*', destination: `${apiUrl}/api/:path*` }]),
+  headers: () =>
+    Promise.resolve([
+      {
+        source: '/sw.js',
+        headers: [
+          { key: 'Cache-Control', value: 'no-store' },
+          { key: 'Service-Worker-Allowed', value: '/' },
+        ],
+      },
+      {
+        source: '/manifest.webmanifest',
+        headers: [
+          { key: 'Cache-Control', value: 'no-cache' },
+          { key: 'Content-Type', value: 'application/manifest+json' },
+        ],
+      },
+    ]),
   // The RAPTOR tree page was folded into Memory activity (2026-11-03); old links keep their query (node, hits, q).
   redirects: () => Promise.resolve([{ source: '/raptor', destination: '/memory-activity', permanent: false }]),
 };

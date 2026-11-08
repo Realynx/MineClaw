@@ -16,7 +16,7 @@ namespace MineClaw.App.Tests;
 /// absolute y, the routes' kind / seed / preference, and the AI's mine prompt and templates.
 /// </summary>
 [Collection(GameDataDefaultCollection.Name)]
-public class DesignerMineTests
+public partial class DesignerMineTests
 {
     private const string Token = "s3cret-token";
     private static JsonElement E(object o) => JsonSerializer.SerializeToElement(o);

@@ -120,8 +120,8 @@ function StepUpDialog({
       }
       description={
         totp
-          ? 'Changing the bot needs a fresh check. Enter the current code from your authenticator; it lasts 5 minutes.'
-          : 'Changing the bot needs a fresh check. Enter your password; it lasts 5 minutes.'
+          ? 'Changing administration settings needs a fresh check. Enter the current code from your authenticator; it lasts 5 minutes.'
+          : 'Changing administration settings needs a fresh check. Enter your password; it lasts 5 minutes.'
       }
       footer={
         <>

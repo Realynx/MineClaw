@@ -177,12 +177,18 @@ function buildInit<K extends RouteId>(route: RouteDef, opts: CallOptions<K>): Re
 async function send<K extends RouteId>(id: K, opts: CallOptions<K>): Promise<Response> {
   const route: RouteDef = ROUTES[id];
   const url = apiPath(id, opts.params ?? {}, opts.query);
+  const checkOnline = () => {
+    if (route.method !== 'GET' && typeof navigator !== 'undefined' && navigator.onLine === false)
+      throw new ApiError(0, 'You are offline. Reconnect, then send the command again.', { code: 'offline' });
+  };
   const attempt = async (): Promise<Response> => {
+    checkOnline();
     const init = buildInit(route, opts);
     if (route.method !== 'GET') {
       const token = await ensureCsrf();
       (init.headers as Record<string, string>)['X-CSRF-Token'] = token;
     }
+    checkOnline();
     try {
       return await rawFetch(url, init);
     } catch (e) {
@@ -266,6 +272,7 @@ const STATUS_TEXT: Partial<Record<number, string | ((code: string | undefined) =
 };
 
 function apiErrorText(e: ApiError): string {
+  if (e.code === 'offline') return e.message;
   const t = STATUS_TEXT[e.status];
   if (t === undefined) return e.message;
   return typeof t === 'function' ? t(e.code) : t;

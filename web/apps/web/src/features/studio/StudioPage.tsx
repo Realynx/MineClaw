@@ -46,6 +46,7 @@ import { PictureControls } from './PictureControls';
 import { ChatPanel, type ChatPanelHandle } from './ChatPanel';
 import { MinePanel } from './MinePanel';
 import { minePreview } from './mine/minePreview';
+import { visibleMinePreview } from './mine/visiblePreview';
 import { useMinePlacement } from './useMinePlacement';
 import type { MineCells } from './mine/mineTemplates';
 import type { MinePreset } from './mine/presets';
@@ -311,7 +312,7 @@ function StudioBody({
   const [saveSummary, setSaveSummary] = useState('');
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState<{ designId: number; rev: number; text: string } | null>(() =>
-    session.designId ? { designId: session.designId, rev: session.revisions[0]?.rev ?? 0, text: '' } : null,
+    session.designId ? { designId: session.designId, rev: session.designRevision ?? session.revisions[0]?.rev ?? 0, text: '' } : null,
   );
   const [revisions, setRevisions] = useState<DesignRevision[]>(session.revisions);
   const [notice, setNotice] = useState<string | null>(null);
@@ -332,19 +333,22 @@ function StudioBody({
   const bundle = useRef<Awaited<ReturnType<Mod['loadBundle']>> | null>(null);
   const [sheet, setSheet] = useState<IconSheet | null>(null);
   useEffect(() => {
-    let live = true;
-    void mod
-      .loadBundle(version)
-      .then(async (b) => {
-        if (!live) return;
-        bundle.current = b;
-        setIconTick((n) => n + 1);
-        const atlas = await mod.blockIconAtlasAsync(b, session.palette, 32);
-        if (live) setSheet(atlas);
-      })
-      .catch(() => undefined);
+    let live = true, generation = 0;
+    const reload = () => {
+      const current = ++generation;
+      void mod.loadBundle(version).then(async (b) => {
+          if (!live || current !== generation) return;
+          bundle.current = b;
+          setIconTick((n) => n + 1);
+          const atlas = await mod.blockIconAtlasAsync(b, session.palette, 32);
+          if (live && current === generation) setSheet(atlas);
+        }).catch(() => undefined);
+    };
+    reload();
+    window.addEventListener(mod.ASSETS_CHANGED, reload);
     return () => {
       live = false;
+      window.removeEventListener(mod.ASSETS_CHANGED, reload);
     };
   }, [mod, version, session.palette]);
   const hints = useMemo(() => new Map(session.palette.map((e) => [entryKey(e), e.icon ?? null] as const)), [session.palette]);
@@ -402,8 +406,8 @@ function StudioBody({
     if (m.label.startsWith('spiral') || kind === 'preset') void studio.setAnchor(m.entry).catch(() => undefined);
     setNotice(`${m.label}: ${changed.length} cells`);
   };
-  const applyPreset = async (p: MinePreset, m: MineCells) => {
-    insertMine(m, 'preset');
+  const applyPreset = async (p: MinePreset) => {
+    if (!minePlacement.insertPreset(p)) return;
     try {
       await studio.flush();
       await api('designer.version', { params: { id: session.id }, body: { version, preferredFor: p.version } });
@@ -526,18 +530,14 @@ function StudioBody({
   }, [overlay, mine, studio]);
 
   useEffect(() => overlay.setSelection(snap.selection), [overlay, snap.selection]);
-  // Only authored excavations and veins exposed by those routes; seed caves never create outlines.
+  // Terrain discovery only changes with excavation. Visibility reuses the result without another terrain scan.
+  const excavationPreview = useMemo(() => studio.terrain ? minePreview(studio.terrain, studio.canvas.holes(), studio.canvas.cells()) : null,
+    [studio, canvasTick]); // eslint-disable-line react-hooks/exhaustive-deps -- mutable canvas uses its explicit revision signal
+  const visiblePreview = useMemo(() => excavationPreview ? visibleMinePreview(excavationPreview, minePlacement.modules) : null,
+    [excavationPreview, minePlacement.modules]);
   useEffect(() => {
-    if (!studio.terrain || !xray) { overlay.setMinePreview(null); return; }
-    let frame = 0;
-    const update = () => {
-      frame = 0;
-      overlay.setMinePreview(minePreview(studio.terrain!, studio.canvas.holes(), studio.canvas.cells()));
-    };
-    update();
-    const stop = studio.onCells(() => { if (!frame) frame = requestAnimationFrame(update); });
-    return () => { stop(); if (frame) cancelAnimationFrame(frame); };
-  }, [overlay, studio, xray]);
+    overlay.setMinePreview(xray ? visiblePreview : null);
+  }, [overlay, visiblePreview, xray]);
   useEffect(() => overlay.setAnchor(snap.anchor), [overlay, snap.anchor]);
   useEffect(() => overlay.setGrid(grid), [overlay, grid]);
   // Underground: the view cuts away every layer above the chosen one (the pick looks through the cut too).
@@ -812,8 +812,10 @@ function StudioBody({
   const capturePicture = useCallback(async () => {
     const engine = viewer.current?.engine();
     if (!engine) throw new Error('The designer is still loading. Try again when the view is ready.');
-    return overlay.withoutGuides(() => engine.capturePng());
-  }, [overlay]);
+    if (mine && !xray) overlay.setMinePreview(visiblePreview);
+    try { return await overlay.withoutGuides(() => engine.capturePng(), mine); }
+    finally { if (mine && !xray) overlay.setMinePreview(null); }
+  }, [overlay, mine, visiblePreview, xray]);
 
   const doSave = useCallback(
     async (asNew: boolean): Promise<boolean> => {
@@ -1046,7 +1048,7 @@ function StudioBody({
             busy={busy || saving}
             onSeed={(seed) => void changeSeed(seed)}
             onInsert={(m) => insertMine(m)}
-            onPreset={(p, m) => void applyPreset(p, m)}
+            onPreset={(p) => void applyPreset(p)}
             modules={minePlacement.modules}
             selectedModule={minePlacement.selectedId}
             placingModule={minePlacement.placing}
@@ -1069,6 +1071,7 @@ function StudioBody({
             onDuplicateModule={minePlacement.duplicate}
             onPasteModule={minePlacement.paste}
             onCombineModules={minePlacement.combine}
+            onVisibilityModule={minePlacement.setVisible}
           />
         ) : null}
         <ChatPanel

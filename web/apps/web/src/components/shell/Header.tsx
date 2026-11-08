@@ -12,6 +12,7 @@ import { Badge, Button, Kbd } from '@/components/ui/primitives';
 import { Tooltip } from '@/components/ui/overlays';
 import { NAV_ITEMS } from './nav';
 import { TotpDialog } from './TotpDialog';
+import { InstallApp } from '@/features/pwa/PwaProvider';
 
 const levelStyle = {
   live: { dot: 'bg-ok', ring: 'ring-ok/25', text: 'text-fg' },
@@ -34,7 +35,14 @@ export function ConnectionIndicator() {
           aria-label={`Connection: ${c.label}. ${c.detail}`}
         >
           <span className="relative flex size-2.5 items-center justify-center">
-            <span className={cn('relative inline-flex size-2 rounded-full ring-3', s.dot, s.ring, pulsing && 'animate-pulse-dot')} />
+            <span
+              className={cn(
+                'relative inline-flex size-2 rounded-full ring-3',
+                s.dot,
+                s.ring,
+                pulsing && 'animate-pulse-dot',
+              )}
+            />
           </span>
           <span className={cn('hidden sm:inline', s.text)}>{c.label}</span>
         </button>
@@ -92,7 +100,11 @@ function ThemeMenu() {
         </DM.Trigger>
       </Tooltip>
       <DM.Portal>
-        <DM.Content align="end" sideOffset={6} className="z-50 min-w-36 rounded-lg border border-border bg-surface p-1 shadow-pop">
+        <DM.Content
+          align="end"
+          sideOffset={6}
+          className="z-50 min-w-36 rounded-lg border border-border bg-surface p-1 shadow-pop"
+        >
           <DM.RadioGroup value={theme} onValueChange={(v) => setPrefs({ theme: v as ThemePref })}>
             {(['system', 'light', 'dark'] as const).map((t) => (
               <DM.RadioItem key={t} value={t} className={menuItem}>
@@ -126,13 +138,23 @@ function UserMenu() {
           </button>
         </DM.Trigger>
         <DM.Portal>
-          <DM.Content align="end" sideOffset={6} className="z-50 w-64 rounded-lg border border-border bg-surface p-1 shadow-pop">
+          <DM.Content
+            align="end"
+            sideOffset={6}
+            className="z-50 w-64 rounded-lg border border-border bg-surface p-1 shadow-pop"
+          >
             <div className="px-2 py-2">
               <div className="flex items-center gap-2 text-sm font-medium text-fg">
                 <UserRound className="size-4 text-subtle" /> {me.username}
               </div>
               <div className="mt-1 text-xs text-muted">
-                {me.player ? <>Plays as <span className="font-medium text-fg">{me.player}</span></> : 'No linked player (cannot chat)'}
+                {me.player ? (
+                  <>
+                    Plays as <span className="font-medium text-fg">{me.player}</span>
+                  </>
+                ) : (
+                  'No linked player (cannot chat)'
+                )}
               </div>
               <div className="mt-2 flex flex-wrap gap-1">
                 {me.roles.map((r) => (
@@ -193,6 +215,7 @@ export function Header({ onOpenPalette, menuButton }: { onOpenPalette: () => voi
           </Button>
         </Tooltip>
         <ThemeMenu />
+        <InstallApp />
         <UserMenu />
       </div>
     </header>

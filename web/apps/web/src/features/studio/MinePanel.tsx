@@ -16,7 +16,7 @@ import type { MineCells } from './mine/mineTemplates';
 import { ModulePalette, ModuleSettings, type ModulePaletteProps } from './mine/ModulePalette';
 import { MineComponents } from './mine/MineComponents';
 import type { MineTerrain } from './mine/mineTerrain';
-import { presetCells, presetsFor, type MinePreset } from './mine/presets';
+import { presetsFor, type MinePreset } from './mine/presets';
 import { plotMode, type V3 } from './canvas';
 
 export interface MinePanelProps extends ModulePaletteProps {
@@ -40,7 +40,7 @@ export interface MinePanelProps extends ModulePaletteProps {
   busy: boolean;
   onSeed: (seed: string) => void;
   onInsert: (cells: MineCells) => void;
-  onPreset: (p: MinePreset, cells: MineCells) => void;
+  onPreset: (p: MinePreset) => void;
 }
 
 function Section({ title, children }: { title: string; children: ReactNode }) {
@@ -141,7 +141,7 @@ export function MinePanel(p: MinePanelProps) {
   const disabled = !p.canWrite || p.busy;
   return <aside className="flex min-h-0 w-full shrink-0 flex-col overflow-hidden border-l border-border bg-surface text-xs lg:w-72" aria-label="Mine designer" data-testid="mine-panel">
     <MineComponents modules={p.modules} selectedModule={p.selectedModule} onSelectModule={p.onSelectModule} onFrameModule={p.onFrameModule}
-      onCopyModule={p.onCopyModule} onDuplicateModule={p.onDuplicateModule} onPasteModule={p.onPasteModule} canPasteModule={p.canPasteModule} onCombineModules={p.onCombineModules} disabled={disabled} />
+      onCopyModule={p.onCopyModule} onDuplicateModule={p.onDuplicateModule} onPasteModule={p.onPasteModule} canPasteModule={p.canPasteModule} onCombineModules={p.onCombineModules} onVisibilityModule={p.onVisibilityModule} disabled={disabled} />
     <div ref={properties} className="min-h-0 flex-1 overflow-y-auto" data-testid="mine-properties">
     {p.selectedModule && !p.placingModule ? <section className="border-b border-border px-3 pb-3"><ModuleSettings key={p.selectedModule} {...p} disabled={disabled} /></section> : null}
     <section className="border-b border-border p-3"><ModulePalette {...p} disabled={disabled} /></section>
@@ -160,9 +160,9 @@ export function MinePanel(p: MinePanelProps) {
     </Section>
     <Section title="Dig estimate"><DigEstimate stats={stats} /></Section>
     <section className="border-b border-border px-3 py-2"><details><summary className="cursor-pointer text-[11px] font-medium text-muted">Version presets · {version}</summary>
-      <p className="mt-2 text-[10px] text-subtle">Complete reference mines. These add ordinary excavation cells; use the layouts above for movable pieces.</p>
+      <p className="mt-2 text-[10px] text-subtle">Complete reference mines, inserted as editable components. Select the shaft or branches above to move, configure or remove them.</p>
       <ul className="mt-2 space-y-2">{presetsFor(version).map((pr) => <li key={pr.id}><div className="flex items-center gap-2"><span className="flex-1 text-[11px]">{pr.name}</span>
-        <Button size="sm" variant="secondary" disabled={disabled} data-testid={`preset-${pr.id}`} onClick={() => p.onPreset(pr, presetCells(pr, terrain))}>Use</Button></div><p className="mt-0.5 text-[10px] text-subtle">{pr.notes}</p></li>)}</ul>
+        <Button size="sm" variant="secondary" disabled={disabled} data-testid={`preset-${pr.id}`} onClick={() => p.onPreset(pr)}>Use</Button></div><p className="mt-0.5 text-[10px] text-subtle">{pr.notes}</p></li>)}</ul>
       <PreferredNote preferredFor={p.preferredFor} />
     </details></section>
     <section className="px-3 py-2"><details><summary className="cursor-pointer text-[11px] font-medium text-muted">Terrain &amp; seed</summary>
@@ -223,6 +223,7 @@ function OreHeights(p: {
       </button>
     </div>
     <p className="mt-2 flex flex-wrap gap-2 text-[10px]" aria-label="Mine preview legend"><span className="text-sky-400">■ Planned excavation</span><span className="text-amber-400">■ Exposed veins</span></p>
+    <p className="mt-1 text-[10px] text-subtle">Very large plans use a coarser wireframe to keep the view responsive. Saved excavation stays exact.</p>
     {readout ? (
       <ul className="mt-1 space-y-0.5" data-testid="level-readout">
         {readout.map((r) => (

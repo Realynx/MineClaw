@@ -10,13 +10,15 @@
 import type { AimTarget, BotBadge, EntityView, PickedBlock, WorldViewerEngine, WorldViewerHandle } from '@mineclaw/world-viewer';
 import { getViewerQuality } from '@mineclaw/world-viewer/settings';
 import { designationCells, type StoryBuild, type StoryColonyState, type StoryArchitectEntry } from '@mineclaw/contracts';
-import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef } from 'react';
+import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef } from 'react';
 import { useWorldHost } from '@/features/world/integration';
 import { DotMap } from '@/features/world/DotMap';
 import { DESIGN_DRAG_TYPE } from './DesignLibrary';
 import { StoryFlyCrosshair } from './StoryFlyCrosshair';
+import { StoryAudio } from './StoryAudio';
 import { pawnBadges } from './pawnBadges';
 import { StoryFlyEditor, useStoryFlyEditor } from './StoryFlyEditor';
+import { canCaptureController } from './controllerInput';
 import type { EditSend } from './flyEdit';
 import {
   assignAlong,
@@ -463,6 +465,7 @@ export const StoryMap =forwardRef<StoryMapHandle, StoryMapProps>(function StoryM
   const p = useRef(props);
   p.current = props;
   const drag = useRef<DragState | null>(null);
+  const pendingRelease = useRef<object | null>(null);
   /** Esc / the other button cancel a drag; the release after a cancel does nothing (tools.ts `DragGate`). */
   const gate = useRef(new DragGate());
   const hover = useRef<Hover | null>(null);
@@ -506,8 +509,14 @@ export const StoryMap =forwardRef<StoryMapHandle, StoryMapProps>(function StoryM
     e.rig.flyPos.set(t.x, t.y + 12, t.z + 16);
     e.rig.flyPitch = 35;
     e.rig.flyYaw = 180;
-    e.surface.focus();
+    if (!editorRef.current.paletteOpen && canCaptureController()) e.lock();
   };
+
+  // Worker picks/scans may outlive a released drag. Changing tools or leaving the map cancels their eventual command.
+  useLayoutEffect(() => {
+    pendingRelease.current = null;
+    return () => { pendingRelease.current = null; };
+  }, [props.tool, props.view, props.level, props.build]);
 
   useEffect(() => {
     props.keys.current.clear();
@@ -562,7 +571,7 @@ export const StoryMap =forwardRef<StoryMapHandle, StoryMapProps>(function StoryM
       return null;
     },
     cancelDrag: () => {
-      if (!gate.current.escape()) return false;
+      if (!gate.current.escape() && !pendingRelease.current) return false;
       dropDrag();
       return true;
     },
@@ -605,48 +614,38 @@ export const StoryMap =forwardRef<StoryMapHandle, StoryMapProps>(function StoryM
     return () => cancelAnimationFrame(raf);
   }, [props.home, props.settle, ready]);
 
-  // ------------------------------------------------------------------ the frame loop: pan, project, draw
-  useEffect(() => {
-    let raf = 0;
-    let last = performance.now();
-    const centre: CentreReport = { at: 0, key: '', cb: undefined };
-    const pan = { x: 0, z: 0 };
-    const loop = (now: number) => {
-      raf = requestAnimationFrame(loop);
-      const dt = Math.min(0.1, (now - last) / 1000);
-      last = now;
-      const e = engine(),
-        c = canvas.current;
-      if (!e || !c) return;
-      syncView(e);
-      const w = c.clientWidth,
-        h = c.clientHeight;
-      if (c.width !== w || c.height !== h) {
-        c.width = w;
-        c.height = h;
-      }
-      if (p.current.view === 'fly') {
-        c.getContext('2d')?.clearRect(0, 0, c.width, c.height);
-        syncLabels([]);
-        return;
-      }
-      panStep(e, dt, w, h, pan);
-      const cam = e.camera;
-      mats.current = {
-        view: cam.matrixWorldInverse.elements,
-        proj: cam.projectionMatrix.elements,
-        world: cam.matrixWorld.elements,
-        projInv: cam.projectionMatrixInverse.elements,
-        w,
-        h,
-      };
-      scanChests(e, now);
-      reportCentre(e, now, centre);
-      draw(c, dt);
+  // Input, the world and its overlay share one rendered frame, including the viewer's FPS cap.
+  const frameState = useRef({ centre: { at: 0, key: '', cb: undefined }, pan: { x: 0, z: 0 } });
+  const beforeViewerFrame = (e: WorldViewerEngine, _now: number, dt: number) => {
+    const c = canvas.current;
+    if (!c) return;
+    syncView(e);
+    if (c.width !== c.clientWidth || c.height !== c.clientHeight) {
+      c.width = c.clientWidth;
+      c.height = c.clientHeight;
+    }
+    if (p.current.view !== 'fly') panStep(e, dt, c.clientWidth, c.clientHeight, frameState.current.pan);
+  };
+  const afterViewerFrame = (e: WorldViewerEngine, now: number, dt: number) => {
+    const c = canvas.current;
+    if (!c) return;
+    if (p.current.view === 'fly') {
+      c.getContext('2d')?.clearRect(0, 0, c.width, c.height);
+      syncLabels([]);
+      return;
+    }
+    const cam = e.camera;
+    mats.current = {
+      view: cam.matrixWorldInverse.elements, proj: cam.projectionMatrix.elements,
+      world: cam.matrixWorld.elements, projInv: cam.projectionMatrixInverse.elements,
+      w: c.clientWidth, h: c.clientHeight,
     };
-    raf = requestAnimationFrame(loop);
-    return () => cancelAnimationFrame(raf);
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+    scanChests(e, now);
+    reportCentre(e, now, frameState.current.centre);
+    draw(c, dt);
+  };
+  const frameCallbacks = useRef({ before: beforeViewerFrame, after: afterViewerFrame });
+  useLayoutEffect(() => { frameCallbacks.current = { before: beforeViewerFrame, after: afterViewerFrame }; });
 
   /** [frame] The viewer follows the page: a new engine's setup, the level cut, the level's height, the clock, the holograms. */
   const syncView = (e: WorldViewerEngine) => {
@@ -1169,6 +1168,7 @@ export const StoryMap =forwardRef<StoryMapHandle, StoryMapProps>(function StoryM
     return e.runtime.store.entities(0).some((x) => isAttackable(x, pawns) && withinPx(m, x, pt, 18));
   };
   const attackAt = useRef(0);
+  const hoverPick = useRef(0);
 
   const updateHover = (pt: Pt) => {
     const now = performance.now();
@@ -1184,10 +1184,18 @@ export const StoryMap =forwardRef<StoryMapHandle, StoryMapProps>(function StoryM
     const tool = p.current.tool;
     if (p.current.view === 'angled' && (tool.kind === 'build' || tool.kind === 'design') && now - h.pickAt > 60) {
       h.pickAt = now;
+      const request = ++hoverPick.current;
       void pick(pt).then((hit) => {
-        if (!hover.current) return;
-        hover.current.face = hit ? faceCell(hit) : null;
-        if (hit) hover.current.cell = [hit.x, hit.y, hit.z];
+        const current = hover.current;
+        if (request !== hoverPick.current || current !== h || p.current.view !== 'angled' || p.current.tool !== tool) return;
+        if (current.at.x !== pt.x || current.at.y !== pt.y) {
+          // The pointer stopped between throttled requests: query its final position, never apply the old answer there.
+          current.pickAt = -Infinity;
+          updateHover(current.at);
+          return;
+        }
+        current.face = hit ? faceCell(hit) : null;
+        if (hit) current.cell = [hit.x, hit.y, hit.z];
       });
     }
   };
@@ -1246,6 +1254,7 @@ export const StoryMap =forwardRef<StoryMapHandle, StoryMapProps>(function StoryM
 
   /** Drops the drag in progress (Esc, the other button, leaving full screen): no preview, nothing on release. */
   const dropDrag = () => {
+    pendingRelease.current = null;
     drag.current = null;
     scan.current = { key: '', busy: false, result: null };
     formationShown.current = null;
@@ -1365,6 +1374,7 @@ export const StoryMap =forwardRef<StoryMapHandle, StoryMapProps>(function StoryM
   };
 
   const onPointerDown = (ev: React.PointerEvent<HTMLCanvasElement>) => {
+    pendingRelease.current = null;
     const pt = local(ev);
     if (gate.current.button !== null && (ev.buttons & ~buttonBit(ev.button)) !== 0) {
       // A second button while one is held (browsers that send it as a down, not a chorded move).
@@ -1494,10 +1504,33 @@ export const StoryMap =forwardRef<StoryMapHandle, StoryMapProps>(function StoryM
     const d = drag.current;
     drag.current = null;
     const props = p.current;
-    if (ev.button === 2) await rightUp(ev, pt, d, props);
-    else if (!d || d.button !== 0) return;
-    else if (props.tool.kind === 'select') await selectUp(ev, pt, d, props);
-    else await toolUp(ev, d, props);
+    const request = {};
+    pendingRelease.current = request;
+    const current = () => pendingRelease.current === request && p.current.tool === props.tool
+      && p.current.view === props.view && p.current.level === props.level && p.current.build === props.build;
+    try {
+      if (d) {
+        d.now = pt;
+        d.moved ||= isDrag(d.start, pt);
+        if (d.button === 0 && (props.tool.kind === 'build' || props.tool.kind === 'design') && props.view === 'angled') {
+          const hit = await pick(pt);
+          if (!current()) return;
+          if (hit) {
+            const cell = faceCell(hit);
+            d.endCell = props.tool.kind === 'build' && FLAT_BUILDS.has(props.tool.id) && d.startCell
+              ? [cell[0], d.startCell[1], cell[2]] : cell;
+          }
+        } else {
+          const cell = groundCell(pt);
+          if (cell) d.endCell = d.button === 0 && (props.tool.kind === 'build' || props.tool.kind === 'design')
+            ? [cell[0], props.level + 1, cell[2]] : cell;
+        }
+      }
+      if (ev.button === 2) await rightUp(ev, pt, d, props);
+      else if (!d || d.button !== 0) return;
+      else if (props.tool.kind === 'select') await selectUp(ev, pt, d, props);
+      else await toolUp(ev, d, props, current);
+    } finally { if (pendingRelease.current === request) pendingRelease.current = null; }
   };
 
   /** Right click: drops the active tool (the genre); with something selected, the order menu for the thing under it; a
@@ -1662,12 +1695,13 @@ export const StoryMap =forwardRef<StoryMapHandle, StoryMapProps>(function StoryM
   };
 
   /** A tool: a click is a 1×1 drag; a designate tool sends what its drag previewed (or scans now). */
-  const toolUp = async (ev: React.PointerEvent, d: DragState, props: StoryMapProps) => {
+  const toolUp = async (ev: React.PointerEvent, d: DragState, props: StoryMapProps, current: () => boolean) => {
     if (!d.startCell) return;
     const end = d.endCell ?? d.startCell;
     const tool = props.tool;
     if (tool.kind === 'designate') {
       const res = await designateResult(tool.id, d.startCell, end);
+      if (!current()) return;
       props.onTool({ ...res, moved: d.moved }, ev.shiftKey);
       return;
     }
@@ -1761,7 +1795,7 @@ export const StoryMap =forwardRef<StoryMapHandle, StoryMapProps>(function StoryM
   // Leaving full screen mid-drag (the browser's Esc where Esc can't be locked) cancels the drag too.
   useEffect(() => {
     const off = () => {
-      if (!document.fullscreenElement && gate.current.escape()) dropDrag();
+      if (!document.fullscreenElement && (gate.current.escape() || pendingRelease.current)) dropDrag();
     };
     document.addEventListener('fullscreenchange', off);
     return () => document.removeEventListener('fullscreenchange', off);
@@ -1769,9 +1803,9 @@ export const StoryMap =forwardRef<StoryMapHandle, StoryMapProps>(function StoryM
 
   /** The pointer was taken away (a touch scroll, the window lost it): the drag ends with nothing done. */
   const lost = () => {
-    if (gate.current.button === null) return;
+    if (gate.current.button === null && !pendingRelease.current) return;
     gate.current = new DragGate();
-    if (drag.current) dropDrag();
+    if (drag.current || pendingRelease.current) dropDrag();
   };
 
   // The wheel must not scroll the page (a passive React listener cannot prevent it).
@@ -1897,11 +1931,14 @@ export const StoryMap =forwardRef<StoryMapHandle, StoryMapProps>(function StoryM
           follow={null}
           layers={layers}
           cameraMode={cameraMode}
+          controls="controller"
           xray="off"
           drawDistance={112}
           hideHint={cameraMode !== 'fly'}
           onAimClick={(target, mods) => flyClick.current(target, mods)}
           onAim={(target) => editorRef.current.setAimed(target)}
+          onBeforeFrame={(e, now, dt) => frameCallbacks.current.before(e, now, dt)}
+          onAfterFrame={(e, now, dt) => frameCallbacks.current.after(e, now, dt)}
           resolveAim={(target, ray) => p.current.view === 'fly' && p.current.canEdit ? editorRef.current.resolve(target, ray) : target}
           className="absolute inset-0"
         />
@@ -1953,7 +1990,8 @@ export const StoryMap =forwardRef<StoryMapHandle, StoryMapProps>(function StoryM
         onAuxClick={(e) => e.preventDefault()}
       />
       <StoryFlyCrosshair flying={props.view === 'fly'} host={wrap} />
-      <StoryFlyEditor editor={editor} state={props.state} flying={props.view === 'fly'} canEdit={!!props.canEdit} onStart={props.onDropTool} />
+      <StoryAudio viewer={viewer} view={props.view} />
+      <StoryFlyEditor editor={editor} state={props.state} flying={props.view === 'fly'} canEdit={!!props.canEdit} onStart={props.onDropTool} viewer={viewer} />
       <div
         ref={labelsEl}
         className="pointer-events-none absolute inset-0 overflow-hidden"

@@ -153,6 +153,8 @@ export const DesignerSession = z.object({
   plot: z.object({ size: z.number().int(), height: z.number().int(), depth: z.number().int().nullish() }),
   kind: DesignerKind.nullish().describe('build (default: on the grass) | mine (dug into generated terrain, absolute y)'),
   seed: z.string().nullish().describe("a mine session's terrain seed (the generator is MineClaw's own)"),
+  mineAuthoring: z.string().max(2_000_000).nullish().describe('Revision-specific mine components and editor settings; executable work remains in cells'),
+  designRevision: z.number().int().nonnegative().nullish().describe('Opened or last saved design revision, separate from the canvas edit revision'),
   preferredFor: z
     .string()
     .nullish()
@@ -261,6 +263,7 @@ export const DesignerSaveRequest = z
     previewPng: z.string().max(190_000).regex(/^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/).optional()
       .describe('PNG of the designer camera, at most 384 by 256 pixels'),
     previewOnly: z.boolean().optional().describe('update the loaded design picture without saving a revision'),
+    mineAuthoring: z.string().max(2_000_000).optional(),
   })
   .strict();
 export type DesignerSaveRequest = z.infer<typeof DesignerSaveRequest>;
@@ -690,6 +693,7 @@ export interface MockSavedDesign {
   revisions: DesignRevision[];
   updated: number;
   previewPng?: string;
+  mineAuthoring?: string | null;
   /** The game version it is drawn for. */
   version?: string;
   /** build | mine, the mine's seed, its version tag, its anchor (a mine's entry). */
@@ -698,7 +702,7 @@ export interface MockSavedDesign {
   preferredFor?: string | null;
   anchor?: [number, number, number] | null;
   /** Each revision's cells (opened with `rev`). */
-  revs?: Record<number, { blocks: DesignerCell[]; dug: string[] }>;
+  revs?: Record<number, { blocks: DesignerCell[]; dug: string[]; mineAuthoring?: string | null }>;
 }
 
 type MockSession = DesignerSession & { cells: Map<string, DesignerCell>; holes: Set<string> };
@@ -769,6 +773,7 @@ function newMockSession(id: number, owner: string, body: MakeBody, d: MockSavedD
     owner,
     model: body.model ?? 'main',
     designId: from.designId,
+    designRevision: d ? body.rev ?? d.revisions[0]?.rev ?? null : null,
     name: from.name,
     rev: 0,
     blocks: [],
@@ -809,6 +814,7 @@ function revisionOf(body: MakeBody, d: MockSavedDesign | undefined) {
 /** The design's cells (a revision's with `rev`), converted on the way in with `convertTo`. */
 function openDesignCells(s: MockSession, body: MakeBody, d: MockSavedDesign | undefined): DesignerCell[] {
   const at = revisionOf(body, d);
+  s.mineAuthoring = body.rev ? at?.mineAuthoring ?? null : d?.mineAuthoring ?? null;
   if (at) s.holes = new Set(at.dug);
   const blocks = at?.blocks ?? d?.blocks ?? [];
   if (!d || !body.convertTo || body.convertTo === s.version) return blocks;
@@ -863,6 +869,7 @@ function copyIntoDesign(d: MockSavedDesign, s: MockSession, name: string): void 
   d.kind = s.kind ?? 'build';
   d.seed = s.seed ?? null;
   d.preferredFor = s.preferredFor ?? null;
+  d.mineAuthoring = s.kind === 'mine' ? s.mineAuthoring ?? null : null;
   d.anchor = s.anchor ?? null;
   d.updated = Date.now();
 }
@@ -1089,10 +1096,11 @@ export function createDesignerMock(
       }
       if (s.cells.size === 0 && s.holes.size === 0) throw new Error('the canvas is empty');
       const { d, created } = designToSave(s, saved, body, owner, () => nextDesign++);
+      if (body.mineAuthoring !== undefined) s.mineAuthoring = body.mineAuthoring;
       copyIntoDesign(d, s, body.name);
       if (body.previewPng) d.previewPng = body.previewPng;
       const rev = (d.revisions[0]?.rev ?? 0) + 1;
-      d.revs = { ...(d.revs ?? {}), [rev]: { blocks: [...d.blocks], dug: [...d.dug!] } };
+      d.revs = { ...(d.revs ?? {}), [rev]: { blocks: [...d.blocks], dug: [...d.dug!], mineAuthoring: d.mineAuthoring } };
       d.revisions.unshift({
         rev,
         author: owner,
@@ -1105,6 +1113,7 @@ export function createDesignerMock(
         kind: s.kind ?? 'build',
       });
       s.designId = d.id;
+      s.designRevision = rev;
       s.name = body.name;
       const text = saveText(s, d, rev, body.name, created);
       msg(s, 'assistant', text);

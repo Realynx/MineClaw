@@ -35,7 +35,7 @@ export interface EngineOptions extends RuntimeOptions {
   layers?: Partial<LayerToggles>;
   cameraMode?: CameraMode;
   /** Editor: cursor-first orbit (MMB), pan (Shift+MMB), and wheel dolly. Never captures the mouse with pointer lock. */
-  controls?: 'default' | 'editor';
+  controls?: 'default' | 'editor' | 'controller';
   xray?: XRayMode;
   /** Blocks (32..256): the most this view ever draws; the viewer settings' draw distance applies below it. Absent = the setting. */
   drawDistance?: number;
@@ -50,6 +50,10 @@ export interface EngineOptions extends RuntimeOptions {
   onAimClick?: (t: AimTarget | null, mods: { shift: boolean; ctrl: boolean; button?: number }) => void;
   /** Adds application plan cells to the center-ray pick, without changing the physical world. */
   resolveAim?: (physical: AimTarget | null, ray: AimRay) => AimTarget | null;
+  /** Application camera input, applied before this frame's camera matrices are computed. */
+  onBeforeFrame?: (engine: WorldViewerEngine, now: number, dt: number) => void;
+  /** Application overlays, using the exact camera matrices just rendered (including viewport fitting). */
+  onAfterFrame?: (engine: WorldViewerEngine, now: number, dt: number) => void;
 }
 
 const XRAY_RANGE = 48; // FreecamXRay.Range
@@ -73,6 +77,7 @@ export class WorldViewerEngine implements RuntimeView {
   /** The view's own cap (the drawDistance prop), null = the viewer settings' distance alone. */
   private drawCap: number | null;
   private keys = new Set<string>();
+  private inputPaused = false;
   private drag: { x: number; y: number; t: number; button: number; moved: boolean } | null = null;
   private editorDrag: { x: number; y: number; pointerId: number } | null = null;
   private frames = 0;
@@ -98,6 +103,9 @@ export class WorldViewerEngine implements RuntimeView {
   private highlighted: string[] = [];
   private levelCut: { y: number; r: number; dimBelow: number | null } | null = null;
   private botLabels = true;
+  private frameNow = 0;
+  private frameDt = 0;
+  private readonly afterRender = () => this.opts.onAfterFrame?.(this, this.frameNow, this.frameDt);
 
   constructor(
     private readonly container: HTMLElement,
@@ -191,6 +199,14 @@ export class WorldViewerEngine implements RuntimeView {
     if (this.opts.controls === 'editor') return;
     this.surface.focus();
     void Promise.resolve(this.surface.requestPointerLock?.()).catch(() => undefined);
+  }
+
+  /** Temporarily lets an immersive tool menu own input without releasing pointer lock. */
+  setInputPaused(paused: boolean): void {
+    this.inputPaused = paused;
+    this.keys.clear();
+    this.drag = null;
+    this.aimRequest++;
   }
 
   setXRay(m: XRayMode): void {
@@ -445,9 +461,14 @@ export class WorldViewerEngine implements RuntimeView {
 
   frame(rt: WorldRuntime, now: number, dt: number): ViewSetup | null {
     if (this.disposed) return null;
+    this.frameNow = now;
+    this.frameDt = dt;
+    this.opts.onBeforeFrame?.(this, now, dt);
     const t0 = performance.now();
     const bot = this.followed();
     this.followBot(bot, dt);
+    this.rigInput.controller = this.opts.controls === 'controller';
+    if (this.inputPaused || this.opts.controls === 'controller' && this.rig.mode === 'fly' && !this.locked()) this.keys.clear();
     this.rig.apply(this.camera, dt, this.rigInput, now);
     const iso = this.rig.mode === 'iso' || this.rig.mode === 'top';
     const cover = this.cover();
@@ -515,6 +536,7 @@ export class WorldViewerEngine implements RuntimeView {
     return {
       dim: this.dim,
       camera: this.camera,
+      ...(this.opts.onAfterFrame ? { afterRender: this.afterRender } : {}),
       centre: iso || this.rig.mode === 'follow' ? this.rig.target : this.camera.position,
       drawDistance: this.drawDistance,
       cover,
@@ -712,11 +734,12 @@ export class WorldViewerEngine implements RuntimeView {
     this.bindEditorNavigation();
     this.listen(c, 'contextmenu', (e: MouseEvent) => e.preventDefault());
     this.listen(c, 'pointerdown', (e: PointerEvent) => {
+      if (this.inputPaused) return;
       c.focus();
       // Free cam plays like the game: the first click locks and hides the cursor (Esc releases it); that click picks nothing.
       if (this.opts.controls !== 'editor' && this.rig.mode === 'fly' && e.button === 0 && document.pointerLockElement !== c) {
         this.drag = null;
-        void c.requestPointerLock?.();
+        this.lock();
         return;
       }
       this.drag = { x: e.clientX, y: e.clientY, t: performance.now(), button: e.button, moved: false };
@@ -730,6 +753,7 @@ export class WorldViewerEngine implements RuntimeView {
       }
     });
     this.listen(c, 'pointermove', (e: PointerEvent) => {
+      if (this.inputPaused) return;
       if (document.pointerLockElement === c) {
         this.rig.look(e.movementX, e.movementY);
         return;
@@ -751,6 +775,7 @@ export class WorldViewerEngine implements RuntimeView {
       else this.rig.look(dx, dy);
     });
     this.listen(c, 'pointerup', (e: PointerEvent) => {
+      if (this.inputPaused) return;
       const d = this.drag;
       this.drag = null;
       if (c.hasPointerCapture?.(e.pointerId)) c.releasePointerCapture(e.pointerId);
@@ -759,7 +784,7 @@ export class WorldViewerEngine implements RuntimeView {
       if (locked && this.opts.onAimClick) {
         const mods = { shift: e.shiftKey, ctrl: e.ctrlKey || e.metaKey, button: e.button };
         void this.aimNow().then((t) => {
-          if (!this.disposed && document.pointerLockElement === c && this.rig.mode === 'fly') this.opts.onAimClick?.(t, mods);
+          if (!this.disposed && !this.inputPaused && document.pointerLockElement === c && this.rig.mode === 'fly') this.opts.onAimClick?.(t, mods);
         });
         return;
       }
@@ -776,6 +801,7 @@ export class WorldViewerEngine implements RuntimeView {
       c,
       'wheel',
       (e: WheelEvent) => {
+        if (this.inputPaused) return;
         e.preventDefault();
         if (this.opts.controls === 'editor') this.rig.dolly(e.deltaY);
         else this.rig.wheel(e.deltaY);
@@ -783,7 +809,13 @@ export class WorldViewerEngine implements RuntimeView {
       { passive: false },
     );
     this.listen(window, 'keydown', (e: KeyboardEvent) => {
-      if (!this.active() || this.opts.controls === 'editor') return;
+      if (!this.active() || this.inputPaused || this.opts.controls === 'editor') return;
+      if (this.opts.controls === 'controller' && this.rig.mode === 'fly') {
+        if (!this.locked() || (e.target as HTMLElement | null)?.closest?.('input,textarea,select,[contenteditable="true"]')) return;
+        // Ctrl is descent, so Ctrl+W/S/D must not close/save/bookmark the page while flying.
+        if (e.ctrlKey) e.preventDefault();
+        if (e.code === 'KeyQ' || e.code === 'KeyE') return;
+      }
       if (e.code === 'KeyQ' && this.rig.mode === 'iso') this.rig.rotateIso(-1);
       else if (e.code === 'KeyE' && this.rig.mode === 'iso') this.rig.rotateIso(1);
       this.keys.add(e.code);

@@ -30,7 +30,8 @@ public sealed record WorldPose(WireVec? Head = null, WireVec? Body = null, WireV
 
 /// <summary>A one-shot entity event on the entity delta feed (<c>events</c>): kind swing | swing_off | hurt | death | crit |
 /// magic_crit | eat | teleport | lightning (with its position); <c>at</c> unix ms.</summary>
-public sealed record WorldEntityEvent(int Id, string Kind, long At, int Dim, double? X = null, double? Y = null, double? Z = null);
+public sealed record WorldEntityEvent(int Id, string Kind, long At, int Dim, double? X = null, double? Y = null, double? Z = null,
+    string? Sound = null, float? Volume = null, float? Pitch = null);
 
 internal sealed class WireItemConverter : JsonConverter<WireItem>
 {
@@ -100,7 +101,8 @@ public static class EntityLooks
         int dim = w.Dimension;
         foreach (var e in w.Entities.Events.Recent(nowUtc))
             yield return new WorldEntityEvent(e.EntityId, e.Kind, new DateTimeOffset(DateTime.SpecifyKind(e.At, DateTimeKind.Utc)).ToUnixTimeMilliseconds(), dim,
-                e.Position is { } p ? Math.Round(p.X, 2) : null, e.Position is { } q ? Math.Round(q.Y, 2) : null, e.Position is { } r ? Math.Round(r.Z, 2) : null);
+                e.Position is { } p ? Math.Round(p.X, 2) : null, e.Position is { } q ? Math.Round(q.Y, 2) : null, e.Position is { } r ? Math.Round(r.Z, 2) : null,
+                e.Sound, e.Volume, e.Pitch);
     }
 
     /// <summary>The mob's or object's name (the version's, else the b1.8.1 tables).</summary>

@@ -40,16 +40,31 @@ public class Release1122P4Tests
     private static T Next<T>(Release1122Connection c) where T : IPacket => Assert.IsType<T>(c.ReadPacket());
 
     [Fact]
-    public void Fishing_splash_sound_preserves_position_and_ignores_unrelated_sounds()
+    public void Sound_events_include_world_audio_and_keep_fishing_splash_position()
     {
         var (client, server) = InPlay();
         server.Send(0x49, w => w.WriteVarInt(1).WriteVarInt(6).WriteInt(0).WriteInt(0).WriteInt(0).WriteFloat(1).WriteFloat(1));
         server.Send(0x49, w => w.WriteVarInt(153).WriteVarInt(6).WriteInt(-91).WriteInt(504).WriteInt(68).WriteFloat(0.25f).WriteFloat(1.1f));
+        Assert.Equal("block.anvil.break", Next<SoundMessage>(client).Sound);
         var sound = Next<SoundMessage>(client);
         Assert.Equal(SoundMessage.BobberSplash, sound.Sound);
         Assert.Equal((-11.375, 63.0, 8.5), (sound.X, sound.Y, sound.Z));
         Assert.Equal(0.25f, sound.Volume);
         Assert.Equal(1.1f, sound.Pitch);
+    }
+
+    [Fact]
+    public void Named_sound_and_block_break_effect_preserve_the_wire_position()
+    {
+        var (client, server) = InPlay();
+        server.Send(0x19, w => w.WriteString("minecraft:block.chest.open").WriteVarInt(4).WriteInt(80).WriteInt(512).WriteInt(-24).WriteFloat(0.5f).WriteFloat(0.9f));
+        var sound = Next<SoundMessage>(client);
+        Assert.Equal("block.chest.open", sound.Sound);
+        Assert.Equal((10.0, 64.0, -3.0), (sound.X, sound.Y, sound.Z));
+        Assert.Equal(0.5f, sound.Volume);
+        server.Send(0x21, w => w.WriteInt(2001).WritePosition(10, 63, -3).WriteInt(5).WriteBool(false));
+        var effect = Next<SoundEffectPacket>(client);
+        Assert.Equal((2001, 10, 63, -3, 5), (effect.EffectId, effect.X, effect.Y, effect.Z, effect.Data));
     }
 
     [Fact]

@@ -8,6 +8,7 @@
 
 import { meshAssets } from '../atlas/assets';
 import type { AssetBundle, Pack1122 } from '../assets/bundle';
+import { ASSETS_CHANGED } from '../assets/localStore';
 import { buildStateTable, type StateTable } from '../mesh/states';
 import { TINT_FIXED, TINT_FOLIAGE, TINT_GRASS, TINT_NONE, type Quad } from '../mesh/quad';
 import { tileFor } from '../mesh/beta/textures';
@@ -17,13 +18,20 @@ import { look1122 } from './entities/items';
 /** b1.8.1 blocks the inventory draws flat (cross / flat render types): their front tile is the icon. */
 const FLAT_BETA = new Set([6, 27, 28, 30, 31, 32, 37, 38, 39, 40, 50, 55, 59, 64, 65, 66, 69, 71, 75, 76, 77, 83, 101, 102, 104, 105, 106]);
 
-const tables = new Map<string, StateTable>();
+const tables = new WeakMap<AssetBundle, StateTable>();
+const bundleIds = new WeakMap<AssetBundle, number>();
+let nextBundleId = 0;
+function bundleKey(bundle: AssetBundle): number {
+  let id = bundleIds.get(bundle);
+  if (id === undefined) { id = ++nextBundleId; bundleIds.set(bundle, id); }
+  return id;
+}
 
 function tableOf(bundle: AssetBundle): StateTable {
-  let t = tables.get(bundle.version);
+  let t = tables.get(bundle);
   if (!t) {
-    t = buildStateTable(bundle.version, meshAssets(bundle.pack), true);
-    tables.set(bundle.version, t);
+    t = buildStateTable(bundle.version, bundle.fallback ? null : meshAssets(bundle.pack), !bundle.fallback);
+    tables.set(bundle, t);
   }
   return t;
 }
@@ -115,12 +123,12 @@ function drawTexturedQuad(g: CanvasRenderingContext2D, bundle: AssetBundle, q: Q
 function blitQuadCells(g: CanvasRenderingContext2D, bundle: AssetBundle, q: Quad, sx: number, sy: number, sw: number, sh: number): void {
   const ts = bundle.pack.tileSize;
   if (q.tint !== TINT_NONE && !q.span) {
-    const cell = tintedCell(bundle.blocks, q.c * ts, q.r * ts, ts, tintColour(q.tint), `${bundle.version}:${q.c}:${q.r}:${q.tint}`);
+    const cell = tintedCell(bundle.blocks, q.c * ts, q.r * ts, ts, tintColour(q.tint), `${bundleKey(bundle)}:${q.c}:${q.r}:${q.tint}`);
     g.drawImage(cell, sx - q.c * ts, sy - q.r * ts, sw, sh, sx, sy, sw, sh);
   } else g.drawImage(bundle.blocks, sx, sy, sw, sh, sx, sy, sw, sh);
   if (q.ovC < 0) return;
   const ovt = q.ovTint !== TINT_NONE ? tintColour(q.ovTint) : 0;
-  const src = ovt ? tintedCell(bundle.blocks, q.ovC * ts, q.ovR * ts, ts, ovt, `${bundle.version}:${q.ovC}:${q.ovR}:${q.ovTint}`) : null;
+  const src = ovt ? tintedCell(bundle.blocks, q.ovC * ts, q.ovR * ts, ts, ovt, `${bundleKey(bundle)}:${q.ovC}:${q.ovR}:${q.ovTint}`) : null;
   const dx = (q.ovC - q.c) * ts, dy = (q.ovR - q.r) * ts;
   if (src) g.drawImage(src, sx - q.c * ts, sy - q.r * ts, sw, sh, sx, sy, sw, sh);
   else g.drawImage(bundle.blocks, sx + dx, sy + dy, sw, sh, sx, sy, sw, sh);
@@ -172,7 +180,7 @@ function drawHintSprite(g: CanvasRenderingContext2D, bundle: AssetBundle, icon: 
   const items = look.atlas === 'items';
   const cols = items ? pack.items.columns : pack.blocks.columns;
   const ts = pack.tileSize;
-  drawSprite(g, items ? bundle.items : bundle.blocks, (look.cell % cols) * ts, Math.floor(look.cell / cols) * ts, ts, size, ox, oy, look.tint, `${look.atlas}:${look.cell}:${look.tint}`);
+  drawSprite(g, items ? bundle.items : bundle.blocks, (look.cell % cols) * ts, Math.floor(look.cell / cols) * ts, ts, size, ox, oy, look.tint, `${bundleKey(bundle)}:${look.atlas}:${look.cell}:${look.tint}`);
   return true;
 }
 
@@ -184,7 +192,7 @@ function drawFlatBeta(g: CanvasRenderingContext2D, bundle: AssetBundle, id: numb
   if (t.tile < 0) return false;
   const ts = bundle.pack.tileSize;
   const tint = t.tint ? (id === 106 || id === 18 ? FOLIAGE_TINT : GRASS_TINT) : 0;
-  drawSprite(g, bundle.blocks, (t.tile % 16) * ts, Math.floor(t.tile / 16) * ts, ts, size, ox, oy, tint, `bt:${t.tile}:${tint}`);
+  drawSprite(g, bundle.blocks, (t.tile % 16) * ts, Math.floor(t.tile / 16) * ts, ts, size, ox, oy, tint, `${bundleKey(bundle)}:bt:${t.tile}:${tint}`);
   return true;
 }
 
@@ -218,7 +226,7 @@ const cache = new Map<string, string>();
  * browser).
  */
 export function blockIconUrl(bundle: AssetBundle, id: number, meta: number, size = 32, icon?: string | null): string {
-  const k = `${bundle.version}:${id}:${meta}:${size}:${icon ?? ''}`;
+  const k = `${bundleKey(bundle)}:${id}:${meta}:${size}:${icon ?? ''}`;
   const hit = cache.get(k);
   if (hit) return hit;
   const c = document.createElement('canvas');
@@ -246,14 +254,17 @@ export interface IconAtlas {
 
 const atlases = new Map<string, IconAtlas>();
 const atlasJobs = new Map<string, Promise<IconAtlas>>();
+let generation = 0;
+if (typeof window !== 'undefined') window.addEventListener(ASSETS_CHANGED, () => { generation++; tinted.clear(); cache.clear(); atlases.clear(); atlasJobs.clear(); });
 type AtlasEntry = { id: number; meta: number; icon?: string | null };
 
 function atlasKey(bundle: AssetBundle, entries: readonly AtlasEntry[], size: number): string {
-  return `${bundle.version}:${size}:${entries.map((e) => `${e.id}.${e.meta}.${e.icon ?? ''}`).join(',')}`;
+  return `${bundleKey(bundle)}:${size}:${entries.map((e) => `${e.id}.${e.meta}.${e.icon ?? ''}`).join(',')}`;
 }
 
 /** Build a palette during idle slices, sharing the cached result and any in-flight request with every opener. */
 export function blockIconAtlasAsync(bundle: AssetBundle, entries: readonly AtlasEntry[], size = 32): Promise<IconAtlas> {
+  const started = generation;
   const key = atlasKey(bundle, entries, size);
   const hit = atlases.get(key);
   if (hit) return Promise.resolve(hit);
@@ -286,14 +297,15 @@ export function blockIconAtlasAsync(bundle: AssetBundle, entries: readonly Atlas
         } while (next < entries.length && performance.now() - start < 4);
         if (next < entries.length) { schedule(); return; }
         const atlas = { url: c.toDataURL('image/png'), size, cols, rows, index };
-        atlases.set(key, atlas);
+        if (started === generation) atlases.set(key, atlas);
         resolve(atlas);
       } catch (error) { reject(error instanceof Error ? error : new Error(String(error))); }
     };
     schedule();
   });
   atlasJobs.set(key, job);
-  void job.then(() => atlasJobs.delete(key), () => atlasJobs.delete(key));
+  const forget = () => { if (atlasJobs.get(key) === job) atlasJobs.delete(key); };
+  void job.then(forget, forget);
   return job;
 }
 

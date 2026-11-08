@@ -168,6 +168,35 @@ public class ViewerLooksTests
     private static IReadOnlyList<WorldEntity> Wire2(MinecraftClient c) =>
         HiveEntityMerge.Merge([new BodyEntities("maid_chan", 0, c.World.Entities.All())], new HashSet<string>(), DateTime.UtcNow);
 
+    [Fact]
+    public async Task Sound_packets_reach_viewer_with_volume_pitch_and_position()
+    {
+        var (c, s) = await Start(true);
+        await using var cc = c;
+        using var ss = s;
+        s.Send(new SoundMessage { Sound = "block.chest.open", X = 12.5, Y = 64, Z = -4.5, Volume = 0.5f, Pitch = 0.8f });
+        Assert.True(await Wait(() => c.World.Entities.Events.Recent(DateTime.UtcNow).Any(e => e.Kind == "sound")));
+        var sound = Assert.Single(EntityLooks.EventsOf(c.World, DateTime.UtcNow).Where(e => e.Kind == "sound"));
+        Assert.Equal(("block.chest.open", 12.5, 64.0, -4.5, 0.5f, 0.8f),
+            (sound.Sound, sound.X!.Value, sound.Y!.Value, sound.Z!.Value, sound.Volume!.Value, sound.Pitch!.Value));
+    }
+
+    [Fact]
+    public void Nearby_sound_copies_dedupe_without_merging_different_positions_or_replaying_old_samples()
+    {
+        var log = new EntityDeltaLog { MinInterval = TimeSpan.Zero };
+        long at = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var a = new WorldEntityEvent(0, "sound", at, 0, 10, 64, 10, "block.chest.open", 1, 1);
+        var b = a with { At = at + 20 }; // same packet received by another pawn
+        var c = a with { X = 15 }; // a different chest
+        var first = log.Since(0, () => [], () => [a, b, c]);
+        Assert.Equal(2, first.Events.Count);
+        var repeated = a with { At = at + 200 };
+        var second = log.Since(first.Rev, () => [], () => [a, b, c, repeated]);
+        Assert.Equal(repeated, Assert.Single(second.Events));
+        Assert.Empty(log.Since(second.Rev, () => [], () => [a, b, c, repeated]).Events);
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

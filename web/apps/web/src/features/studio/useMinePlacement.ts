@@ -13,6 +13,7 @@ import { minePlacementPoint, modulePlacementHeight, surfaceModuleAt, type Placem
 import { modulePlacementPreview } from './mine/placementPreview';
 import { pictureDistance } from './PictureControls';
 import { mineCameraGesture } from './studioPointer';
+import { presetModules, type MinePreset } from './mine/presets';
 
 const NONE: readonly MineModuleInstance[] = [];
 const noSubscription = () => () => undefined;
@@ -44,16 +45,23 @@ export function useMinePlacement(p: {
   const [clipboard, setClipboard] = useState<ComponentClip | null>(null);
   const [hover, setHover] = useState<V3 | null>(null);
   const ownedSelection = useRef<Selection | null>(null);
+  const selectedShape = useRef<{ id: string; spec: MineModuleSpec; at: V3 } | null>(null);
   const lastPreview = useRef('');
   const nativeDrag = useRef(false);
   const selected = modules.find((m) => m.id === selectedId) ?? null;
   const live = useRef({ ...p, modules, placing, heightMode, fixedY, placementHeight, connection, clipboard, selectedId });
   useEffect(() => { live.current = { ...p, modules, placing, heightMode, fixedY, placementHeight, connection, clipboard, selectedId }; });
   useEffect(() => () => controller?.dispose(), [controller]);
+  useEffect(() => {
+    if (controller?.recoveredLocal) live.current.notice('Recovered saved components from this browser. Save the design to keep them with its revision on the server.');
+  }, [controller]);
 
   const select = useCallback((id: string | null) => {
     const item = controller?.snapshot().find((m) => m.id === id);
     setSelectedId(item?.id ?? null);
+    const previous = selectedShape.current;
+    if (item && previous?.id === item.id && previous.spec === item.spec && previous.at === item.at && studio.selection === ownedSelection.current) return;
+    selectedShape.current = item ?? null;
     ownedSelection.current = item ? maskSelection(new Set(moduleCells(item.spec, item.at).cells.map((c) => keyOf(c[0], c[1], c[2])))) : null;
     studio.setSelection(ownedSelection.current);
   }, [controller, studio]);
@@ -218,6 +226,7 @@ export function useMinePlacement(p: {
       if (!ray || overlay.pickHandle(ray)) return;
       let nearest: { id: string; distance: number } | null = null;
       for (const item of controller.snapshot()) {
+        if (item.visible === false) continue;
         for (const cell of moduleCells(item.spec, item.at).cells) {
           const at: V3 = [cell[0], cell[1], cell[2]];
           const distance = mineRayBox(ray.ray, at, at);
@@ -300,6 +309,16 @@ export function useMinePlacement(p: {
     clipboard, copy, paste, duplicate, combine,
     updatePlacing: (spec: MineModuleSpec) => { if (live.current.canEdit) { setPlacing(spec); lastPreview.current = ''; } },
     rememberDesign: (id: number, revision: number) => controller?.rememberDesign(id, revision),
+    setVisible: (id: string, visible: boolean) => controller?.setVisible(id, visible),
+    insertPreset: (preset: MinePreset) => {
+      if (!controller || !live.current.canEdit) return false;
+      const items = controller.addMany(presetModules(preset, studio.terrain), `Add ${preset.name}`);
+      if (!items?.length) { live.current.notice(controller.lastError ?? 'Could not insert this preset.'); return false; }
+      cancel(); select(items[0]!.id);
+      void studio.setAnchor(moduleCells(items[0]!.spec, items[0]!.at).entry).catch(() => undefined);
+      live.current.notice(`${preset.name}: ${items.length} editable components. Select one to move, resize or remove it.`);
+      return true;
+    },
     dragOver, drop,
     move,
     update: (id: string, spec: MineModuleSpec) => {

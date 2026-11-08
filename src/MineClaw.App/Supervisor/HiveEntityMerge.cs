@@ -142,7 +142,7 @@ public sealed class EntityDeltaLog(TimeProvider? time = null)
 
     // One-shot events stamped with the revision they arrived in (kept EventRetention); the dedupe keys by (dim, id, kind).
     private readonly List<(long Rev, WorldEntityEvent E)> _events = [];
-    private readonly Dictionary<(int Dim, int Id, string Kind), long> _eventSeen = new();
+    private readonly Dictionary<(int Dim, int Id, string Kind, string? Sound, double? X, double? Y, double? Z), long> _eventSeen = new();
 
     /// <summary>The same event seen by several bodies within this window is one (their packets arrive a few ms apart).</summary>
     public TimeSpan EventDedupe { get; init; } = TimeSpan.FromMilliseconds(300);
@@ -182,8 +182,8 @@ public sealed class EntityDeltaLog(TimeProvider? time = null)
         bool any = false;
         foreach (var e in list.OrderBy(e => e.At))
         {
-            var k = (e.Dim, e.Id, e.Kind);
-            if (_eventSeen.TryGetValue(k, out var at) && Math.Abs(e.At - at) <= window) continue;
+            var k = (e.Dim, e.Id, e.Kind, e.Sound, e.Sound != null ? e.X : null, e.Sound != null ? e.Y : null, e.Sound != null ? e.Z : null);
+            if (_eventSeen.TryGetValue(k, out var at) && (e.At <= at || e.At - at <= (e.Sound != null ? 75 : window))) continue;
             _eventSeen[k] = e.At;
             if (!any) { _rev++; any = true; }
             _events.Add((_rev, e));

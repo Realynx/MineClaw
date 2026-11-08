@@ -2508,9 +2508,9 @@ The design grew while it was built. The wire forms are in `docs/web/api.md` §6 
   (1–12), roofs a style (flat, slab, gable, none) and an overhang. State: `builds` and `ghosts`.
 - **Levels.** Top-down shows the working level: everything from the roof line up (level + wall height + 1) is x-rayed, drawn
   as the hatched cut. PgUp / PgDn move a storey; an angled view (V) builds in 3D with the same tools, placing against the
-  hovered face. **Free cam** (Shift+V) enters first-person flight near the map focus: click to look around, WASD to move,
-  Space/E up, Q down and Shift faster; Esc releases the mouse. V or **Map** returns to the same top-down framing and working
-  level, without reloading the viewer. Flight keys never pause the colony or operate a held tool.
+  hovered face. **Free cam** (Shift+V) enters first-person flight near the map focus: WASD moves, Space rises, Ctrl descends
+  (PgUp/PgDn also move vertically), and Shift moves faster. Esc releases the mouse. V or **Map** returns to the same top-down
+  framing and working level without reloading the viewer. See the Controller controls below for tools and browser capture.
 - **Designate tools** work by area the genre's way: pick a tool, drag a grid rectangle, every matching target lights up with a
   live count, release designates (Shift keeps the tool). Kinds gain `cut`, `hunt`, `forbid`, `allow` and a mine `filter`; the
   director expands an area to its targets and answers the count. Mine and Deconstruct send the exact cells instead (`blocks`):
@@ -2716,7 +2716,18 @@ allowing independently supported upper-floor furnishings to proceed.
 
 The navigation entry is **Controller**, above **Live hive**; its existing `/story` URL and `story` permission remain compatible.
 
-- Freecam pawn activity badges use frame-rate-independent position damping, with immediate resets for teleports. The compact **Freecam tools** toggle contains Inspect/Edit plan, hides while looking around, and **B** opens the block list when editing. Palette icons prepare asynchronously and are shared across openings.
+Entering Controller freecam requests mouse lock automatically, except while typing or editing in a dialog, block palette,
+or expanded Sound menu. If the browser declines, click the world to capture the mouse; Esc releases it. While captured,
+hold **Q**, move toward a radial menu choice, then release Q to choose Inspect, Place / remove blocks, All Blocks, or Rotate.
+Releasing in the centre cancels. **E** opens All Blocks, **R** rotates while editing, and choosing a block resumes mouse
+capture. These controls are specific to Controller; Builder and Mine Designer retain their separate camera controls.
+
+Browser shortcuts that reach the page are suppressed while flying with Ctrl held. Reserved shortcuts such as **Ctrl+W**
+also need the existing full-screen control and browser permission for [Keyboard Lock](https://developer.chrome.com/docs/capabilities/web-apis/keyboard-lock).
+Controller requests only WASD capture while both full screen and immersive controls are active, and releases it on exit
+or loss of focus. It never enters full screen automatically; use **PgDn** to descend when reserved-key capture is unavailable.
+
+- Freecam pawn activity badges use frame-rate-independent position damping, with immediate resets for teleports. The compact **Freecam tools** toggle contains Inspect/Edit plan and hides while looking around; **B** remains an alias for opening All Blocks. Palette icons prepare asynchronously and are shared across openings.
 - Time-loop settings start collapsed. An enabled interval is highlighted directly on the daylight slider, including intervals that cross dawn. Expand the loop control to change or disable it.
 - **Build queue** groups by the placed building's `group` identity. Multiple copies of the same design have separate instance labels. Completed parts contribute to progress; expand for individual parts. Pause/resume, reorder, retry and cancel on a group apply to that placement. Manual orders remain separate. Older named designs without group ids use a narrowly bounded creation batch for display; parts with missing timestamps are left separate.
 - **Inventory**, beside Colony, aggregates the last known contents of every registered colony chest. Double-chest aliases use their newest observation once. Exact item variants remain separate. Search and sort by name or count; unseen chests are identified instead of inventing contents.

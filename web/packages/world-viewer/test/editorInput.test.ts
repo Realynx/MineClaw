@@ -6,7 +6,7 @@ import type { AimRay, AimTarget } from '../src/render/aim';
 
 afterEach(() => vi.unstubAllGlobals());
 
-function setup(controls: 'default' | 'editor' = 'editor') {
+function setup(controls: 'default' | 'editor' | 'controller' = 'editor') {
   const doc = { pointerLockElement: null as EventTarget | null, activeElement: null as EventTarget | null, exitPointerLock: vi.fn() };
   const win = new EventTarget();
   vi.stubGlobal('document', doc);
@@ -119,6 +119,60 @@ describe('editor navigation', () => {
     event('pointerdown'); event('pointerup');
     expect(surface.requestPointerLock).toHaveBeenCalledOnce();
     expect(pickAt).not.toHaveBeenCalled();
+  });
+});
+
+describe('Controller immersive input', () => {
+  it('requires this view to own pointer lock and suppresses Ctrl shortcuts only while flying', () => {
+    const { engine, surface, win, rig, internal } = setup('controller');
+    rig.mode = 'fly';
+    surface.focus();
+    const key = (code: string, ctrlKey = false) => {
+      const e = Object.assign(new Event('keydown', { cancelable: true }), { code, ctrlKey });
+      win.dispatchEvent(e); return e;
+    };
+    expect(key('KeyW', true).defaultPrevented).toBe(false);
+    expect(internal.keys.size).toBe(0);
+    engine.lock();
+    expect(key('KeyW', true).defaultPrevented).toBe(true);
+    expect(internal.keys.has('KeyW')).toBe(true);
+    key('KeyQ'); key('KeyE');
+    expect(internal.keys.has('KeyQ')).toBe(false);
+    expect(internal.keys.has('KeyE')).toBe(false);
+    engine.setCameraMode('top');
+    expect(key('KeyS', true).defaultPrevented).toBe(false);
+  });
+
+  it('pauses movement, looking, and picking while the tool wheel owns input', () => {
+    const { engine, win, event, rig, internal, pickAt } = setup('controller');
+    rig.mode = 'fly'; engine.lock();
+    win.dispatchEvent(Object.assign(new Event('keydown'), { code: 'KeyW' }));
+    expect(internal.keys.has('KeyW')).toBe(true);
+    engine.setInputPaused(true);
+    const yaw = rig.flyYaw;
+    event('pointerdown'); event('pointermove', { movementX: 100, movementY: 40 }); event('pointerup');
+    win.dispatchEvent(Object.assign(new Event('keydown'), { code: 'Space' }));
+    expect(rig.flyYaw).toBe(yaw);
+    expect(internal.keys.size).toBe(0);
+    expect(pickAt).not.toHaveBeenCalled();
+    engine.setInputPaused(false);
+    event('pointermove', { movementX: 100, movementY: 0 });
+    expect(rig.flyYaw).toBe((yaw + 15) % 360);
+  });
+
+  it('uses Ctrl/Space vertically and reserves Q/E only in Controller', () => {
+    const rig = new CameraRig(); rig.mode = 'fly';
+    const y = rig.flyPos.y;
+    rig.desired(1, { keys: new Set(['ControlLeft']), controller: true });
+    expect(rig.flyPos.y).toBe(y - 12);
+    rig.desired(1, { keys: new Set(['Space']), controller: true });
+    expect(rig.flyPos.y).toBe(y);
+    rig.desired(1, { keys: new Set(['KeyQ', 'KeyE']), controller: true });
+    expect(rig.flyPos.y).toBe(y);
+    rig.desired(1, { keys: new Set(['KeyQ']) });
+    expect(rig.flyPos.y).toBe(y - 12);
+    rig.desired(1, { keys: new Set(['KeyE']) });
+    expect(rig.flyPos.y).toBe(y);
   });
 });
 

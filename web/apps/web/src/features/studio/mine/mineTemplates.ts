@@ -288,7 +288,7 @@ export function fromStep(step: Step, terrain: MineTerrain | null): MineCells {
   throw new Error(`no mine template '${t}' (spiral, strip)`);
 }
 
-function spiralStep(step: Step, terrain: MineTerrain | null): SpiralSpec {
+export function spiralStep(step: Step, terrain: MineTerrain | null): SpiralSpec {
   const d = SPIRAL_DEFAULTS;
   const x = int(step, d.x, 'x'),
     z = int(step, d.z, 'z'),
@@ -309,7 +309,7 @@ function spiralStep(step: Step, terrain: MineTerrain | null): SpiralSpec {
   };
 }
 
-function stripStep(step: Step): StripSpec {
+export function stripStep(step: Step): StripSpec {
   const d = STRIP_DEFAULTS;
   const axis = (str(step, 'axis') ?? 'x').trim().toLowerCase();
   return {

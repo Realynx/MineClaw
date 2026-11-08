@@ -13,10 +13,14 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
 import { randomBytes } from 'node:crypto';
-import { NestConfig } from '@mineclaw/contracts';
+import { NestConfig, WebTlsSettings } from '@mineclaw/contracts';
 import { z } from 'zod';
+import { readHostingOverride } from './web-hosting.js';
 
 const WebExtra = NestConfig.shape.web.extend({
+  tls: WebTlsSettings.default(() => WebTlsSettings.parse({})),
+  /** Runtime provenance: environment TLS overrides make the Administration editor read-only. */
+  tlsEnvOverride: z.boolean().default(false),
   /** Directory of web.db (`<DataDir>/web.db`); `Web:DbPath` overrides the full path. */
   dataDir: z.string().default('/var/lib/mineclaw-web'),
   dbPath: z.string().nullish(),
@@ -270,7 +274,15 @@ export function loadConfig(opts: LoadOptions = {}): LoadedConfig {
   let merged = baseLayer(dev, nodeEnv, cwd);
   const files = configFiles(argv, env);
   for (const f of files) merged = deepMerge(merged, readConfigFile(f, cwd));
-  merged = deepMerge(merged, envOverrides(env));
+  const environment = envOverrides(env);
+  const location = deepMerge(merged, environment).web as Layer | undefined;
+  const dataDir = typeof location?.dataDir === 'string' ? location.dataDir : '/var/lib/mineclaw-web';
+  const savedHosting = readHostingOverride(dataDir);
+  if (savedHosting) merged = deepMerge(merged, { web: { tls: savedHosting } });
+  merged = deepMerge(merged, environment);
+  merged = deepMerge(merged, {
+    web: { tlsEnvOverride: Object.keys(env).some((k) => /^MINECLAW_WEB_Web__Tls(?:__|$)/i.test(k)) },
+  });
   merged = argvLayer(bridgeKeyLayer(merged, env), argv);
   if (opts.overrides) merged = deepMerge(merged, opts.overrides);
   merged.bridge = resolveBridge(merged, nodeEnv);

@@ -164,7 +164,7 @@ function onKeyDown(c: Story, e: KeyboardEvent) {
   if (isTyping(e.target) || document.querySelector('[role="dialog"][data-state="open"]')) return;
   // Flight owns movement (including Space/Q/E/PgUp/PgDn); never pause, rotate tools or issue work while flying.
   // V always gets back to the map even with the pointer locked. Esc only releases the pointer.
-  if (c.view === 'fly' && e.code !== 'KeyV') return;
+  if (c.view === 'fly' && (e.code !== 'KeyV' || e.ctrlKey || e.metaKey)) return;
   if (e.repeat && e.code === 'KeyV') return;
   if (PAN_KEYS[e.code]) {
     c.keys.current.add(e.code);
