@@ -418,17 +418,21 @@ public sealed class WorldState : IBlockAccess, IDisposable
     /// their data). Callers hold the chunk column's <see cref="ChunkColumn.Sync"/>.</summary>
     private void ForgetTold(int x, int z, int y0, int y1)
     {
-        foreach (var p in Told.Keys)
-            if (p.X == x && p.Z == z && p.Y >= y0 && p.Y <= y1) Told.TryRemove(p, out _);
+        // A packet's bounded vertical run is far smaller than the shared world's unrelated change history.
+        // ConcurrentDictionary.Keys materializes that entire history on every call.
+        for (int y = y0; y <= y1; y++) Told.TryRemove(new BlockPos(x, y, z), out _);
     }
 
     /// <summary>Store mode: forgets the <see cref="Told"/> entries of one chunk column (it left this view). Callers hold its
     /// <see cref="ChunkColumn.Sync"/>.</summary>
-    internal void ForgetTold(int chunkX, int chunkZ)
+    internal void ForgetTold(int chunkX, int chunkZ) => ForgetToldColumn(chunkX, chunkZ, null);
+
+    private void ForgetToldColumn(int chunkX, int chunkZ, int? height)
     {
         if (Told.IsEmpty) return;
-        foreach (var p in Told.Keys)
-            if (p.X >> 4 == chunkX && p.Z >> 4 == chunkZ) Told.TryRemove(p, out _);
+        foreach (var pair in Told)
+            if (pair.Key.X >> 4 == chunkX && pair.Key.Z >> 4 == chunkZ
+                && (height == null || pair.Key.Y >= 0 && pair.Key.Y < height)) Told.TryRemove(pair.Key, out _);
     }
 
     // Private constants copied into column storage by ApplyChunkRegion; never handed to packet consumers.
@@ -450,21 +454,29 @@ public sealed class WorldState : IBlockAccess, IDisposable
         if (height is <= 0 or > 256 || height % 16 != 0) throw new ArgumentOutOfRangeException(nameof(height));
         var newColumns = new List<(int, int)>();
         int x = chunkX * 16, z = chunkZ * 16;
-        int sections = height / 16;
-        for (int section = 0; section < sections;)
+        var column = GetOrCreate(chunkX, chunkZ, out bool created);
+        if (created) newColumns.Add((chunkX, chunkZ));
+        // Hold the shared column lock through the final acknowledgement cleanup: another body's later update must not
+        // be forgotten after an earlier section of this packet was written.
+        lock (column.Sync)
         {
-            if ((sectionMask & 1 << section) != 0) { section++; continue; }
-            int start = section++;
-            while (section < sections && (sectionMask & 1 << section) == 0) section++;
-            var air = new RegionRun(start * 16, (section - start) * 16, EmptyChunkCells, EmptyChunkCells, EmptyChunkCells, hasSkyLight ? OpenSkyChunkCells : null);
-            WriteRegionData(x, z, 16, 16, air, newColumns);
-        }
-        foreach (var slice in slices)
-        {
-            if (slice.Y < 0 || slice.Height <= 0 || slice.Y + slice.Height > height || slice.Ids.Length < 256 * slice.Height)
-                throw new ArgumentException("chunk slice is outside the full column", nameof(slices));
-            WriteRegionData(x, z, 16, 16,
-                new RegionRun(slice.Y, slice.Height, slice.Ids, slice.Meta, slice.BlockLight, hasSkyLight ? slice.SkyLight : null), newColumns);
+            int sections = height / 16;
+            for (int section = 0; section < sections;)
+            {
+                if ((sectionMask & 1 << section) != 0) { section++; continue; }
+                int start = section++;
+                while (section < sections && (sectionMask & 1 << section) == 0) section++;
+                var air = new RegionRun(start * 16, (section - start) * 16, EmptyChunkCells, EmptyChunkCells, EmptyChunkCells, hasSkyLight ? OpenSkyChunkCells : null);
+                WriteChunkSlice(column, x, z, air);
+            }
+            foreach (var slice in slices)
+            {
+                if (slice.Y < 0 || slice.Height <= 0 || slice.Y + slice.Height > height || slice.Ids.Length < 256 * slice.Height)
+                    throw new ArgumentException("chunk slice is outside the full column", nameof(slices));
+                WriteChunkSlice(column, x, z,
+                    new RegionRun(slice.Y, slice.Height, slice.Ids, slice.Meta, slice.BlockLight, hasSkyLight ? slice.SkyLight : null));
+            }
+            ForgetToldColumn(chunkX, chunkZ, Math.Min(height, WorldHeight));
         }
         CompleteRegion(x, 0, z, 16, height, 16, hasSkyLight, hasBlockLight: true, newColumns);
     }
@@ -514,18 +526,28 @@ public sealed class WorldState : IBlockAccess, IDisposable
     {
         var col = GetOrCreate(x >> 4, z >> 4, out bool created);
         if (created) newColumns.Add((x >> 4, z >> 4));
-        // The part of the y run inside the world.
+        lock (col.Sync) WriteRegionRun(col, x, z, src, r, forgetTold: true);
+    }
+
+    /// <summary>Caller holds the column lock; the full chunk acknowledges Told once after all slices.</summary>
+    private void WriteChunkSlice(ChunkColumn column, int x, int z, in RegionRun r)
+    {
+        for (int dx = 0; dx < 16; dx++)
+        for (int dz = 0; dz < 16; dz++)
+            WriteRegionRun(column, x + dx, z + dz, (dx * 16 + dz) * r.SizeY, r, forgetTold: false);
+    }
+
+    /// <summary>Writes one vertical run under the caller's column lock.</summary>
+    private void WriteRegionRun(ChunkColumn col, int x, int z, int src, in RegionRun r, bool forgetTold)
+    {
         int d0 = Math.Max(0, -r.OriginY), d1 = Math.Min(r.SizeY, WorldHeight - r.OriginY);
-        lock (col.Sync)
+        if (d1 > d0)
         {
-            if (d1 > d0)
-            {
-                int s0 = src + d0, n = d1 - d0;
-                col.WriteRun(x & 15, z & 15, r.OriginY + d0, r.Ids.AsSpan(s0, n), Run(r.Meta, s0, n), Run(r.BlockLight, s0, n), Run(r.SkyLight, s0, n));
-                if (!Told.IsEmpty) ForgetTold(x, z, r.OriginY + d0, r.OriginY + d1 - 1);
-            }
-            col.HasData = true;
+            int s0 = src + d0, n = d1 - d0;
+            col.WriteRun(x & 15, z & 15, r.OriginY + d0, r.Ids.AsSpan(s0, n), Run(r.Meta, s0, n), Run(r.BlockLight, s0, n), Run(r.SkyLight, s0, n));
+            if (forgetTold && !Told.IsEmpty) ForgetTold(x, z, r.OriginY + d0, r.OriginY + d1 - 1);
         }
+        col.HasData = true;
     }
 
     private void ForgetRemembered(int originX, int originZ, int sizeX, int sizeZ)
