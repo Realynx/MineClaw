@@ -73,6 +73,16 @@ export interface MineStats {
   yRange: { min: number; max: number } | null;
 }
 
+/**
+ * Ore blocks seen (mined or in a wall) per 100 blocks mined: a layout's yield for its digging, the measure of the layout study
+ * (docs/design/mine-blueprints.md; the bot's MineStats.SeenPer100). One ore, or all of them.
+ */
+export function seenPer100(stats: MineStats, oreId?: string): number {
+  if (stats.toMine === 0) return 0;
+  const seen = stats.ores.filter((o) => !oreId || o.ore.id === oreId).reduce((n, o) => n + o.mined + o.exposed, 0);
+  return (100 * seen) / stats.toMine;
+}
+
 const N6: ReadonlyArray<[number, number, number]> = [
   [1, 0, 0],
   [-1, 0, 0],

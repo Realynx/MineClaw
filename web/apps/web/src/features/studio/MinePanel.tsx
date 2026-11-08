@@ -11,8 +11,8 @@ import { Dices, Eye, Server } from 'lucide-react';
 import { useMemo, useState, type ReactNode } from 'react';
 import { Button, Input } from '@/components/ui/primitives';
 import { cn } from '@/lib/utils';
-import { levelOres, mineStats, oreColour } from './mine/mineStats';
-import { room, spiral, strip, type MineCells } from './mine/mineTemplates';
+import { levelOres, mineStats, oreColour, seenPer100 } from './mine/mineStats';
+import { room, spiral, STRIP_DEFAULTS, strip, type MineCells } from './mine/mineTemplates';
 import type { MineTerrain } from './mine/mineTerrain';
 import { presetCells, presetsFor, type MinePreset } from './mine/presets';
 import type { V3 } from './canvas';
@@ -174,7 +174,8 @@ export function MinePanel(p: MinePanelProps) {
   const [axis, setAxis] = useState<'x' | 'z'>('x');
   const [length, setLength] = useState(30);
   const [corridor, setCorridor] = useState<'1x2' | '2x3'>('1x2');
-  const [spacing, setSpacing] = useState(version === 'b1.8.1' ? 2 : 3);
+  // The layout study's best for both versions (docs/design/mine-blueprints.md).
+  const [spacing, setSpacing] = useState<number>(STRIP_DEFAULTS.spacing);
   const [branch, setBranch] = useState(12);
   const [sides, setSides] = useState<'both' | 'left' | 'right' | 'none'>('both');
   const [stripTorches, setStripTorches] = useState(8);
@@ -539,6 +540,9 @@ function DigEstimate({ stats }: { stats: ReturnType<typeof mineStats> }) {
           <th className="font-normal">Ore (band)</th>
           <th className="text-right font-normal">mined</th>
           <th className="text-right font-normal">in walls</th>
+          <th className="text-right font-normal" title="ore seen (mined + in the walls) per 100 blocks mined: compare layouts by it">
+            per 100
+          </th>
         </tr>
       </thead>
       <tbody>
@@ -553,6 +557,9 @@ function DigEstimate({ stats }: { stats: ReturnType<typeof mineStats> }) {
             </td>
             <td className="text-right font-mono">{o.mined}</td>
             <td className="text-right font-mono">{o.exposed}</td>
+            <td className="text-right font-mono" data-testid={`mine-per100-${o.ore.id}`}>
+              {seenPer100(stats, o.ore.id).toFixed(2)}
+            </td>
           </tr>
         ))}
       </tbody>

@@ -19,7 +19,7 @@ describe('mine stats and the X-ray layer (golden, pinned before they were split)
       const t = new MineTerrain(seed, v);
       const dug = [
         ...spiral({ x: 10, z: 10, top: 70, bottom: 5, size: 5 }).cells,
-        ...strip({ x: 2, y: 12, z: 40, length: 50, torchEvery: 4 }).cells,
+        ...strip({ x: 2, y: 12, z: 40, length: 50, spacing: 3, torchEvery: 4 }).cells,
       ].filter((c) => c[3] === 0);
       out.push(mineStats(t, dug.map(([x, y, z]) => [x, y, z] as const)));
       out.push(mineStats(t, []));

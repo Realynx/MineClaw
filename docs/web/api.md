@@ -829,9 +829,13 @@ of the ground, so a large underground strip mine can be drawn once and placed in
   lap later the same cell is 4(n−1) lower with solid floor between; top (default: the highest ground over its square) to
   bottom, clockwise or not, a torch on the outer wall every N steps, landings (the whole square dug 2 high) at given levels;
   `strip` — a main corridor (1×2 or 2×3) along x or z with 1×2 branches off both sides every spacing+1 cells, torches on the
-  corridor's wall. Presets (`mine-presets.json`): "1.12.2 diamond strip mine at y 11" (branches 3 apart), "1.12.2 lapis and
-  iron strip mine at y 16", "b1.8.1 diamond strip mine at y 11" (2 apart: smaller veins), "b1.8.1 lapis and gold strip mine
-  at y 16"; a design made from one is saved with `preferred_for <version>`.
+  corridor's wall; by default (`StripSpec.Default` / `STRIP_DEFAULTS`) feet y 11, a 1×2 corridor and branches 4 solid blocks
+  apart, the layout study's best (docs/design/mine-blueprints.md, updated 2026-11-08). Presets (`mine-presets.json`), per
+  version: "diamond strip mine at y 11" (1×2 corridor, branches 4 apart: the most ore per block dug), "diamond strip mine at
+  y 11, thorough" (2 apart: strips the plot clean, about 70% more digging for 30% more ore), and "lapis and iron" (1.12.2) /
+  "lapis and gold" (b1.8.1) "strip mine at y 16" (4 apart); a design made from one is saved with `preferred_for <version>`.
+  The panel's dig estimate shows each ore's "per 100" (ore seen, mined + in the walls, per 100 blocks mined: `seenPer100`,
+  the bot's `MineStats.SeenPer100`) to compare layouts by.
 - **Routes.** `POST sessions {kind?, seed?, rev?, …}`: a new mine canvas (a random seed when none), or revision `rev` of a design
   (saving it again makes it the newest revision: a revert). `POST sessions/{id}/version {version, kind?, seed?, preferred_for?,
   apply?}`: `kind` switches an empty canvas at once and answers `needs_clear: true` for a full one (`apply` clears it and
@@ -844,9 +848,13 @@ of the ground, so a large underground strip mine can be drawn once and placed in
   taller than 32 (up to 128) or place nothing at all; it never digs below y 1. Every builder places it at its absolute y
   (`Blueprint.OriginOn`: the entry's column on the site's), and the history's revisions, diff and revert keep it a mine.
 - **The AI designer.** On a mine canvas only: a compact system section (absolute y, the surface range here, the version's ore
-  heights in one line, the preset ids, the walkable-mine rules) and three more tools: `spiral_shaft {at:[x,z], size?, core?,
-  top?, bottom, dir?, torch_every?, landings?}`, `strip_mine {at:[x,y,z], axis?, length?, corridor? 1x2|2x3, spacing?,
-  branch_length?, sides?, torch_every?}`, `mine_preset {id}`. `remove` digs rooms; a build turn's prompt and tools are unchanged.
+  heights in one line, the preset ids, the walkable-mine rules, the layout study's rules) and five more tools: `spiral_shaft
+  {at:[x,z], size?, core?, top?, bottom, dir?, torch_every?, landings?}`, `strip_mine {at:[x,y,z], axis?, length?, corridor?
+  1x2|2x3, spacing?, branch_length?, sides?, torch_every?}`, `mine_preset {id}`, and two read-only surveys (added 2026-11-08):
+  `mine_stats {}` (the mine as drawn: blocks to mine by material, each ore mined + in the walls, the ore found by following
+  every vein it touches with the plot's share, ore per 100 blocks mined: `MineStats` (a port of the browser's `mineStats.ts`,
+  checked against its numbers) and `OreVeins`) and `ore_levels {ore?}` (the best 3 feet levels of each ore for a 1×2 strip
+  mine across this plot, by that vein yield: `OreLevels`). `remove` digs rooms; a build turn's prompt and tools are unchanged.
 - **Story Mode.** A placed mine is one `mine` build item group (docs/web/story-mode.md "Construction"): `blocks` = the cells to dig
   at their absolute y, `place` = `[[x,y,z,id,meta]]` the blocks that go in them.
 

@@ -60,6 +60,8 @@ public static class DesignerTools
             Obj("\"at\":" + P3 + ",\"axis\":{\"type\":\"string\",\"enum\":[\"x\",\"z\"]},\"length\":" + Int0 + ",\"corridor\":{\"type\":\"string\",\"enum\":[\"1x2\",\"2x3\"]},\"spacing\":"
                 + Int0 + ",\"branch_length\":" + Int0 + ",\"sides\":{\"type\":\"string\",\"enum\":[\"both\",\"left\",\"right\",\"none\"]},\"torch_every\":" + Int0, "at")),
         new("mine_preset", "Apply a version-preferred mine preset by id (its shaft + strip mine).", Obj("\"id\":" + Str0, "id")),
+        new("mine_stats", "Estimate the mine as drawn: blocks to mine, ores in sight, ore found by following the veins it touches, ore per 100 blocks.", Obj("")),
+        new("ore_levels", "The best feet levels on THIS plot for a 1x2 strip mine, per ore (or one ore).", Obj("\"ore\":" + Str0)),
     ];
 
     /// <summary>The tools for a canvas of this kind.</summary>
@@ -71,6 +73,13 @@ public static class DesignerTools
         "Keep each reply to a few calls; one place takes at most about 100 cells (use box, line or replace for runs): a reply that hits " +
         "the output limit loses the call it was writing. A tool error says what was wrong and the usage: fix that, don't repeat the call. " +
         "Reply after the edits with ONE or two short sentences on what changed, in plain words (no coordinates unless asked).";
+
+    /// <summary>What the layout study measured (docs/design/mine-blueprints.md), as rules for the mine designer.</summary>
+    private const string LayoutRules =
+        "Measured on this terrain (ore found per block dug): 1x2 branches 4 solid blocks apart are best (2 apart digs 70% more for 30% " +
+        "more ore: only to strip a plot clean); keep the main corridor 1x2 (2x3 digs over 10% more for under 5% more ore); taller or wider tunnels, " +
+        "poke holes and a second level 3 above all find less per block; diamond, redstone and gold: feet y 11 (y 7-11 is as good, y 13+ " +
+        "falls off fast; y 11 keeps clear of lava lakes); lapis and iron: y 14-16. Check a level with ore_levels and the result with mine_stats.";
 
     /// <summary>
     /// The mine designer's cached system prompt (a mine canvas only; compact: the plot, the ore heights of the version, the presets
@@ -86,7 +95,7 @@ public static class DesignerTools
         "bedrock y 0-4. The design is the cells to mine out: remove digs a box (never bedrock), \"earth\" fills dug cells back; blocks you " +
         "place (torches, ladders, rails, chests) go in after their cell is dug. Prefer the templates: spiral_shaft (a walkable spiral " +
         "staircase around a core, from the surface down), strip_mine (main corridor + 1x2 branches, spacing solid blocks apart), remove for " +
-        "rooms; tunnels 2 high, steps at most 1. Connect everything to the shaft. Ore heights: " + OreTable.Compact(canvas.Version) +
+        "rooms; tunnels 2 high, steps at most 1. Connect everything to the shaft. " + LayoutRules + " Ore heights: " + OreTable.Compact(canvas.Version) +
         ". Presets (mine_preset): " + presets + ". Blocks by minecraft name (torch:wall=<side of the supporting block>, ladder:wall=<side>, rail, " +
         "chest:<front>); unsure: find_blocks. " + ReplyRules;
     }
@@ -127,6 +136,8 @@ public static class DesignerTools
         ["spiral_shaft"] = (c, i) => MineTool(c, "spiral_shaft", i),
         ["strip_mine"] = (c, i) => MineTool(c, "strip_mine", i),
         ["mine_preset"] = (c, i) => MineTool(c, "mine_preset", i),
+        ["mine_stats"] = (c, _) => Survey(c, "mine_stats", t => MineStatsText(c, t)),
+        ["ore_levels"] = (c, i) => Survey(c, "ore_levels", t => OreLevels.Text(t, 3, OptStr(i, "ore"))),
         ["clear"] = (c, _) => Done(c, "clear", "cleared the canvas", c.Clear(), 0),
         ["remove"] = RemoveTool,
         ["place"] = PlaceTool,
@@ -300,15 +311,31 @@ public static class DesignerTools
         return res.Item2 == null ? res : (res.Item1 + string.Create(CultureInfo.InvariantCulture, $"; entry {m.Entry.X},{m.Entry.Y},{m.Entry.Z}"), res.Item2, res.Item3);
     }
 
+/// <summary>A read-only survey of a mine canvas's terrain (no op); a build canvas is refused like the templates.</summary>
+    private static (string, DesignerOp?, bool) Survey(DesignerCanvas canvas, string name, Func<MineTerrain, string> text) =>
+        canvas.Mine && canvas.Terrain is { } terrain ? (text(terrain), null, false) : ($"error: {name} needs a mine canvas (switch the studio to Mine)", null, true);
+
+    /// <summary>The mine as drawn: its dig estimate and what following the veins it touches finds.</summary>
+    private static string MineStatsText(DesignerCanvas canvas, MineTerrain terrain)
+    {
+        var dug = canvas.Dug;
+        var stats = MineStats.Of(terrain, dug);
+        if (stats.YRange == null) return stats.Text();
+        var found = OreVeins.For(terrain).Yield(dug).Where(y => y.Blocks > 0)
+            .Select(y => string.Create(CultureInfo.InvariantCulture, $"{y.Ore.Id} {y.Blocks} in {y.Veins} veins ({y.Coverage:P0} of the plot's)"));
+        return stats.Text() + "; following the veins: " + string.Join(", ", found.DefaultIfEmpty("nothing"));
+    }
+
     private static MineCells SpiralOf(JsonElement input, MineTerrain terrain)
     {
         if (!input.TryGetProperty("at", out var at) || at.ValueKind != JsonValueKind.Array || at.GetArrayLength() != 2) throw new ArgumentException("at: [x,z]");
         int x = Int(at[0]), z = Int(at[1]);
-        int size = Math.Clamp(OptInt(input, "size") ?? 4, MineTemplates.MinSize, MineTemplates.MaxSize);
+        var d = SpiralSpec.Default;
+        int size = Math.Clamp(OptInt(input, "size") ?? d.Size, MineTemplates.MinSize, MineTemplates.MaxSize);
         int top = OptInt(input, "top") ?? terrain.SurfaceOver(x, z, x + size - 1, z + size - 1);
         var landings = IntList(input, "landings");
-        return MineTemplates.Spiral(new SpiralSpec(x, z, top, OptInt(input, "bottom") ?? 11, size, OptInt(input, "core") ?? 2,
-            OptStr(input, "dir") != "ccw", OptInt(input, "torch_every") ?? 0, landings));
+        return MineTemplates.Spiral(new SpiralSpec(x, z, top, OptInt(input, "bottom") ?? d.Bottom, size, OptInt(input, "core") ?? d.Core,
+            OptStr(input, "dir") != "ccw", OptInt(input, "torch_every") ?? d.TorchEvery, landings));
     }
 
     private static MineCells StripOf(JsonElement input)
@@ -316,9 +343,10 @@ public static class DesignerTools
         var (x, y, z) = P(input, "at");
         bool wide = (OptStr(input, "corridor") ?? "1x2") == "2x3";
         var axis = OptStr(input, "axis") == "z" ? 'z' : 'x';
-        var sides = OptStr(input, "sides") ?? "both";
-        return MineTemplates.Strip(new StripSpec(x, y, z, axis, OptInt(input, "length") ?? 30, wide ? 2 : 1, wide ? 3 : 2, OptInt(input, "spacing") ?? 3,
-            OptInt(input, "branch_length") ?? 12, sides, OptInt(input, "torch_every") ?? 0));
+        var d = StripSpec.Default;
+        return MineTemplates.Strip(new StripSpec(x, y, z, axis, OptInt(input, "length") ?? d.Length, wide ? 2 : d.Width, wide ? 3 : d.Height,
+            OptInt(input, "spacing") ?? d.Spacing, OptInt(input, "branch_length") ?? d.BranchLength, OptStr(input, "sides") ?? d.Sides,
+            OptInt(input, "torch_every") ?? d.TorchEvery));
     }
 
     private static int? OptInt(JsonElement e, string k) => e.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.Number ? Int(v) : null;
