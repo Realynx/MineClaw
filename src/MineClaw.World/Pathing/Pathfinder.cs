@@ -9,8 +9,8 @@ namespace MineClaw.World;
 /// optionally break (mine obstacles) and place (bridge / pillar with a scaffold budget).
 /// <para>Void safety: cells over the void are never nodes; a cell next to a void/deadly drop is an "edge" (higher
 /// cost; the step is flagged <see cref="PathStep.Sneak"/>); diagonals require both orthogonal cells to be safe floor;
-/// drops and jumps are cardinal only, and a drop is refused if overshooting the landing cell would fall into a deadly
-/// drop. Unloaded chunks are treated as void.</para>
+/// drops and jumps are cardinal only. A dangerous runout rejects a drop except a controlled one-block descent between
+/// full cubes over a floored pit; void/lava runouts remain refused. Unloaded chunks are treated as void.</para>
 /// </summary>
 public sealed partial class Pathfinder
 {
@@ -650,8 +650,10 @@ public sealed partial class Pathfinder
         bool soft = c.Water;
         if (soft && !CheckWaterLanding(here, tx, ty, tz, ref soft, ref fall)) return false;
         if (LandingRefused(c, tx, ty, tz, dx, dz, soft, fall)) return false;
+        bool careful = !soft && IsDeadly(tx + dx, ty, tz + dz);
         double cost = DropCost(tx, ty, tz, fall);
-        output.Add(new Candidate(tx, ty, tz, c.Water ? MoveKind.Swim : MoveKind.Drop, c.Floor, cost, [], null, false));
+        if (careful) cost += 12; // stop, align, then ease onto the single landing cell
+        output.Add(new Candidate(tx, ty, tz, c.Water ? MoveKind.Swim : MoveKind.Drop, c.Floor, cost, [], null, false, Gentle: careful));
         return true;
     }
 
@@ -676,9 +678,17 @@ public sealed partial class Pathfinder
         // A fall of more than half a block onto farmland turns it to dirt (1.12 BlockFarmland.onFallenUpon): never planned.
         if (!c.Water && OnFarmland(tx, ty, tz)) return true;
         if (soft && (!_o.AllowSwim || fall > _o.MaxWaterDrop + 1e-6)) return true;
-        // Overshoot guard: the cell beyond the landing spot must not be a deadly drop.
-        return !soft && IsDeadly(tx + dx, ty, tz + dz);
+        // Taller drops still need a safe runout. A single full-block descent above a floored pit can instead
+        // stop and enter slowly; the follower brakes before leaving support and settles on the landing.
+        return !soft && IsDeadly(tx + dx, ty, tz + dz) && !CarefulDrop(c, tx, ty, tz, dx, dz, fall);
     }
+
+    private bool CarefulDrop(CellInfo c, int x, int y, int z, int dx, int dz, double fall) =>
+        fall <= 1 + 1e-6 && c.Ground && !c.Water && !c.Climb && Math.Abs(c.Floor - y) < 1e-6
+        && BlockShapes.IsFullCube(_w, x, y - 1, z) && BlockShapes.IsFullCube(_w, x - dx, y, z - dz)
+        && _w.Physics.Slipperiness(_w.GetBlock(x, y - 1, z)) <= 0.600001
+        && _w.Physics.Slipperiness(_w.GetBlock(x - dx, y, z - dz)) <= 0.600001
+        && !IsFatalEdge(x, y, z) && !IsFatalEdge(x - dx, y + 1, z - dz);
 
     private double DropCost(int tx, int ty, int tz, double fall)
     {

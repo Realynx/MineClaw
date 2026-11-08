@@ -43,6 +43,18 @@ public sealed class StoryQuarryBatchTests
     private static string[] Cells(JsonObject j) => j["dig_cells"]!.AsArray().Select(n => n!.GetValue<string>()).ToArray();
 
     [Fact]
+    public void A_lower_stray_ten_blocks_below_the_seed_is_reserved_for_the_same_pillar_descent()
+    {
+        var (c, _, w) = Rig();
+        w.Set(14, 50, 16, 4);
+        var cells = Cells(c.Next());
+        Assert.Contains(Top.ToString(), cells);
+        Assert.Contains("14,50,16", cells);
+        Assert.DoesNotContain(cells, cell => int.Parse(cell.Split(',')[1]) <= 44);
+        Assert.InRange(cells.Length, 2, StoryColony.QuarryBatchMax);
+    }
+
+    [Fact]
     public void Nearby_remnants_share_a_job_including_the_lower_pole_but_never_the_next_solid_floor()
     {
         var (c, _, w) = Rig();

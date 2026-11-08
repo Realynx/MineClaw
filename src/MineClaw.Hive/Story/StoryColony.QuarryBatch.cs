@@ -28,7 +28,7 @@ public sealed partial class StoryColony
         var columns = z.Cells.Sorted().Where(c => Near(new P3(c.X, seed.Y, c.Z)))
             .OrderBy(c => Math.Abs(c.X - seed.X) + Math.Abs(c.Z - seed.Z)).ToList();
         var stopped = new HashSet<(int X, int Z)>();
-        for (int y = seed.Y - 1; y >= Math.Max(q.Bottom, seed.Y - 8) && cells.Count < QuarryBatchMax; y--)
+        for (int y = seed.Y - 1; y >= Math.Max(q.Bottom, seed.Y - Scripting.Story.ReachScan.MaxPillar) && cells.Count < QuarryBatchMax; y--)
             foreach (var (x, zz) in columns)
             {
                 if (cells.Count >= QuarryBatchMax) break;

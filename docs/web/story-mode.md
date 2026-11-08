@@ -1080,7 +1080,7 @@ left standing as a seal; lava sources in the zone are collected in buckets, wate
 blocks and spawners too (see "Quarry hazards").
 
 **Shared access for remnants.** One dig job reserves up to 12 compatible nearby cells within 3 blocks horizontally. It includes
-cells on the current layer and thin, exposed remnants up to 8 blocks below it (at least 3 open horizontal sides). It never batches
+cells on the current layer and thin, exposed remnants within the 24-block access depth below it (at least 3 open horizontal sides). It never batches
 the next intact floor, the stair, hazard seals, another pawn's support, or another job's reserved cells. The pawn clears visible
 targets before dismantling its access pillar and works lower targets while descending. Unattempted cells remain quarry work;
 a failed cell keeps its own retry reason without marking the rest of the cluster failed. Cancelling a reserved cell interrupts
@@ -1099,10 +1099,19 @@ dirt, netherrack, planks, stone, sandstone: carried, else fetched from storage; 
 (the cell under a step waiting for a block is held back). The quarry never digs its own steps. Repainting a quarry recomputes the
 ring (its top stays).
 
+An upper stray block can rewind the working layer after the pit is much deeper. Stair checks still follow the open columns near
+that block down to their first usable floor, stopping at intact ground or liquid. Missing steps and blocked headroom along that
+route are repaired in order before sealing or mining resumes. The repair approaches from the preceding intact step; a floating
+step gets one supported temporary scaffold, with material for both placements reserved before work starts. The scaffold is removed
+after the permanent step is placed.
+
 **Walking the stair.** A pit with a floor is no "edge" to sneak at: a path step sneaked only because of such an edge is walked (the
 pathfinder keeps its edge costs, so routes don't change; fields and growing zones stay sneaked), and the edge guard forces sneak and
 stops sprint only beside a fatal drop (the void, lava, water over the void: `Safety.IsFatalColumn`). Beside a quarry's pit the stair is walked normally (live 11-04: "they crouch-walk when the stairs get high on the
 outside wall"); the guard's per-tick simulation still never lets the body step off, and drops into the pit stay limited to safe ones.
+A repaired step can be walked onto while the following step is still missing: for a one-block descent between full, nonslippery
+blocks above a floored pit, the pawn stops and aligns before leaving its support, then brakes onto the landing. Taller drops and
+landings beside the void, lava, or on ice still require a safe space beyond the landing.
 
 **Digging from where a face is in view.** Live 11-04 (Fox: "the pawns refuse to go into it. They get the idea to do it, they go to do
 it, they get almost down the stairs and then cancel that idea"; "dig 181,57,366 failed: can't reach stone" ×14 from as many pawns, the

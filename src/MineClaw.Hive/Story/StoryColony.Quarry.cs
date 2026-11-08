@@ -19,7 +19,8 @@ public sealed partial class StoryColony
     internal sealed class QuarryScan
     {
         public DateTimeOffset At;
-        public int Top, Bottom, Layer;
+        public int Top, Bottom, Layer, AccessLayer;
+        public int? WorkFeet;
         public bool Done;
         public List<(int X, int Z)>? Ring;
         public readonly Dictionary<(int X, int Z), int> Bottoms = new();
@@ -27,8 +28,10 @@ public sealed partial class StoryColony
         public readonly List<P3> Dig = new();
         /// <summary>Cells under a step still waiting for its block (dug once the step stands).</summary>
         public int Held;
-        /// <summary>Steps from the top down to one under the working layer that need a block (placed first, top-most first).</summary>
+        /// <summary>Steps down to the work's access floor that need a block (placed first, top-most first).</summary>
         public readonly List<(P3 At, bool Clear)> StepFix = new();
+        /// <summary>Obstructions over already excavated stair steps, ordered by the step they block.</summary>
+        public readonly List<(P3 At, int Layer)> StairClear = new();
         /// <summary>Cells to place a sealing block in (lava or water in the zone, a breached cave's opening), from the layers looked at.</summary>
         public readonly List<(P3 At, string Kind)> SealFix = new();
         /// <summary>The hazards the look found (left standing or to seal), by kind: cave, lava, water, sand, danger.</summary>
@@ -76,7 +79,7 @@ public sealed partial class StoryColony
         _quarryScan[z.Id] = q;
         if (!QuarryBounds(w, z, q)) { q.Done = true; return q; } // nothing seen yet
         FindLayer(w, z, q);
-        if (!q.Done) CheckStair(w, q);
+        if (!q.Done) { QuarryAccess(w, z, q); CheckStair(w, q); }
         if (!q.Done) q.Spawner = SpawnerNear(w, z, q); // StoryColony.QuarryHazards.cs
         QuarryHazardNews(z, q);
         return q;
@@ -159,14 +162,22 @@ public sealed partial class StoryColony
         return OpenCell(id) || StoryBlocks.Liquids.Contains(id) ? false : null;
     }
 
-    /// <summary>Every step from the top down to the one under the working layer, as the world has it now: the missing ones to place.</summary>
+    /// <summary>Every step down to the actual access floor: missing blocks to place and headroom to clear.</summary>
     private static void CheckStair(IStoryWorld w, QuarryScan q)
     {
         if (q.Ring is not { } ring) return;
-        for (int j = 0; j <= Math.Min(q.Layer + 1, q.MaxK); j++)
+        for (int j = 0; j <= q.AccessLayer; j++)
         {
             var s = StoryQuarry.Step(ring, q.Top, j);
             if (StepNeedsBlock(w, s) is { } clear) q.StepFix.Add((s, clear));
+            // A future step is still inside the intact layer. Clear deeper headroom only when a remnant's real floor requires it.
+            if (q.AccessLayer <= q.Layer + 1 && j >= q.Layer) continue;
+            for (int d = 1; d <= 3; d++)
+            {
+                var at = s.Add(0, d, 0);
+                if (at.Y <= q.Top && !StoryWander.Passable(w.Block(at.X, at.Y, at.Z).Id)
+                    && !q.StairClear.Any(c => c.At == at)) q.StairClear.Add((at, j));
+            }
         }
     }
 
@@ -186,24 +197,19 @@ public sealed partial class StoryColony
     {
         if (World is not { } w || Quarry(z) is not { Done: false } q) return null;
         if (q.Spawner != null) { Blocked($"quarry {ZoneName(z)}: {QuarryWaitReason(q)}"); return null; } // stopped (StoryColony.QuarryHazards.cs)
-        var job = StairJob(p, live, z, q) ?? SealJob(p, live, z, q);
+        var job = StairJob(p, live, z, q);
+        if (job == null && !StairBroken(q)) job = SealJob(p, live, z, q);
         if (job == null && !StairBroken(q) && !SealPending(q)) job = LayerJob(p, live, w, z, q);
         if (job == null && QuarryWaitReason(q, anyResting: true) is { } why) Blocked($"quarry {ZoneName(z)}: {why}");
         return job;
     }
 
-    /// <summary>A step at or above the working layer is missing: nobody gets down there until it is placed.</summary>
-    private static bool StairBroken(QuarryScan q) => q.StepFix.Any(f => f.At.Y >= q.Y);
+    /// <summary>The work's access stair is incomplete or obstructed: repair it before entering to dig or seal.</summary>
+    private static bool StairBroken(QuarryScan q) => q.StepFix.Count > 0 || q.StairClear.Count > 0;
 
     private ActiveJob? StairJob(PawnState p, PawnLive live, ZoneState z, QuarryScan q)
     {
-        var from = live.Block;
-        foreach (var (at, clear) in q.StepFix.OrderByDescending(f => f.At.Y))
-        {
-            if (!Open("b:" + at, p.Name, at)) continue;
-            return StepBlockJob(p, live, z, at, clear, from);
-        }
-        return null;
+        return QuarryStairRepair(p, live, z, q);
     }
 
     private ActiveJob? StepBlockJob(PawnState p, PawnLive live, ZoneState z, P3 at, bool clear, P3 from) =>
@@ -265,8 +271,10 @@ public sealed partial class StoryColony
     /// nothing there (its idle audit) hears of resting cells even when others are still open to other pawns.</summary>
     private string? QuarryWaitReason(QuarryScan q, bool anyResting = false)
     {
-        if (HazardWait(q) is { } hw) return hw; // a spawner, a seal to place (StoryColony.QuarryHazards.cs)
+        if (q.Spawner != null) return HazardWait(q);
+        if (q.StairClear.Count > 0) return $"stair blocked at {q.StairClear[0].At}: clearing its headroom";
         if (StairBroken(q)) return $"stair broken at y {q.StepFix.Max(f => f.At.Y)}: placing a step";
+        if (HazardWait(q) is { } hw) return hw; // a seal to place (StoryColony.QuarryHazards.cs)
         if (q.Dig.Count == 0 && q.Held > 0) return $"waiting for the stair step over y {q.Y}";
         var resting = q.Dig.Where(QuarryResting).ToList();
         if (resting.Count == 0 || (!anyResting && resting.Count < q.Dig.Count)) return null;

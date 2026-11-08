@@ -17,7 +17,10 @@ public sealed partial class StoryColony
             && (fetch || job.At is { } target && quarry != inside
                 && (!inside.Contains(target.X, target.Z) || target.Y > live.Y + 2));
         if (exits) job.Json["quarry_exit"] = QuarryWalk(w, inside!, (int)Math.Floor(live.Y), QuarryTopOf(inside!) + 1);
-        if (quarry == null || job.At is not { } at || QuarryWorkHeight(w, quarry, at) is not { } feet) return job;
+        if (quarry == null || job.At is not { } at) return job;
+        int? planned = job.Json["quarry_access_y"]?.GetValue<int>()
+            ?? (job.Kind == "dig" ? Quarry(quarry)?.WorkFeet : null) ?? QuarryWorkHeight(w, quarry, at);
+        if (planned is not { } feet) return job;
         int from = inside == quarry && !fetch ? (int)Math.Floor(live.Y) : QuarryTopOf(quarry) + 1;
         if (Math.Abs(from - feet) > 2) job.Json["quarry_approach"] = QuarryWalk(w, quarry, from, feet);
         return job;
@@ -25,12 +28,7 @@ public sealed partial class StoryColony
 
     private static int? QuarryWorkHeight(IStoryWorld w, ZoneState z, P3 target)
     {
-        for (int y = target.Y + 1; y >= Math.Max(2, target.Y - Scripting.Story.ReachScan.MaxPillar - 4); y--)
-            for (int dx = -3; dx <= 3; dx++)
-                for (int dz = -3; dz <= 3; dz++)
-                    if (z.Contains(target.X + dx, target.Z + dz)
-                        && StoryWander.Standable(w, target.X + dx, y, target.Z + dz)) return y;
-        return null;
+        return QuarryAccessColumns(z, [target]).Select(c => QuarryColumnFeet(w, c.X, c.Z, target.Y)).OfType<int>().Cast<int?>().Min();
     }
 
     private JsonArray? QuarryWalk(IStoryWorld w, ZoneState z, int fromY, int toY)

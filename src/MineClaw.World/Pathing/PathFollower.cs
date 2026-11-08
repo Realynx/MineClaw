@@ -159,6 +159,8 @@ public sealed partial class PathFollower
         _noProgress = 0;
         _jumpCancels = 0;
         _jumpFrom = null;
+        _dropAligned = false;
+        _dropStart = null;
     }
 
     private void QueueDoorRestores(IBlockAccess w, PathStep step)
@@ -178,7 +180,7 @@ public sealed partial class PathFollower
 
     private bool NeedsPrecision(PathStep step)
     {
-        if (StepIndex == _steps.Count - 1 || step.Sneak || step.Opens.Count > 0 || step.Trigger is not null) return true;
+        if (StepIndex == _steps.Count - 1 || step.Sneak || step.Opens.Count > 0 || step.Trigger is not null || BrakesForDrop(step)) return true;
         var next = StepIndex + 1 < _steps.Count ? _steps[StepIndex + 1] : null;
         // Doorways are 0.81 wide once the panel swings in: line up on the cell centre before and inside them.
         return next is not null && (LinesUpBefore(next.Kind) || next.Sneak || next.Opens.Count > 0 || next.Jump is not null);
@@ -287,6 +289,7 @@ public sealed partial class PathFollower
         if ((int)Math.Floor(pos.X) != step.X || (int)Math.Floor(pos.Z) != step.Z) return false;
         if (!Settled(w, s)) return false;
         if (step.Jump is not null) return LandedJump(s, step);
+        if (BrakesForDrop(step) && Speed(s) >= 0.025) return false;
         return AtStepHeight(pos, step) && (!NeedsPrecision(step) || OnCentre(pos, step));
     }
 
@@ -347,6 +350,7 @@ public sealed partial class PathFollower
         if (DangerCheck(w, s, step, idle) is { } danger) return danger;
         if (StallCheck(w, s, step, idle, dist) is { } stalled) return stalled;
         if (StepAction(w, s, step, idle, sneak, yaw, dist) is { } action) return action;
+        if (step is { Kind: MoveKind.Drop, Gentle: true }) return DriveCarefulDrop(w, s, step);
         return Walk(w, s, step, idle, sneak, yaw, dist);
     }
 
