@@ -1,93 +1,31 @@
 using System.Globalization;
 using System.Text;
 using MineClaw.Agent.Budget;
+using MineClaw.Agent.Context;
 using MineClaw.Agent.Llm;
 
 namespace MineClaw.Bot.Blueprints;
 
-/// <summary>A model the Design Studio can talk to: one of the bot's tiers, or a configured profile (Ollama/DeepSeek, …).</summary>
-/// <param name="Id">"main" / "worker" / "cheap" (the tiers) or "profile:&lt;name&gt;".</param>
-public sealed record DesignerModel(string Id, string Label, string Provider, string Model, ModelTier Tier, string? Profile, string? CostHint);
-
-/// <summary>
-/// The models the bot is configured to use (Agent:Llm): each tier's model and every usable profile, de-duplicated by
-/// (provider, model). A Claude model outside the 5.5 generation is never offered (startup refuses such a config anyway).
-/// </summary>
-public static class DesignerModels
-{
-    public static List<DesignerModel> List(LlmOptions o)
-    {
-        var list = new List<DesignerModel>();
-        void Add(string id, string label, string provider, string model, ModelTier tier, string? profile, string? hint)
-        {
-            provider = LlmProviders.Normalize(provider);
-            if (string.IsNullOrWhiteSpace(model) || !o.ProviderConfigured(provider)) return;
-            if (provider == LlmProviders.Anthropic && !ModelProfiles.IsCurrentGeneration(model)) return;
-            if (list.Any(m => m.Provider == provider && m.Model.Equals(model, StringComparison.OrdinalIgnoreCase))) return;
-            list.Add(new DesignerModel(id, label, provider, model.Trim(), tier, profile, hint));
-        }
-        Add("main", $"{Pretty(o.MainModel)} (brain)", o.ProviderFor(ModelTier.Main), o.MainModel, ModelTier.Main, null, "$$$");
-        Add("worker", $"{Pretty(o.WorkerModel)} (worker)", o.ProviderFor(ModelTier.Worker), o.WorkerModel, ModelTier.Worker, null, "$$");
-        Add("cheap", $"{Pretty(o.CheapModel)} (memory)", o.ProviderFor(ModelTier.Cheap), o.CheapModel, ModelTier.Cheap, null, "$");
-        foreach (var name in o.UsableProfiles())
-            if (o.Profile(name) is { } p)
-                Add("profile:" + name, $"{Pretty(p.Model)} ({name})", p.Provider, p.Model, ModelTier.Main, name, p.CostHint);
-        return list;
-    }
-
-    /// <summary>The default: the brain tier when usable, else the first.</summary>
-    public static DesignerModel? Default(LlmOptions o) => List(o).FirstOrDefault();
-
-    /// <summary>An id from <see cref="List"/>, or a model id one of them names; null = not available.</summary>
-    public static DesignerModel? Resolve(LlmOptions o, string? id)
-    {
-        var all = List(o);
-        if (string.IsNullOrWhiteSpace(id)) return all.FirstOrDefault();
-        id = id.Trim();
-        return all.FirstOrDefault(m => m.Id.Equals(id, StringComparison.OrdinalIgnoreCase))
-               ?? all.FirstOrDefault(m => m.Model.Equals(id, StringComparison.OrdinalIgnoreCase));
-    }
-
-    /// <summary>"claude-opus-5-5" → "Opus 5.5"; other providers' names stay as they are.</summary>
-    public static string Pretty(string model)
-    {
-        var m = model.Trim();
-        if (!m.StartsWith("claude-", StringComparison.OrdinalIgnoreCase)) return m;
-        var parts = m["claude-".Length..].Split('-');
-        if (parts.Length < 3) return m;
-        return CultureInfo.InvariantCulture.TextInfo.ToTitleCase(parts[0]) + " " + parts[1] + "." + parts[2];
-    }
-}
-
-/// <summary>What one Design Studio message did: the reply, the ops applied (in order), cost and usage.</summary>
-public sealed record DesignerTurnResult(string Reply, IReadOnlyList<DesignerOp> Ops, decimal CostUsd, LlmUsage Usage, string Model, int Calls, string? Refusal = null);
-
-/// <summary>Limits of one Design Studio message ("Supervisor:Viewer:Designer").</summary>
-public sealed class DesignerOptions
-{
-    /// <summary>Off = the <c>/api/designer/*</c> routes are 404 even with the viewer on.</summary>
-    public bool Enabled { get; set; } = true;
-    /// <summary>Model calls per message (each tool round is one).</summary>
-    public int MaxRounds { get; set; } = 8;
-    public int MaxTokens { get; set; } = 4000;
-    /// <summary>A message stops calling the model once it has cost this much (USD).</summary>
-    public decimal MaxUsdPerMessage { get; set; } = 1.50m;
-    /// <summary>Earlier exchanges sent as plain text (older ones are dropped: the canvas summary carries the state).</summary>
-    public int HistoryTurns { get; set; } = 6;
-    /// <summary>output_config.effort of the studio's calls ("" = the tier's).</summary>
-    public string Effort { get; set; } = "low";
-}
-
 /// <summary>
 /// One Design Studio message: the user's words + the canvas summary (+ the selection and their own edits since the last turn)
 /// go to the chosen model with the canvas tools; tool calls are applied to the sandbox canvas until the model answers in text.
-/// The prefix (tools + system) is cached; history is plain text of the last few exchanges. Spend is booked on the bot's
-/// <see cref="UsageTracker"/> (the shared daily/monthly caps) and refused while the budget is paused.
+/// The prefix (tools + system) is cached; history is plain text of the last few exchanges (<see cref="DesignerConversation"/>).
+/// Spend is booked on the bot's <see cref="UsageTracker"/> (the shared daily/monthly caps) and refused while the budget is paused.
+/// <para>A message never loses work: before each call the request is fitted to the context budget (older tool results cut);
+/// a reply cut at the output limit runs its complete calls and tells the model to resend the cut one smaller; a model stuck on
+/// failing calls, the round or cost limit, and a call failing after the first all end the message with the edits made so far
+/// and say why (<see cref="DesignerTurnResult.Stopped"/>). Only a first call that fails throws (nothing ran).</para>
 /// </summary>
 public sealed class DesignerAgent(ILlmClient llm, LlmOptions llmOptions, UsageTracker? usage, DesignerOptions? options = null)
 {
     private readonly DesignerOptions _o = options ?? new DesignerOptions();
     private readonly PriceTable _prices = usage?.Prices ?? new PriceTable();
+
+    /// <summary>Why a model call failed, in a line ("the model call failed: …").</summary>
+    public static string FailureReason(Exception e) => "the model call failed: " + DesignerText.Clip(e.Message, 160);
+
+    /// <summary>The transcript line a failed model call leaves when nothing ran (the route stores it).</summary>
+    public static string FailureText(Exception e) => "(" + FailureReason(e) + ")";
 
     /// <summary>Null = allowed; else why the budget refuses this model now.</summary>
     public string? BudgetRefusal(DesignerModel m)
@@ -100,6 +38,17 @@ public sealed class DesignerAgent(ILlmClient llm, LlmOptions llmOptions, UsageTr
         return null;
     }
 
+    /// <summary>
+    /// The context budget of a call on <paramref name="m"/>: <see cref="DesignerOptions.MaxContextTokens"/>, lowered to an Ollama
+    /// model's <c>num_ctx</c> (Ollama silently cuts a longer prompt's head: the system prompt and tools would go first).
+    /// </summary>
+    public int ContextBudget(DesignerModel m)
+    {
+        int budget = Math.Max(1024, _o.MaxContextTokens);
+        int numCtx = llmOptions.Ollama.DefaultNumCtx;
+        return m.Provider == LlmProviders.Ollama && numCtx > 0 ? Math.Min(budget, numCtx) : budget;
+    }
+
     public async Task<DesignerTurnResult> RunAsync(DesignerSessionRecord s, IReadOnlyList<DesignerMessageRecord> history, DesignerModel m, string text,
         (int[] Min, int[] Max)? selection, string? player, CancellationToken ct)
     {
@@ -108,88 +57,102 @@ public sealed class DesignerAgent(ILlmClient llm, LlmOptions llmOptions, UsageTr
         using var scope = DesignVersions.Use(s.Canvas.Version);
         // A mine canvas gets its own compact prompt and the mine templates (only then: a build turn costs nothing more).
         var system = s.Canvas.Mine ? DesignerTools.MineSystem(player, s.Canvas) : DesignerTools.System(player, s.Canvas.Version);
-        var tools = DesignerTools.For(s.Canvas);
-        var messages = Conversation(history);
-        messages.Add(LlmMessage.User(Brief(s, text, selection)));
-        var turn = new Turn { Model = m.Model };
-        for (int round = 0; round < Math.Max(1, _o.MaxRounds); round++)
-            if (!await RoundAsync(s, m, system, tools, messages, turn, ct).ConfigureAwait(false)) break;
+        var call = new Call(m, [new LlmSystemBlock(system, Cache: true)], DesignerTools.For(s.Canvas),
+            DesignerConversation.Build(history, _o.HistoryTurns, Brief(s, text, selection)));
+        var turn = new DesignerTurn(m.Model, _o.MaxFailedRounds);
+        int rounds = Math.Max(1, _o.MaxRounds);
+        bool more = true;
+        for (int round = 0; round < rounds && more; round++)
+            more = await RoundAsync(s, call, turn, ct).ConfigureAwait(false);
+        if (more) turn.Stop($"I used all {rounds} steps of this message; say \"go on\" to continue");
         return turn.Result();
     }
 
-    /// <summary>What one designer turn gathered: the canvas ops, usage, cost, calls, the last reply and model.</summary>
-    private sealed class Turn
-    {
-        public readonly List<DesignerOp> Ops = [];
-        public LlmUsage Total = LlmUsage.Zero;
-        public decimal Cost;
-        public int Calls;
-        public string Reply = "";
-        public string Model = "";
+    /// <summary>What every call of one turn sends: the model, the cached prefix and the growing messages.</summary>
+    private sealed record Call(DesignerModel Model, IReadOnlyList<LlmSystemBlock> System, IReadOnlyList<LlmToolDefinition> Tools, List<LlmMessage> Messages);
 
-        public DesignerTurnResult Result()
-        {
-            var reply = Reply.Length > 0 ? Reply
-                : Ops.Count > 0 ? "Done: " + string.Join("; ", Ops.Select(o => o.Label).Distinct().Take(4)) + "." : "(no changes)";
-            return new DesignerTurnResult(reply, Ops, Cost, Total, Model, Calls);
-        }
-    }
-
-    /// <summary>The last turns of the session, starting with the user (the API wants alternating turns starting with the user:
-    /// drop a leading assistant line, merge none, we always add pairs).</summary>
-    private List<LlmMessage> Conversation(IReadOnlyList<DesignerMessageRecord> history)
-    {
-        var messages = new List<LlmMessage>();
-        foreach (var h in history.TakeLast(Math.Max(0, _o.HistoryTurns) * 2))
-            messages.Add(h.Role == "assistant" ? LlmMessage.Assistant(h.Text.Length == 0 ? "(done)" : h.Text) : LlmMessage.User(h.Text));
-        while (messages.Count > 0 && messages[0].Role != LlmRole.User) messages.RemoveAt(0);
-        return messages;
-    }
-
-    /// <summary>One model call and its tool calls run on the canvas; false when the turn ends (no tool use, the cost cap).</summary>
-    private async Task<bool> RoundAsync(DesignerSessionRecord s, DesignerModel m, string system, IReadOnlyList<LlmToolDefinition> tools, List<LlmMessage> messages,
-        Turn turn, CancellationToken ct)
+    /// <summary>One model call and its tool calls run on the canvas; false when the turn ends (the model answered, or a limit).</summary>
+    private async Task<bool> RoundAsync(DesignerSessionRecord s, Call c, DesignerTurn turn, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
-        LlmResponse resp;
-        try { resp = await llm.CompleteAsync(Request(m, system, tools, messages), ct).ConfigureAwait(false); }
-        catch (LlmCostCapException cc)
+        int maxOut = Math.Max(256, _o.MaxTokens);
+        if (!ContextManager.FitMessages(c.Messages, c.System, c.Tools, maxOut, ContextBudget(c.Model)))
         {
-            turn.Cost += Book(cc.Model, cc.PartialUsage, m.Tier);
-            turn.Total = turn.Total.Add(cc.PartialUsage);
+            turn.Stop($"this conversation no longer fits the model's context ({ContextBudget(c.Model)} tokens); " +
+                      "start a new session or raise Supervisor:Viewer:Designer:MaxContextTokens");
             return false;
         }
-        turn.Calls++;
-        turn.Model = resp.Model;
-        turn.Total = turn.Total.Add(resp.Usage);
-        turn.Cost += Book(resp.Model, resp.Usage, m.Tier);
-        if (resp.Text.Trim() is { Length: > 0 } t) turn.Reply = t;
+        if (await CallAsync(c, maxOut, turn, ct).ConfigureAwait(false) is not { } resp) return false;
         var uses = resp.ToolUses.ToList();
-        if (uses.Count == 0 || resp.StopReason != StopReasons.ToolUse) return false;
-        messages.Add(new LlmMessage(LlmRole.Assistant, resp.Content));
-        var results = RunTools(s, uses, turn.Ops);
-        if (turn.Cost >= _o.MaxUsdPerMessage)
+        if (resp.StopReason == StopReasons.Refusal)
         {
-            turn.Reply = turn.Reply.Length > 0 ? turn.Reply : $"I stopped at the per-message cost cap (${_o.MaxUsdPerMessage:0.00}); say \"go on\" to continue.";
+            turn.Stop("the model declined this request");
             return false;
         }
-        messages.Add(new LlmMessage(LlmRole.User, results));
-        return true;
+        if (uses.Count == 0)
+        {
+            if (resp.StopReason == StopReasons.MaxTokens) turn.Stop("the reply was cut off at the output limit");
+            return false;
+        }
+        var content = resp.Content.Where(b => b is not LlmText t || !string.IsNullOrWhiteSpace(t.Text)).ToList();
+        c.Messages.Add(new LlmMessage(LlmRole.Assistant, content));
+        var results = RunTools(s, uses, CutOff(resp, content), turn.Ops, maxOut);
+        c.Messages.Add(new LlmMessage(LlmRole.User, results));
+        if (turn.Stuck(results)) return false;
+        if (turn.Cost < _o.MaxUsdPerMessage) return true;
+        turn.Stop(string.Create(CultureInfo.InvariantCulture, $"I stopped at the per-message cost cap (${_o.MaxUsdPerMessage:0.00}); say \"go on\" to continue"));
+        return false;
     }
 
-    private LlmRequest Request(DesignerModel m, string system, IReadOnlyList<LlmToolDefinition> tools, List<LlmMessage> messages) => new()
+    /// <summary>
+    /// The call, booked on the turn; null when the turn ends without a reply: the cost cap aborted it, or a call after the first
+    /// failed (the edits so far stand). A failing first call throws: nothing ran, so the route answers it as a failure.
+    /// </summary>
+    private async Task<LlmResponse?> CallAsync(Call c, int maxOut, DesignerTurn turn, CancellationToken ct)
     {
-        Tier = m.Tier, Model = m.Model, Profile = m.Profile, MaxTokens = Math.Max(256, _o.MaxTokens), Purpose = "designer",
-        System = [new LlmSystemBlock(system, Cache: true)], Tools = tools, Messages = messages.ToList(),
+        try
+        {
+            var resp = await llm.CompleteAsync(Request(c, maxOut), ct).ConfigureAwait(false);
+            turn.Record(resp, Book(resp.Model, resp.Usage, c.Model.Tier));
+            return resp;
+        }
+        catch (LlmCostCapException cc)
+        {
+            turn.Spend(cc.PartialUsage, Book(cc.Model, cc.PartialUsage, c.Model.Tier));
+            turn.Stop("the model call hit its cost cap");
+            return null;
+        }
+        catch (Exception e) when (e is not OperationCanceledException && turn.Calls > 0)
+        {
+            turn.Stop(FailureReason(e));
+            return null;
+        }
+    }
+
+    private LlmRequest Request(Call c, int maxOut) => new()
+    {
+        Tier = c.Model.Tier, Model = c.Model.Model, Profile = c.Model.Profile, MaxTokens = maxOut, Purpose = "designer",
+        System = c.System, Tools = c.Tools, Messages = c.Messages.ToList(),
         CacheHistory = true, Effort = string.IsNullOrWhiteSpace(_o.Effort) ? null : _o.Effort,
     };
 
-    /// <summary>Runs the model's tool calls on the canvas (each change an op): the tool results, in order.</summary>
-    private static List<LlmBlock> RunTools(DesignerSessionRecord s, List<LlmToolUse> uses, List<DesignerOp> ops)
+    /// <summary>The id of the call a reply cut at the output limit ended inside (its input is incomplete), else null.</summary>
+    private static string? CutOff(LlmResponse resp, List<LlmBlock> content) =>
+        resp.StopReason == StopReasons.MaxTokens && content.Count > 0 && content[^1] is LlmToolUse last ? last.Id : null;
+
+    /// <summary>Runs the model's tool calls on the canvas (each change an op): the tool results, in order. The call cut at the
+    /// output limit isn't run: the model is told to resend it smaller.</summary>
+    private static List<LlmToolResult> RunTools(DesignerSessionRecord s, List<LlmToolUse> uses, string? cutId, List<DesignerOp> ops, int maxOut)
     {
-        var results = new List<LlmBlock>();
+        var results = new List<LlmToolResult>();
         foreach (var u in uses)
         {
+            if (u.Id == cutId)
+            {
+                results.Add(new LlmToolResult(u.Id, $"error: not run: your reply hit the output limit ({maxOut} tokens) inside this call. " +
+                    "Send it again in smaller pieces: box, line or replace for runs of blocks, fewer cells per place, fewer calls per reply.", true));
+                continue;
+            }
             var (res, op, err) = DesignerTools.Run(s.Canvas, u.Name, u.Input);
             if (op != null) ops.Add(op);
             results.Add(new LlmToolResult(u.Id, res, err));

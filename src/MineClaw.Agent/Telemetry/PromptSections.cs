@@ -29,7 +29,7 @@ public static class PromptSections
     public static (Dictionary<string, int> Sections, int Round) Estimate(LlmRequest r, TurnInput? turn = null)
     {
         var s = PromptSection.All.ToDictionary(k => k, _ => 0);
-        s[PromptSection.Tools] = Worker.WorkerAgent.ToolTokens(r.Tools);
+        s[PromptSection.Tools] = ContextManager.ToolTokens(r.Tools);
         for (int i = 0; i < r.System.Count; i++) AddSystemBlock(s, i, r.System[i].Text);
         var (anchor, anchorBlock) = turn != null ? FindTurn(r.Messages, turn.Text) : (-1, -1);
         int round = anchor >= 0 ? AddAnchored(s, r.Messages, anchor, anchorBlock, turn!) : AddUnanchored(s, r.Messages, turn != null);

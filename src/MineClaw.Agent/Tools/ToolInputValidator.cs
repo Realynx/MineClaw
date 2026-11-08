@@ -7,7 +7,7 @@ namespace MineClaw.Agent.Tools;
 /// objects/arrays. Unknown properties remain allowed unless the schema explicitly forbids them (body routing and
 /// tool-specific aliases use extra fields). This is argument validation, not a replacement for world/caller policy.
 /// </summary>
-internal sealed class ToolInputValidator
+public sealed class ToolInputValidator
 {
     private readonly string? _type;
     private readonly string[] _required;
@@ -32,7 +32,7 @@ internal sealed class ToolInputValidator
     public string? Error(JsonElement value, string path = "$")
     {
         if (!Matches(value)) return $"{path}: expected {_type}";
-        if (_enum != null && !_enum.Any(v => JsonElement.DeepEquals(v, value))) return $"{path}: value is not in enum";
+        if (_enum != null && !_enum.Any(v => JsonElement.DeepEquals(v, value))) return $"{path}: value is not in enum ({string.Join(", ", _enum.Select(v => v.GetRawText()))})";
         if (value.ValueKind == JsonValueKind.Object && ObjectError(value, path) is { } objectError) return objectError;
         return _items != null && value.ValueKind == JsonValueKind.Array ? ItemsError(value, path) : null;
     }

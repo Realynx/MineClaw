@@ -570,16 +570,8 @@ public sealed class WorkerAgent
         }, ct);
 
     /// <summary>Keeps the worker context under <see cref="WorkerOptions.MaxContextTokens"/> (older results cut first).</summary>
-    private bool FitContext(List<LlmMessage> messages, IReadOnlyList<LlmToolDefinition> tools)
-    {
-        int fixedTokens = _system.Sum(s => TextUtil.EstimateTokens(s.Text)) + ToolTokens(tools) + _llmOptions.MaxTokensFor(ModelTier.Worker);
-        int budget = _o.MaxContextTokens - fixedTokens;
-        if (budget <= 0) return false;
-        return ContextManager.Shrink(messages, budget) <= budget;
-    }
-
-    internal static int ToolTokens(IEnumerable<LlmToolDefinition> tools) =>
-        tools.Sum(t => TextUtil.EstimateTokens(t.Name + t.Description + t.InputSchema.GetRawText()) + 6);
+    private bool FitContext(List<LlmMessage> messages, IReadOnlyList<LlmToolDefinition> tools) =>
+        ContextManager.FitMessages(messages, _system, tools, _llmOptions.MaxTokensFor(ModelTier.Worker), _o.MaxContextTokens);
 
     private static void AppendText(List<LlmMessage> messages, string text)
     {

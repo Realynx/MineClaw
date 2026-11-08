@@ -14,10 +14,10 @@ namespace MineClaw.App.Tests;
 [Collection(GameDataDefaultCollection.Name)]
 public class DesignerTests
 {
-    private const string Token = "s3cret-token";
+    internal const string Token = "s3cret-token";
 
     /// <summary>A scripted model: each call pops the next reply (tool calls or text) and records what it was asked.</summary>
-    private sealed class ScriptedModel(params Func<LlmRequest, LlmResponse>[] steps) : ILlmClient
+    internal sealed class ScriptedModel(params Func<LlmRequest, LlmResponse>[] steps) : ILlmClient
     {
         private int _i;
         public readonly ConcurrentQueue<LlmRequest> Requests = new();
@@ -30,14 +30,14 @@ public class DesignerTests
         }
     }
 
-    private static readonly LlmUsage Use = new(1000, 200, 3000, 0);
+    internal static readonly LlmUsage Use = new(1000, 200, 3000, 0);
 
-    private static LlmResponse Tools(LlmRequest r, params (string Name, object Input)[] calls) =>
+    internal static LlmResponse Tools(LlmRequest r, params (string Name, object Input)[] calls) =>
         new(calls.Select((c, i) => (LlmBlock)new LlmToolUse($"t{i}", c.Name, JsonSerializer.SerializeToElement(c.Input))).ToList(), StopReasons.ToolUse, Use, r.Model ?? "claude-opus-5-5");
 
-    private static LlmResponse Say(LlmRequest r, string text) => new([new LlmText(text)], StopReasons.EndTurn, Use, r.Model ?? "claude-opus-5-5");
+    internal static LlmResponse Say(LlmRequest r, string text) => new([new LlmText(text)], StopReasons.EndTurn, Use, r.Model ?? "claude-opus-5-5");
 
-    private static LlmOptions Llm(bool key = true) => new() { ApiKey = key ? "sk-test" : null };
+    internal static LlmOptions Llm(bool key = true) => new() { ApiKey = key ? "sk-test" : null };
 
     private static (BlueprintService Service, AgentDb Db) Designs()
     {
@@ -51,12 +51,12 @@ public class DesignerTests
         return (s, db);
     }
 
-    private static SupervisorOptions Options(bool viewer = true, bool designer = true) => new()
+    internal static SupervisorOptions Options(bool viewer = true, bool designer = true) => new()
     {
         Token = Token, Viewer = new SupervisorViewerOptions { Enabled = viewer, Designer = new DesignerOptions { Enabled = designer } },
     };
 
-    private static (SupervisorServer Server, DesignerRoutes Routes, BlueprintService Designs) Server(ILlmClient llm, UsageTracker? usage = null,
+    internal static (SupervisorServer Server, DesignerRoutes Routes, BlueprintService Designs) Server(ILlmClient llm, UsageTracker? usage = null,
         SupervisorOptions? o = null, LlmOptions? llmOptions = null)
     {
         var (svc, db) = Designs();
@@ -65,10 +65,10 @@ public class DesignerTests
         return (new SupervisorServer(o, new FakeSupervisorData()) { Designer = routes }, routes, svc);
     }
 
-    private static SupervisorRequest Req(string method, string path, object? body = null, string? token = Token) =>
+    internal static SupervisorRequest Req(string method, string path, object? body = null, string? token = Token) =>
         new(method, path, new Dictionary<string, string>(), token, body == null ? null : JsonSerializer.Serialize(body));
 
-    private static JsonElement J(SupervisorReply r)
+    internal static JsonElement J(SupervisorReply r)
     {
         Assert.True(r.Status == 200, $"{r.Status}: {r.Text}");
         return JsonDocument.Parse(r.Text).RootElement.Clone();
