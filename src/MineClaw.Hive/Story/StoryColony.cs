@@ -384,7 +384,7 @@ public sealed partial class StoryColony : IStoryPort
     /// <summary>Idle with nothing to do (not drafted) for <see cref="WakeAfter"/>, and not woken within <see cref="WakeCooldown"/>.</summary>
     private bool Wakeable(PawnState p)
     {
-        if (p.Drafted || !_current.TryGetValue(p.Name, out var cur) || cur.Source != "none" || cur.Label != NothingToDo) return false;
+        if (p.Drafted || !_current.TryGetValue(p.Name, out var cur) || cur.Source != "none" || cur.Type != "idle" || cur.State != "idle") return false;
         if (Now - cur.Since < WakeAfter) return false;
         return !(_woken.TryGetValue(p.Name, out var at) && Now - at < WakeCooldown);
     }

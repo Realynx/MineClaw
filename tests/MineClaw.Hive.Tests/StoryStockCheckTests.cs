@@ -26,6 +26,7 @@ public class StoryStockCheckTests
         h.KnowsChests = true;
         foreach (var t in WorkTypes.All) c.Pawns.Values.Single().Priorities[t] = t == WorkTypes.Craft ? 1 : 0;
         w.Set(Table.X, Table.Y, Table.Z, 58);
+        w.Set(Chest.X, Chest.Y, Chest.Z, 54);
         c.StorageOp("set", [Chest], null, null, null);
         foreach (var s in stock) c.AddContents(c.StorageAt(Chest)!, s);
         Assert.Null(c.WorkbenchOp("designate", Table).Error);

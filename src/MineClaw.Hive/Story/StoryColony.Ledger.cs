@@ -44,7 +44,7 @@ public sealed partial class StoryColony
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
     /// <summary>A failure that was the plan's (the stock it counted on wasn't there), not the pawn's: it never makes a pawn rest.</summary>
-    internal static bool PlanningError(string? why) => why != null && Planning.IsMatch(why);
+    internal static bool PlanningError(string? why) => why != null && (Planning.IsMatch(why) || NotContainer.IsMatch(why));
 
     private static readonly Regex ToolTrouble = new(
         @"needs (?:a|an) [a-z ]*?(?:pickaxe|axe|shovel|hoe|sword)\b|needs shears|lose the drop|couldn't hold|no [a-z ()_]+ carried|tool broke|pickaxe broke|axe broke|shovel broke|hoe broke",
@@ -179,7 +179,7 @@ public sealed partial class StoryColony
 
     /// <summary>The chest is in this pick's plans: nothing shuts its lid (StoryColony.Storage.cs), someone gets there, and the pawn picking
     /// hasn't just failed to.</summary>
-    internal bool ChestOpen(P3 chest) => !ChestUnreachable(chest) && LidBlocked(chest) == null
+    internal bool ChestOpen(P3 chest) => StorageAt(chest) is not { Missing: true } && !ChestUnreachable(chest) && LidBlocked(chest) == null
         && (_pickPawn == null || _chestSkip.Count == 0 || !ChestSkipped(_pickPawn, chest));
 
     /// <summary>

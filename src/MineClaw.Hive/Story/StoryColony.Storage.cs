@@ -33,7 +33,7 @@ public sealed partial class StoryColony
     private void Recount(StorageState s)
     {
         int used = s.Contents.Sum(c => (c.Count + MaxStack(c.Id) - 1) / MaxStack(c.Id));
-        s.FreeSlots = Math.Max(0, s.Slots - used);
+        s.FreeSlots = s.Missing ? 0 : Math.Max(0, s.Slots - used);
         s.KnownAt = Now;
         s.Rev = Touch();
         MaterialsChanged(); // what the builds can count on changed
@@ -228,9 +228,9 @@ public sealed partial class StoryColony
         Alert("warn", $"Chest at {chest} can't open: {what} on top of it at {lid}. Pawns leave it alone until that block is gone");
     }
 
-    private P3? DoubleHalf(P3 c)
+    private P3? DoubleHalf(P3 c, IStoryWorld? view = null)
     {
-        if (World is not { } w) return null;
+        if ((view ?? World) is not { } w) return null;
         int id = w.Block(c.X, c.Y, c.Z).Id;
         if (id is not (54 or 146)) return null;
         foreach (var n in new[] { c.Add(1, 0, 0), c.Add(-1, 0, 0), c.Add(0, 0, 1), c.Add(0, 0, -1) })

@@ -444,6 +444,10 @@ so the other pawns stood idle in front of a field of work. Fox also saw pawns st
     `waiting: the furnace at 6,64,0 is in use`
   - `priority 0`: there is work, but only of kinds it doesn't do
 
+  A blocked job does not stop the priority search. Even a miner waiting briefly for another pawn to finish a quarry layer tries
+  every other enabled work type before waiting. Idle holds and alerts name the blockage when known; a concrete supply or bench
+  wait takes precedence over generic designation cooldowns. New work can wake these holds just like an empty-work hold.
+
   A bill whose count is met, or whose stock is there, is no work. A furnace that is still smelting is no work either. A pawn with
   nothing else is simply idle. The colony's state carries `blocked_work`: idle pawns grouped by reason, most first. The web shows it
   as one condition, such as "4 pawns idle: build b3: need 48 block of iron (short: 432 iron ore)". The supervisor's per-minute perf
@@ -1738,6 +1742,11 @@ Filters:
 
 Storage: `{chest, double_with, label, priority, filter:{allow, deny}, contents:[[id,meta,count]], free_slots, known_at}`. The
 contents start from what the bot remembers of the chest. The director keeps them up to date after each deposit and withdrawal.
+Loaded storage locations are also checked against the world during stock refresh. Removed chests lose their recorded contents and
+capacity and are excluded from fetches, deliveries and inspection jobs. Their filters, priority and label survive replacement.
+If one half of a double chest remains, it becomes the storage address and its inventory is checked again. Old container memories
+cannot restore the former contents; unloaded locations keep their records until the world or a pawn confirms what is there.
+A fetch reporting `is not a container` corrects storage without failing or cooling down the unrelated work target.
 
 Chests that can't open and chests the colony builds (added 2026-11-06; live: oak planks lay on two double chests and every fetch
 and delivery that chose them failed, ×241 in 7 hours; Fox placed 14 chests when storage filled up):

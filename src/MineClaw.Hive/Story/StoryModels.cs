@@ -333,6 +333,7 @@ public static class StoragePriority
 
 public sealed class StorageState
 {
+    public bool Missing { get; set; }
     public P3 Chest { get; set; }
     public P3? DoubleWith { get; set; }
     public string? Label { get; set; }

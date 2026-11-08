@@ -29,6 +29,8 @@ public sealed class StoryBuildGoldenTests
         var sb = new StringBuilder();
         void Rec(string label, (JsonNode? Result, string? Error) r) => sb.Append(label).Append(" => ").Append(R(r)).Append('\n');
         P3 chest = new(0, 64, 9), chest2 = new(4, 64, 9);
+        w.Set(chest.X, chest.Y, chest.Z, 54);
+        w.Set(chest2.X, chest2.Y, chest2.Z, 54);
         Rec("storage", c.StorageOp("set", [chest, chest2], null, null, null));
         foreach (var s in new[] { new Stack(4, 0, 64), new Stack(5, 0, 64), new Stack(67, 0, 30), new Stack(61, 0, 2), new Stack(54, 0, 2) })
             c.AddContents(c.StorageAt(chest)!, s);

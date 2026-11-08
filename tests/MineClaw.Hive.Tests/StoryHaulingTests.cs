@@ -147,6 +147,7 @@ public sealed class StoryHaulingTests
     {
         var clock = NewClock();
         var (c, h, w) = StoryRig.Make(time: clock);
+        w.Set(2, 64, 0, 54);
         c.StorageOp("set", [new P3(2, 64, 0)], null, null, null);
         w.Tree(6, 6);
         c.Designate("add", "chop", Area.Of(4, 60, 4, 8, 75, 8), null, null);

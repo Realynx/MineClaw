@@ -35,6 +35,7 @@ public sealed class StoryOpsGoldenTests
 
         public void Store(P3 chest, params Stack[] stock)
         {
+            W.Set(chest.X, chest.Y, chest.Z, 54);
             if (C.StorageAt(chest) == null) Rec("storage set " + chest, C.StorageOp("set", [chest], null, null, null));
             foreach (var s in stock) C.AddContents(C.StorageAt(chest)!, s);
         }

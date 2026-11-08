@@ -27,6 +27,7 @@ public sealed class StoryRecipeFamilyTests
         var (c, h, w) = StoryRig.Make(pawns: 1, data: data ?? Modern, time: _clock);
         foreach (var t in WorkTypes.All) c.Pawns.Values.First().Priorities[t] = t is WorkTypes.Craft or WorkTypes.Cook ? 1 : 0;
         h.Lives[c.P()] = FakeStoryHost.Bare(0, 64, 0);
+        w.Set(Chest.X, Chest.Y, Chest.Z, 54);
         Assert.Null(c.StorageOp("set", [Chest], null, null, null).Error);
         foreach (var s in stock) c.AddContents(c.StorageAt(Chest)!, s);
         w.Set(Table.X, Table.Y, Table.Z, 58);

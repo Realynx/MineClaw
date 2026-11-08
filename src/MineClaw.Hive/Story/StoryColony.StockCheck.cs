@@ -38,14 +38,16 @@ public sealed partial class StoryColony
     private bool RefreshOneSeen(StorageState st, bool force)
     {
         if (!force && _seenAsked.TryGetValue(st.Chest, out var asked) && Now - asked < TimeSpan.FromSeconds(5)) return false;
+        bool changed = World is { } w && ReconcileStorage(st, w);
         _seenAsked[st.Chest] = Now;
+        if (st.Missing) return changed;
         (IReadOnlyList<Stack> Contents, DateTimeOffset At)? seen;
         try { seen = Host.SeenChest(st.Chest); }
-        catch (Exception) { return false; }
-        if (seen is not { } s || st.SeenAt is { } s0 && s.At <= s0) return false;
+        catch (Exception) { return changed; }
+        if (seen is not { } s || st.SeenAt is { } s0 && s.At <= s0) return changed;
+        if (st.KnownAt is { } k && s.At <= k) return changed; // the record's own last change is newer than that look
         st.SeenAt = s.At;
         st.Rev = Touch();
-        if (st.KnownAt is { } k && s.At <= k) return false; // the record's own last change is newer than that look
         st.Contents = s.Contents.GroupBy(x => (x.Id, x.Meta)).Select(g => new Stack(g.Key.Id, g.Key.Meta, g.Sum(x => x.Count))).ToList();
         Recount(st);
         return true;
@@ -66,7 +68,7 @@ public sealed partial class StoryColony
     private ActiveJob? LookJob(PawnState p, string work, WorkbenchState bench, BillState bill, string item)
     {
         if (!Host.KnowsChests) return null;
-        var due = Storages.Where(s => s.Chest.Dist(bench.Pos) <= bill.Radius && (s.SeenAt is not { } seen || Now - seen > SeenStale)
+        var due = Storages.Where(s => ChestOpen(s.Chest) && s.Chest.Dist(bench.Pos) <= bill.Radius && (s.SeenAt is not { } seen || Now - seen > SeenStale)
                 && (!_looked.TryGetValue(s.Chest, out var at) || Now - at > TimeSpan.FromMinutes(2)) && Open("look:" + s.Chest, p.Name, null))
             .OrderBy(s => s.Chest.Dist(bench.Pos)).FirstOrDefault();
         if (due == null) return null;
@@ -86,7 +88,7 @@ public sealed partial class StoryColony
     /// <summary>"checked 6 chests within 32 of the bench (2 not seen yet)" for a missing ingredient's reason.</summary>
     private string CheckedText(WorkbenchState bench, int radius)
     {
-        var near = Storages.Where(s => s.Chest.Dist(bench.Pos) <= radius).ToList();
+        var near = Storages.Where(s => !s.Missing && s.Chest.Dist(bench.Pos) <= radius).ToList();
         int unseen = Host.KnowsChests ? near.Count(s => s.SeenAt is not { } seen || Now - seen > SeenStale) : 0;
         return near.Count == 0
             ? $"no storage chest within {radius} of the bench"

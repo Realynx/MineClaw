@@ -26,6 +26,7 @@ public sealed class StoryUnreachableDropTests
         var (c, h, w) = StoryRig.Make(pawns, time: clock);
         foreach (var p in c.Pawns.Values)
             foreach (var t in WorkTypes.All) p.Priorities[t] = t == WorkTypes.Haul ? 1 : 0;
+        w.Set(2, 64, 0, 54);
         c.StorageOp("set", [new P3(2, 64, 0)], null, null, null);
         return (c, h, w, clock);
     }

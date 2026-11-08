@@ -117,14 +117,15 @@ public sealed partial class StoryColony
         if (RescueJob(p, live) is { } rescue) return rescue; // a pawn stuck in a pit gets blocks brought to it first
         if (Work(p, live) is { } work) return work;
         if (Deliver(p, live, force: true) is { } leftovers) return leftovers; // nothing else to do: store what it still carries
+        var idleLabel = WorkIdleLabel(p);
         if (!_idleAlert.TryGetValue(p.Name, out var last) || Now - last > TimeSpan.FromMinutes(5))
         {
             _idleAlert[p.Name] = Now;
-            Alert("info", $"{p.Display} is idle: nothing to do", p.Name);
+            Alert("info", $"{p.Display} is {idleLabel}", p.Name);
         }
         // ---- nothing to do: idle behaviour (StoryColony.Idle.cs). It wanders the home area, one leg at a time, and real work
         // takes the leg back at once; with nowhere to go it holds where it is (never all pawns to the home cell).
-        return IdleJob(p, live, "work", hour) ?? Hold(NothingToDo, "idle", null, StoryCharacter.IdleSeconds(p));
+        return IdleJob(p, live, "work", hour) ?? Hold(idleLabel, "idle", null, StoryCharacter.IdleSeconds(p));
     }
 
     // ---------------------------------------------------------------- back-off
@@ -267,6 +268,7 @@ public sealed partial class StoryColony
         // "Immediate requirements like that should always be at the top of the list for crafting"): StoryColony.CraftTasks.cs.
         if (ImmediateCraftJob(p, live) is { } now) return now;
         int riskChecked = 0;
+        bool quarryWait = false;
         foreach (var t in WorkOrder(p))
         {
             // Within one priority, a drop about to despawn is hauled first (StoryColony.Hauling.cs).
@@ -276,10 +278,9 @@ public sealed partial class StoryColony
                 if (HaulJob(p, live, riskOnly: true) is { } risky) return risky;
             }
             if (Candidate(t, p, live) is { } j) return j;
-            if (t == WorkTypes.Mine && WaitingForQuarry(p, live))
-                return Hold("waiting for the quarry's next layer", "working", s: 2, type: WorkTypes.Mine);
+            if (t == WorkTypes.Mine) quarryWait = WaitingForQuarry(p, live);
         }
-        return null;
+        return quarryWait ? Hold("waiting for the quarry's next layer", "working", s: 2, type: WorkTypes.Mine) : null;
     }
 
     private bool Skipped(string key) => _skip.TryGetValue(key, out var until) && until > Now;
@@ -781,7 +782,7 @@ public sealed partial class StoryColony
         // The chest's record was wrong (corrected), or the tool's trouble (none, broke, couldn't hold): re-planned at once, never a
         // target failure, back-off or rest (StoryColony.Ledger.cs).
         // A furnace with nothing to collect yet, or a load left without fuel (a refuel follows): no failure (StoryColony.Refuel.cs).
-        if (StaleFetch(p, j, note) || ToolFailure(note) || ContainerUnreachable(p, note) || FurnaceNotReady(j, why)) return;
+        if (MissingContainer(p, note) || StaleFetch(p, j, note) || ToolFailure(note) || ContainerUnreachable(p, note) || FurnaceNotReady(j, why)) return;
         NoteDropMiss(p, j, why); // the spot it missed them at: several misses there and its drops rest, whatever their ids (StoryColony.DropSpots.cs)
         // Unreachable from where this pawn stands, a stuck pawn, a monster it couldn't find: its own rest, not the target's failure
         // (live 11-04: one pawn in a hole failed grass after grass for everyone; StoryColony.Rescue.cs).

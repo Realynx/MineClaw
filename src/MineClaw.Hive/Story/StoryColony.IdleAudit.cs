@@ -71,12 +71,20 @@ public sealed partial class StoryColony
         if (_stuck.ContainsKey(p.Name)) return "stuck";
         var look = FreshLook(p.Name);
         if (look is { Found: true }) return "work not taken yet";
-        if (MarksIdleReason(p, look) is { } why) return why;
+        if (look?.NoReach is { } unreachable) return unreachable;
         // What its last search found held back: a build short of something, a suspended bill, a busy bench.
         if (look is { Blocked: [var first, ..] }) return "waiting: " + first;
+        if (MarksIdleReason(p, look) is { } why) return why;
         kinds ??= WorkKindsWithWork();
         if (DoesAnyOf(p, kinds)) return null; // its own kinds: nothing it could start (searched)
         return kinds.Count > 0 ? "priority 0" : null;
+    }
+
+    private string WorkIdleLabel(PawnState p)
+    {
+        var look = FreshLook(p.Name);
+        string? why = look?.NoReach ?? (look is { Blocked: [var first, ..] } ? "waiting: " + first : MarksIdleReason(p, look));
+        return why == null ? NothingToDo : "idle: " + why;
     }
 
     /// <summary>

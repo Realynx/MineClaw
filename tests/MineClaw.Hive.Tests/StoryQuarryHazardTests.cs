@@ -371,7 +371,7 @@ public sealed class StoryQuarryHazardTests
         Assert.Contains("monster spawner", Status(c));
         clock.Now += TimeSpan.FromSeconds(6);
         Assert.NotEqual("dig", c.Next()["kind"]?.GetValue<string>());
-        Assert.Single(c.Alerts, a => a.Text.Contains("monster spawner"));
+        Assert.Single(c.Alerts, a => a.Level == "warn" && a.Text.Contains("monster spawner"));
         w.Set(spawner.X, spawner.Y, spawner.Z, 0); // broken by the owner
         clock.Now += TimeSpan.FromSeconds(6);
         var j = c.Next();

@@ -130,7 +130,8 @@ public sealed class StoryLootBatchingTests(ITestOutputHelper output)
     [InlineData(false, false)]
     [InlineData(true, false)]
     [InlineData(false, true)]
-    public void A_miner_waits_briefly_for_other_miners_to_finish_the_layer(bool stalled, bool seal)
+    [InlineData(false, false, true)]
+    public void A_miner_waits_briefly_for_other_miners_to_finish_the_layer(bool stalled, bool seal, bool otherWork = false)
     {
         var clock = new Clock(DateTimeOffset.Parse("2026-11-06T06:00:00Z"));
         var (c, h, w) = StoryRig.Make(2, time: clock);
@@ -160,6 +161,18 @@ public sealed class StoryLootBatchingTests(ITestOutputHelper output)
             h.Lives[c.P(1)] = FakeStoryHost.Live(10, 64, 10, inv: new Stack(4, 0, 3));
             other = c.Next(1);
             Assert.Equal("place", Kind(other));
+        }
+        if (otherWork)
+        {
+            // Lower-priority work is available while the quarry's last cell belongs to another pawn.
+            c.Pawns.Values.First().Priorities[WorkTypes.Chop] = 4;
+            w.Set(15, 64, 15, 31, 1);
+            c.Designate("add", "cut", null, [new P3(15, 64, 15)], null);
+            var alternative = c.Next();
+            Assert.Equal("dig", Kind(alternative));
+            Assert.Equal(new P3(15, 64, 15), At(alternative));
+            Assert.False(Stores(alternative));
+            return;
         }
         var waiting = c.Next();
         Assert.Equal("hold", Kind(waiting));

@@ -92,6 +92,7 @@ public sealed class StoryBlockedWorkTests
         w.Set(Table.X, Table.Y, Table.Z, 58);
         w.Set(Furnace.X, Furnace.Y, Furnace.Z, 61);
         c.StorageOp("set", [Chest], null, null, null);
+        w.Set(Chest.X, Chest.Y, Chest.Z, 54);
         c.AddContents(c.StorageAt(Chest)!, new Stack(280, 0, 20)); // sticks
         c.AddContents(c.StorageAt(Chest)!, new Stack(263, 0, 16)); // coal
         Assert.Null(c.WorkbenchOp("designate", Table).Error);
