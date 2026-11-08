@@ -190,12 +190,12 @@ public sealed class StoryRecipeFamilyTests
     }
 
     [Fact]
-    public void Many_bills_on_one_bench_with_an_idle_crafter_raise_one_alert()
+    public void Many_bills_on_one_crafting_table_do_not_claim_the_table_limits_concurrency()
     {
         var (c, _, _) = Rig(null, new Stack(5, 0, 64));
         foreach (var r in new[] { "craft:stick", "craft:" + Name(58), "craft:" + Name(54), "craft:" + Name(270) }) Bill(c, r, 4);
         c.State();
-        Assert.Contains(c.Alerts, a => a.Text.StartsWith("4 bills waiting on 1 crafting table"));
+        Assert.DoesNotContain(c.Alerts, a => a.Text.Contains("bills waiting on 1 crafting table"));
         int n = c.Alerts.Count;
         c.State();
         Assert.Equal(n, c.Alerts.Count); // once, not every poll

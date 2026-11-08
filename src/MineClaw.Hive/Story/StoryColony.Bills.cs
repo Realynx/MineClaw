@@ -429,6 +429,12 @@ public sealed partial class StoryColony
         if (StoryRecipes.Stations.Contains(bench.Kind) && (!StoryRecipes.SupportedIn(w.Data, bench.Kind) || StationGone(bench))) return null;
         foreach (var bill in BenchQueue(bench, only)) // immediate tasks, the owner's bills, the other tasks
             if (BillOnBench(w, p, live, work, bench, bill, key) is { } job) return job;
+        // Colony crafts can use any crafting table. Manual bills stay beside the supplies
+        // the owner chose when configuring that table.
+        if (bench.Kind == "crafting_table" && w.Loaded(bench.Pos.X, bench.Pos.Z) && w.Block(bench.Pos.X, bench.Pos.Y, bench.Pos.Z).Id == 58)
+            foreach (var source in Benches.Where(b => b != bench && b.Kind == bench.Kind).OrderBy(b => b.Pos.Dist(bench.Pos)))
+                foreach (var bill in BenchQueue(source, only).Where(b => b.ForBuild != null))
+                    if (BillOnBench(w, p, live, work, bench, bill, key) is { } shared) return shared;
         return null;
     }
 
@@ -452,6 +458,13 @@ public sealed partial class StoryColony
     /// <summary>One bill's job for this pawn, or null (paused, not its work, suspended, done, or waiting: said why).</summary>
     private ActiveJob? BillOnBench(IStoryWorld w, PawnState p, PawnLive live, string work, WorkbenchState bench, BillState bill, string key)
     {
+        if (_current.Values.Any(j => j.Source == "bill" && j.SourceId == bill.Id)) return null;
+        // Crafting windows belong to each player. Reserve the bill, not the shared table.
+        if (bench.Kind == "crafting_table")
+        {
+            key = "craft:" + bill.Id;
+            if (!Open(key, p.Name, null)) return null;
+        }
         if (bill.Paused) return null;
         if (StoryRecipes.Get(w.Data, bill.Recipe) is not { } r || r.WorkType != work || !MayTake(bill, p, work)) return null;
         if (bill.SuspendedReason != null) { NoteSuspended(bill, r); return null; }

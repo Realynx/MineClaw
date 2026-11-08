@@ -450,6 +450,11 @@ so the other pawns stood idle in front of a field of work. Fox also saw pawns st
   Crafting batches shrink to the ingredients in the pawn's pockets and accessible storage, combining both sources. A completed
   craft remains completed if its delivery fails: its output stays with the pawn, no fictitious deposit is recorded, and the bench
   remains available for other work.
+  Automatic colony crafts can use another registered crafting table when it has no runnable local work. Their progress stays
+  with the original task; only one pawn may execute that task at a time. Manual bills stay at their configured table, near the
+  owner's chosen supply chests. Furnaces and other stations retain their own queues and loads.
+  Crafting tables allow simultaneous users: leases protect individual crafting jobs, not the table. Furnaces still reserve their
+  shared inventory and active load for one job at a time.
 
   A bill whose count is met, or whose stock is there, is no work. A furnace that is still smelting is no work either. A pawn with
   nothing else is simply idle. The colony's state carries `blocked_work`: idle pawns grouped by reason, most first. The web shows it

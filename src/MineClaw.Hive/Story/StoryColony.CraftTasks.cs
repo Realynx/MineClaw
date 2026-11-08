@@ -172,11 +172,12 @@ public sealed partial class StoryColony
     {
         var label = w != null && StoryRecipes.Get(w.Data, t.Recipe) is { } r ? r.Label : t.Recipe;
         var blocked = t.SuspendedReason ?? _taskBlocked.GetValueOrDefault(t.Id);
+        var workingAt = _current.Values.FirstOrDefault(j => j.Source == "bill" && j.SourceId == t.Id)?.At ?? bench.Pos;
         return new JsonObject
         {
             ["id"] = t.Id, ["item"] = t.Recipe, ["label"] = label, ["count"] = Math.Max(0, t.Target - t.Done),
             ["reason"] = t.Reason ?? (t.ForBuild == ToolsTag ? "for tools" : $"for build {t.ForBuild}"), ["for"] = t.ForBuild, ["for_item"] = t.ForItem,
-            ["priority"] = Immediate(t) ? "immediate" : "normal", ["bench"] = bench.Pos.Json(), ["status"] = TaskStatus(bench, t, blocked), ["blocked"] = blocked,
+            ["priority"] = Immediate(t) ? "immediate" : "normal", ["bench"] = workingAt.Json(), ["status"] = TaskStatus(bench, t, blocked), ["blocked"] = blocked,
         };
     }
 

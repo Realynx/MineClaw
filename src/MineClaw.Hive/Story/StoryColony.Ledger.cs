@@ -260,15 +260,14 @@ public sealed partial class StoryColony
     private DateTimeOffset _benchAlertAt = DateTimeOffset.MinValue, _benchCheckAt = DateTimeOffset.MinValue;
 
     /// <summary>
-    /// One pawn works a bench at a time (the genre's rule). With several runnable bills on the only bench of its kind and a crafter
-    /// idle, the colony hears it (at most every 10 minutes): "12 bills waiting on 1 crafting table — place another to craft in parallel".
+    /// Furnaces have one shared load. Warn about a furnace bottleneck; crafting tables have independent windows for every pawn.
     /// </summary>
     internal void BenchLoadAlert()
     {
         // Looked at every 30 s at most (it counts stock per bill: live 11-04, every state poll did it).
         if (World is not { } w || Now - _benchAlertAt < TimeSpan.FromMinutes(10) || Now - _benchCheckAt < TimeSpan.FromSeconds(30)) return;
         _benchCheckAt = Now;
-        foreach (var kind in new[] { "crafting_table", "furnace" })
+        foreach (var kind in new[] { "furnace" })
         {
             if (BenchBacklog(w, kind) is not { } waiting) continue;
             _benchAlertAt = Now;
