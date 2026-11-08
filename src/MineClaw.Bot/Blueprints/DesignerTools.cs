@@ -1,6 +1,8 @@
 using System.Globalization;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using MineClaw.Agent.Llm;
+using MineClaw.Agent.Tools;
 using MineClaw.Bot.Blueprints.Mine;
 using MineClaw.Data;
 using MineClaw.Data.Versioning;
@@ -63,6 +65,13 @@ public static class DesignerTools
     /// <summary>The tools for a canvas of this kind.</summary>
     public static IReadOnlyList<LlmToolDefinition> For(DesignerCanvas canvas) => canvas.Mine ? Mine : All;
 
+    /// <summary>How every studio reply works, build or mine: small calls (the output limit cuts a long reply's last call), errors
+    /// fixed rather than repeated, then a short answer.</summary>
+    private const string ReplyRules =
+        "Keep each reply to a few calls; one place takes at most about 100 cells (use box, line or replace for runs): a reply that hits " +
+        "the output limit loses the call it was writing. A tool error says what was wrong and the usage: fix that, don't repeat the call. " +
+        "Reply after the edits with ONE or two short sentences on what changed, in plain words (no coordinates unless asked).";
+
     /// <summary>
     /// The mine designer's cached system prompt (a mine canvas only; compact: the plot, the ore heights of the version, the presets
     /// and the rules of a walkable mine). One text per version, seed and player.
@@ -79,7 +88,7 @@ public static class DesignerTools
         "staircase around a core, from the surface down), strip_mine (main corridor + 1x2 branches, spacing solid blocks apart), remove for " +
         "rooms; tunnels 2 high, steps at most 1. Connect everything to the shaft. Ore heights: " + OreTable.Compact(canvas.Version) +
         ". Presets (mine_preset): " + presets + ". Blocks by minecraft name (torch:wall=<side of the supporting block>, ladder:wall=<side>, rail, " +
-        "chest:<front>); unsure: find_blocks. Reply after the edits with ONE or two short sentences in plain words (no coordinates unless asked).";
+        "chest:<front>); unsure: find_blocks. " + ReplyRules;
     }
 
     /// <summary>
@@ -104,8 +113,7 @@ public static class DesignerTools
         "supporting block is, seen from the torch or ladder: torch:wall=west hangs on the solid block to its west, on that block's east " +
         "face; it must be a full block)" + (pal.Version == DesignVersions.Release ? "; :top for upper slabs and upside-down stairs" : "") +
         ". Doors and windows need openings in walls.\n" + pal.Summary() +
-        "When the user names \"the selection\" use its box. Reply after the edits with ONE or two short sentences on what changed, in plain " +
-        "words (no coordinates unless asked).";
+        "When the user names \"the selection\" use its box. " + ReplyRules;
     }
 
     /// <summary>One canvas tool: (text for the model, the op applied or null, whether it was an error).</summary>
@@ -127,32 +135,74 @@ public static class DesignerTools
         ["replace"] = ReplaceTool,
     };
 
-    /// <summary>Runs one tool call on the canvas: (text for the model, the op applied or null, whether it was an error).</summary>
+    /// <summary>Longest tool result sent back (a full 64-wide layer with its legend fits; it rides in every later round).</summary>
+    public const int MaxResultChars = 6000;
+
+    /// <summary>Each tool's input check (the same schema validation as the brain's tools) and its one-line usage.</summary>
+    private static readonly Dictionary<string, (ToolInputValidator Validator, string Usage)> Specs =
+        Mine.ToDictionary(t => t.Name, t => (new ToolInputValidator(t.InputSchema), UsageOf(t)), StringComparer.Ordinal);
+
+    /// <summary>Runs one tool call on the canvas: (text for the model, the op applied or null, whether it was an error).
+    /// Input is checked against the tool's schema first; an error names what was wrong and the tool's usage, so the model's
+    /// retry is right the second time.</summary>
     public static (string Text, DesignerOp? Op, bool Error) Run(DesignerCanvas canvas, string name, JsonElement input)
     {
         // Every name, rule and summary in the canvas's own version.
         using var scope = DesignVersions.Use(canvas.Version);
+        if (!Tools.TryGetValue(name, out var tool) || !Specs.TryGetValue(name, out var spec))
+            return ($"error: no tool '{name}'; the tools are {string.Join(", ", For(canvas).Select(t => t.Name))}", null, true);
+        input = Lenient(name, input);
+        if (spec.Validator.Error(input) is { } invalid) return Failed(invalid, spec.Usage);
         try
         {
-            return Tools.TryGetValue(name, out var tool) ? tool(canvas, input) : ($"error: no tool '{name}'", null, true);
+            var (text, op, error) = tool(canvas, input);
+            return (DesignerText.Clip(text, MaxResultChars), op, error);
         }
-        catch (Exception e) when (e is ArgumentException or JsonException or InvalidOperationException or FormatException or KeyNotFoundException)
+        catch (Exception e) when (e is ArgumentException or JsonException or InvalidOperationException or FormatException or KeyNotFoundException
+                                       or OverflowException)
         {
-            return ("error: " + e.Message, null, true);
+            return Failed(e.Message, spec.Usage);
         }
     }
+
+    private static (string, DesignerOp?, bool) Failed(string why, string usage) => ($"error: {why} (usage: {usage})", null, true);
+
+    /// <summary>"box {b, from, to, mode?}": the tool's arguments, optional ones marked '?'.</summary>
+    private static string UsageOf(LlmToolDefinition t)
+    {
+        var required = t.InputSchema.TryGetProperty("required", out var r) ? r.EnumerateArray().Select(v => v.GetString()).ToHashSet() : [];
+        var names = t.InputSchema.TryGetProperty("properties", out var p) ? p.EnumerateObject().Select(x => required.Contains(x.Name) ? x.Name : x.Name + "?") : [];
+        return $"{t.Name} {{{string.Join(", ", names)}}}";
+    }
+
+    /// <summary>
+    /// The shapes models commonly send instead of the schema's, made the schema's: no input at all for a tool without required
+    /// arguments, and place's <c>at</c> as one position <c>[x,y,z]</c> instead of a list of them.
+    /// </summary>
+    private static JsonElement Lenient(string name, JsonElement input)
+    {
+        if (input.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null) return EmptyObject;
+        if (name != "place" || input.ValueKind != JsonValueKind.Object || !input.TryGetProperty("at", out var at) || !IsPosition(at)) return input;
+        var o = JsonNode.Parse(input.GetRawText())!.AsObject();
+        o["at"] = new JsonArray(JsonNode.Parse(at.GetRawText()));
+        return JsonSerializer.SerializeToElement(o);
+    }
+
+    private static readonly JsonElement EmptyObject = Schema("{}");
+
+    private static bool IsPosition(JsonElement e) => e.ValueKind == JsonValueKind.Array && e.GetArrayLength() == 3 && e.EnumerateArray().All(v => v.ValueKind == JsonValueKind.Number);
 
     private static (string, DesignerOp?, bool) FindBlocksTool(DesignerCanvas canvas, JsonElement input)
     {
         var q = Str(input, "q");
-        int n = input.TryGetProperty("n", out var nv) && nv.ValueKind == JsonValueKind.Number ? Math.Clamp(nv.GetInt32(), 1, 40) : 15;
+        int n = input.TryGetProperty("n", out var nv) && nv.ValueKind == JsonValueKind.Number ? Math.Clamp(Int(nv), 1, 40) : 15;
         var hits = canvas.Palette.Find(q, n);
         if (hits.Count == 0) return ($"no {canvas.Version} block matches '{q}'" + (canvas.Palette.DidYouMean(q) is { Count: > 0 } dm ? "; did you mean " + string.Join(", ", dm) : ""), null, false);
         return (string.Join("\n", hits.Select(e => $"{e.Spec} = {e.Name} ({e.Category}{(e.Facing ? ", facing" : "")})")), null, false);
     }
 
     private static (string, DesignerOp?, bool) DescribeTool(DesignerCanvas canvas, JsonElement input) =>
-        (input.TryGetProperty("y", out var y) && y.ValueKind == JsonValueKind.Number ? canvas.Layer(y.GetInt32()) : canvas.Describe(16), null, false);
+        (input.TryGetProperty("y", out var y) && y.ValueKind == JsonValueKind.Number ? canvas.Layer(Int(y)) : canvas.Describe(16), null, false);
 
     private static (string, DesignerOp?, bool) RemoveTool(DesignerCanvas canvas, JsonElement input)
     {
@@ -253,7 +303,7 @@ public static class DesignerTools
     private static MineCells SpiralOf(JsonElement input, MineTerrain terrain)
     {
         if (!input.TryGetProperty("at", out var at) || at.ValueKind != JsonValueKind.Array || at.GetArrayLength() != 2) throw new ArgumentException("at: [x,z]");
-        int x = at[0].GetInt32(), z = at[1].GetInt32();
+        int x = Int(at[0]), z = Int(at[1]);
         int size = Math.Clamp(OptInt(input, "size") ?? 4, MineTemplates.MinSize, MineTemplates.MaxSize);
         int top = OptInt(input, "top") ?? terrain.SurfaceOver(x, z, x + size - 1, z + size - 1);
         var landings = IntList(input, "landings");
@@ -271,14 +321,19 @@ public static class DesignerTools
             OptInt(input, "branch_length") ?? 12, sides, OptInt(input, "torch_every") ?? 0));
     }
 
-    private static int? OptInt(JsonElement e, string k) => e.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.Number && v.TryGetInt32(out var n) ? n : null;
+    private static int? OptInt(JsonElement e, string k) => e.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.Number ? Int(v) : null;
+
+    /// <summary>A whole number, also when written 3.0 (some models do); anything else throws with what was expected.</summary>
+    private static int Int(JsonElement v) =>
+        v.ValueKind == JsonValueKind.Number && v.TryGetDouble(out var d) && d == Math.Floor(d) && d is >= int.MinValue and <= int.MaxValue
+            ? (int)d : throw new ArgumentException($"expected a whole number, got {DesignerText.Clip(v.GetRawText(), 24)}");
 
     /// <summary>An optional string argument (null when missing or not a string).</summary>
     private static string? OptStr(JsonElement e, string k) => e.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
 
     /// <summary>An optional list of whole numbers (its non-numbers skipped); null when missing or not an array.</summary>
     private static List<int>? IntList(JsonElement e, string k) => e.TryGetProperty(k, out var l) && l.ValueKind == JsonValueKind.Array
-        ? l.EnumerateArray().Where(x => x.ValueKind == JsonValueKind.Number).Select(x => x.GetInt32()).ToList() : null;
+        ? l.EnumerateArray().Where(x => x.ValueKind == JsonValueKind.Number).Select(Int).ToList() : null;
 
     private static (string, DesignerOp?, bool) Done(DesignerCanvas canvas, string kind, string label, List<CanvasCell> changed, int rejected)
     {
@@ -349,7 +404,7 @@ public static class DesignerTools
     private static (int X, int Y, int Z) V(JsonElement a)
     {
         if (a.ValueKind != JsonValueKind.Array || a.GetArrayLength() != 3) throw new ArgumentException("a position is [x,y,z]");
-        return (a[0].GetInt32(), a[1].GetInt32(), a[2].GetInt32());
+        return (Int(a[0]), Int(a[1]), Int(a[2]));
     }
 
     private static (int X, int Y, int Z) P(JsonElement e, string k) =>
