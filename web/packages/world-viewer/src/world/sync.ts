@@ -5,7 +5,8 @@ import type { Dim, WorldIndex, WorldSource } from '../types';
 import type { MeshHost } from '../mesh/host';
 import type { ApplyResult } from '../mesh/columns';
 import { normalizeIndex } from '../wire/normalize';
-import { WorldCache, indexRect, planBatches } from './cache';
+import { type WorldCache, indexRect, planBatches } from './cache';
+import { FairQueue } from './fairQueue';
 
 export class Backoff {
   private delay = 0;
@@ -56,26 +57,28 @@ export class Poller {
     this.schedule(0);
   }
   private schedule(ms: number): void {
-    this.timer = setTimeout(async () => {
-      this.timer = null;
-      if (!this.running) return;
-      let next = this.periodMs;
-      this.inFlight = true;
-      try {
-        await this.fn();
-        this.backoff.ok();
-      } catch (e) {
-        next = Math.max(next, this.backoff.fail(Date.now()));
-        this.again = false;
-        this.onError?.(e);
-      } finally {
-        this.inFlight = false;
-      }
-      if (this.again) {
-        this.again = false;
-        next = 0;
-      }
-      if (this.running && !this.timer) this.schedule(next);
+    this.timer = setTimeout(() => {
+      void (async () => {
+        this.timer = null;
+        if (!this.running) return;
+        let next = this.periodMs;
+        this.inFlight = true;
+        try {
+          await this.fn();
+          this.backoff.ok();
+        } catch (e) {
+          next = Math.max(next, this.backoff.fail(Date.now()));
+          this.again = false;
+          this.onError?.(e);
+        } finally {
+          this.inFlight = false;
+        }
+        if (this.again) {
+          this.again = false;
+          next = 0;
+        }
+        if (this.running && !this.timer) this.schedule(next);
+      })();
     }, ms);
   }
 }
@@ -117,13 +120,14 @@ export interface WorldSyncEvents {
 
 /**
  * The world loop: re-index each interest every `periodMs` (or at once when it moves 16+ blocks / changes dimension), fetch the
- * changed columns nearest first in batches of 48 (at most 8 per pass), hand each payload to the mesh host, and keep at most
+ * changed columns with nearby/oldest-waiting fairness in batches of 48 (at most 8 per pass), hand each payload to the mesh host, and keep at most
  * `maxColumns` per dimension (those nearest any interest). Several interests (one per viewed bot) are indexed round-robin.
  */
 export class WorldSync {
   private interests = new Map<string, Interest>();
   private interestShape = '';
   private indexedAt = new Map<string, { at: Interest; t: number }>();
+  private readonly pendingColumns = new Map<string, FairQueue>();
   private timer: ReturnType<typeof setTimeout> | null = null;
   private running = false;
   private busy = false;
@@ -141,6 +145,15 @@ export class WorldSync {
   /** Re-index every interest on the next pass (block-delta fallback, reconnect). */
   reindexNow(): void {
     this.indexedAt.clear();
+  }
+
+  /** A delta outside every view must not restart their indexing/download turns. */
+  reindexColumns(dim: Dim, columns: Array<[number, number]>): void {
+    for (const [key, interest] of this.interests) {
+      if (interest.dim !== dim) continue;
+      const [x0, z0, x1, z1] = indexRect(interest.x, interest.z, interest.r);
+      if (columns.some(([x, z]) => x >= x0 && x <= x1 && z >= z0 && z <= z1)) this.indexedAt.delete(key);
+    }
   }
 
   /** The single interest of one view. */
@@ -169,6 +182,7 @@ export class WorldSync {
     const next = sharedInterests(list);
     this.interests = next;
     for (const k of [...this.indexedAt.keys()]) if (!next.has(k)) this.indexedAt.delete(k);
+    for (const k of this.pendingColumns.keys()) if (!next.has(k)) this.pendingColumns.delete(k);
   }
 
   start(): void {
@@ -184,14 +198,16 @@ export class WorldSync {
   }
 
   private loop(): void {
-    this.timer = setTimeout(async () => {
-      this.timer = null;
-      if (!this.running) return;
-      try {
-        await this.tick(Date.now());
-      } finally {
-        if (this.running) this.loop();
-      }
+    this.timer = setTimeout(() => {
+      void (async () => {
+        this.timer = null;
+        if (!this.running) return;
+        try {
+          await this.tick(Date.now());
+        } finally {
+          if (this.running) this.loop();
+        }
+      })();
     }, 150);
   }
 
@@ -205,7 +221,7 @@ export class WorldSync {
   async tick(now: number): Promise<void> {
     if (this.busy || !this.interests.size || this.indexBackoff.waiting(now)) return;
     const key = this.nextDue(now);
-    if (key == null) return;
+    if (key === null) return;
     const it = this.interests.get(key)!;
     this.busy = true;
     try {
@@ -264,14 +280,21 @@ export class WorldSync {
     return normalizeIndex(raw);
   }
 
-  /** The changed columns, nearest the interest's centre first, in batches; a failed batch is retried on the next pass. */
+  /** Nearby columns interleaved with oldest waiting columns; a failed batch is retried on the next pass. */
   private async fetchColumns(key: string, it: Interest, want: Array<[number, number]>): Promise<void> {
+    if (!this.currentInterest(key, it) || this.chunkBackoff.waiting(Date.now())) return;
     const ccx = Math.floor(it.x) >> 4, ccz = Math.floor(it.z) >> 4;
     // A scattered thumbnail grid cannot hold the interactive view behind eight whole downloads. One view keeps full
     // throughput; several views share short turns. Overlap the next download with the worker applying this one.
     const limit = this.interests.size > 1 ? Math.min(2, this.maxBatches) : this.maxBatches;
-    const batches = planBatches(want, ccx, ccz, this.batchColumns, limit);
-    if (!batches.length || !this.currentInterest(key, it) || this.chunkBackoff.waiting(Date.now())) return;
+    const ordered = planBatches(want, ccx, ccz, this.batchColumns, Infinity).flat();
+    let queue = this.pendingColumns.get(key);
+    if (!queue) this.pendingColumns.set(key, (queue = new FairQueue()));
+    const selected = queue.pick(ordered.map((c) => c.join(',')), this.batchColumns * limit);
+    const batches: Array<Array<[number, number]>> = [];
+    for (let n = 0; n < selected.length; n += this.batchColumns)
+      batches.push(selected.slice(n, n + this.batchColumns).map((c) => c.split(',').map(Number) as [number, number]));
+    if (!batches.length) return;
     let pending = this.downloadBatch(it.dim, batches[0]);
     for (let n = 0; n < batches.length; n++) {
       const buf = await pending;

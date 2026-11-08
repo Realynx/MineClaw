@@ -49,7 +49,7 @@ public sealed partial class StoryColony
         PurgeToolFailuresOnce(); // after a load: tool/record failures of old never hold a target back
         try
         {
-            var job = QuarryTravel(PillarHint(PickCore(p, live), live), live);
+            var job = QuarryTravel(PillarHint(FollowOre(PickCore(p, live)), live), live);
             // Idle after an empty search: the wanderers' wake check need not search again until something changes (StoryColony.IdleAudit.cs).
             if (job.Source is "none" or "wander" && _looks.TryGetValue(p.Name, out var look) && look.At == Now && !look.Found) _probed[p.Name] = (Now, WorkStamp());
             return job;
@@ -313,11 +313,11 @@ public sealed partial class StoryColony
         [WorkTypes.Craft] = static (c, p, live) => c.BillJob(p, live, WorkTypes.Craft) ?? c.SupplyJob(p, live), // the builds' own crafts (a bench to place, a 2×2 craft)
         [WorkTypes.Hunt] = static (c, p, live) => c.HuntJob(p, live),
         [WorkTypes.Fish] = static (c, p, live) => c.FishJob(p, live), // StoryColony.Fishing.cs
-        [WorkTypes.Build] = static (c, p, live) => c.StorageSignRemovalJob(p, live) ?? c.GhostJob(p, live) ?? c.DesignationJob(p, live, live.Block, WorkTypes.Build, "deconstruct", "dig", "deconstructing"),
+        [WorkTypes.Build] = static (c, p, live) => c.StorageSignRemovalJob(p, live) ?? c.VeinJob(p, live, WorkTypes.Build) ?? c.GhostJob(p, live) ?? c.DesignationJob(p, live, live.Block, WorkTypes.Build, "deconstruct", "dig", "deconstructing"),
         [WorkTypes.Farm] = static (c, p, live) => c.DesignationJob(p, live, live.Block, WorkTypes.Farm, "harvest", "harvest", "harvesting") ?? c.FarmZoneJob(p, live),
-        [WorkTypes.Mine] = static (c, p, live) => c.DesignationJob(p, live, live.Block, WorkTypes.Mine, "mine", "dig", "mining") ?? c.ZoneJob(p, live.Block, WorkTypes.Mine, "mine", live),
+        [WorkTypes.Mine] = static (c, p, live) => c.VeinJob(p, live, WorkTypes.Mine) ?? c.DesignationJob(p, live, live.Block, WorkTypes.Mine, "mine", "dig", "mining") ?? c.ZoneJob(p, live.Block, WorkTypes.Mine, "mine", live),
         [WorkTypes.Chop] = static (c, p, live) => c.ChopJob(p, live),
-        [WorkTypes.Haul] = static (c, p, live) => c.HaulJob(p, live) ?? c.RebalanceJob(p, live), // StoryColony.Hauling.cs
+        [WorkTypes.Haul] = static (c, p, live) => c.HaulingWork(p, live), // pickups, organization, and fresh chest contents
     };
 
     private ActiveJob? ChopJob(PawnState p, PawnLive live)
@@ -325,7 +325,7 @@ public sealed partial class StoryColony
         if (LeaveToSurfacePawn(p, live, WorkTypes.Chop)) { PassedMark(MarkPass.LeftToSurface, "chop", null); return null; } // a pawn up top takes the trees
         var from = live.Block;
         return DesignationJob(p, live, from, WorkTypes.Chop, "chop", "chop", "chopping a tree") ?? DesignationJob(p, live, from, WorkTypes.Chop, "cut", "dig", "cutting plants")
-            ?? ZoneJob(p, from, WorkTypes.Chop, "chop");
+            ?? ZoneJob(p, from, WorkTypes.Chop, "chop", live);
     }
 
     /// <summary>A pawn that is hungry and has no food: food brought to it (carried, or fetched from storage).</summary>
@@ -402,7 +402,7 @@ public sealed partial class StoryColony
         if (!Index().ByKind.TryGetValue(kind, out var list) || list.Count == 0) return null;
         bool digs = kind is "mine" or "deconstruct";
         // The dig takes its material's tool (StoryColony.Gear.cs): never a lost drop.
-        var s = new MarkSearch(kind, digs, digs || kind == "cut", World, live.Online ? Support(live.X, live.Y, live.Z).ToHashSet() : []);
+        var s = new MarkSearch(kind, digs, digs || kind is "cut" or "chop", World, live.Online ? Support(live.X, live.Y, live.Z).ToHashSet() : []);
         var best = NearestMark(p, live, from, list, s);
         if (best.D == null) return null;
         return MarkJob(p, live, type, scriptKind, label, list, best, s);
@@ -436,6 +436,7 @@ public sealed partial class StoryColony
     /// failure).</summary>
     private bool MarkWorkable(PawnState p, PawnLive live, DesignationState d, P3 at, MarkSearch s, ref HashSet<P3>? stoodOn)
     {
+        if (d.OreOrigin != null) return false; // vein work retains its parent's work type and access rules
         if (d.Auto && Meta.TempBlocks?.Any(t => t.Designation == d.Id && (t.RetryAfter > Now || t.DeferredReason != null)) == true) return false;
         if (MarkPassedOver(p.Name, d, at, s, ref stoodOn) is { } pass) { PassedMark(pass, s.Kind, at); return false; }
         // No tool for its material (carried or stored): the target waits, said on the map, no failure.
@@ -585,12 +586,12 @@ public sealed partial class StoryColony
         {
             if (IsQuarry(z)) { if (live != null && QuarryJob(p, live, z) is { } dig) return dig; continue; } // StoryColony.Quarry.cs
             // Ores only with the pickaxe they need (carried or stored): never one dug for nothing.
-            ToolPlan? Tool((P3 Pos, string? Replant, string Kind) t) => zoneKind == "mine" && live != null ? PlanTool(p, live, DigBlockAt(t.Pos)) : null;
-            var t = ZoneTasks(z).Where(t => Open("b:" + t.Pos, p.Name, t.Pos) && Tool(t) is not { Wait: not null }).OrderBy(t => t.Pos.Dist(from)).FirstOrDefault();
+            ToolPlan? Tool((P3 Pos, string? Replant, string Kind) t) => live != null ? PlanTool(p, live, DigBlockAt(t.Pos)) : null;
+            var t = ZoneTasks(z).Where(t => Open("b:" + t.Pos, p.Name, t.Pos) && Tool(t) is not { Wait: not null } && HarvestAgrees(p.Name, t.Kind, t.Pos)).OrderBy(t => t.Pos.Dist(from)).FirstOrDefault();
             if (t.Kind == null) continue;
             return zoneKind == "chop"
-                ? Job(type, "chop", "chopping a tree (zone)", t.Pos, "b:" + t.Pos, "zone", z.Id,
-                    fill: j => ChopFill(j, World is { } tw ? StoryBlocks.TreeFrom(tw, t.Pos) : null), xp: 40)
+                ? WithTool(Tool(t), Job(type, "chop", "chopping a tree (zone)", t.Pos, "b:" + t.Pos, "zone", z.Id,
+                    fill: j => ChopFill(j, World is { } tw ? StoryBlocks.TreeFrom(tw, t.Pos) : null), xp: 40))
                 : WithTool(Tool(t), Job(type, "dig", "mining ore (zone)", t.Pos, "b:" + t.Pos, "zone", z.Id));
         }
         return null;
@@ -602,7 +603,7 @@ public sealed partial class StoryColony
         foreach (var z in Zones.Where(z => z.Kind == "farm").OrderBy(z => z.Area.Center.Dist(from)))
         {
             if (z.Bills != null || z.Plant != null) { if (GrowJob(p, live, z) is { } grow) return grow; continue; } // a growing zone (StoryColony.Farming.cs)
-            foreach (var t in ZoneTasks(z).Where(t => Open("b:" + t.Pos, p.Name, t.Pos)).OrderBy(t => t.Pos.Dist(from)))
+            foreach (var t in ZoneTasks(z).Where(t => Open("b:" + t.Pos, p.Name, t.Pos) && HarvestAgrees(p.Name, t.Kind, t.Pos)).OrderBy(t => t.Pos.Dist(from)))
                 if (FarmZoneTask(live, z, t, from) is { } j) return j;
         }
         return null;
@@ -781,6 +782,7 @@ public sealed partial class StoryColony
     private void Failed(PawnState p, ActiveJob j, string? note)
     {
         if (ChestRemovalWait(j, note)) return;
+        if (HarvestGone(p, j, note)) return;
         // A batch has already accounted for every attempted cell. Its untouched tail is simply released.
         if (j.DigCells != null && (j.DigReported || note == "dig batch interrupted")) { GearTakesEnded(j, done: false); return; }
         // Older/single-cell callers can report the whole placement as failed when only its support is pending.

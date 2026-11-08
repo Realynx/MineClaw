@@ -17,6 +17,10 @@ public interface IStoryPort
     /// is no longer this body's (superseded: drop it and ask for the next).</summary>
     bool Report(string body, string job, string status, string? note, double? pct);
 
+    /// <summary>After one reserved mining cell was removed, leases newly exposed ore for this same job. Entries are
+    /// {at:"x,y,z",ore:canonicalBlockId}; null means the job was cancelled. Called before the ordinary per-cell report.</summary>
+    JsonArray? DigExposed(string body, string job, string cell, int beforeId, int beforeMeta) => [];
+
     /// <summary>Is <paramref name="job"/> still <paramref name="body"/>'s? False once the director took it back (real work came up for
     /// an idle pawn): <c>story.during</c> then cuts what the script is doing. A director that never takes jobs back keeps the default.</summary>
     bool Holds(string body, string job) => true;

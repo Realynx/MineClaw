@@ -178,12 +178,12 @@ public sealed partial class MinecraftClient
         while (TickCount < startTick + total)
         {
             await WaitUntilTickAsync(Math.Min(startTick + total, TickCount + 4), ct).ConfigureAwait(false);
-            if (Broke(pos, id)) break;
             if (Check() is { } changed) return changed;
+            if (Broke(pos, id)) break;
             int elapsed = (int)(TickCount - startTick);
             if (elapsed - lastSwing >= 4) { lastSwing = elapsed; Send(new AnimationPacket { EntityId = eid, Animation = 1 }); }
         }
-        if (!Broke(pos, id) && Check() is { } late) return late;
+        if (Check() is { } late) return late;
         Send(new PlayerDiggingPacket { Status = PlayerDiggingPacket.StatusFinished, X = pos.X, Y = pos.Y, Z = pos.Z, Face = face });
         return null;
     }

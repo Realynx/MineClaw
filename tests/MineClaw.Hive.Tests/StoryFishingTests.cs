@@ -84,7 +84,7 @@ public sealed class StoryFishingTests
         c.Report(c.P(), more["id"]!.GetValue<string>(), "done", "fished: 1 cast(s), 0 bite(s), 0 fish caught", null);
         var next = c.Next(0);
         Assert.NotNull(next["stash"]);
-        Assert.Contains(w.Data.Item(StoryColony.RawFish).Name, next["stash"]![0]!["items"]!.ToJsonString());
+        Assert.Equal(["349:0"], next["stash"]![0]!["items"]!.AsArray().Select(n => n!.GetValue<string>()));
     }
 
     [Fact]

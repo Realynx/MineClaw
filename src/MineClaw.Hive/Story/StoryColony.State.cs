@@ -179,7 +179,7 @@ public sealed partial class StoryColony
 
     private JsonObject DesignationJson(DesignationState d) => new()
     {
-        ["id"] = d.Id, ["kind"] = d.Kind, ["work_type"] = WorkOf(d.Kind) is { Length: > 0 } w ? w : null,
+        ["id"] = d.Id, ["kind"] = d.Kind, ["work_type"] = WorkOf(d) is { Length: > 0 } w ? w : null,
         ["target"] = d.Entity is { } e ? new JsonObject { ["entity"] = e } : d.At?.Json(),
         ["blocks"] = d.Blocks == null ? null : new JsonArray(d.Blocks.Select(b => (JsonNode)b.Json()).ToArray()),
         ["label"] = d.Label, ["created"] = d.Created, ["status"] = d.Status, ["reason"] = d.Reason, ["fails"] = d.Fails, ["retry_at"] = RetryAt(d),

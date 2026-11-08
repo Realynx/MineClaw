@@ -18,7 +18,7 @@ public static class DepositAtTool
                 if (Locations.ParseCoords(i.ReqStr("at")) is not { } p) return ToolResult.Error("at must be x,y,z");
                 var wanted = new List<(int Id, int Meta)>();
                 foreach (var name in i.StrList("items"))
-                    if (Items.ByNameWithDamage(name) is { } item) wanted.Add((item.Item.Id, item.Damage));
+                    if (TransferItemSelector.Resolve(name) is { } item) wanted.Add((item.Item.Id, item.Damage));
                     else return ToolResult.Error($"unknown item '{name}'");
                 if (wanted.Count == 0) return ToolResult.Error("items required");
                 bool Match(ItemStack stack) => !stack.IsEmpty && wanted.Any(w => w.Id == stack.Id && (w.Meta < 0 || w.Meta == stack.Damage));

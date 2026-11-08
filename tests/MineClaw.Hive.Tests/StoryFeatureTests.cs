@@ -295,10 +295,10 @@ public sealed class StoryFeatureTests
         c.Report(c.P(), chop["id"]!.GetValue<string>(), "done", null, null);
         var stash = c.Next();
         Assert.Equal(far.ToString(), stash["stash"]![0]!["to"]!.GetValue<string>());
-        Assert.Equal(["log"], stash["stash"]![0]!["items"]!.AsArray().Select(x => x!.GetValue<string>()));
+        Assert.Equal(["oak_wood"], stash["stash"]![0]!["items"]!.AsArray().Select(x => x!.GetValue<string>()));
         // The sapling no filter takes: "unfiltered storage takes anything" puts it in the general (lowest-priority) chest with room.
         Assert.Equal(near.ToString(), stash["stash"]![1]!["to"]!.GetValue<string>());
-        Assert.Equal(["sapling"], stash["stash"]![1]!["items"]!.AsArray().Select(x => x!.GetValue<string>()));
+        Assert.Equal(["6:0"], stash["stash"]![1]!["items"]!.AsArray().Select(x => x!.GetValue<string>()));
         c.Report(c.P(), stash["id"]!.GetValue<string>(), "done", null, null);
         Assert.Equal(5, c.StorageAt(far)!.Contents.Single(s => s.Id == 17).Count);
         Assert.Empty(c.StorageAt(food)!.Contents);

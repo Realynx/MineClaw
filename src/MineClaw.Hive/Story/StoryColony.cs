@@ -35,6 +35,9 @@ public sealed class ActiveJob
     /// <summary>A quarry dig's reserved cells still awaiting a per-cell report. Access is shared for the whole batch.</summary>
     public List<P3>? DigCells { get; set; }
     public bool DigReported { get; set; }
+    public OreWorkOrigin? OreOrigin { get; set; }
+    public Dictionary<P3, string> DigDesignations { get; } = new();
+    public HashSet<P3> DigExposedCells { get; } = new();
     /// <summary>Runs once when the job is handed to the pawn (a pick that only probes for work claims nothing).</summary>
     public Action? Assign { get; set; }
     /// <summary>Further targets the job holds besides <see cref="Lease"/> (a hauler's batch of drops), leased and released with it.</summary>
@@ -417,6 +420,7 @@ public sealed partial class StoryColony : IStoryPort
             ExpireLeases();
             ReleaseOffline();
             ReconcileStorageSigns();
+            OreTick();
             if (Meta.Active) CollectRestarts(restart);
             if (Now - _benchScan > TimeSpan.FromSeconds(30)) { _benchScan = Now; ScanBenches(); RefreshSeen(Storages); RetrySuspended(); } // missing ingredients may be stored by now
             _pickEnts = null; // the tick's searches read the world's entities once (and never a pick's old list)
@@ -426,6 +430,7 @@ public sealed partial class StoryColony : IStoryPort
             HaulTick(); // a drop about to despawn may take a hauler off lesser work (StoryColony.Hauling.cs)
             ReconcileTick(); // every build cell against the world: drift reopens, wrong blocks are cleared (StoryColony.Reconcile.cs)
             PruneEntityMarks(); // haul, hunt, forbid marks whose entity is gone go (StoryColony.EntityMarks.cs)
+            PruneGoneHarvestMarks(); // saved no-tree errors retire without waiting through their old backoff
             TempTick(); // blocks pawns put down for themselves: left behind -> a cleanup job (StoryColony.TempBlocks.cs)
             AuditIdle(); // why a pawn is idle in its work hours with work about (StoryColony.IdleAudit.cs)
             _pickEnts = null;

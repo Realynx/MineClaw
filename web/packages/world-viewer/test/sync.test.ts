@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { WorldCache, indexRect, planBatches } from '../src/world/cache';
-import { sharedInterests, WorldSync } from '../src/world/sync';
+import { sharedInterests, WorldSync, type WorldSyncEvents } from '../src/world/sync';
 import { InlineMeshHost } from '../src/mesh/host';
 import { createFixtureSource, PLAN } from '../src/fixtures/world';
 import type { WorldIndexColumn, WorldSource } from '../src/types';
@@ -29,7 +29,7 @@ describe('WorldCache.reconcile (hash-diff)', () => {
     const c = new WorldCache();
     const exact = '-7046029254386353131';
     c.applyStored(0, [{ cx: 0, cz: 0, hash: exact, seen: 1, by: 'a', live: true, height: 128, missing: false }], 0);
-    const lossy = JSON.parse(`[${exact}]`)[0] as number;
+    const lossy = (JSON.parse(`[${exact}]`) as number[])[0];
     expect(c.reconcile(0, 0, 0, 0, 0, [col(0, 0, lossy)]).want).toEqual([]);
   });
 
@@ -55,7 +55,7 @@ describe('WorldCache.reconcile (hash-diff)', () => {
 });
 
 describe('WorldSync index-then-fetch', () => {
-  function rig(source: WorldSource) {
+  function rig(source: WorldSource, onError?: WorldSyncEvents['onError']) {
     const host = new InlineMeshHost();
     const cache = new WorldCache();
     const dirty: number[] = [];
@@ -64,9 +64,9 @@ describe('WorldSync index-then-fetch', () => {
       onDropped: () => undefined,
       onTouched: () => undefined,
       onInfo: () => undefined,
-      onError: (r, e) => {
+      onError: onError ?? ((r, e) => {
         throw new Error(`${r}: ${String(e)}`);
-      },
+      }),
     });
     (sync as unknown as { running: boolean }).running = true;
     return { host, cache, sync, dirty };
@@ -108,6 +108,69 @@ describe('WorldSync index-then-fetch', () => {
     sync.setInterest({ dim: 0, x: 20, z: 0, r: 32 });
     await sync.tick(400);
     expect(src.calls.index).toBe(2);
+  });
+
+  it('loads distant missing columns and updates them even while the nearest column changes every pass', async () => {
+    const src = createFixtureSource({ radius: 1, now: () => 0, buildRate: 0 });
+    const requests = vi.spyOn(src, 'chunks');
+    const { sync, cache } = rig(src);
+    sync.batchColumns = 1;
+    sync.maxBatches = 1;
+    sync.setInterest({ dim: 0, x: 0, z: 0, r: 32 });
+    for (let turn = 0; turn < 20; turn++) {
+      cache.invalidate(0, [[0, 0]]);
+      await sync.tick(turn * 1000);
+    }
+    expect(cache.count()).toBe(9);
+    expect(requests.mock.calls.filter(([, cols]) => cols[0][0] === 0 && cols[0][1] === 0).length).toBeGreaterThan(5);
+    requests.mockClear();
+    cache.invalidate(0, [[1, 1]]);
+    for (let turn = 20; turn < 24; turn++) {
+      cache.invalidate(0, [[0, 0]]);
+      await sync.tick(turn * 1000);
+    }
+    expect(requests.mock.calls.some(([, cols]) => cols.some(([x, z]) => x === 1 && z === 1))).toBe(true);
+  });
+
+  it('only accelerates indexing for views affected by a column update', async () => {
+    const src = createFixtureSource({ radius: 1, now: () => 0, buildRate: 0 });
+    const index = vi.spyOn(src, 'index');
+    const { sync } = rig(src);
+    sync.setInterests({ a: { dim: 0, x: 0, z: 0, r: 16 }, b: { dim: 0, x: 256, z: 0, r: 16 } });
+    await sync.tick(0);
+    await sync.tick(1);
+    sync.reindexColumns(0, [[100, 100]]);
+    sync.reindexColumns(-1, [[0, 0]]);
+    await sync.tick(2);
+    expect(index).toHaveBeenCalledTimes(2);
+    sync.reindexColumns(0, [[16, 0]]);
+    await sync.tick(3);
+    expect(index.mock.calls.map((call) => call[1])).toEqual([0, 256, 256]);
+  });
+
+  it('retries a failed distant chunk without letting continuous nearby changes starve it', async () => {
+    const src = createFixtureSource({ radius: 1, now: () => 0, buildRate: 0 });
+    const chunks = src.chunks.bind(src);
+    let failed = false;
+    vi.spyOn(src, 'chunks').mockImplementation(async (dim, cells) => {
+      if (!failed && cells.some(([x, z]) => x === 1 && z === 1)) {
+        failed = true;
+        throw new Error('503 busy');
+      }
+      return chunks(dim, cells);
+    });
+    const errors: string[] = [];
+    const { sync, cache } = rig(src, (route) => errors.push(route));
+    sync.batchColumns = sync.maxBatches = 1;
+    sync.setInterest({ dim: 0, x: 0, z: 0, r: 32 });
+    for (let turn = 0; turn < 24; turn++) {
+      sync.chunkBackoff.until = 0; // the next simulated turn occurs after the retry delay
+      cache.invalidate(0, [[0, 0]]);
+      await sync.tick(turn * 1000);
+    }
+    expect(errors).toEqual(['chunks']);
+    expect(cache.count()).toBe(9);
+    expect(cache.get(0, 1, 1)).toBeDefined();
   });
 
   it('indexes several interests round-robin (thumbnail views)', async () => {

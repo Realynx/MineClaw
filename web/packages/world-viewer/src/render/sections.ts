@@ -1,5 +1,5 @@
 // Section meshes of one dimension on the GPU, shared by every view: what to (re)mesh next (dirty and in range of any view,
-// nearest first), the meshes themselves (ONE set of vertex buffers per pass per section; the cut cap reuses the solid
+// nearby work interleaved with oldest waiting work), the meshes themselves (ONE set of vertex buffers per pass per section; the cut cap reuses the solid
 // buffers with the cap material and a draw range over the closed quads only, no copy), per-view visibility by draw distance, and eviction (everything far beyond every view, then
 // least recently rendered). The worker keeps the blocks, so an evicted section is simply meshed again when it comes back.
 
@@ -9,6 +9,7 @@ import type { SectionMesh } from '../mesh/mesher';
 import type { MeshArrays } from '../mesh/sink';
 import type { WorldCache } from '../world/cache';
 import { ALL_VISIBLE, visibleSections, walkStart } from '../mesh/visibility';
+import { FairQueue } from '../world/fairQueue';
 
 interface Entry {
   cx: number;
@@ -58,6 +59,7 @@ export class SectionManager {
   readonly group = new THREE.Group();
   private readonly entries = new Map<string, Entry>();
   private readonly dirty = new Set<string>();
+  private readonly work = new FairQueue();
   private inFlight = false;
   private frame = 0;
   private scanAt = -Infinity;
@@ -128,6 +130,7 @@ export class SectionManager {
   clear(): void {
     for (const [k, e] of this.entries) this.remove(k, e);
     this.dirty.clear();
+    this.work.clear();
   }
 
   private remove(k: string, e: Entry): void {
@@ -272,7 +275,8 @@ export class SectionManager {
     scored.sort((a, b) => a[0] - b[0]);
     const pick: Array<[number, number, number]> = [];
     const gens = new Map<string, number>();
-    for (const [, k] of scored.slice(0, this.batch)) {
+    const requested = new Map<string, Entry>();
+    for (const k of this.work.pick(scored.map(([, k]) => k), this.batch)) {
       this.dirty.delete(k);
       const [cx, sy, cz] = k.split(',').map(Number);
       pick.push([cx, sy, cz]);
@@ -283,6 +287,7 @@ export class SectionManager {
         if (sy > this.topSy) this.topSy = sy;
       }
       gens.set(k, e.gen);
+      requested.set(k, e);
     }
     this.inFlight = true;
     const dim = this.dim;
@@ -290,7 +295,10 @@ export class SectionManager {
       .mesh(dim, pick, null)
       .then((res) => {
         if (dim !== this.dim) return;
-        for (const m of res) this.install(m, gens.get(skey(m.cx, m.sy, m.cz)) ?? 0);
+        for (const m of res) {
+          const k = skey(m.cx, m.sy, m.cz);
+          if (this.entries.get(k) === requested.get(k)) this.install(m, gens.get(k) ?? 0);
+        }
       })
       .catch(() => {
         for (const [cx, sy, cz] of pick) this.dirty.add(skey(cx, sy, cz));
@@ -309,8 +317,10 @@ export class SectionManager {
     if (!e) return; // evicted or dropped meanwhile
     if (e.gen !== gen) {
       this.dirty.add(k);
-      if (e.meshedGen > 0) return; // keep the old mesh until the fresh one arrives
     }
+    // Show forward progress even when more changes arrived during meshing. Keeping the old mesh until a quiet interval
+    // can leave a busy forest permanently behind; the newer generation remains queued for the next pass.
+    if (e.meshedGen > gen) return;
     e.meshedGen = gen;
     e.vis = m.vis ?? ALL_VISIBLE;
     e.animCells = m.animCells?.length ? m.animCells : null;

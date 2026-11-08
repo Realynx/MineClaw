@@ -35,6 +35,9 @@ public interface IBuildBody
 
     /// <summary>Digs from where the body is (a planned stand or a water column), no pathing.</summary>
     Task<ActionResult> DigHereAsync(BlockPos pos, CancellationToken ct) => DigAsync(pos, ct);
+    Task<ActionResult> DigOreHereAsync(BlockPos pos, int ore, CancellationToken ct) => Task.FromResult(ActionResult.Fail("guarded ore mining is unavailable"));
+    Task<ActionResult> GotoOreStandAsync(BlockPos pos, CancellationToken ct) => GotoAsync(pos, ct);
+    Task<ActionResult> RecoverOreScaffoldAsync(BlockPos pos, CancellationToken ct) => DigHereAsync(pos, ct);
     /// <summary>Pours the water bucket into <paramref name="source"/> against <paramref name="face"/> of the block behind it.</summary>
     Task<ActionResult> PourWaterAsync(BlockPos source, BlockFace face, CancellationToken ct) => Task.FromResult(ActionResult.Fail("this body can't pour water"));
     /// <summary>Steps from <paramref name="entry"/> into the column (or moves within it) and holds the feet at <paramref name="feetY"/>.</summary>
@@ -152,6 +155,15 @@ public sealed class GameBuildBody(Func<IGameClient> client, IBody? owner = null)
 
     public Task<ActionResult> DigHereAsync(BlockPos pos, CancellationToken ct) =>
         Real is { } r ? r.DigHereAsync(pos, ct) : C.DigBlockAsync(pos.X, pos.Y, pos.Z, ct);
+
+    public Task<ActionResult> DigOreHereAsync(BlockPos pos, int ore, CancellationToken ct) => Real is { } r
+        ? r.DigOreHereAsync(pos, ore, ct) : Task.FromResult(ActionResult.Fail("guarded ore mining is unavailable"));
+
+    public Task<ActionResult> GotoOreStandAsync(BlockPos pos, CancellationToken ct) => C.GotoAsync(new GoalBlock(pos),
+        GotoOptions.Default with { AllowBreak = false, AllowPlace = false, BreakOnly = (_, _) => false, MaxDrop = 1, AllowPartial = false }, ct);
+
+    public Task<ActionResult> RecoverOreScaffoldAsync(BlockPos pos, CancellationToken ct) => Real is { } r
+        ? r.DigHereAsync(pos, ct, floorGuard: true) : Task.FromResult(ActionResult.Fail("stationary scaffold recovery is unavailable"));
 
     public Task<ActionResult> PourWaterAsync(BlockPos source, BlockFace face, CancellationToken ct) =>
         Real is { } r ? r.PourWaterAsync(source, face, ct) : Task.FromResult(ActionResult.Fail("pouring needs the real client"));

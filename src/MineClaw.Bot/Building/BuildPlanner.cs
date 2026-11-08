@@ -127,7 +127,7 @@ public sealed partial class BuildPlanner
         {
             Part = part.Index, Parts = part.Count, Version = plan.Hash(), Format = BuildPlan.CurrentFormat, Origin = plan.Origin, Facing = plan.Blueprint.Facing,
             Gate = new GateInfo { After = o.GateBlocks, State = o.GateBlocks > 0 ? GateState.Pending : GateState.Off },
-            Home = _home,
+            Home = _home, OreFrontier = previous?.OreFrontier?.ToList(),
         };
     }
 

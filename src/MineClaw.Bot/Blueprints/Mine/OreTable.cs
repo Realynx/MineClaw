@@ -52,7 +52,12 @@ public static class OreTable
     }
 
     /// <summary>The ore at a block state, or null.</summary>
-    public static OreBand? OreOf(string? version, int id, int meta) => For(version).Ores.FirstOrDefault(o => o.Block == id && (o.Meta == meta || o.Meta == 0));
+    public static OreBand? OreOf(string? version, int id, int meta)
+    {
+        var table = For(version);
+        int ore = World.OreIdentity.Canonical(id, table.Version == "1.12.2");
+        return ore == 0 ? null : table.Ores.FirstOrDefault(o => o.Block == ore && (o.Meta == meta || o.Meta == 0));
+    }
 
     /// <summary>"coal y0-127 (best 48), iron y0-63 (16), … ; lava lakes y≤10, bedrock y0-4": the compact line the AI designer reads.</summary>
     public static string Compact(string? version)

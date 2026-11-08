@@ -258,15 +258,15 @@ public sealed class StoryHaulingTests
         Assert.Equal(2, j["fetch"]!.AsArray().Count);
         Assert.All(j["fetch"]!.AsArray(), f => Assert.Equal(a.ToString(), f!["from"]!.GetValue<string>()));
         var to = j["stash"]!.AsArray().ToDictionary(s => s!["to"]!.GetValue<string>(), s => s!["items"]![0]!.GetValue<string>());
-        Assert.Equal("log", to[wood.ToString()]);
-        Assert.Equal("cobblestone", to[stone.ToString()]);
+        Assert.Equal("oak_wood", to[wood.ToString()]);
+        Assert.Equal("4:0", to[stone.ToString()]);
         c.Report(c.P(), Id(j), "done", null, null);
         Assert.Empty(c.StorageAt(a)!.Contents);
         Assert.Equal(40, c.StorageAt(stone)!.Contents.Single().Count);
     }
 
     [Fact]
-    public void With_no_chest_for_it_a_disallowed_stack_is_dropped_beside_the_chest_then_hauled_once_a_chest_takes_it()
+    public void With_no_chest_for_it_a_disallowed_stack_stays_stored_then_moves_once_a_chest_takes_it()
     {
         var (c, h, w) = StoryRig.Make(time: NewClock());
         Prio(c, (WorkTypes.Haul, 1));
@@ -275,19 +275,17 @@ public sealed class StoryHaulingTests
         c.StorageOp("set", [a], new StorageFilter { Allow = ["food"] }, null, "Food");
         c.AddContents(c.StorageAt(a)!, new Stack(4, 0, 30));
         var j = c.Next();
-        Assert.Equal("dump", Kind(j));
-        Assert.Equal("cobblestone", j["drop"]![0]!["item"]!.GetValue<string>());
-        Assert.Equal(a.ToString(), j["fetch"]![0]!["from"]!.GetValue<string>());
+        Assert.DoesNotContain(Kind(j), new[] { "dump", "go" });
+        Assert.Null(j["drop"]);
+        Assert.Null(j["fetch"]);
         Assert.Single(c.Alerts, x => x.Text.StartsWith("No storage for: Cobblestone"));
         c.Report(c.P(), Id(j), "done", null, null);
-        Assert.Empty(c.StorageAt(a)!.Contents);
-        // On the ground by the chest: nowhere to go, so it lies there…
-        w.Ents.Add(Drop(5, 2.5, 1.5));
+        Assert.Equal(30, c.StorageAt(a)!.Contents.Single().Count);
         Assert.NotEqual("collect", Kind(c.Next()));
         c.Report(c.P(), c.CurrentOf(c.P())!.Id, "done", null, null);
         // …until a chest takes it.
         c.StorageOp("set", [new P3(6, 64, 0)], new StorageFilter { Allow = ["stone_building"] }, null, "Stone");
-        Assert.Equal("collect", Kind(c.Next()));
+        Assert.Equal("go", Kind(c.Next()));
         Assert.Empty(c.State()["unstored_kinds"]!.AsArray());
     }
 

@@ -19,8 +19,7 @@ namespace MineClaw.Hive.Story;
 /// (a "dump" zone, else by home). Nowhere: one alert "No storage for: …" and <c>unstored_kinds</c> in the state.</item>
 /// <item><b>Batching</b>: one trip collects the drops near the first one that go to the same place, up to its free slots.</item>
 /// <item><b>Re-sorting</b>: what a chest's filter no longer allows goes to a chest that takes it (batched per chest); a better-priority
-/// chest pulls what it accepts; with nowhere to go it is dropped beside the chest (unless <see cref="ColonyMeta.KeepDisallowed"/>),
-/// where it despawns unless it is hauled once a chest takes it. What the fallback put in a chest stays there.</item>
+/// chest pulls what it accepts; with nowhere safe to go it stays in the source chest. What the fallback put in a chest stays there.</item>
 /// </list>
 /// </summary>
 public sealed partial class StoryColony
@@ -152,7 +151,7 @@ public sealed partial class StoryColony
         var stash = new JsonArray(order.Select(g => (JsonNode)new JsonObject
         {
             ["to"] = g.S.Chest.ToString(),
-            ["items"] = new JsonArray(g.Stacks.Select(s => ItemName(s.Id, s.Meta)).Distinct().Select(n => (JsonNode)n!).ToArray()),
+            ["items"] = new JsonArray(g.Stacks.Select(HaulItemName).Distinct().Select(n => (JsonNode)n!).ToArray()),
         }).ToArray());
         var names = order.SelectMany(g => g.Stacks).Concat(drops).Select(s => ItemName(s.Id, s.Meta)).Distinct().ToList();
         ActiveJob j;
@@ -454,7 +453,7 @@ public sealed partial class StoryColony
     private (long Stamp, List<(StorageState Src, Stack St, StorageState? Dst, bool Fallback)> Moves)? _resort;
 
     /// <summary>What should leave which chest (cached per storage revision): misfiled stacks to a chest that takes them (or the
-    /// fallback, or nowhere: dropped, or kept with <see cref="ColonyMeta.KeepDisallowed"/>), and stacks a better chest pulls.</summary>
+    /// fallback), and stacks a better chest pulls. Items without a destination remain stored.</summary>
     private List<(StorageState Src, Stack St, StorageState? Dst, bool Fallback)> Resorts()
     {
         long stamp = Storages.Count + (Meta.UnfilteredTakesAnything ? 7 : 0) + (Meta.KeepDisallowed ? 13 : 0);
@@ -479,18 +478,16 @@ public sealed partial class StoryColony
         if (!allowed) ResortUnwanted(src, st, moves);
     }
 
-    /// <summary>No chest's filter takes it. What the fallback put here stays; anything else goes to a fallback chest, else out (dropped,
-    /// or kept with <see cref="ColonyMeta.KeepDisallowed"/>).</summary>
+    /// <summary>No chest's filter takes it. Use a permitted fallback, otherwise keep the items safe until storage becomes available.</summary>
     private void ResortUnwanted(StorageState src, Stack st, List<(StorageState, Stack, StorageState?, bool)> moves)
     {
         if (src.Signs.Count == 0 && Meta.UnfilteredTakesAnything && !Denied(src, st.Id, st.Meta) && _fallbackStored.Contains((src.Chest, st.Id, st.Meta))) return;
         if (Meta.UnfilteredTakesAnything && Fallback(st.Id, st.Meta, src.Chest, src) is { } fb) { moves.Add((src, st, fb, true)); return; }
         Unstored(st.Id, st.Meta);
-        if (src.Signs.Count == 0 && !Meta.KeepDisallowed) moves.Add((src, st, null, false));
     }
 
     /// <summary>One re-sort trip: from the chest with the most to move (lowest priority, then nearest), as many stacks as the pawn has
-    /// room for, each to its chest; what has nowhere to go is dropped beside the chest.</summary>
+    /// room for, each to its chest; what has nowhere to go remains stored.</summary>
     internal ActiveJob? RebalanceJob(PawnState p, PawnLive live)
     {
         var from = live.Block;
@@ -508,37 +505,52 @@ public sealed partial class StoryColony
         string work = WorkTypes.Haul)
     {
         var key = "resort:" + src.Chest;
-        if (!ChestOpen(src.Chest) || work != WorkTypes.Build && ChestDeconstructing(src.Chest)) return null;
+        if (live.FreeSlots <= 0 || !ChestOpen(src.Chest) || work != WorkTypes.Build && ChestDeconstructing(src.Chest)) return null;
         if (!Open(key, p.Name, null)) return null;
         var take = ResortParts(moves.Where(m => m.Dst == null || !ChestDeconstructing(m.Dst.Chest) && ChestOpen(m.Dst.Chest)), Math.Max(1, live.FreeSlots - 1));
         if (take.Count == 0) return null;
         var drops = take.Where(t => t.Dst == null).ToList();
         var puts = take.Where(t => t.Dst != null).GroupBy(t => t.Dst!).ToList();
-        foreach (var fb in take.Where(x => x.Fallback)) _fallbackStored.Add((fb.Dst!.Chest, fb.St.Id, fb.St.Meta));
         var fetch = new JsonArray(take.Select(t => (JsonNode)new JsonObject { ["from"] = src.Chest.ToString(),
-            ["item"] = work == WorkTypes.Build ? BillTakeName(t.St) : ItemName(t.St.Id, t.St.Meta), ["n"] = t.N }).ToArray());
+            ["item"] = HaulItemName(t.St), ["n"] = t.N }).ToArray());
         var stash = new JsonArray(puts.Select(pg => (JsonNode)new JsonObject
         {
             ["to"] = pg.Key.Chest.ToString(),
-            ["items"] = new JsonArray(pg.Select(t => work == WorkTypes.Build ? BillTakeName(t.St) : ItemName(t.St.Id, t.St.Meta)).Distinct().Select(n => (JsonNode)n!).ToArray()),
+            ["items"] = new JsonArray(pg.Select(t => HaulItemName(t.St)).Distinct().Select(n => (JsonNode)n!).ToArray()),
         }).ToArray());
         var j = drops.Count > 0 ? ResortDropJob(src, key, drops, fetch, stash) : ResortMoveJob(src, key, take, puts[0].Key, fetch, stash, work);
+        j.Assign += () =>
+        {
+            foreach (var fb in take.Where(x => x.Fallback)) _fallbackStored.Add((fb.Dst!.Chest, fb.St.Id, fb.St.Meta));
+        };
         foreach (var t in take) j.Takes.Add((src.Chest, t.St with { Count = t.N }));
         foreach (var pg in puts) j.Puts.Add((pg.Key.Chest, pg.Select(t => t.St with { Count = t.N }).ToList()));
         return j;
     }
 
-    /// <summary>The stacks the pawn has room for (in slots), in order.</summary>
+    /// <summary>Both the pawn and each destination need room; in-flight deliveries already own their destination space.</summary>
     private List<ResortPart> ResortParts(IEnumerable<(StorageState Src, Stack St, StorageState? Dst, bool Fallback)> moves, int room)
     {
         int used = 0;
         var take = new List<ResortPart>();
+        var spaces = new Dictionary<StorageState, HaulSpace>();
         foreach (var m in moves)
         {
-            int stacks = (m.St.Count + MaxStack(m.St.Id) - 1) / MaxStack(m.St.Id);
             if (used >= room) break;
-            int n = Math.Min(m.St.Count, (room - used) * MaxStack(m.St.Id));
-            used += Math.Min(stacks, room - used);
+            int max = MaxStack(m.St.Id);
+            int n = Math.Min(m.St.Count, (room - used) * max);
+            if (m.Dst is { } dst)
+            {
+                if (!spaces.TryGetValue(dst, out var space))
+                {
+                    spaces[dst] = space = new HaulSpace(dst, MaxStack);
+                    foreach (var put in _current.Values.SelectMany(j => j.Puts).Where(p => p.Chest == dst.Chest || p.Chest == dst.DoubleWith))
+                        foreach (var stack in put.Stacks) space.Reserve(stack.Id, stack.Meta, stack.Count);
+                }
+                n = space.Reserve(m.St.Id, m.St.Meta, n);
+            }
+            if (n <= 0) continue;
+            used += (n + max - 1) / max;
             take.Add(new ResortPart(m.St, n, m.Dst, m.Fallback));
         }
         return take;

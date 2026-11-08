@@ -565,6 +565,10 @@ function DigEstimate({ stats }: { stats: ReturnType<typeof mineStats> }) {
       </tbody>
     </table>
     <p className="mt-1 text-[10px] text-subtle">Estimated from the generated terrain; the real world will differ.</p>
+    <p className="mt-1 text-[10px] text-subtle" data-testid="mine-vein-follow">
+      Miners automatically follow connected exposed ore beyond the plan, while keeping access routes and protected blocks intact.
+      These estimates show the planned tunnels and their walls; extra vein mining adds to the yield.
+    </p>
     </>
   );
 }

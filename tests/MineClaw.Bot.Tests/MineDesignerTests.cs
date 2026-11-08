@@ -14,6 +14,18 @@ public class MineDesignerTests
     // Golden values: the same constants are asserted by the browser's tests (mineTerrain.test.ts / mineTemplates.test.ts).
     private const uint GoldenPlot1122 = 1021586989u, GoldenPlotBeta = 1802239221u, GoldenSpiral = 2749961926u, GoldenStrip = 2072293685u;
 
+    [Theory]
+    [InlineData("b1.8.1")]
+    [InlineData("1.12.2")]
+    public void Lit_redstone_uses_the_same_ore_band_as_unlit_redstone(string version)
+    {
+        var unlit = OreTable.OreOf(version, 73, 0);
+        Assert.NotNull(unlit);
+        Assert.Same(unlit, OreTable.OreOf(version, 74, 0));
+        Assert.Equal("redstone", unlit.Id);
+        Assert.Null(OreTable.OreOf(version, 1, 0));
+    }
+
     [Fact]
     public void The_ore_table_has_every_band_per_version_with_its_sources()
     {

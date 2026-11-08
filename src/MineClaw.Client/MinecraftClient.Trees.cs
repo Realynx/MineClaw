@@ -33,6 +33,8 @@ public sealed record TreeChopOptions
     public int MaxUnreplantedChops { get; init; } = 2;
     /// <summary>A named tree (<c>at</c>) only: when another body holds it, fail instead of taking the next free tree near it.</summary>
     public bool OnlyThisTree { get; init; }
+    /// <summary>A policy-selected tool: stop felling if it breaks or leaves inventory. Cleanup/replanting remain allowed.</summary>
+    public int? RequiredToolId { get; init; }
     public static TreeChopOptions Default { get; } = new();
 }
 
@@ -132,6 +134,7 @@ public sealed partial class MinecraftClient
 
     private sealed class ChopState(TreeInfo tree)
     {
+        public int? RequiredToolId;
         public TreeInfo Tree { get; } = tree;
         public int LogsBefore, SaplingsBefore, ApplesBefore, Felled, LeavesBroken, LeavesDecayed;
         public int TrunkEdge;
@@ -249,6 +252,7 @@ public sealed partial class MinecraftClient
             limit.CancelAfter(o.Timeout);
             var st = new ChopState(tree)
             {
+                RequiredToolId = o.RequiredToolId,
                 LogsBefore = World.Inventory.CountItem(Wood.LogId(tree.Wood), Wood.LogDamage(tree.Wood)),
                 SaplingsBefore = World.Inventory.CountItem(Blocks.Sapling),
                 ApplesBefore = World.Inventory.CountItem(Items.Apple),
@@ -473,6 +477,7 @@ public sealed partial class MinecraftClient
         {
             var remaining = RemainingLogs(st);
             if (remaining.Count == 0) return st.Failed.Count > 0 ? $"{st.Failed.Count} log(s) wouldn't break" : null;
+            if (ChopToolRefusal(st) is { } missing) return missing;
             await SurvivalWindowAsync(ct).ConfigureAwait(false);
 
             if (DiggableNow(remaining) is { } log)
@@ -489,7 +494,7 @@ public sealed partial class MinecraftClient
     /// <summary>Digs one log in reach. Null = go on; else why felling stops (too many failed digs).</summary>
     private async Task<string?> FellLogAsync(ChopState st, BlockPos log, CancellationToken ct)
     {
-        var r = await DigCoreAsync(log, ct, allowPathing: false).ConfigureAwait(false);
+        var r = await DigCoreAsync(log, ct, allowPathing: false, verify: () => ChopToolRefusal(st)).ConfigureAwait(false);
         if (r.Ok)
         {
             st.Felled++;
@@ -656,6 +661,7 @@ public sealed partial class MinecraftClient
     /// </summary>
     private async Task<bool> JumpDigAsync(ChopState st, List<BlockPos> remaining, CancellationToken ct)
     {
+        if (ChopToolRefusal(st) != null) return false;
         if (JumpDigTarget(remaining) is not { } t) return false;
         int id = World.GetBlock(t);
         int held = await SelectToolForAsync(id, ct).ConfigureAwait(false);
@@ -672,6 +678,11 @@ public sealed partial class MinecraftClient
         long started = TickCount;
         await WaitUntilAsync(() => World.Player.OnGround, TimeSpan.FromSeconds(2), ct).ConfigureAwait(false);
         await SwingWhileDiggingAsync(t, id, started, started + ticks + 2, eid, ct).ConfigureAwait(false);
+        if (ChopToolRefusal(st) != null)
+        {
+            Send(new PlayerDiggingPacket { Status = PlayerDiggingPacket.StatusCancelled, X = t.X, Y = t.Y, Z = t.Z, Face = face });
+            return false;
+        }
         Send(new PlayerDiggingPacket { Status = PlayerDiggingPacket.StatusFinished, X = t.X, Y = t.Y, Z = t.Z, Face = face });
         bool broke = await WaitUntilAsync(() => World.GetBlock(t) != id, TimeSpan.FromMilliseconds(1500), ct).ConfigureAwait(false);
         Log($"chop: jump-dig {Fmt(t)} {(broke ? "ok" : "didn't break")}");
@@ -679,6 +690,9 @@ public sealed partial class MinecraftClient
         else { NoteEditReverted(t, "dig"); st.Failed.Add(t); }
         return broke;
     }
+
+    private string? ChopToolRefusal(ChopState st) => st.RequiredToolId is { } id && World.Inventory.CountItem(id) == 0
+        ? $"needs {ItemName(id)}: required chopping tool is unavailable" : null;
 
     /// <summary>The lowest log in reach at the top of a jump from here, when here is a safe spot to jump (on the ground, 2+ from the
     /// edge, clear headroom); never one another player stands on (hard safety).</summary>

@@ -18,7 +18,6 @@ public sealed record OreYield(OreBand Ore, int Veins, int Blocks, int PlotBlocks
 public sealed class OreVeins
 {
     private static readonly ConditionalWeakTable<MineTerrain, OreVeins> Cache = new();
-    private static readonly (int Dx, int Dy, int Dz)[] N6 = [(1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1)];
 
     private readonly MineTerrain _terrain;
     private readonly Dictionary<BlockPos, int> _veinOf = new();
@@ -43,7 +42,7 @@ public sealed class OreVeins
         foreach (var p in dug)
         {
             if (_veinOf.TryGetValue(p, out var v)) touched.Add(v);
-            foreach (var (dx, dy, dz) in N6)
+            foreach (var (dx, dy, dz) in OreIdentity.Neighbors)
                 if (_veinOf.TryGetValue(new BlockPos(p.X + dx, p.Y + dy, p.Z + dz), out var n)) touched.Add(n);
         }
         return _terrain.Table.Ores.Where(o => o.Veins > 0).OrderBy(o => o.Veins).ThenBy(o => o.Size).Select(o =>
@@ -69,7 +68,7 @@ public sealed class OreVeins
         {
             var c = queue.Dequeue();
             size++;
-            foreach (var (dx, dy, dz) in N6)
+            foreach (var (dx, dy, dz) in OreIdentity.Neighbors)
             {
                 var n = new BlockPos(c.X + dx, c.Y + dy, c.Z + dz);
                 if (n.X is < 0 or >= DesignerCanvas.Size || n.Z is < 0 or >= DesignerCanvas.Size || n.Y is < 0 or >= MineTerrain.Height

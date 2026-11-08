@@ -81,13 +81,21 @@ public sealed partial class StoryColony
         var single = DigCellJob(j, at);
         if (status == "done") Done(p, single, null);
         else Failed(p, single, status[8..]);
+        if (single.Source == "ghost" && single.SourceId != null) j.Cells?.Remove(single.SourceId);
+        j.DigDesignations.Remove(at);
     }
 
-    private static ActiveJob DigCellJob(ActiveJob batch, P3 at) => new()
+    private static ActiveJob DigCellJob(ActiveJob batch, P3 at)
     {
-        Id = batch.Id + "@" + at, Type = batch.Type, Kind = "dig", At = at, Lease = "b:" + at,
-        Source = batch.Source, SourceId = batch.SourceId, Xp = batch.Xp, Since = batch.Since,
-    };
+        bool extra = batch.DigDesignations.TryGetValue(at, out var designation);
+        return new ActiveJob
+        {
+            Id = batch.Id + "@" + at, Type = batch.Type, Kind = "dig", At = at, Lease = "b:" + at,
+            Source = extra ? "designation" : batch.Source, SourceId = extra ? designation : batch.SourceId,
+            Cells = !extra && batch.Source == "ghost" && batch.SourceId != null ? [batch.SourceId] : null,
+            Xp = batch.Xp, Since = batch.Since,
+        };
+    }
 
     /// <summary>The batch's fetch is settled once; per-cell reports already accounted for successes and failures.</summary>
     private void DigBatchDone(PawnState p, ActiveJob j)
@@ -96,7 +104,8 @@ public sealed partial class StoryColony
         GearTakesEnded(j, done: true);
         ChestsReached(p, j);
         // Compatibility with older callers: only the seed they actually removed is credited, never untouched tail cells.
-        if (!j.DigReported && j.At is { } at && World is { } w && w.Loaded(at.X, at.Z) && OpenCell(w.Block(at.X, at.Y, at.Z).Id))
+        if (!j.DigReported && j.At is { } at && (j.Source is "designation" or "ghost"
+            || World is { } w && w.Loaded(at.X, at.Z) && OpenCell(w.Block(at.X, at.Y, at.Z).Id)))
             Done(p, DigCellJob(j, at), null);
         ZoneWorkDone(j);
     }
@@ -118,11 +127,15 @@ public sealed partial class StoryColony
     /// <summary>Changing a quarry or its keep-out area stops its old batch before it can touch a removed or forbidden cell.</summary>
     private void StopInvalidQuarryBatches()
     {
+        OreTick();
         foreach (var (owner, job) in _current.ToList())
         {
             if (job.DigCells is not { } cells || !Pawns.TryGetValue(owner, out var p)) continue;
-            var zone = Zones.FirstOrDefault(z => z.Id == job.SourceId && IsQuarry(z));
-            if (zone != null && cells.All(at => zone.Contains(at.X, at.Z) && !Forbidden(at))) continue;
+            if (job.Source != "zone") continue;
+            var zone = Zones.FirstOrDefault(z => z.Id == job.SourceId && z.Kind == "mine");
+            bool quarry = job.Json["vein_quarry"]?.GetValue<bool>() ?? true;
+            if (zone != null && IsQuarry(zone) == quarry
+                && cells.All(at => (job.DigDesignations.ContainsKey(at) || zone.Contains(at.X, at.Z)) && !Forbidden(at))) continue;
             Supersede(p, "quarry changed");
             p.Rev = Bump();
         }

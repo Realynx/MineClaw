@@ -65,19 +65,21 @@ export class BlockDeltaFeed {
   }
 
   private poll(ms: number): void {
-    this.timer = setTimeout(async () => {
-      this.timer = null;
-      if (!this.running || !this.source.blocks) return;
-      let next = this.pollMs;
-      try {
-        const d = await this.source.blocks(this.rev || undefined);
-        this.push(d);
-        if (d.more) next = 0;
-      } catch (e) {
-        next = Math.min(15_000, Math.max(1000, next * 4));
-        this.ev.onError?.(e);
-      }
-      if (this.running) this.poll(next);
+    this.timer = setTimeout(() => {
+      void (async () => {
+        this.timer = null;
+        if (!this.running || !this.source.blocks) return;
+        let next = this.pollMs;
+        try {
+          const d = await this.source.blocks(this.rev || undefined);
+          this.push(d);
+          if (d.more) next = 0;
+        } catch (e) {
+          next = Math.min(15_000, Math.max(1000, next * 4));
+          this.ev.onError?.(e);
+        }
+        if (this.running) this.poll(next);
+      })();
     }, ms);
   }
 
@@ -117,9 +119,9 @@ export class BlockDeltaFeed {
       this.pending = new Map();
       const cols = this.stale;
       this.stale = [];
-      let reindex = this.takeFallback();
-      for (const [dim, blocks] of batches) if (await this.applyBatch(dim, blocks)) reindex = true;
-      for (const c of cols) if (await this.applyStale(c)) reindex = true;
+      const reindex = this.takeFallback();
+      for (const [dim, blocks] of batches) await this.applyBatch(dim, blocks);
+      for (const c of cols) await this.applyStale(c);
       if (reindex) this.sync.reindexNow();
     } catch (e) {
       this.ev.onError?.(e);
@@ -136,32 +138,30 @@ export class BlockDeltaFeed {
     return true;
   }
 
-  /** One dimension's changes on the worker; true when some fell in columns not held (yet): the index fetches them when they
-   * are in someone's interest. */
-  private async applyBatch(dim: Dim, blocks: Change5[]): Promise<boolean> {
+  /** One dimension's changes on the worker. Missing columns accelerate only the views interested in them. */
+  private async applyBatch(dim: Dim, blocks: Change5[]): Promise<void> {
     const r = await this.host.patch(dim, blocks);
     this.applied += r.applied;
     if (r.dirty.length) this.ev.onDirty(dim, r.dirty);
     if (r.applied) this.ev.onChanged?.(dim, blocks.map(([x, y, z]) => [x, y, z]));
-    if (!r.missing.length) return false;
+    if (!r.missing.length) return;
     this.cache.invalidate(dim, r.missing);
-    return true;
+    this.sync.reindexColumns(dim, r.missing);
   }
 
-  /** A column the server says changed otherwise: its block entities, reloaded (refetch: true), or out of every bot's sight. */
-  private async applyStale(c: StaleColumn): Promise<boolean> {
+  /** A column the server says changed otherwise: its block entities, reloaded, or out of every bot's sight. */
+  private async applyStale(c: StaleColumn): Promise<void> {
     const have = this.cache.get(c.dim, c.cx, c.cz);
     if (c.kind === 'block_entity') {
       this.ev.onBlockEntities?.(c.dim, c.cx, c.cz);
     } else if (c.kind === 'loaded') {
       this.cache.invalidate(c.dim, [[c.cx, c.cz]]);
-      return true;
+      this.sync.reindexColumns(c.dim, [[c.cx, c.cz]]);
     } else if (have && have.live) {
       // Out of every bot's sight: keep it, drawn as remembered (dimmed); the cache's LRU trims it later.
       have.live = false;
       this.ev.onDirty(c.dim, await this.host.touch(c.dim, [{ cx: c.cx, cz: c.cz, seen: have.seen, by: have.by, live: false }]));
     }
-    return false;
   }
 }
 

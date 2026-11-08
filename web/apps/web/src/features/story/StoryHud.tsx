@@ -185,12 +185,14 @@ function droppedOrder(
 
 /** The portraits between two x positions (a box-select drag). */
 function coveredNames(row: HTMLElement | null, x0: number, x1: number): string[] {
-  const lo = Math.min(x0, x1),
-    hi = Math.max(x0, x1);
+  const viewport = row?.getBoundingClientRect();
+  const lo = Math.max(Math.min(x0, x1), viewport?.left ?? -Infinity),
+    hi = Math.min(Math.max(x0, x1), viewport?.right ?? Infinity);
+  if (hi < lo) return [];
   return [...(row?.querySelectorAll<HTMLElement>('[data-portrait]') ?? [])]
     .filter((el) => {
       const r = el.getBoundingClientRect();
-      return r.right >= lo && r.left <= hi;
+      return r.right >= lo && r.left <= hi && (!viewport || (r.right > viewport.left && r.left < viewport.right));
     })
     .map((el) => el.dataset.portrait!);
 }
@@ -242,7 +244,11 @@ function useBarGestures({ bodies, pawns, order, onOrder, onClick, onBox, onJump 
       if (p.timer) clearTimeout(p.timer);
     }
     if (p.lifted) liftAt(p.name, e.clientX);
-    else if (p.moved) setBox({ x0: p.x, x1: e.clientX, top: (row.current?.getBoundingClientRect().bottom ?? 2) - 2 });
+    else if (p.moved) {
+      const r = row.current?.getBoundingClientRect();
+      const clip = (x: number) => Math.max(r?.left ?? -Infinity, Math.min(r?.right ?? Infinity, x));
+      setBox({ x0: clip(p.x), x1: clip(e.clientX), top: (r?.bottom ?? 2) - 2 });
+    }
   };
 
   /** A press that didn't move: a click, or the second click of a double click (jump). */
@@ -285,7 +291,7 @@ type PortraitHandlers = {
 
 function portraitClass(b: BarBody, selected: boolean, lifted: boolean): string {
   return cn(
-    'relative flex cursor-pointer flex-col items-center gap-0.5 rounded-md px-1 pt-1 pb-1 transition-colors select-none',
+    'relative flex shrink-0 cursor-pointer flex-col items-center gap-0.5 rounded-md px-1 pt-1 pb-1 transition-colors select-none',
     b.kind === 'ai' ? 'w-[48px]' : 'w-[58px]',
     selected ? 'bg-[#f5c542]/20 ring-2 ring-[#f5c542]' : 'hover:bg-surface-2',
     lifted && 'opacity-40',
@@ -298,15 +304,15 @@ function Portrait({
   b,
   selected,
   lifted,
-  tip,
   h,
 }: {
   b: BarBody;
   selected: boolean;
   lifted: boolean;
-  tip: boolean;
   h: PortraitHandlers;
 }) {
+  const number = b.name.match(/\d+$/)?.[0] ?? '';
+  const accessibleName = number || b.name;
   return (
     <div
       data-portrait={b.name}
@@ -315,7 +321,7 @@ function Portrait({
       role="button"
       tabIndex={-1}
       aria-pressed={selected}
-      aria-label={b.offline ? `${b.label}: offline, ${b.offlineReason}` : `${b.label}: ${b.job}`}
+      aria-label={b.offline ? `${accessibleName}: offline, ${b.offlineReason}` : `${accessibleName}: ${b.job}`}
       data-offline={b.offline || undefined}
       onPointerDown={(e) => h.onDown(e, b.name)}
       onPointerMove={h.onMove}
@@ -335,11 +341,10 @@ function Portrait({
           b.mood === 'danger' ? 'text-danger' : 'text-fg',
         )}
       >
-        {b.label}
+        {number}
       </span>
       <StatBar title={`Health ${b.hp}/20`} colour="bg-[#e5484d]" value={b.hp} />
       <StatBar title={`Food ${Math.round(b.food)}/20`} colour="bg-[#e2a336]" value={b.food} />
-      {tip ? <PortraitTip b={b} /> : null}
     </div>
   );
 }
@@ -397,7 +402,7 @@ function PortraitTip({ b }: { b: BarBody }) {
       role="tooltip"
     >
       <div className="font-semibold">
-        {b.label} {b.kind === 'ai' ? <span className="text-[#a78bfa]">· AI</span> : null}
+        {b.name} {b.kind === 'ai' ? <span className="text-[#a78bfa]">· AI</span> : null}
       </div>
       {b.offline ? (
         <div className="text-muted" data-testid="offline-reason">
@@ -470,7 +475,6 @@ export function ColonistBar({
       b={b}
       selected={sel.has(b.name)}
       lifted={lift?.name === b.name}
-      tip={hover === b.name && !pressing}
       h={h}
     />
   );
@@ -479,14 +483,18 @@ export function ColonistBar({
     <div
       className={cn(
         panel,
-        'pointer-events-auto relative flex max-w-full flex-wrap items-start justify-center gap-1 px-1.5 py-1',
+        'pointer-events-auto relative flex min-w-0 max-w-full items-start gap-1 px-1.5 py-1',
       )}
-      ref={row}
       data-testid="colonist-bar"
       aria-label="Colonists"
     >
-      {pawns.map(portrait)}
-      <JoiningTiles pending={pending} reason={pendingReason} />
+      <div ref={row} className="flex min-w-0 max-w-full flex-nowrap items-start gap-1 overflow-x-auto overscroll-x-contain p-0.5">
+        {pawns.map(portrait)}
+        <JoiningTiles pending={pending} reason={pendingReason} />
+        {onBringAll ? <BringAllTile bodies={bodies} onBringAll={onBringAll} /> : null}
+        {ai.length ? <div className="mx-1 w-px shrink-0 self-stretch bg-border" aria-hidden /> : null}
+        {ai.map(portrait)}
+      </div>
       {onAdd || onRemove ? (
         <BarControls
           pawns={pawns}
@@ -499,9 +507,7 @@ export function ColonistBar({
           setConfirmRemove={setConfirmRemove}
         />
       ) : null}
-      {onBringAll ? <BringAllTile bodies={bodies} onBringAll={onBringAll} /> : null}
-      {ai.length ? <div className="mx-1 w-px self-stretch bg-border" aria-hidden /> : null}
-      {ai.map(portrait)}
+      {hover && !pressing ? bodies.filter((b) => b.name === hover).map((b) => <PortraitTip key={b.name} b={b} />) : null}
       <DragMarks box={box} lift={lift} />
     </div>
   );
@@ -511,7 +517,7 @@ export function ColonistBar({
 export const JOINING_TILES_MAX = 4;
 
 const joiningTile =
-  'flex h-[58px] w-[58px] flex-col items-center justify-center gap-0.5 rounded-md border border-dashed border-border text-[10px] text-subtle opacity-70 grayscale';
+  'flex h-[58px] w-[58px] shrink-0 flex-col items-center justify-center gap-0.5 rounded-md border border-dashed border-border text-[10px] text-subtle opacity-70 grayscale';
 
 /** Greyed "joining…" tiles for pawns added that aren't here yet; many collapse into one "+N waiting" tile. */
 function JoiningTiles({ pending, reason }: { pending: number; reason?: string | null }) {
@@ -548,7 +554,7 @@ function BringAllTile({ bodies, onBringAll }: { bodies: readonly BarBody[]; onBr
     <button
       type="button"
       onClick={onBringAll}
-      className="flex h-[58px] w-[58px] flex-col items-center justify-center gap-0.5 rounded-md border border-dashed border-border-strong text-[10px] leading-tight font-semibold text-muted hover:bg-surface-2 hover:text-fg"
+      className="flex h-[58px] w-[58px] shrink-0 flex-col items-center justify-center gap-0.5 rounded-md border border-dashed border-border-strong text-[10px] leading-tight font-semibold text-muted hover:bg-surface-2 hover:text-fg"
       title="Bring every offline pawn online (main whitelists them again; the player cap permitting)"
       data-testid="bar-bring-online"
     >
@@ -600,7 +606,7 @@ function BarControls({
 }) {
   const chosen = pawns.filter((p) => sel.has(p.name));
   return (
-    <div className="relative flex h-[58px] flex-col justify-center gap-1">
+    <div className="relative flex h-[58px] shrink-0 flex-col justify-center gap-1">
       {onAdd ? (
         <button
           type="button"

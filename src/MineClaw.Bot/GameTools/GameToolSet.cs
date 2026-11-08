@@ -271,7 +271,7 @@ public static class GameToolSet
             ToolSchema.Create().Str("item").Int("count", "default 64", required: false).Str("at", At, required: false).Build(),
             async (i, ct) =>
             {
-                if (Items.ByNameWithDamage(i.ReqStr("item")) is not { } it) return ToolResult.Error($"unknown item '{i.Str("item")}'");
+                if (TransferItemSelector.Resolve(i.ReqStr("item")) is not { } it) return ToolResult.Error($"unknown item '{i.Str("item")}'");
                 var at = OptionalAt(i, places, out var err) ?? NearestChest(c);
                 if (err != null) return err;
                 if (at == null) return ToolResult.Error("no chest nearby");
@@ -351,6 +351,8 @@ public static class GameToolSet
         DepositAtTool.Register(tools, c); // hidden: a chest evacuation never falls back to its source
         RemoveStorageSignTool.Register(tools, c); // hidden: remove only the unchanged label attached to the intended chest
         StationaryDigTool.Register(tools, c); // hidden: dig_here{at} (quarry batches keep their access while digging nearby cells)
+        OreDigTool.Register(tools, c); // hidden: leased vein cells never authorize digging a replacement block
+        PolicyChopTool.Register(tools, c); // hidden: explicit material rules remain mandatory throughout a tree
         StationaryPlaceTool.Register(tools, c); // hidden: place_here{block,at,meta?} (construction batches keep their shared access)
         ClearTemporaryTool.Register(tools, c); // hidden: clear_temporary{} (a Story pawn takes back its own scaffolds after each job)
     }

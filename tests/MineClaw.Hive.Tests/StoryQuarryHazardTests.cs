@@ -267,7 +267,7 @@ public sealed class StoryQuarryHazardTests
         c.Report(c.P(), job["id"]!.GetValue<string>(), "done", null, null);
         job = c.Next();
         Assert.Equal("go", job["kind"]!.GetValue<string>());
-        Assert.Contains("lava_bucket", job["stash"]!.ToJsonString());
+        Assert.Contains("327:0", job["stash"]!.ToJsonString());
         h.Lives[c.P()] = FakeStoryHost.Live(0, 64, 9, inv: new Stack(4, 0, 16));
         c.Report(c.P(), job["id"]!.GetValue<string>(), "done", null, null);
         Assert.Contains(c.StorageAt(chest)!.Contents, s => s.Id == 327 && s.Count == 1);
@@ -349,7 +349,7 @@ public sealed class StoryQuarryHazardTests
         c.Pawns[c.P()] = System.Text.Json.JsonSerializer.Deserialize<PawnState>(saved)!;
         job = c.Next();
         Assert.Equal("go", job["kind"]!.GetValue<string>());
-        Assert.Contains("lava_bucket", job["stash"]!.ToJsonString());
+        Assert.Contains("327:0", job["stash"]!.ToJsonString());
     }
 
     [Fact]

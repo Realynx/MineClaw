@@ -147,7 +147,7 @@ describe('block deltas', () => {
       for (let x = 4; x < 7; x++) for (let z = 4; z < 7; z++) blocks.push([x, y, z, 0, 0]);
       feed.push({ rev: ++rev, full: false, blocks: { 0: blocks } });
     }
-    feed.push({ rev: ++rev, full: false, blocks: { 0: [[5, y0, 5, 4, 0], [5, y0, 5, 0, 0]] } }); // later entry wins
+    feed.push({ rev: rev + 1, full: false, blocks: { 0: [[5, y0, 5, 4, 0], [5, y0, 5, 0, 0]] } }); // later entry wins
     await feed.flush();
     await settle(sections, view);
     const touched = [...sections.builds].filter(([k, n]) => n !== before.get(k));
@@ -204,5 +204,19 @@ describe('block deltas', () => {
     feed.push(await src.blocks!(feed.rev));
     await feed.flush();
     expect(feed.applied).toBe(6);
+  });
+
+  it('deltas from distant pawns do not repeatedly restart indexing for the current view', async () => {
+    const { src, host, cache, sync } = await world(1);
+    const feed = new BlockDeltaFeed(src, host, cache, sync, { onDirty: () => undefined });
+    const before = src.calls.index;
+    feed.push({ rev: 1, full: false, blocks: { 0: [[1600, 64, 1600, 0, 0]] }, columns: [{ dim: 0, cx: 100, cz: 100, kind: 'loaded' }] });
+    await feed.flush();
+    await sync.tick(100);
+    expect(src.calls.index).toBe(before);
+    feed.push({ rev: 2, full: false, blocks: {}, columns: [{ dim: 0, cx: 1, cz: 1, kind: 'loaded' }] });
+    await feed.flush();
+    await sync.tick(200);
+    expect(src.calls.index).toBe(before + 1);
   });
 });

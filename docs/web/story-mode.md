@@ -512,10 +512,10 @@ later while they keep mining until the job is done or their inventory is full."
   - A drafted pawn keeps what it carries.
   - A build that needs what a pawn carries takes it from its pockets (no fetch).
 - Benchmark (`StoryLootBatchingTests`, 24 dirt cells, the chest 9 blocks away, simulated time): about 6.5 → 18 blocks a minute.
-- **Tool rules between blocks.** Every block is its own job, and its tool is planned when it is handed out. A material rule or gear
-  policy changed while a pawn works takes effect at its next block: it fetches the newly wanted tool from storage on the way, or holds
-  the one it carries. The block under way finishes as it started (never cut mid-swing). A rule that now waits (an enchantment that isn't
-  there, fallback `wait`) leaves the rest of the field waiting with that reason and no failure.
+- **Tool rules while working.** Editing a material rule interrupts matching mining or chopping work and chooses its tool again.
+  Pawns use a qualifying tool they carry or fetch one from storage; work waits when none is available. This also applies to marked
+  trees, chop zones, direct orders and grown trees in farms. If the required axe breaks during a tree, chopping stops until a suitable
+  tool is available. The `plain` fallback permits an unenchanted tool meeting the rule, never bare hands below the requested tier.
 
 ### Reaching high blocks (added 2026-11-04)
 
@@ -896,6 +896,13 @@ against every other pawn: 0.9 / 2.3 / 3.2 ms (pawns² a round); the taken spots 
 
 The area expands at designation time to the matching targets in the bot's world view. Each target is one designation, at most
 4096 per request; targets already designated are skipped.
+
+A failed chop, cut or harvest whose target is confirmed gone in a loaded view automatically removes its marker and publishes the
+removal to the map. The reporting pawn's own connection takes precedence over a stale main view. An explicit `no tree at/there`
+or `tree doesn't exist` result also cancels an old trunk-base marker when the base is gone, even if stray upper logs remain.
+Ordinary reach/path failures keep still-standing trees and partial trees; unloaded columns never count as proof of absence.
+Standing chop/farm zones remain active and skip targets their worker already sees as harvested.
+Saved terminal no-tree failures are checked every five seconds, so existing stale markers clear without waiting through their old retry delay.
 
 | kind | targets | work type |
 |---|---|---|
@@ -1382,6 +1389,11 @@ run; nothing is queued (see "Water").
   open cells (a cave) need nothing, liquids, fire and portals are left alone. Order: a cell opens once a neighbour is open (from
   the entry at the surface outward and down), top-down first, then nearest; a block goes in as its cell opens. The web places a
   mine at its saved y (only x, z and the turn follow the click), refuses one that would reach below y 1 and says its y range.
+  When mining exposes ore, miners follow connected blocks of that ore beyond the planned tunnel or quarry boundary. Blocks
+  must share a face; diagonal contact alone does not join veins. Lit and unlit redstone are the same ore. Access floors,
+  quarry stairs, protected builds and forbidden cells remain intact, and unknown terrain or liquid/falling-block hazards
+  defer extra digging. Extra mining remains visible work that can be cancelled. The designer's dig estimate still counts the
+  planned excavation and exposed walls, so following veins can yield more than those numbers.
 - **group:** the items of one placed design. A design with a basement (Design Studio dug cells) is queued as a `remove`
   item of its dug cells first, then its block items, all with the same `group`: its blocks wait until that dig is done.
   The design's ground floor goes on the clicked level and the basement under it.
@@ -1914,11 +1926,15 @@ limit the types of items allowed in a chest, pawns … should rearrange … Othe
   pawn wrote off, "no room in my bag". The idle audit says it: `waiting: drops at
   6,64,6 unreachable`, or for a haul mark `no reachable target: haul …: drops there unreachable (…)`. The collect's failure now says what
   it saw: "no reachable drops nearby (none in sight within 4 with room for it)", "(2 seen: 1 with no way to a pickup spot, 1 not picked up)".
-- **Re-sorting** (background, after drops): a stack a chest's filter no longer allows goes to a chest that takes it. A stack a
-  better-priority chest accepts moves up. One trip takes as many stacks out of one chest as the pawn has room for, each to its own
-  chest. With no chest for it, the fallback chest takes it (option on). What the fallback put somewhere stays there. Else the stack is
-  dropped beside its chest (job kind `dump`) and the condition alert names it. Like the genre, it then despawns unless a chest takes it
-  and a hauler picks it up. Option `keep_disallowed` (default off) leaves it in the chest instead.
+- **Storage organization is Haul work**: ordinary ground pickups, chest transfers, and storage inspections take turns when a pawn
+  accepts a job. Manual haul marks and drops near despawning still come first. Continuous fresh drops cannot indefinitely postpone
+  organizing storage. Unknown or stale loaded chests are inspected at most once every two minutes, using the shared chest look lease,
+  so haulers discover player-added contents without needing a crafting bill.
+- **Re-sorting**: a stack a chest's filter no longer allows goes to a chest that takes it. A better-priority chest pulls matching
+  stock, including the stronger priority of physical labels. One trip batches exact item variants from one source, capped by the
+  pawn's inventory space and destination space after already assigned deliveries. A permitted fallback can take rejected stock;
+  otherwise it stays safely in its source and the condition alert names it. Automatic organization never discards stored items.
+  `keep_disallowed` remains accepted for saved settings; lack of a safe destination always keeps items stored.
 - Options (`POST …/options`): `rescue_teleport`, `unfiltered_storage_takes_anything`, `keep_disallowed` (booleans, in `options`).
 
 ## Workbenches & bills

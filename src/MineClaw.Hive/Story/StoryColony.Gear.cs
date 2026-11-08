@@ -235,6 +235,7 @@ public sealed partial class StoryColony
             Meta.Gear.Rules.Add(rule!);
             Touch();
             _toolPlans.Clear();
+            ReassignMaterialWork(rule!.Material);
             WakeIdle();
             return (new JsonObject { ["rule"] = RuleJson(w.Data, rule!) }, null);
         }
@@ -243,7 +244,7 @@ public sealed partial class StoryColony
     private (JsonNode? Result, string? Error) RemoveMaterialRule(string material)
     {
         int n = Meta.Gear.Rules.RemoveAll(r => r.Material.Equals(material, StringComparison.OrdinalIgnoreCase));
-        if (n > 0) { Touch(); _toolPlans.Clear(); WakeIdle(); }
+        if (n > 0) { Touch(); _toolPlans.Clear(); ReassignMaterialWork(material); WakeIdle(); }
         return (new JsonObject { ["removed"] = n > 0 }, null);
     }
 
@@ -573,9 +574,22 @@ public sealed partial class StoryColony
         var t = new ToolPick(this, live, d, blockId, need, kind, min);
         if (ench != null && t.Enchanted(ench, rule!) is { } enchanted) return ToolHad(p.Name, kind, min, enchanted, worn: false);
         if (t.Plain(ench) is { } plain) return ToolHad(p.Name, kind, min, plain, t.WornOnly);
-        if (need.Hand && rule?.Fallback != "wait") return null; // a rule's wish only: the hand will do
+        // "plain" permits an unenchanted qualifying tool, never a bare hand below an explicit material rule.
         NoteToolWant(p.Name, kind, min);
         return new ToolPlan(t.Label, null, null, null, null, $"needs {t.Label}");
+    }
+
+    private void ReassignMaterialWork(string material)
+    {
+        if (World is not { } w || RuleTargetOf(w.Data, material).Target is not { } target) return;
+        var ids = target.Members.ToHashSet();
+        foreach (var (name, job) in _current.ToArray())
+        {
+            if (job.Kind is not ("dig" or "chop" or "harvest") || !Pawns.TryGetValue(name, out var pawn)) continue;
+            var cells = job.DigCells?.ToArray() ?? (job.At is { } at ? [at] : Array.Empty<P3>());
+            if (cells.Any(at => ids.Contains(DigBlockAt(at))) || job.Kind == "chop" && ids.Overlaps(StoryBlocks.Logs))
+                Supersede(pawn, "material tool rule changed");
+        }
     }
 
     /// <summary>The pawn has a tool for the dig: its want is met, unless all it has is a worn one (then its replacement is made before

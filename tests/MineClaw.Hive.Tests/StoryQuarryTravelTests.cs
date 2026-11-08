@@ -51,7 +51,7 @@ public sealed class StoryQuarryTravelTests
         job = c.Next();
         Assert.Equal("go", job["kind"]!.GetValue<string>());
         Assert.NotNull(job["stash"]);
-        if (lavaBucket) Assert.Contains("lava_bucket", job["stash"]!.ToJsonString());
+        if (lavaBucket) Assert.Contains("327:0", job["stash"]!.ToJsonString());
         route = job["quarry_exit"]!.AsArray().Select(n => n!.GetValue<string>()).ToArray();
         Assert.Equal("25,49,10", route[0]);
         Assert.Equal("10,64,10", route[^1]);

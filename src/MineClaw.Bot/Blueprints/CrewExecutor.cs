@@ -676,6 +676,11 @@ internal sealed class LaneRunner(CrewExecutor x, CrewContext c, PlanLane lane, I
         try
         {
             await PrefetchAsync(ct).ConfigureAwait(false);
+            if (c.Voxel.Blueprint.Mine)
+            {
+                Ore.Resume(lane.Steps.Select(i => Bp.Steps[i].Target));
+                _r.Cleared += await Ore.DrainAsync(ct, allowAccess: false).ConfigureAwait(false);
+            }
             if (await LoopAsync(ct).ConfigureAwait(false)) _r.State = "done";
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -1002,6 +1007,9 @@ internal sealed class LaneRunner(CrewExecutor x, CrewContext c, PlanLane lane, I
 
     private Task<ActionResult> DigAsync(BlockPos p, bool here, CancellationToken ct) => here ? body.DigHereAsync(p, ct) : body.DigAsync(p, ct);
 
+    private MineOreWork Ore => new(c.Voxel, Bp, body, () => c.Yield ? "yielded" : x.Single.HoldNow(c.Id),
+        () => Checkpoint(), body.Claims);
+
     /// <summary>A failed action: the step keeps its short reason and is tried again later.</summary>
     private static Outcome Failed(PlanStep s, ActionResult r)
     {
@@ -1025,6 +1033,11 @@ internal sealed class LaneRunner(CrewExecutor x, CrewContext c, PlanLane lane, I
         if (!r.Ok) { _r.Failed++; return Failed(s, r); }
         _r.Cleared++;
         Set(s, StepStatus.Verified);
+        if (c.Voxel.Blueprint.Mine)
+        {
+            Ore.Expose(s.Target, OreIdentity.Canonical(id, W.Inventory.Model.ModernClicks));
+            _r.Cleared += await Ore.DrainAsync(ct, allowAccess: false).ConfigureAwait(false);
+        }
         return Outcome.Done;
     }
 

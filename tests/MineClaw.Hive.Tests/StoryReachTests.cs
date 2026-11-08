@@ -30,11 +30,11 @@ public sealed class StoryReachTests
         h.Lives[c.P()] = FakeStoryHost.Live(0, 64, 0, inv: [new Stack(3, 0, 12), new Stack(17, 0, 5)]);
         var j = c.Next();
         var items = j["stash"]!.AsArray().SelectMany(s => s!["items"]!.AsArray().Select(x => x!.GetValue<string>())).ToList();
-        Assert.Equal(["log"], items); // the 12 dirt stay: blocks to nerd-pole with
+        Assert.Equal(["oak_wood"], items); // the 12 dirt stay: blocks to nerd-pole with
         c.Report(c.P(), Id(j), "done", null, null);
         h.Lives[c.P()] = FakeStoryHost.Live(0, 64, 0, inv: [new Stack(3, 0, 40), new Stack(17, 0, 5)]);
         var big = c.Next();
-        Assert.Contains("dirt", big["stash"]!.ToJsonString()); // more than the stack: it all goes (fetched back when needed)
+        Assert.Contains("3:0", big["stash"]!.ToJsonString()); // more than the stack: it all goes (fetched back when needed)
         Assert.Equal(16, c.State()["options"]!["pillar_stack"]!.GetValue<int>());
     }
 

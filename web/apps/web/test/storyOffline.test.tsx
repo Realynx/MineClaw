@@ -26,6 +26,56 @@ const pawn = (name: string, extra: Partial<StoryPawn> = {}): StoryPawn => ({
 });
 
 describe('offline pawns in the colonist bar', () => {
+  it('shows only numeric account suffixes while keeping full account keys for selection', () => {
+    const bodies = barBodies([pawn('maid_chan_109', { display: 'Cleo' }), pawn('maid_chat_1337', { display: 'River' })], []);
+    render(
+      <ColonistBar bodies={bodies} selected={['maid_chan_109']} order={[]}
+        onOrder={vi.fn()} onClick={vi.fn()} onBox={vi.fn()} onJump={vi.fn()} />,
+    );
+    const first = document.querySelector('[data-portrait="maid_chan_109"]')!;
+    const second = document.querySelector('[data-portrait="maid_chat_1337"]')!;
+    expect(first.textContent).toBe('109');
+    expect(second.textContent).toBe('1337');
+    expect(first).toHaveAttribute('aria-pressed', 'true');
+    expect(first).toHaveAttribute('aria-label', '109: Idle');
+    expect(screen.queryByText('Cleo')).toBeNull();
+    expect(screen.queryByText('River')).toBeNull();
+  });
+
+  it('box-selects only visible portraits in a scrolled row and anchors its line to viewport coordinates', () => {
+    const names = [100, 101, 102, 103].map((n) => `maid_chan_${n}`);
+    const onBox = vi.fn();
+    const capture = vi.spyOn(HTMLElement.prototype, 'setPointerCapture').mockImplementation(() => undefined);
+    const rect = vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
+      const i = names.indexOf(this.getAttribute('data-portrait') ?? '');
+      const left = i < 0 ? 100 : 40 + i * 60;
+      const width = i < 0 ? 120 : 58;
+      return { left, right: left + width, width, top: 100, bottom: 160, height: 60, x: left, y: 100, toJSON: () => ({}) };
+    });
+    try {
+      const { container } = render(
+        <ColonistBar bodies={barBodies(names.map((name) => pawn(name)), [])} selected={[]} order={[]}
+          onOrder={vi.fn()} onClick={vi.fn()} onBox={onBox} onJump={vi.fn()} />,
+      );
+      const firstVisible = container.querySelector('[data-portrait="maid_chan_101"]')!;
+      const ptr = (type: 'pointerDown' | 'pointerMove' | 'pointerUp', x: number) =>
+        fireEvent[type](firstVisible, { button: 0, pointerId: 1, clientX: x, clientY: 120 });
+      ptr('pointerDown', 120);
+      ptr('pointerMove', 500);
+      expect(container.querySelector('.fixed')).toHaveStyle({ left: '120px', width: '100px', top: '158px' });
+      ptr('pointerUp', 500);
+      expect(onBox).toHaveBeenLastCalledWith([names[1], names[2]], false);
+      ptr('pointerDown', 190);
+      ptr('pointerMove', 0);
+      ptr('pointerUp', 0);
+      expect(onBox).toHaveBeenLastCalledWith([names[1], names[2]], false);
+      expect(onBox).toHaveBeenCalledTimes(2);
+    } finally {
+      capture.mockRestore();
+      rect.mockRestore();
+    }
+  });
+
   const pawns = [
     pawn('maid_s1_dara'),
     pawn('maid_s1_ivo', { online: false, state: 'offline', offlineReason: 'not whitelisted — re-adding' }),
@@ -62,7 +112,7 @@ describe('offline pawns in the colonist bar', () => {
     const ivo = document.querySelector('[data-portrait="maid_s1_ivo"]')!;
     expect(ivo.getAttribute('data-offline')).toBe('true');
     expect(ivo.className).toContain('opacity-60');
-    expect(ivo.getAttribute('aria-label')).toBe('ivo: offline, not whitelisted — re-adding');
+    expect(ivo.getAttribute('aria-label')).toBe('maid_s1_ivo: offline, not whitelisted — re-adding');
     fireEvent.pointerEnter(ivo);
     expect(screen.getByTestId('offline-reason').textContent).toBe('Offline: not whitelisted — re-adding');
     const btn = screen.getByTestId('bar-bring-online');

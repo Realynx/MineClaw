@@ -10,7 +10,8 @@ public sealed partial class StoryColony
     {
         if (!live.Online || job.Kind == "attack" || World is not { } w) return job;
         var inside = Zones.FirstOrDefault(z => IsQuarry(z) && z.Contains(live.Block.X, live.Block.Z));
-        var quarry = job.Source == "zone" ? Zones.FirstOrDefault(z => z.Id == job.SourceId && IsQuarry(z)) : null;
+        var quarryId = job.OreOrigin is { Source: "zone" } origin ? origin.Id : job.Source == "zone" ? job.SourceId : null;
+        var quarry = Zones.FirstOrDefault(z => z.Id == quarryId && IsQuarry(z));
         bool fetch = job.Json["fetch"] is JsonArray { Count: > 0 } || job.Json["store"] is JsonArray { Count: > 0 }
             || job.Json["pillar"] != null && live.Inventory.Where(s => PillarAny.Contains(s.Id)).Sum(s => s.Count) < 4;
         bool exits = inside != null && live.Y < QuarryTopOf(inside) - 1

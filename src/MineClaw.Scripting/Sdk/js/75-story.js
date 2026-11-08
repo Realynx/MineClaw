@@ -201,6 +201,11 @@
   };
   // during(job, fn): fn while the job is still this pawn's; cut at once when the director takes it back -> {ok:false, cancelled:true}.
   const during = (j, f) => H.storyDuring(String(id(j)), f);
+  const chop = (j, at) => {
+    if (!j.tool) return globalThis.chop(at + ' only');
+    if (typeof globalThis.chop_with_tool !== 'function') return {ok:false,msg:'policy chopping is unavailable'};
+    return during(j, () => call('chop_with_tool', at, j.tool));
+  };
   // idle(job): an idle leg (a stroll or a pastime: j.act). Walk to the director's cell (this pawn's alone), then linger looking at
   // each of j.look in turn (another pawn, the stars, the sunset, a chair); cut the moment work comes up. Someone already standing
   // there (met on the way): move on, the director picks another cell.
@@ -545,7 +550,8 @@
   // A reserved cluster shares its access: dig everything visible before dismantling the pillar, and visit lower cells on the way
   // down. A later target needing another approach waits until this pillar is recovered. Never walk off the top to chase a cell.
   const digBatch = j => {
-    const pending = new Set(j.dig_cells || [j.at]), total = pending.size;
+    const pending = new Set(j.dig_cells || [j.at]), attempted = new Set(), veinOres = { ...(j.vein_ores || {}) };
+    let total = pending.size;
     let n = 0, stopped = false;
     const act = fn => {
       if (stopped) return { ok: false, cancelled: true, msg: 'dig batch interrupted' };
@@ -560,7 +566,21 @@
       if (j.id && !report(j, 'progress', 'digcell ' + c + (good(r) ? ' done' : ' failed: ' + why(r)))) stopped = true;
     };
     const one = c => {
-      const r = act(() => j.ordered || j.replace ? clearDig(c, j) : digHere(c));
+      const before = j.follow_veins ? H.storyBlockState(c) : null;
+      const r = act(() => veinOres[c]
+        ? typeof globalThis.dig_ore_here === 'function' ? call('dig_ore_here', c, veinOres[c])
+          : { ok: false, msg: 'guarded ore mining is unavailable' }
+        : j.ordered || j.replace ? clearDig(c, j) : digHere(c));
+      attempted.add(c);
+      if (!stopped && good(r) && j.follow_veins && j.id) {
+        const extra = H.storyDigExposed(String(j.id), c, before.id, before.meta);
+        if (extra === null) stopped = true;
+        else for (const cell of extra) {
+          if (!cell.at || !cell.ore || attempted.has(cell.at)) continue;
+          veinOres[cell.at] = cell.ore;
+          if (!pending.has(cell.at)) { pending.add(cell.at); total++; }
+        }
+      }
       note(c, r);
       return r;
     };
@@ -675,6 +695,7 @@
   };
   /** story.next(s)|report(job, status, note?)|during|idle|work|fetch|stash|go|dig|escape|sweep - the job loop */
   def('story', Object.freeze({
+    chop,
     next: s => H.storyNext(s == null ? 0 : s),
     report,
     during,

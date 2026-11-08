@@ -55,11 +55,11 @@ orders r2 maid_chan_103 job => {"id":"story-1.j9","type":"chop","kind":"chop","l
   report True
 orders r3 maid_chan_101 job => {"id":"story-1.j10","type":"build","kind":"blueprint","label":"building design #4","design":"4"}
   report True
-orders r3 maid_chan_102 job => {"id":"story-1.j11","type":"mine","kind":"dig","label":"mining","at":"2,63,2","tool":"stone_pickaxe","tool_ench":"none"}
+orders r3 maid_chan_102 job => {"id":"story-1.j11","type":"mine","kind":"dig","label":"mining","at":"2,63,2","tool":"stone_pickaxe","tool_ench":"none","dig_cells":["2,63,2"],"follow_veins":true}
   report True
 orders r3 maid_chan_103 job => {"id":"story-1.j12","type":"mine","kind":"dig","label":"mining (order)","at":"0,63,0","tool":"stone_pickaxe","tool_ench":"none"}
   report True
-orders r4 maid_chan_101 job => {"id":"story-1.j13","type":"mine","kind":"dig","label":"mining","at":"3,63,2","tool":"stone_pickaxe","tool_ench":"none"}
+orders r4 maid_chan_101 job => {"id":"story-1.j13","type":"mine","kind":"dig","label":"mining","at":"3,63,2","tool":"stone_pickaxe","tool_ench":"none","dig_cells":["3,63,2"],"follow_veins":true}
   report True
 orders r4 maid_chan_102 job => {"id":"story-1.j14","type":"chop","kind":"chop","label":"chopping a tree","at":"8,64,2","wood":["log"],"wood_blocks":["log"],"planks":"planks","logs":["8,64,2","8,65,2","8,66,2","8,67,2","8,68,2","8,69,2"]}
   report True

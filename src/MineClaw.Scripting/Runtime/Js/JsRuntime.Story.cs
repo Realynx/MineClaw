@@ -28,6 +28,21 @@ internal sealed partial class JsRuntime
             if (status is not ("progress" or "done" or "failed")) throw ScriptSession.Bug("story.report status is progress|done|failed");
             return port.Report(s.Host.Username, job, status, Str(a, 2), Num(a, 3)) ? JsBoolean.True : JsBoolean.False;
         });
+        H(h, "storyBlockState", a =>
+        {
+            s.SafePoint();
+            var at = ScriptSession.PosOf(JsonValue.Create(Str(a, 0))) ?? throw ScriptSession.Bug("storyBlockState(cell) needs a position");
+            return V(new JsonObject { ["id"] = s.Host.World.GetBlock(at), ["meta"] = s.Host.World.GetMeta(at) });
+        });
+        H(h, "storyDigExposed", a =>
+        {
+            s.SafePoint();
+            var port = StoryPort ?? throw ScriptSession.Bug("story.digBatch(): this body isn't a Story Mode pawn");
+            var job = Str(a, 0) ?? throw ScriptSession.Bug("storyDigExposed needs a job");
+            var cell = Str(a, 1) ?? throw ScriptSession.Bug("storyDigExposed needs a cell");
+            var next = port.DigExposed(s.Host.Username, job, cell, (int)(Num(a, 2) ?? 0), (int)(Num(a, 3) ?? 0));
+            return next != null ? V(next) : JsValue.Null;
+        });
         // story.escape's eyes (Story/PitScan.cs): is this body in a pit, a cave or water, and the next move out. Zero tokens, no action.
         H(h, "storyPit", a =>
         {

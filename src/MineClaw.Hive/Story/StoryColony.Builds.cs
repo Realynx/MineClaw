@@ -132,9 +132,10 @@ public sealed partial class StoryColony
         foreach (var b in hit)
         {
             if (op == "remove") { RemoveBuild(b); continue; }
-            if (b.Status != "done") b.Status = op == "pause" ? "paused" : "queued";
+            if (b.Status != "done" || b.Kind == "mine") b.Status = op == "pause" ? "paused" : "queued";
             b.Rev = Touch();
         }
+        OreTick();
         BuildConflictsPass();
         return (new JsonObject { ["ids"] = new JsonArray(hit.Select(b => (JsonNode)b.Id!).ToArray()) }, null);
     }
@@ -316,6 +317,7 @@ public sealed partial class StoryColony
 
     private ActiveJob? DigCell(IStoryWorld w, PawnState p, PawnLive live, BuildState b, GhostState g, string key)
     {
+        if (!Open("b:" + g.At, p.Name, g.At)) return null;
         if (w.Block(g.At.X, g.At.Y, g.At.Z).Id == 0 && w.Loaded(g.At.X, g.At.Z))
         {
             if (ReplacementAir(b, g)) CellDone(b, g); else { g.State = "done"; g.Rev = Touch(); }

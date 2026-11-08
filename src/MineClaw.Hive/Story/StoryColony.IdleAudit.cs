@@ -145,13 +145,13 @@ public sealed partial class StoryColony
     /// </summary>
     private bool SkippedByDesign(DesignationState d, Look? look)
     {
-        if (look is { LeftTrees: true } && WorkOf(d.Kind) == WorkTypes.Chop) return true;
+        if (look is { LeftTrees: true } && WorkOf(d) == WorkTypes.Chop) return true;
         return d.Auto && d.At is { } at && World is { } w && CaveLeftAlone(w, d, at);
     }
 
     /// <summary>An open (or tool-waiting) designation of a work type the pawn does.</summary>
     private static bool MarkOfItsWork(PawnState p, DesignationState d) =>
-        d.Status is null or "open" or "waiting" && WorkOf(d.Kind) is { Length: > 0 } wt && p.Priorities.GetValueOrDefault(wt) is >= 1 and <= 4;
+        d.Status is null or "open" or "waiting" && WorkOf(d) is { Length: > 0 } wt && p.Priorities.GetValueOrDefault(wt) is >= 1 and <= 4;
 
     // ---------------------------------------------------------------- why a search passed over open marks
 
@@ -211,7 +211,7 @@ public sealed partial class StoryColony
     {
         var set = new HashSet<string>(StringComparer.Ordinal);
         foreach (var d in Designations)
-            if (d.Status is null or "open" or "waiting" && WorkOf(d.Kind) is { Length: > 0 } t) set.Add(t); // waiting: for a tool
+            if (d.Status is null or "open" or "waiting" && WorkOf(d) is { Length: > 0 } t) set.Add(t); // waiting: for a tool
         if (Builds.Any(b => b.Status is "active" or "queued" && b.Ghosts.Any(g => g.Job && g.State is "todo"))) set.Add(WorkTypes.Build);
         if (World is { } w) AddBillWork(w, set);
         return set;

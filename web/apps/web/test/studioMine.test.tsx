@@ -182,6 +182,8 @@ describe('the mine panel', () => {
     expect(onPreset).toHaveBeenCalledTimes(1);
     expect(screen.queryByTestId('preset-b1.8.1-diamond-y11')).toBeNull();
     expect(screen.getByTestId('mine-stats').textContent).toContain('0 blocks to mine');
+    expect(screen.getByTestId('mine-vein-follow')).toHaveTextContent('follow connected exposed ore beyond the plan');
+    expect(screen.getByTestId('mine-vein-follow')).toHaveTextContent('planned tunnels and their walls');
   });
 });
 

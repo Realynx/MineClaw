@@ -14,7 +14,7 @@ public sealed partial class ConstructionExecutor
     /// short, someone else's blocks) and its steps, each one level of the loop: the preamble (claim, gate held/waiting), the
     /// passes over the plan (a re-plan or a gate correction starts a fresh pass), the step actions, the gate, the bookkeeping.
     /// </summary>
-    private sealed class BuildRun
+    private sealed partial class BuildRun
     {
         private readonly ConstructionExecutor _x;
         private readonly BlueprintOptions _o;
@@ -62,8 +62,10 @@ public sealed partial class ConstructionExecutor
             {
                 if (await EndsBeforeBuildingAsync().ConfigureAwait(false)) return Finish();
                 await PrepareAsync().ConfigureAwait(false);
+                await ResumeOreAsync().ConfigureAwait(false);
                 while (await PassAsync().ConfigureAwait(false)) { }
                 await AfterPassesAsync().ConfigureAwait(false);
+                if (_bp.OreFrontier?.Count > 0 && _report.Stopped == null) _report.Stopped = "exposed ore waits for safe access or inventory room";
             }
             catch (OperationCanceledException) when (_ct.IsCancellationRequested)
             {
@@ -172,6 +174,7 @@ public sealed partial class ConstructionExecutor
         /// <summary>One pass over the plan's steps in order; true = the plan changed (a re-plan, a gate correction): pass again.</summary>
         private async Task<bool> PassAsync()
         {
+            if (_report.Stopped != null) return false;
             _included = Included(_bp);
             _report.Total = _bp.Steps.Count(s => s.Action == StepAction.Place && _included.Contains(s.Index));
             Tally();
@@ -328,6 +331,11 @@ public sealed partial class ConstructionExecutor
                 step.Status = StepStatus.Verified;
                 _bp.ScaffoldUp.Remove(step.Target);
                 _rec.Scaffold.Remove(step.Target);
+                if (_voxel.Blueprint.Mine)
+                {
+                    ExposeOre(step.Target, OreIdentity.Canonical(id, _w.Inventory.Model.ModernClicks));
+                    await DrainOreAsync().ConfigureAwait(false);
+                }
             }
             else Deviate(step, $"couldn't clear {_voxel.Local(step.Target)}: {Short(r.Message)}", r);
             return StepOutcome.Done;

@@ -247,23 +247,24 @@ public sealed class StoryLootBatchingTests(ITestOutputHelper output)
         Assert.True(after > before * 1.8, $"{before:0.0} → {after:0.0}");
     }
 
-    // ================================================================ tool rules take effect between blocks
+    // ================================================================ tool rule edits interrupt and replan current work
 
     [Fact]
-    public void A_dirt_rule_changed_mid_run_takes_effect_at_the_next_block_without_restarting_the_work()
+    public void A_dirt_rule_changed_mid_run_interrupts_and_replans_the_unfinished_block_without_a_storage_detour()
     {
         var (c, h, w) = Field(6);
         var first = c.Next();
         Assert.Equal("dig", Kind(first));
         Assert.Null(first["tool"]); // dirt by hand
-        // The owner says: dirt with a shovel. The block under way finishes as it is (never cut mid-swing)…
+        // The owner says: dirt with a shovel. The current hand dig is cut and its unfinished target stays designated.
         Assert.Null(c.MaterialRulesOp(new JsonObject { ["op"] = "set", ["rule"] = new JsonObject { ["material"] = "dirt", ["tool"] = "shovel" } }).Error);
-        Assert.Equal(Id(first), c.CurrentOf(c.P())!.Id);
+        Assert.Null(c.CurrentOf(c.P()));
+        Assert.False(c.Holds(c.P(), Id(first)));
+        Assert.Contains(h.Interrupted, line => line.Contains("material tool rule changed"));
         c.AddContents(c.StorageAt(Chest)!, new Stack(269, 0, 1)); // a wooden shovel in storage
-        w.Set(At(first).X, 64, At(first).Z, 0);
-        h.Lives[c.P()] = FakeStoryHost.Live(1, 64, 1, inv: new Stack(3, 0, 1));
-        c.Report(c.P(), Id(first), "done", null, null);
-        // …and the next block gets the shovel from storage: fetched with the dig, or by the gear step just before it.
+        Assert.False(c.Report(c.P(), Id(first), "done", null, null)); // a late report cannot finish the canceled job
+        Assert.Equal(3, w.Block(At(first).X, 64, At(first).Z).Id);
+        // The retried block gets the shovel from storage: fetched with the dig, or by the gear step just before it.
         var second = c.Next();
         Assert.False(Stores(second), second.ToJsonString()); // no trip to storage with the loot in between
         Assert.Contains("\"from\":\"" + Chest + "\"", second.ToJsonString());
@@ -275,6 +276,7 @@ public sealed class StoryLootBatchingTests(ITestOutputHelper output)
             second = c.Next();
         }
         Assert.Equal("dig", Kind(second));
+        Assert.Equal(At(first), At(second));
         Assert.Equal(w.Data.Item(269).Name, second["tool"]!.GetValue<string>());
         // Carrying it now: held, no more fetching; and still no store trip in between.
         w.Set(At(second).X, 64, At(second).Z, 0);
@@ -295,8 +297,9 @@ public sealed class StoryLootBatchingTests(ITestOutputHelper output)
         {
             ["op"] = "set", ["rule"] = new JsonObject { ["material"] = "dirt", ["tool"] = "shovel", ["enchant"] = "silk_touch", ["fallback"] = "wait" },
         }).Error);
-        w.Set(At(first).X, 64, At(first).Z, 0);
-        c.Report(c.P(), Id(first), "done", null, null);
+        Assert.False(c.Holds(c.P(), Id(first)));
+        Assert.False(c.Report(c.P(), Id(first), "done", null, null));
+        Assert.Equal(3, w.Block(At(first).X, 64, At(first).Z).Id);
         Assert.NotEqual("dig", Kind(c.Next()));
         Assert.All(c.Designations, d => Assert.StartsWith("waiting for", d.Wait));
         Assert.All(c.Designations, d => Assert.Equal(0, d.Fails));

@@ -17,7 +17,7 @@ function chopTree(j) {
   if (!ok(there)) return there
   story.ready(j)
   const before = held()
-  const r = chop(j.at + ' only'), got = held() - before
+  const r = story.chop(j, j.at), got = held() - before
   if (ok(r) || got <= 0) return r
   if (j.planks && inv(j.planks) < 4) craft(j.planks, 4)
   return chopRest(j, wood, held, r, got)
@@ -27,7 +27,7 @@ function chopRest(j, wood, held, r, got) {
   const rest = (j.logs || []).find(p => logs.includes(block(p)))
   if (rest) {
     const mark = held()
-    r = chop(rest + ' only')
+    r = story.chop(j, rest)
     if (ok(r)) return r
     got += Math.max(0, held() - mark)
   }

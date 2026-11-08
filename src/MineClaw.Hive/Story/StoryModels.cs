@@ -313,6 +313,9 @@ public sealed class DesignationState
     /// left alone (surface work). An owner's mark is work wherever it is.</summary>
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
     public bool Auto { get; set; }
+    /// <summary>Ore exposed by authorized mining; keeps its original work policy and parent cancellation.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public OreWorkOrigin? OreOrigin { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] public int Ore { get; set; }
     /// <summary>Why it waits without failing ("needs a stone pickaxe"): no pawn that picked it had or could fetch the tool; not saved.</summary>
     [System.Text.Json.Serialization.JsonIgnore] public string? Wait { get; set; }
     public long Rev { get; set; }
@@ -534,8 +537,7 @@ public sealed class ColonyMeta
     /// <summary>Loot no chest's filter accepts goes into any chest with room that doesn't deny it (default on). Off: it stays with the
     /// pawn (or on the ground) until a chest accepts it.</summary>
     public bool UnfilteredTakesAnything { get; set; } = true;
-    /// <summary>A chest keeps what its filter no longer allows until a compatible chest exists (default off: like the genre, the haulers
-    /// take it out and drop it by the chest, where it despawns unless it is hauled).</summary>
+    /// <summary>Legacy saved setting. Chest organization now always retains items until a safe destination exists.</summary>
     public bool KeepDisallowed { get; set; }
     /// <summary>Blocks a pawn keeps to nerd-pole with (dirt first, then cobblestone, netherrack) out of its store trips: a kind it
     /// carries no more of than this stays with it (default 16; 0 = none). Fox 11-04: high blocks are reached from a pillar.</summary>
@@ -564,7 +566,13 @@ public sealed class ColonyMeta
     /// <summary>Blocks the pawns put down for themselves and haven't taken back yet (StoryColony.TempBlocks.cs); null = none.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public List<TempBlockState>? TempBlocks { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public List<OreFrontier>? OreFrontiers { get; set; }
+    /// <summary>Cancelled automatic ore extensions stay cancelled across neighboring digs and restarts.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public List<P3>? CancelledOre { get; set; }
 }
+
+public sealed record OreWorkOrigin(string Source, string Id, string Type);
+public sealed record OreFrontier(P3 At, int Ore, OreWorkOrigin Origin);
 
 /// <summary>
 /// A block a pawn put down for itself (a reach or escape pillar step, a build's scaffold, a walk's pillar or bridge, a shelter box, a

@@ -84,6 +84,7 @@ public sealed class PlanColumn
 
 /// <summary>A planned cell the planner couldn't schedule, with why (reported before building).</summary>
 public sealed record Infeasible(BlockPos Pos, int Id, string Why);
+public sealed record OreFrontierCell(BlockPos Pos, int Ore, bool Unknown = false);
 
 /// <summary>Rotation (clockwise quarter turns about <see cref="Anchor"/>), mirror (across the main axis) and shift of a plan.</summary>
 public sealed record BuildTransform(int Quarters = 0, bool Mirror = false, int Dx = 0, int Dy = 0, int Dz = 0, BlockPos Anchor = default, char Axis = 'x')
@@ -169,7 +170,7 @@ public sealed class BuildPlan
             Origin = prev.Origin, Facing = prev.Facing, Dim = prev.Dim, Transform = prev.Transform,
             Gate = prev.Gate, Placed = prev.Placed.Distinct().ToList(), ScaffoldUp = prev.ScaffoldUp.Distinct().ToList(),
             Columns = prev.Columns.Where(c => c.Poured && !c.Removed).ToList(), State = prev.State, Replans = prev.Replans,
-            Home = prev.Home, Exit = prev.Exit.ToList(),
+            Home = prev.Home, Exit = prev.Exit.ToList(), OreFrontier = prev.Version == version ? prev.OreFrontier?.ToList() : null,
             Note = $"re-planned: the saved plan was {(prev.Version != version ? "for another version of the design" : $"in an older format ({prev.Format})")}",
         };
     }
@@ -183,6 +184,9 @@ public sealed class BuildPlan
     public GateInfo Gate { get; set; } = new();
     public List<BlockPos> Placed { get; set; } = new();
     public List<BlockPos> ScaffoldUp { get; set; } = new();
+    /// <summary>Exposed mine ore awaiting this same build's continuation, kept across inventory stops and resuming.</summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public List<OreFrontierCell>? OreFrontier { get; set; }
     /// <summary>
     /// The ground the build started from (the feet cell of its first slicing, kept across every resume and re-plan): "a way down"
     /// always means back to this level. Live 10-28 16:15: a resume/the finale sliced from up on the drop tower's platform made the

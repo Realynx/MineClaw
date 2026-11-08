@@ -40,6 +40,8 @@ public sealed partial class ScriptBridge
         DepositAtTool.ToolName, // hidden: planned evacuation delivery to only its selected chest
         RemoveStorageSignTool.ToolName, // hidden: exact attached sign removal before a storage filter override
         StationaryDigTool.ToolName, // hidden: dig_here{at} (visible reserved cells, without walking off a shared access pillar)
+        OreDigTool.ToolName, // hidden: expected ore only, from the same shared access
+        PolicyChopTool.ToolName,
         StationaryPlaceTool.ToolName, // hidden: place_here{block,at,meta?} (construction from the current footing)
         ClearTemporaryTool.ToolName, // hidden: clear_temporary{} (a Story pawn's own scaffolds, pillars and boxes dug back after each job)
         FishingTool.ToolName, // hidden tool: fish(at, seconds) with a rod
@@ -51,7 +53,7 @@ public sealed partial class ScriptBridge
     private static readonly HashSet<string> AtomicTools = new(StringComparer.OrdinalIgnoreCase)
     {
         "craft", "smelt", "collect_furnace", "deposit", "withdraw", "organize_chest", "place", "dig", "use_block", "eat", EquipTool.ToolName, EscapeDigTool.ToolName, ClearDigTool.ToolName, StationaryDigTool.ToolName,
-        TurnedPlaceTool.ToolName, StationaryPlaceTool.ToolName, DeconstructChestTool.ToolName, DepositAtTool.ToolName, RemoveStorageSignTool.ToolName,
+        TurnedPlaceTool.ToolName, StationaryPlaceTool.ToolName, DeconstructChestTool.ToolName, DepositAtTool.ToolName, RemoveStorageSignTool.ToolName, OreDigTool.ToolName,
     };
 
     private static readonly AsyncLocal<bool> InWorker = new();

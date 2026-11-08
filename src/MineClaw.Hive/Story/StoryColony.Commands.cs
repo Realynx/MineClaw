@@ -212,7 +212,7 @@ public sealed partial class StoryColony
     {
         "move" => Job("order", "go", $"moving to {at}", at ?? o.Area?.Center, null, "order", o.Id, "moving", j => j["dist"] = 0, xp: 0),
         "attack" => AttackJob(p, o, e, at), // the exact entity, every ordered pawn at once (StoryColony.Combat.cs)
-        "chop" => ChopOrderJob(o, at),
+        "chop" => ChopOrderJob(p, live, o, at),
         "mine" => MineOrderJob(p, live, o, at),
         "haul" => HaulOrderJob(o, at, e),
         "build" when o.Design is { } d => Job(WorkTypes.Build, "blueprint", $"building design #{d}", at, "design:" + d, "order", o.Id, "working", j => j["design"] = d.ToString(), xp: 60),
@@ -223,9 +223,13 @@ public sealed partial class StoryColony
     private ActiveJob HaulOrderJob(Order o, P3? at, StoryEntity? e) =>
         Job(WorkTypes.Haul, "collect", "hauling (order)", at ?? o.Area?.Center, e != null ? "e:" + e.Id : null, "order", o.Id, "working", j => j["r"] = 4, xp: 5);
 
-    private ActiveJob ChopOrderJob(Order o, P3? at) =>
-        Job(WorkTypes.Chop, "chop", "chopping (order)", at, at is { } c ? "b:" + c : null, "order", o.Id,
-            fill: j => ChopFill(j, at is { } ct && World is { } ow ? StoryBlocks.TreeFrom(ow, ct) : null), xp: 40);
+    private ActiveJob ChopOrderJob(PawnState p, PawnLive live, Order o, P3? at)
+    {
+        var tool = at is { } target ? PlanTool(p, live, DigBlockAt(target)) : null;
+        if (tool?.Wait is { } wait) return Job("order", "hold", wait, null, null, "tool_wait", o.Id, "idle", j => j["s"] = 3, xp: 0);
+        return WithTool(tool, Job(WorkTypes.Chop, "chop", "chopping (order)", at, at is { } c ? "b:" + c : null, "order", o.Id,
+            fill: j => ChopFill(j, at is { } ct && World is { } ow ? StoryBlocks.TreeFrom(ow, ct) : null), xp: 40));
+    }
 
     private void OrderDone(PawnState p, ActiveJob j, bool ok, string? note)
     {
@@ -268,6 +272,7 @@ public sealed partial class StoryColony
         lock (_lock)
         {
             var gone = Designations.Where(d => RemovalHits(d, kind, area, blocks, ids)).ToList();
+            CancelOreMarks(gone, kind, area, blocks);
             foreach (var d in gone)
             {
                 CancelStorageSignMark(d);
@@ -278,6 +283,7 @@ public sealed partial class StoryColony
             var cancelled = gone.Select(d => d.Id).ToHashSet();
             foreach (var p in Pawns.Values)
                 if (_current.TryGetValue(p.Name, out var job) && (job.Source == "designation" && job.SourceId is { } id && cancelled.Contains(id)
+                    || job.DigDesignations.Values.Any(cancelled.Contains)
                     || job.Json["deconstruct_id"]?.GetValue<string>() is { } demolition && cancelled.Contains(demolition)))
                 {
                     Supersede(p, "task cancelled by owner");

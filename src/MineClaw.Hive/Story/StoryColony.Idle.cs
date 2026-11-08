@@ -321,6 +321,7 @@ public sealed partial class StoryColony
     /// <summary>The wanderer's new job, leased now (so the next pawn sees it taken).</summary>
     private void HandToWanderer(PawnState p, ActiveJob job)
     {
+        job = FollowOre(job);
         if (job.Lease != null) _leases[job.Lease] = (p.Name, Now + LeaseTtl);
         foreach (var k in job.MoreLeases) _leases[k] = (p.Name, Now + LeaseTtl);
         job.Assign?.Invoke(); // a build batch leases its cells now (as Next does)

@@ -80,7 +80,9 @@ public sealed class BuildPlanStore
 
     /// <summary>One lane's own progress row: its steps' status, the blocks it placed, its scaffold still up (a lane writes only
     /// its row, so bodies in other processes never overwrite each other's progress).</summary>
-    private sealed record LaneRow(string Body, string State, string? Note, List<int[]> Status, List<BlockPos> Placed, List<BlockPos> Scaffold);
+    private sealed record LaneRow(string Body, string State, string? Note, List<int[]> Status, List<BlockPos> Placed, List<BlockPos> Scaffold,
+        [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+        List<OreFrontierCell>? OreFrontier = null);
 
     /// <summary>Saves lane <paramref name="lane"/>'s progress for the plan's current slicing (<see cref="BuildPlan.SliceId"/>).</summary>
     public void SaveLane(BuildPlan bp, PlanLane lane)
@@ -93,7 +95,8 @@ public sealed class BuildPlanStore
             row = new LaneRow(lane.Body, lane.State, lane.Note,
                 steps.Where(s => s.Status != StepStatus.Pending).Select(s => new[] { s.Index, (int)s.Status }).ToList(),
                 steps.Where(s => s.Action == StepAction.Place && s.Status is StepStatus.Done or StepStatus.Verified).Select(s => s.Target).ToList(),
-                steps.Where(s => s.Action == StepAction.Scaffold && s.Finished && bp.ScaffoldUp.Contains(s.Target)).Select(s => s.Target).ToList());
+                steps.Where(s => s.Action == StepAction.Scaffold && s.Finished && bp.ScaffoldUp.Contains(s.Target)).Select(s => s.Target).ToList(),
+                bp.OreFrontier?.Count > 0 ? bp.OreFrontier.ToList() : null);
         }
         var json = JsonSerializer.Serialize(row, Json);
         lock (_db.Gate)
@@ -127,6 +130,11 @@ public sealed class BuildPlanStore
         foreach (var st in row.Status) MergeStatus(bp, st);
         foreach (var p in row.Placed) if (!bp.Placed.Contains(p)) bp.Placed.Add(p);
         foreach (var p in row.Scaffold) if (!bp.ScaffoldUp.Contains(p)) bp.ScaffoldUp.Add(p);
+        foreach (var ore in row.OreFrontier ?? [])
+        {
+            var frontier = bp.OreFrontier ??= [];
+            if (frontier.All(c => c.Pos != ore.Pos)) frontier.Add(ore);
+        }
         if (laneIx >= 0 && laneIx < bp.Lanes.Count) { bp.Lanes[laneIx].State = row.State; bp.Lanes[laneIx].Note = row.Note; }
     }
 

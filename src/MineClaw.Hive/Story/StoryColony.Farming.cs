@@ -190,7 +190,7 @@ public sealed partial class StoryColony
         var from = live.Block;
         var cells = GrowCells(z).Where(c => Open("b:" + c.At, p.Name, c.At)).OrderBy(c => c.At.Dist(from)).ToList();
         var own = OwnView(p.Name);
-        if (z.Harvest && RipeJob(w, z, plant, cells, own) is { } harvest) return harvest;
+        if (z.Harvest && RipeJob(w, z, plant, cells, own, p, live) is { } harvest) return harvest;
         if (!z.Sow || plant == null) return null;
         HoeCheck(z, cells);
         if (FirstAgreed(cells, "sow", z, own) is { } sow && SowJob(w, p, live, z, plant, sow) is { } sown) return sown;
@@ -198,10 +198,12 @@ public sealed partial class StoryColony
     }
 
     /// <summary>The nearest ripe cell's harvest, unless no chest has room for what it yields (<see cref="HarvestHeld"/>).</summary>
-    private ActiveJob? RipeJob(IStoryWorld w, ZoneState z, StoryPlant? plant, List<GrowCell> cells, IStoryWorld? own)
+    private ActiveJob? RipeJob(IStoryWorld w, ZoneState z, StoryPlant? plant, List<GrowCell> cells, IStoryWorld? own, PawnState p, PawnLive live)
     {
         if (FirstAgreed(cells, "ripe", z, own) is not { } r || StoryPlants.Get(w.Data, r.Plant) is not { } crop) return null;
-        return HarvestHeld(z, crop) ? null : HarvestJob(w, z, plant, r, crop);
+        if (HarvestHeld(z, crop)) return null;
+        var tool = crop.Harvest == "tree" ? PlanTool(p, live, w.Block(r.At.X, r.At.Y, r.At.Z).Id) : null;
+        return tool?.Wait != null ? null : WithTool(tool, HarvestJob(w, z, plant, r, crop));
     }
 
     /// <summary>The pawn's own view (its connection's world), or null: the colony's (main's) view is all there is.</summary>
