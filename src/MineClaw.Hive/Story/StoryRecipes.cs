@@ -125,6 +125,15 @@ public static class StoryRecipes
     private static string Name(IGameData d, int id, int meta) =>
         meta > 0 ? d.VariantName(id, meta) is { Length: > 0 } v ? v : d.Item(id).Name : d.ItemExists(id) ? d.Item(id).Name : d.Block(id).Name;
 
+    private static string CraftToolName(IGameData d, int id, int meta, string fallback)
+    {
+        var variant = d.VariantName(id, meta);
+        // Some display names collide with the family alias after normalization (stonebrick / stone_brick, stone_slab).
+        // The crafter's explicit selector preserves this recipe without changing ordinary player craft commands.
+        if (d.ItemByNameWithDamage(variant) is { } item && item.Item.Id == id && item.Damage == meta) return variant;
+        return d.RecipesFor(id).Select(r => r.OutputDamage).Distinct().Skip(1).Any() ? $"{id}:{meta}" : fallback;
+    }
+
     private static readonly HashSet<string> SmallWords = new(StringComparer.OrdinalIgnoreCase) { "of", "and", "with", "on", "a", "the", "into" };
 
     /// <summary>The item's display name in title case ("Light gray Wool" → "Light Gray Wool"); any-variant inputs (damage -1) take the
@@ -152,8 +161,11 @@ public static class StoryRecipes
             var id = "craft:" + name;
             if (!seen.Add(id)) continue;
             var inputs = r.Totals.Select(t => new RecipeInput([new ItemKey(t.Ingredient.Id, t.Ingredient.Damage)], t.Count)).ToList();
+            // Recipe ids are persisted, but the tool needs the exact output even for metadata zero. Family recipes below keep
+            // their wildcard names; exact recipes use an unambiguous name or a numeric id:meta selector.
+            var toolItem = r.OutputDamage < 0 ? name : CraftToolName(d, r.OutputId, r.OutputDamage, name);
             list.Add(StoryRecipeFamilies.Mark(new StoryRecipe(id, $"Make {Label(d, r.OutputId, r.OutputDamage)}", "crafting_table", WorkTypes.Craft,
-                new Stack(r.OutputId, Math.Max(0, r.OutputDamage), r.OutputCount), inputs, false) { ToolItem = name }));
+                new Stack(r.OutputId, Math.Max(0, r.OutputDamage), r.OutputCount), inputs, false) { ToolItem = toolItem }));
         }
         foreach (var s in d.AllSmelting)
         {

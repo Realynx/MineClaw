@@ -49,9 +49,19 @@ public sealed partial class StoryColony
         {
             int units = f.Units(need.Net);
             bool Ok(Stack s) => f.Item.Matches(s.Id, s.Meta);
-            int own = Math.Max(0, (need.Live?.Inventory.Where(Ok).Sum(s => s.Count) ?? 0) - (need.OwnInputs?.Where(Ok).Sum(s => s.Count) ?? 0));
+            var wood = FuelChoice(need.Bench, need.Bill) is StoryFuels.Auto or "any" ? WoodBudget(need.Bill, null, fuel: true) : null;
+            foreach (var input in need.OwnInputs ?? []) WoodTaken(wood, input);
+            // The client furnace primitive selects fuel by ID only. A protected carried variant could be chosen ahead of
+            // the permitted variant fetched from storage, so use another fuel ID (or another pawn) in that case.
+            if (wood != null && (need.Live?.Inventory ?? []).Where(s => s.Id == f.Item.Id).GroupBy(s => (s.Id, s.Meta))
+                .Any(g => WoodAvailable(wood, g.Key.Id, g.Key.Meta, g.Sum(s => s.Count)) < g.Sum(s => s.Count))) continue;
+            var ownStacks = (need.Live?.Inventory ?? []).Where(Ok).GroupBy(s => (s.Id, s.Meta)).Select(g =>
+                g.First() with { Count = WoodAvailable(wood, g.Key.Id, g.Key.Meta, Math.Max(0, g.Sum(s => s.Count)
+                    - (need.OwnInputs?.Where(s => s.Id == g.Key.Id && s.Meta == g.Key.Meta).Sum(s => s.Count) ?? 0))) }).ToList();
+            int own = ownStacks.Sum(s => s.Count);
             if (own >= units) return (f, units, null, null);
-            if (FindStored(s => Ok(s) && s.Count >= units - own, need.Bench.Pos, need.Bill.Radius) is not { } fs) continue;
+            foreach (var stack in ownStacks) WoodTaken(wood, stack);
+            if (FindStored(s => Ok(s) && WoodAvailable(wood, s.Id, s.Meta, s.Count) >= units - own, need.Bench.Pos, need.Bill.Radius) is not { } fs) continue;
             if (unreservedOnly && Unreserved((id, meta) => f.Item.Matches(id, meta)) < units - own) continue;
             return (f, units, (fs.Store.Chest, fs.Stack with { Count = units - own }), null);
         }

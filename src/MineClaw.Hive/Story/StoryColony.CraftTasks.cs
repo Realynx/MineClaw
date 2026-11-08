@@ -109,7 +109,7 @@ public sealed partial class StoryColony
     private bool NeedTask(IStoryWorld w, int outputId, int target, string why)
     {
         var recipe = StoryRecipes.For(w.Data, "crafting_table").FirstOrDefault(r => r.Output.Id == outputId);
-        var bench = Benches.Where(b => b.Kind == "crafting_table").OrderBy(b => Home() is { } h ? b.Pos.Dist(h) : 0).FirstOrDefault();
+        var bench = BenchFor("crafting_table", Home() ?? default);
         if (recipe == null || bench == null) return false;
         // Only an open task counts: an owner's bill for it waits its turn in the owner's queue (live 11-05: a "wooden hoe 1/1" bill and
         // the owner's "stone hoe until 1" kept the farm's hoe from ever becoming an immediate task, and no hoe was made for 9 hours).

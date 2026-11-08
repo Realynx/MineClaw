@@ -333,6 +333,29 @@ public class ObtainTests
     }
 
     [Fact]
+    public async Task An_exact_stone_brick_selector_smelts_and_crafts_the_requested_variant_while_the_family_stays_ambiguous()
+    {
+        using var version = MineClaw.Data.Versioning.GameData.Override(MineClaw.Data.Versioning.Release1122GameData.Instance);
+        var (h, c, _) = Make();
+        using var host = h;
+        Furnace(c);
+        Put(c, Blocks.Cobblestone, 0, 4);
+        Put(c, Items.Coal, 0, 1);
+
+        var family = await h.Run("craft", new { item = "stonebrick", count = 4 });
+        Assert.False(family.Ok);
+        Assert.Contains("several items", family.Text);
+        Assert.DoesNotContain("smelt", Calls(c));
+
+        var exact = await h.Run("craft", new { item = "98:0", count = 4 });
+        Assert.True(exact.Ok, exact.Text + " | " + Calls(c));
+        Assert.Contains($"smelt {Blocks.Cobblestone} 4", Calls(c));
+        Assert.Equal(0, c.LastCraftDamage);
+        Assert.Equal(4, Inv(c, Blocks.StoneBricks, 0));
+        Assert.Equal(0, Inv(c, Blocks.StoneBricks, 1));
+    }
+
+    [Fact]
     public async Task A_chest_from_logs_converts_them_to_planks_first()
     {
         var (h, c, s) = Make();

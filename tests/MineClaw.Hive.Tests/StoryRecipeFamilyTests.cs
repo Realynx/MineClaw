@@ -50,8 +50,8 @@ public sealed class StoryRecipeFamilyTests
     private static List<(string Item, int N)> Fetched(JsonObject j) =>
         j["fetch"]!.AsArray().Select(f => (f!["item"]!.GetValue<string>(), f["n"]!.GetValue<int>())).ToList();
 
-    /// <summary>The item name a job uses (fetches take by name: any variant of it).</summary>
-    private static string Name(int id, int meta = 0) => Modern.Item(id).Name;
+    /// <summary>The name a fetch uses for the exact selected variant; zero-meta families retain their existing base name.</summary>
+    private static string Name(int id, int meta = 0) => meta > 0 ? Modern.VariantName(id, meta) : Modern.Item(id).Name;
 
     [Fact]
     public void The_catalogue_has_any_variant_bills_first_and_labels_vanilla_wildcards()

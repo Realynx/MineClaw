@@ -1933,7 +1933,10 @@ level 18)").
 
 Execution:
 - A pawn with the bill's work type on, and allowed by `pawn` and `min_skill`, takes the first runnable bill of the nearest free
-  bench. One pawn works a bench at a time.
+  bench. Furnaces have one active load; crafting tables can serve several pawns working different tasks.
+- A registered table or furnace that is confirmed missing in a loaded column stops receiving work. Automatic tasks move to
+  another available bench of the same kind, clearing their old station failures. Manual bills and settings stay at their chosen
+  location for a replacement bench. An unloaded column does not establish that a bench is missing.
 - It fetches the ingredients from storages within `radius` of the bench (the ingredient filter applies), crafts, and stores the
   product in the bill's chest, else by the storage rules.
 - A furnace is loaded and left to smelt (10 s an item) with the fuel its choice allows (see "Fuel" below). A later job of the same
@@ -2022,7 +2025,9 @@ A furnace's fuel is a bench setting with a per-bill override (`StoryFuels`, `Sto
   bills only).
 - A named fuel is the only one burnt: the pawn brings only it, and the smelt primitive takes another fuel out of the fuel slot
   first and never stands another fuel in when it runs short (`MinecraftClient.SmeltAsync` with a fuel). Auto and any leave stock the
-  builds or bills reserved (planks a build needs) unless nothing else is there.
+  builds or bills reserved (planks a build needs) unless nothing else is there. Exact construction wood is protected even during
+  that fallback: an automatic stone-brick smelt cannot burn the spruce logs held for stairs. An explicitly named fuel can still
+  use that material. Fuel reservations retain the actual wood or coal metadata, including mixed variants.
 - What the furnace still holds counts: the colony keeps `fuel_credit` (items it can still smelt on the fuel it loaded, burn time
   and slot leftovers); a job tops up only what its batch needs beyond it (`fuel_units` 0 = none brought). A job that finds the
   furnace short of fuel resets the credit. The primitive itself counts the real fuel slot and burn time.
@@ -2129,6 +2134,13 @@ materials pass runs whenever storage, the queue, benches or bills change (and ev
   unreserved: logs → planks → sticks → fence, cobblestone → stairs, sand → glass (fuel: coal or charcoal 1 per 8, planks or logs
   1 per 1.5) → panes. What the stock covers (the most, by a binary search; fuel included) is crafted; its ingredients are
   reserved too, so two builds or an owner's bill never take the same planks.
+- **Construction wood before generic uses.** Placed logs/planks and the final recipe's exact wood inputs (such as spruce planks
+  for stairs and doors) claim their available wood in queue order before generic recipes or automatic furnace fuel can take it.
+  Generic crafting uses the remaining stock. Ingredient fetching and fuel selection enforce the same holds, including carried wood.
+- **Exact materials stay exact through the chain.** Spruce stairs require spruce planks, so their prerequisite task crafts
+  spruce planks even when another wood is more plentiful. A generic product such as a chest may still use any plank type.
+  Craft commands use an unambiguous variant name or an explicit `id:meta` selector (normal stone bricks are `98:0`), while saved
+  recipe IDs and deliberate "any" recipes keep their existing names.
 - **Craft tasks, not bills.** Each step is a craft task "for build #N" (`for_build`, `for_item`, `step`, a `reason` such as "for the
   fence of build b4") on the colony's crafting table or furnace nearest home, radius 256: one task per build and recipe with a
   count, in the bench's task list, never in its bill list (see "Craft tasks" below). Its target is `done` + what is still to make,

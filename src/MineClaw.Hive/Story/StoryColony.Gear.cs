@@ -929,7 +929,7 @@ public sealed partial class StoryColony
     /// not even one.</summary>
     private static (CraftPlan Plan, Dictionary<(int Id, int Meta), int> After, int N)? MostTools((int Id, int Meta) key, int max, Dictionary<(int Id, int Meta), int> pool)
     {
-        static bool Ok((CraftPlan Plan, Dictionary<(int Id, int Meta), int> After, (int Id, int Count) Fuel)? f) => f is { } x && !x.Plan.Steps.Any(s => s.IsSmelt);
+        static bool Ok((CraftPlan Plan, Dictionary<(int Id, int Meta), int> After, IReadOnlyList<MaterialNeed> Fuel)? f) => f is { } x && !x.Plan.Steps.Any(s => s.IsSmelt);
         if (!Ok(Feasible(key, 1, pool))) return null; // never smelted for (iron only from ingots)
         for (int n = Math.Min(max, 16); n >= 1; n--)
             if (Feasible(key, n, pool) is { } f && Ok(f)) return (f.Plan, f.After, n);

@@ -16,6 +16,7 @@ public sealed partial class StoryColony
     /// default): only designated benches count (<see cref="WorkbenchOp"/>, a bill added at one, one the colony placed).</summary>
     private void ScanBenches()
     {
+        ReconcileWorkbenches();
         if (!Meta.DetectBenches || World is not { } w || Home() is not { } home) return;
         // Every house (home zone) and the primary home's surroundings.
         var areas = Zones.Where(z => z.Kind == "home").Select(z => (Area: z.Area, Cells: (ZoneCells?)z.Cells)).ToList();
@@ -346,20 +347,29 @@ public sealed partial class StoryColony
     private (List<(P3? Chest, Stack Stack)> Got, string? Missing) Ingredients(BillState b, StoryRecipe r, int crafts, WorkbenchState bench, PawnLive live)
     {
         var got = new List<(P3?, Stack)>();
+        var wood = WoodBudget(b, r);
         foreach (var input in r.Inputs)
         {
             int need = input.Count * crafts;
             bool Ok(Stack s) => input.Options.Any(o => o.Matches(s.Id, s.Meta)) && Cats!.Accepts(b.Ingredients, s.Id, s.Meta);
-            if (live.Inventory.Where(Ok).Sum(s => s.Count) >= need) { got.Add((null, live.Inventory.First(Ok) with { Count = need })); continue; }
+            var ownGroup = live.Inventory.Where(Ok).GroupBy(s => (s.Id, s.Meta))
+                .FirstOrDefault(g => WoodAvailable(wood, g.Key.Id, g.Key.Meta, g.Sum(s => s.Count)) >= need);
+            if (ownGroup != null)
+            {
+                var take = ownGroup.First() with { Count = need };
+                got.Add((null, take)); WoodTaken(wood, take); continue;
+            }
             // Whatever variants are stocked, several stacks if need be (vanilla's wildcard recipes take mixed planks; a family bill
             // takes any log): the most plentiful first, then the nearest. Live 11-04: "no oak wood planks" with birch in the chest.
             int left = need;
             if (bench.Kind != "furnace")
                 foreach (var own in live.Inventory.Where(Ok))
                 {
-                    int n = Math.Min(left, own.Count);
-                    if (n <= 0) break;
+                    int n = WoodAvailable(wood, own.Id, own.Meta, Math.Min(left, own.Count));
+                    if (left <= 0) break;
+                    if (n <= 0) continue;
                     got.Add((null, own with { Count = n }));
+                    WoodTaken(wood, own with { Count = n });
                     left -= n;
                 }
             foreach (var (store, stack) in Storages.Where(s => s.Chest.Dist(bench.Pos) <= b.Radius && ChestOpen(s.Chest))
@@ -368,11 +378,17 @@ public sealed partial class StoryColony
             {
                 if (left <= 0) break;
                 if (r.Fuel && got.Any(g => g.Item1 != null && (g.Item2.Id != stack.Id || g.Item2.Meta != stack.Meta))) continue; // a furnace load is one item
-                int n = Math.Min(left, stack.Count);
+                int n = WoodAvailable(wood, stack.Id, stack.Meta, Math.Min(left, stack.Count));
+                if (n <= 0) continue;
                 got.Add((store.Chest, stack with { Count = n }));
+                WoodTaken(wood, stack with { Count = n });
                 left -= n;
             }
-            if (left == need) return (got, MissingText(input, b.Radius, bench)); // some is a smaller batch; none is missing
+            if (left == need)
+            {
+                bool held = wood != null && (live.Inventory.Any(Ok) || Storages.Where(s => s.Chest.Dist(bench.Pos) <= b.Radius && ChestOpen(s.Chest)).Any(s => s.Contents.Any(Ok)));
+                return (got, held ? ReservedText(input, r, 0) : MissingText(input, b.Radius, bench));
+            } // some is a smaller batch; none is missing
         }
         return (got, null);
     }
@@ -422,6 +438,7 @@ public sealed partial class StoryColony
     /// <summary>The bench's job for this pawn: collecting a furnace that is done, else its first runnable bill; null = none here.</summary>
     private ActiveJob? BenchJob(IStoryWorld w, PawnState p, PawnLive live, string work, WorkbenchState bench, Func<BillState, bool>? only)
     {
+        if (bench.Kind is "crafting_table" or "furnace" && !BenchAvailable(bench)) return null;
         var key = "bench:" + bench.Pos;
         if (!Open(key, p.Name, null)) { NoteBenchInUse(w, bench, work); return null; }
         // A loaded furnace: fuel for a load left without it, collecting one that is done (the bill's work type), else still smelting.
@@ -507,6 +524,13 @@ public sealed partial class StoryColony
     /// waits on a missing one, the fetches, then the fuel (a furnace) or where the product goes.</summary>
     private ActiveJob? CraftBillJob(PawnState p, PawnLive live, string work, WorkbenchState bench, BillState bill, StoryRecipe r, string key)
     {
+        if (ProtectedCarriedWood(bill, r, live))
+        {
+            const string why = "carrying wood reserved for another build; store it before a generic craft";
+            Blocked(why);
+            if (bill.ForBuild != null) _taskBlocked[bill.Id] = why;
+            return null;
+        }
         var batch = new BillBatch { Crafts = AvailableCraftBatch(bill, r, bench, live, BatchSize(bill, r, bench)) };
         (batch.Got, batch.Missing) = Ingredients(bill, r, batch.Crafts, bench, live);
         bool auto = bill.ForBuild != null;
@@ -534,11 +558,13 @@ public sealed partial class StoryColony
     private int AvailableCraftBatch(BillState bill, StoryRecipe recipe, WorkbenchState bench, PawnLive live, int wanted)
     {
         if (bench.Kind == "furnace") return wanted;
+        var wood = WoodBudget(bill, recipe);
         foreach (var input in recipe.Inputs)
         {
             bool Fits(Stack s) => input.Options.Any(o => o.Matches(s.Id, s.Meta)) && Cats!.Accepts(bill.Ingredients, s.Id, s.Meta);
-            int available = live.Inventory.Where(Fits).Sum(s => s.Count)
-                + Storages.Where(s => s.Chest.Dist(bench.Pos) <= bill.Radius && ChestOpen(s.Chest)).Sum(s => s.Contents.Where(Fits).Sum(x => x.Count));
+            int available = live.Inventory.Where(Fits)
+                .Concat(Storages.Where(s => s.Chest.Dist(bench.Pos) <= bill.Radius && ChestOpen(s.Chest)).SelectMany(s => s.Contents.Where(Fits)))
+                .GroupBy(s => (s.Id, s.Meta)).Sum(g => WoodAvailable(wood, g.Key.Id, g.Key.Meta, g.Sum(s => s.Count)));
             wanted = Math.Min(wanted, available / Math.Max(1, input.Count));
         }
         return Math.Max(1, wanted); // An empty batch still runs the ingredient check to explain what is missing.
@@ -615,12 +641,24 @@ public sealed partial class StoryColony
             }, xp: 25, count: crafts * r.Output.Count);
         foreach (var (chest, st) in got.Where(g => g.Chest != null))
         {
-            fetch.Add(new JsonObject { ["from"] = chest!.Value.ToString(), ["item"] = ItemName(st.Id, st.Meta), ["n"] = st.Count });
+            fetch.Add(new JsonObject { ["from"] = chest!.Value.ToString(), ["item"] = BillTakeName(st), ["n"] = st.Count });
             job.Takes.Add((chest.Value, st));
         }
         if (bench.Kind != "furnace") return StashBatch(job, bench, bill, r, crafts);
         var own = got.Where(g => g.Chest == null).Select(g => g.Stack).ToList(); // its input from its own pockets is no fuel too
         return FuelBatch(job, bench, bill, r, crafts, live, auto, own);
+    }
+
+    private string BillTakeName(Stack stack)
+    {
+        if (stack.Meta == 0 && stack.Id is 5 or 17 or 162 && World?.Data is { } data)
+        {
+            var variant = data.VariantName(stack.Id, 0);
+            if (data.ItemByNameWithDamage(variant) is { } item && item.Item.Id == stack.Id && item.Damage == 0) return variant;
+            // The modern registry's display name already owns "oak_wood" as a wildcard. Its existing oak_log alias is exact.
+            if (stack.Id == 17 && data.ItemByNameWithDamage("oak_log") is { Item.Id: 17, Damage: 0 }) return "oak_log";
+        }
+        return TakeName(stack);
     }
 
     /// <summary>
@@ -644,7 +682,7 @@ public sealed partial class StoryColony
         job.Json["fetch"] = fetch;
         if (src is { } fs)
         {
-            fetch.Add(new JsonObject { ["from"] = fs.Chest.ToString(), ["item"] = TakeName(fs.Stack), ["n"] = fs.Stack.Count });
+            fetch.Add(new JsonObject { ["from"] = fs.Chest.ToString(), ["item"] = BillTakeName(fs.Stack), ["n"] = fs.Stack.Count });
             job.Takes.Add((fs.Chest, fs.Stack));
         }
         job.Json["fuel"] = fuel != null ? ItemName(fuel.Item.Id, 0) : null; // the only fuel the pawn loads
@@ -779,7 +817,7 @@ public sealed partial class StoryColony
     /// <summary>Suspended bills whose ingredients may be back are retried (every storage change wakes them).</summary>
     internal void RetrySuspended()
     {
-        foreach (var bench in Benches)
+        foreach (var bench in Benches.Where(BenchAvailable))
             foreach (var b in BillsAndTasks(bench).Where(b => b.SuspendedReason != null && !_billFails.ContainsKey(b.Id)))
             {
                 b.SuspendedReason = null;

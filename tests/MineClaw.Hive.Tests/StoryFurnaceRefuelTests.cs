@@ -132,7 +132,8 @@ public class StoryFurnaceRefuelTests
         var j = c.Next();
         Assert.Equal("smelt", Kind(j));
         Assert.Equal(1, j["fuel_units"]!.GetValue<int>());
-        Assert.Contains(Fetched(j), f => f.Item.StartsWith("log", StringComparison.Ordinal) && f.N == 1); // and one more to burn
+        Assert.Contains(Fetched(j), f => h.World!.Data.ItemByNameWithDamage(f.Item) is { } item
+            && item.Item.Id == 17 && item.Damage == 0 && f.N == 1); // and one more of the exact selected wood to burn
     }
 
     [Fact]

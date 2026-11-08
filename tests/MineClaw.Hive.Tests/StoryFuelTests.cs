@@ -78,7 +78,7 @@ public class StoryFuelTests
         var j = c.Next();
         Assert.Equal("smelt", j["kind"]!.GetValue<string>());
         Assert.Equal("planks", j["fuel"]!.GetValue<string>());
-        Assert.Contains(("planks", 3), Fetched(j)); // 4 items ÷ 1.5
+        Assert.Contains(("oak_wood_planks", 3), Fetched(j)); // 4 items ÷ 1.5, fetch the selected wood variant
         Assert.Equal("planks", BillState(c)["fuel"]!.GetValue<string>());
     }
 

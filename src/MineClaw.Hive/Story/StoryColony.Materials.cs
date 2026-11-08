@@ -43,6 +43,7 @@ public sealed partial class StoryColony
     /// <summary>Runs the materials pass when it is due (callers hold the lock).</summary>
     internal void EnsureMaterials()
     {
+        ReconcileWorkbenches();
         if (!_materialsDirty && (Now - _materialsAt < MaterialsEvery || _materialsRev == _rev)) return;
         RefreshMaterials();
     }
@@ -112,18 +113,6 @@ public sealed partial class StoryColony
         return t;
     }
 
-    /// <summary>Takes n of any meta of an id (fuel); false (and nothing taken) when there aren't n.</summary>
-    private static bool TakeAny(Dictionary<(int Id, int Meta), int> pool, int id, int n)
-    {
-        if (pool.Where(kv => kv.Key.Id == id).Sum(kv => kv.Value) < n) return false;
-        foreach (var k in pool.Keys.Where(k => k.Id == id).ToList())
-        {
-            if (n <= 0) break;
-            n -= Take(pool, k, n);
-        }
-        return true;
-    }
-
     private static void Reserve(Dictionary<(int Id, int Meta), int> into, (int Id, int Meta) key, int n)
     {
         if (n > 0) into[key] = into.GetValueOrDefault(key) + n;
@@ -138,37 +127,51 @@ public sealed partial class StoryColony
 
     /// <summary>Fuel for <paramref name="smelts"/> smelts out of the pool by preference (the furnace's choice; auto = coal, planks,
     /// logs); the fuel taken, or null.</summary>
-    private static (int Id, int Count)? TakeFuel(Dictionary<(int Id, int Meta), int> pool, int smelts)
+    private static IReadOnlyList<MaterialNeed>? TakeFuel(Dictionary<(int Id, int Meta), int> pool, int smelts)
     {
-        if (smelts <= 0) return (0, 0);
+        if (smelts <= 0) return [];
         foreach (var (fid, fmeta, per) in _plannerFuels ?? StoryRecipes.Fuels.Select(f => (f.Id, -1, f.PerItem)).ToList())
         {
             int need = Math.Max(1, (int)Math.Ceiling(smelts * per - 1e-9));
-            if (fmeta < 0 ? TakeAny(pool, fid, need) : pool.GetValueOrDefault((fid, fmeta)) >= need && Take(pool, (fid, fmeta), need) == need) return (fid, need);
+            var keys = pool.Keys.Where(k => k.Id == fid && (fmeta < 0 || k.Meta == fmeta)).ToList();
+            if (keys.Sum(k => pool[k]) < need) continue;
+            var used = new List<MaterialNeed>();
+            foreach (var key in keys)
+            {
+                int taken = Take(pool, key, need);
+                if (taken > 0) used.Add(new MaterialNeed(key.Id, key.Meta, taken));
+                need -= taken;
+                if (need == 0) break;
+            }
+            return used;
         }
         return null;
     }
 
     /// <summary>A plan for n that the pool covers completely, fuel included, and the pool after it; null when it can't.</summary>
-    private static (CraftPlan Plan, Dictionary<(int Id, int Meta), int> After, (int Id, int Count) Fuel)? Feasible((int Id, int Meta) key, int n,
+    private static (CraftPlan Plan, Dictionary<(int Id, int Meta), int> After, IReadOnlyList<MaterialNeed> Fuel)? Feasible((int Id, int Meta) key, int n,
         Dictionary<(int Id, int Meta), int> pool)
     {
         var plan = PlanFor(key, n, pool);
         if (!plan.Complete || plan.Steps.Count == 0) return null;
         var after = new Dictionary<(int, int), int>(pool);
         foreach (var u in plan.Used) Take(after, (u.Id, u.Damage), u.Count);
+        if (_plannerFuelAllowance != null)
+            foreach (var (held, count) in _plannerFuelAllowance) PoolAdd(after, held.Id, held.Meta, count);
         if (TakeFuel(after, plan.ItemsToSmelt) is not { } fuel) return null;
+        if (_plannerFuelAllowance != null)
+            foreach (var (held, count) in _plannerFuelAllowance) PoolAdd(after, held.Id, held.Meta, -count);
         return (plan, after, fuel);
     }
 
     /// <summary>The most of an item (up to <paramref name="max"/>) the pool can make, with that plan.</summary>
-    private static (int N, CraftPlan? Plan, Dictionary<(int Id, int Meta), int>? After, (int Id, int Count) Fuel) MostCraftable((int Id, int Meta) key, int max,
+    private static (int N, CraftPlan? Plan, Dictionary<(int Id, int Meta), int>? After, IReadOnlyList<MaterialNeed> Fuel) MostCraftable((int Id, int Meta) key, int max,
         Dictionary<(int Id, int Meta), int> pool)
     {
-        if (max <= 0) return (0, null, null, (0, 0));
+        if (max <= 0) return (0, null, null, []);
         if (Feasible(key, max, pool) is { } all) return (max, all.Plan, all.After, all.Fuel);
         int lo = 0, hi = max - 1;
-        (CraftPlan, Dictionary<(int, int), int>, (int, int))? best = null;
+        (CraftPlan, Dictionary<(int, int), int>, IReadOnlyList<MaterialNeed>)? best = null;
         while (lo < hi)
         {
             int mid = (lo + hi + 1) / 2;
@@ -176,12 +179,12 @@ public sealed partial class StoryColony
             else hi = mid - 1;
         }
         if (lo > 0 && best == null && Feasible(key, lo, pool) is { } g) best = (g.Plan, g.After, g.Fuel);
-        return lo > 0 && best is { } b ? (lo, b.Item1, b.Item2, b.Item3) : (0, null, null, (0, 0));
+        return lo > 0 && best is { } b ? (lo, b.Item1, b.Item2, b.Item3) : (0, null, null, []);
     }
 
     /// <summary>The bench-kind recipe a planner step is (the bill's recipe), or null.</summary>
-    /// <param name="intermediate">The step makes an ingredient of a later step (planks for sticks), not the item wanted itself: a family
-    /// recipe that takes any variant ("Planks (from any logs)") is used, so the chain never stalls on one wood (StoryRecipeFamilies).</param>
+    /// <param name="intermediate">The step makes an ingredient whose variant later steps don't constrain (planks for sticks): a
+    /// family recipe can use any logs. Exact consumers such as spruce stairs must retain the planner's selected plank variant.</param>
     internal static StoryRecipe? RecipeOf(IGameData d, CraftStep s, bool intermediate = false)
     {
         if (s.Smelt is { } sm)
@@ -200,7 +203,7 @@ public sealed partial class StoryColony
 
     /// <summary>The designated bench of a kind nearest home (or the build), or null.</summary>
     private WorkbenchState? BenchFor(string kind, P3 near) =>
-        Benches.Where(b => b.Kind == kind).OrderBy(b => b.Pos.Dist(near)).FirstOrDefault();
+        Benches.Where(b => b.Kind == kind && BenchAvailable(b)).OrderBy(b => b.Pos.Dist(near)).FirstOrDefault();
 
     /// <param name="Reason">The craft task's reason in words (a tool's: who waits on it); null = said from the build.</param>
     private sealed record Want(string Build, int Order, string ForItem, StoryRecipe Recipe, int Outputs, int Step, string Bench, string? Reason = null);
@@ -208,6 +211,7 @@ public sealed partial class StoryColony
     /// <summary>The materials pass (see the type's summary). Callers hold the lock.</summary>
     internal void RefreshMaterials()
     {
+        ReconcileWorkbenches();
         _materialsDirty = false;
         _materialsAt = Now;
         _materialsSeq++;
@@ -221,8 +225,10 @@ public sealed partial class StoryColony
             : null;
         var pass = new MaterialsPass(this, w, pool);
         pass.Pool = ToolCrafts(w, pass.Pool, pass.Reserved, pass.Wants, pass.HasTable); // tools a waiting job needs, spare tools: auto bills "for tools" (StoryColony.Gear.cs)
+        pass.ProtectWood();
         pass.BucketCovered = BucketsHeld() > 0; // any bucket anywhere, empty or full, is the one liquid builds share (StoryColony.Water.cs)
         foreach (var b in Builds.OrderBy(b => b.Order)) pass.Build(b);
+        pass.FinishWood();
         CommitMaterials(pass, near);
     }
 
@@ -280,9 +286,25 @@ public sealed partial class StoryColony
         public readonly List<Want> Wants = new();
         public readonly List<HandCraft> Hand = new();
         public StationWant? Station;
-        public readonly bool HasTable = c.Benches.Any(b => b.Kind == "crafting_table"), HasFurnace = c.Benches.Any(b => b.Kind == "furnace");
+        public readonly bool HasTable = c.Benches.Any(b => b.Kind == "crafting_table" && c.BenchAvailable(b)),
+            HasFurnace = c.Benches.Any(b => b.Kind == "furnace" && c.BenchAvailable(b));
         public bool BucketCovered;
         private bool _bucketAsked;
+        private ConstructionWoodHolds? _wood;
+
+        public void ProtectWood()
+        {
+            _wood = new ConstructionWoodHolds(Pool);
+            foreach (var b in c.Builds.Where(Builds_Live).OrderBy(b => b.Order))
+                foreach (var grp in Groups(b))
+                {
+                    var (liquid, item, key, need) = GroupKey(grp);
+                    if (!liquid) _wood.Add(b.Id, item, key, need, b.NoCraft.Contains(item));
+                }
+            c._woodClaims = _wood.Claims;
+        }
+
+        public void FinishWood() => _wood?.Finish(Pool, Reserved, Claims);
 
         /// <summary>A build's materials and alert: each item it still places, what the colony has, crafts, or lacks.</summary>
         public void Build(BuildState b)
@@ -305,6 +327,23 @@ public sealed partial class StoryColony
         /// <summary>One item of a build: held from stock, the rest crafted or said short. Liquid sources take a bucket (kept, never
         /// used up): one for all the colony's liquid builds (StoryColony.Water.cs).</summary>
         private void Group(BuildAcc acc, IGrouping<string, GhostState> grp)
+        {
+            var (_, item, _, _) = GroupKey(grp);
+            var hidden = _wood?.Hide(Pool, acc.Build.Id, item) ?? new();
+            var before = new Dictionary<(int Id, int Meta), int>(Pool);
+            var prior = _plannerFuelAllowance;
+            var furnace = c.BenchFor("furnace", c.Home() ?? acc.Build.Ghosts.First().At);
+            _plannerFuelAllowance = furnace != null && FuelChoice(furnace, null) is not (StoryFuels.Auto or "any") ? hidden : null;
+            try { GroupCore(acc, grp); }
+            finally
+            {
+                _wood?.Used(acc.Build.Id, item, before, Pool);
+                foreach (var (key, n) in hidden) PoolAdd(Pool, key.Id, key.Meta, n);
+                _plannerFuelAllowance = prior;
+            }
+        }
+
+        private void GroupCore(BuildAcc acc, IGrouping<string, GhostState> grp)
         {
             var (liquid, item, key, need) = GroupKey(grp);
             // The colony's one bucket is asked for once (an earlier liquid build is crafting or asking for it): no second bill, no
@@ -373,7 +412,7 @@ public sealed partial class StoryColony
         }
 
         /// <summary>The chain's inputs are claimed for it; a bill that makes one of its steps may still use them.</summary>
-        private void ClaimChain(BuildState b, string item, CraftPlan plan, (int Id, int Count) fuel)
+        private void ClaimChain(BuildState b, string item, CraftPlan plan, IReadOnlyList<MaterialNeed> fuel)
         {
             var chainOut = plan.Steps.Select(s => s.OutputId).ToHashSet();
             foreach (var u in plan.Used)
@@ -381,16 +420,22 @@ public sealed partial class StoryColony
                 Reserve(Reserved, (u.Id, u.Damage), u.Count);
                 Claims.Add(new StockClaim((u.Id, u.Damage), u.Count, b.Id, item, chainOut));
             }
-            if (fuel.Count > 0) { Reserve(Reserved, (fuel.Id, 0), fuel.Count); Claims.Add(new StockClaim((fuel.Id, 0), fuel.Count, b.Id, item, chainOut)); }
+            foreach (var f in fuel)
+            {
+                Reserve(Reserved, (f.Id, f.Damage), f.Count);
+                Claims.Add(new StockClaim((f.Id, f.Damage), f.Count, b.Id, item, chainOut));
+            }
         }
 
         /// <summary>The chain's steps as auto bills on the bench they need, or hand crafts (2×2) while the colony has no table.</summary>
         private void AddSteps(BuildAcc acc, string item, (int Id, int Meta) key, CraftPlan plan)
         {
             var b = acc.Build;
-            foreach (var s in plan.Steps)
+            for (int i = 0; i < plan.Steps.Count; i++)
             {
-                if (RecipeOf(w.Data, s, intermediate: (s.Recipe?.OutputId ?? -1) != key.Id) is not { } r) continue;
+                var s = plan.Steps[i];
+                bool anyVariant = s.OutputId != key.Id && !plan.Steps.Skip(i + 1).Any(next => RequiresVariant(next, s.OutputId));
+                if (RecipeOf(w.Data, s, intermediate: anyVariant) is not { } r) continue;
                 // An owner's bill already makes this step (smelting the iron ore into ingots): no second, automatic one.
                 if (c.OwnerMakes(w, s.OutputId)) { acc.Step++; continue; }
                 int outputs = s.OutputCount;
@@ -400,6 +445,10 @@ public sealed partial class StoryColony
                 else if (!s.RequiresCraftingTable) Hand.Add(new HandCraft(b.Id, item, r, outputs, acc.Step++));
             }
         }
+
+        private static bool RequiresVariant(CraftStep step, int item) =>
+            step.Recipe?.Ingredients.Any(input => input.Id == item && input.Damage >= 0) == true
+            || step.Smelt is { } smelt && smelt.InputId == item && smelt.InputDamage >= 0;
 
         private void RawRest((int Id, int Meta) key, int left, MatPlan plan)
         {
@@ -716,8 +765,8 @@ public sealed partial class StoryColony
         }
         Mix((long)pool);
         Mix(_freePool.Count);
-        foreach (var kind in StoryRecipes.Benches) Mix(Benches.Count(b => b.Kind == kind));
-        Mix(Benches.Count);
+        foreach (var kind in StoryRecipes.Benches) Mix(Benches.Count(b => b.Kind == kind && BenchAvailable(b)));
+        Mix(Benches.Count(BenchAvailable));
         Mix(Meta.AllowLava ? 1 : 0); // the Water tab: the Lava source entry, and the buckets anywhere that unlock it (StoryColony.Water.cs)
         Mix(BucketsHeld());
         return (int)(h ^ h >> 32) & int.MaxValue;
@@ -740,7 +789,8 @@ public sealed partial class StoryColony
     {
         {
             using var scope = ReferenceEquals(GameData.Current, w.Data) ? null : GameData.Override(w.Data);
-            bool hasTable = Benches.Any(b => b.Kind == "crafting_table"), hasFurnace = Benches.Any(b => b.Kind == "furnace");
+            bool hasTable = Benches.Any(b => b.Kind == "crafting_table" && BenchAvailable(b)),
+                hasFurnace = Benches.Any(b => b.Kind == "furnace" && BenchAvailable(b));
             var entries = new JsonArray();
             foreach (var e in StoryArchitect.Entries(w.Data)) entries.Add(ArchitectEntryJson(w, e, hasTable, hasFurnace));
             WaterEntries(w, entries, hasTable); // the Water tab: sources, channels, an infinite source (StoryColony.Water.cs)
@@ -748,7 +798,7 @@ public sealed partial class StoryColony
             {
                 ["entries"] = entries,
                 ["benches"] = new JsonObject(StoryRecipes.Benches.Where(k => StoryRecipes.SupportedIn(w.Data, k))
-                    .Select(k => new KeyValuePair<string, JsonNode?>(k, Benches.Count(b => b.Kind == k)))),
+                    .Select(k => new KeyValuePair<string, JsonNode?>(k, Benches.Count(b => b.Kind == k && BenchAvailable(b))))),
                 ["tabs"] = new JsonArray(StoryArchitect.Tabs.Select(t => (JsonNode)t!).ToArray()),
             };
         }

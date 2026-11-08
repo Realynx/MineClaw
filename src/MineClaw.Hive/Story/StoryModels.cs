@@ -456,6 +456,8 @@ public sealed class BillState
 public sealed class WorkbenchState
 {
     public P3 Pos { get; set; }
+    /// <summary>Last confirmed missing in a loaded world view; stays missing across restarts until its block is seen again.</summary>
+    public bool Missing { get; set; }
     /// <summary>crafting_table | furnace | brewing_stand | anvil | enchanting_table.</summary>
     public string Kind { get; set; } = "";
     public string? Label { get; set; }

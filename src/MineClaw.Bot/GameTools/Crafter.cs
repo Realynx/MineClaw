@@ -28,6 +28,11 @@ public sealed class Crafter(IGameClient client)
 
     public async Task<ActionResult> CraftAsync(string itemName, int count, CancellationToken ct)
     {
+        // Colony recipes can name an exact output even when its readable name collides with a family (stonebrick / stone_brick).
+        var exact = itemName.Split(':');
+        if (exact.Length == 2 && int.TryParse(exact[0], out int id) && int.TryParse(exact[1], out int meta)
+            && Items.Exists(id) && meta is >= 0 and <= short.MaxValue)
+            return await CraftAsync(id, meta, count, ct).ConfigureAwait(false);
         if (Items.ByNameWithDamage(itemName) is not { } r) return ActionResult.Fail($"unknown item '{itemName}'");
         return await CraftAsync(r.Item.Id, r.Damage, count, ct).ConfigureAwait(false);
     }
