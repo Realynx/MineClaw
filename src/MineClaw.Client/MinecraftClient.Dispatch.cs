@@ -486,9 +486,12 @@ public sealed partial class MinecraftClient
 
     private void ReceiveOpenWindow(OpenWindowPacket ow, WorldState w)
     {
-        w.Inventory.Open(ow.WindowId, (WindowType)ow.InventoryType, ow.Title, ow.SlotCount, ow.Kind);
-        if (_lastActivated is not { } act || Environment.TickCount64 - act.At > 5000) return;
+        var act = _lastActivated;
         _lastActivated = null;
+        if (act is not null && (Environment.TickCount64 - act.At > 5000 || act.Dimension != w.Dimension)) act = null;
+        _openedContainerAttribution = act is null ? null : new ContainerAttribution(ow.WindowId, w.Dimension, act.Pos);
+        w.Inventory.Open(ow.WindowId, (WindowType)ow.InventoryType, ow.Title, ow.SlotCount, ow.Kind);
+        if (act is null) return;
         int wid = ow.WindowId, wtype = ow.InventoryType;
         Raise(() => ContainerOpened?.Invoke(wid, wtype, act.Pos.X, act.Pos.Y, act.Pos.Z));
     }

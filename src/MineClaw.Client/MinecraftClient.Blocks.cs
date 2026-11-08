@@ -418,7 +418,7 @@ public sealed partial class MinecraftClient
     /// <summary>Last block right-clicked by <see cref="ClickBlockAsync"/> (activate / open) and when (ms tick count), so
     /// the next 0x64 can be attributed to it (<see cref="ContainerOpened"/>).</summary>
     private volatile Activation? _lastActivated;
-    private sealed record Activation(BlockPos Pos, long At);
+    private sealed record Activation(BlockPos Pos, long At, int Dimension);
 
     private async Task<ActionResult> ClickBlockAsync(BlockPos pos, CancellationToken ct, bool allowPathing = true)
     {
@@ -449,7 +449,7 @@ public sealed partial class MinecraftClient
         }
         var (yaw, pitch, face) = look.Value;
         await LookCoreAsync(yaw, pitch, ct).ConfigureAwait(false);
-        _lastActivated = new Activation(pos, Environment.TickCount64);
+        _lastActivated = new Activation(pos, Environment.TickCount64, World.Dimension);
         Send(new PlayerBlockPlacementPacket { X = pos.X, Y = pos.Y, Z = pos.Z, Direction = (byte)face, HeldItem = HeldStack() });
         Send(new AnimationPacket { EntityId = World.Player.EntityId, Animation = 1 });
         return ActionResult.Success("clicked");

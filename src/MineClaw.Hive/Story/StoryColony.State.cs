@@ -46,7 +46,7 @@ public sealed partial class StoryColony
                 {
                     ["at"] = a.At, ["level"] = a.Level, ["text"] = a.Text, ["pawn"] = a.Pawn,
                 }).ToArray()),
-                ["builds"] = new JsonArray(Builds.Where(b => New(b.Rev) || b.Ghosts.Any(g => New(g.Rev))).OrderBy(b => b.Order).Select(b => (JsonNode)new JsonObject
+                ["builds"] = new JsonArray(Builds.Where(b => New(b.Rev) || b.Ghosts.Any(g => New(g.Rev))).OrderBy(b => b.Order).Select(b => (JsonNode)BuildMetadata(b, new JsonObject
                 {
                     ["id"] = b.Id, ["kind"] = b.Kind, ["label"] = b.Label, ["status"] = b.Status, ["reason"] = b.Reason, ["blocks_total"] = b.BlocksTotal,
                     ["blocks_done"] = b.BlocksDone, ["material"] = b.Material, ["order"] = b.Order, ["created"] = b.Created,
@@ -54,7 +54,7 @@ public sealed partial class StoryColony
                     ["no_craft"] = new JsonArray(b.NoCraft.Select(n => (JsonNode)n!).ToArray()),
                     ["station"] = _station is { } st && st.Build == b.Id ? new JsonObject { ["kind"] = st.Kind, ["pos"] = st.Spot.Json() } : null,
                     ["liquid"] = LiquidOfBuild(b), ["renewable"] = LiquidOfBuild(b) == "water" ? Renewable(b) : null,
-                }).ToArray()),
+                })).ToArray()),
                 ["ghosts"] = new JsonObject
                 {
                     ["rev"] = _rev,

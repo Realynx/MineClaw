@@ -28,8 +28,8 @@ public sealed partial class StoryColony
         return free + chain;
     }
 
-    /// <summary>An owner's live bill (not paused or waiting, still wanted) makes <paramref name="output"/>: a build's chain leaves that
-    /// step to it instead of adding an automatic one (no double smelting).</summary>
+    /// <summary>An owner's live bill (not paused or waiting, still wanted) makes <paramref name="output"/>: a build's crafting chain
+    /// leaves that step to it. Furnace chains instead account for committed loads and use every available station.</summary>
     private bool OwnerMakes(IStoryWorld w, int output) =>
         Benches.Any(b => BenchAvailable(b) && b.Bills.Any(x => x.ForBuild == null && !x.Paused && x.SuspendedReason == null
             && StoryRecipes.Get(w.Data, x.Recipe) is { } r && r.Output.Id == output && Wanted(x, r)));

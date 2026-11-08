@@ -66,7 +66,7 @@ public interface IGameClient
             : HarvestGeneratorAsync(cells[0].X, cells[0].Y, cells[0].Z, count, stand, ct);
     Task<ActionResult> CollectDropsAsync(double radius = 8, CancellationToken ct = default, bool dryOnly = false);
     Task<ActionResult> CraftAsync(int itemId, int damage = -1, int count = 1, CancellationToken ct = default);
-    Task<ActionResult> SmeltAsync(int inputItemId, int count, int? fuelItemId = null, bool wait = false, BlockPos? furnace = null, CancellationToken ct = default);
+    Task<ActionResult> SmeltAsync(int inputItemId, int count, int? fuelItemId = null, bool wait = false, BlockPos? furnace = null, CancellationToken ct = default, int? inputMeta = null);
     Task<ActionResult> CollectFurnaceAsync(BlockPos? furnace = null, CancellationToken ct = default);
     Task<ActionResult> OpenContainerAsync(int x, int y, int z, CancellationToken ct = default);
     Task<ActionResult> ClickSlotAsync(int slot, bool rightClick = false, bool shift = false, CancellationToken ct = default);
@@ -80,8 +80,8 @@ public interface IGameClient
         PlaceBlockAsync(x, y, z, itemId, ct);
     /// <summary>Places an item so its block gets <paramref name="meta"/>'s facing, axis or half (a design's furnace front, stairs, log
     /// axis, wall torch: <see cref="MinecraftClient.PlaceTurnedAsync"/>). Default: <see cref="PlaceVariantAsync"/> (the click's own).</summary>
-    Task<ActionResult> PlaceTurnedAsync(int x, int y, int z, int itemId, int? damage, int meta, CancellationToken ct = default) =>
-        PlaceVariantAsync(x, y, z, itemId, damage, null, ct);
+    Task<ActionResult> PlaceTurnedAsync(int x, int y, int z, int itemId, int? damage, int meta, CancellationToken ct = default, bool exact = false) =>
+        exact ? Task.FromResult(ActionResult.Fail("exact placement is unavailable for this client")) : PlaceVariantAsync(x, y, z, itemId, damage, null, ct);
     Task<ActionResult> DigBlockAsync(int x, int y, int z, CancellationToken ct = default);
     Task<ActionResult> ActivateBlockAsync(int x, int y, int z, CancellationToken ct = default);
     /// <summary>Right-clicks <paramref name="face"/> of a block holding <paramref name="itemId"/>: a hoe tills dirt/grass, seeds
@@ -214,8 +214,8 @@ public sealed class MinecraftGameClient(MinecraftClient client) : IGameClient
         Inner.HarvestGeneratorAsync(cells, count, stand, ct);
     public Task<ActionResult> CollectDropsAsync(double radius = 8, CancellationToken ct = default, bool dryOnly = false) => Inner.CollectDropsAsync(radius, ct, dryOnly);
     public Task<ActionResult> CraftAsync(int itemId, int damage = -1, int count = 1, CancellationToken ct = default) => Inner.CraftAsync(itemId, damage, count, ct);
-    public Task<ActionResult> SmeltAsync(int inputItemId, int count, int? fuelItemId = null, bool wait = false, BlockPos? furnace = null, CancellationToken ct = default) =>
-        Inner.SmeltAsync(inputItemId, count, fuelItemId, wait, furnace, ct);
+    public Task<ActionResult> SmeltAsync(int inputItemId, int count, int? fuelItemId = null, bool wait = false, BlockPos? furnace = null, CancellationToken ct = default, int? inputMeta = null) =>
+        Inner.SmeltAsync(inputItemId, count, fuelItemId, wait, furnace, ct, inputMeta);
     public Task<ActionResult> CollectFurnaceAsync(BlockPos? furnace = null, CancellationToken ct = default) => Inner.CollectFurnaceAsync(furnace, ct);
     public Task<ActionResult> OpenContainerAsync(int x, int y, int z, CancellationToken ct = default) => Inner.OpenContainerAsync(x, y, z, ct);
     public Task<ActionResult> ClickSlotAsync(int slot, bool rightClick = false, bool shift = false, CancellationToken ct = default) => Inner.ClickSlotAsync(slot, rightClick, shift, ct);
@@ -225,8 +225,8 @@ public sealed class MinecraftGameClient(MinecraftClient client) : IGameClient
     public Task<ActionResult> PlaceBlockAsync(int x, int y, int z, int itemId, CancellationToken ct = default) => Inner.PlaceBlockAsync(x, y, z, itemId, ct);
     public Task<ActionResult> PlaceVariantAsync(int x, int y, int z, int itemId, int? damage, BlockFace? face, CancellationToken ct = default) =>
         Inner.PlaceVariantAsync(x, y, z, itemId, damage, face, ct);
-    public Task<ActionResult> PlaceTurnedAsync(int x, int y, int z, int itemId, int? damage, int meta, CancellationToken ct = default) =>
-        Inner.PlaceTurnedAsync(new BlockPos(x, y, z), itemId, damage, meta, ct);
+    public Task<ActionResult> PlaceTurnedAsync(int x, int y, int z, int itemId, int? damage, int meta, CancellationToken ct = default, bool exact = false) =>
+        Inner.PlaceTurnedAsync(new BlockPos(x, y, z), itemId, damage, meta, ct, exact);
     public Task<ActionResult> DigBlockAsync(int x, int y, int z, CancellationToken ct = default) => Inner.DigBlockAsync(x, y, z, ct);
     public Task<ActionResult> ActivateBlockAsync(int x, int y, int z, CancellationToken ct = default) => Inner.ActivateBlockAsync(x, y, z, ct);
     public Task<ActionResult> UseItemOnBlockAsync(BlockPos pos, BlockFace face, int itemId, int? damage = null, CancellationToken ct = default) =>

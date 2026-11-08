@@ -10,6 +10,9 @@ internal static class TransferItemSelector
         var parts = name.Split(':');
         if (parts.Length == 2 && int.TryParse(parts[0], out var id) && int.TryParse(parts[1], out var meta))
             return Items.Exists(id) && meta is >= 0 and <= short.MaxValue ? (Items.Get(id), meta) : null;
-        return Items.ByNameWithDamage(name);
+        // Chest observations intentionally aggregate durability. A named tool/armour item means any wear;
+        // only an explicit id:damage selector asks for one exact durability value.
+        var named = Items.ByNameWithDamage(name);
+        return named is { } item && item.Item.MaxDamage > 0 ? (item.Item, -1) : named;
     }
 }

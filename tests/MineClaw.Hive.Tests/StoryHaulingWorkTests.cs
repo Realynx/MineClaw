@@ -32,6 +32,32 @@ public sealed class StoryHaulingWorkTests
     private static void Done(StoryColony c, JsonObject j) => Assert.True(c.Report(c.P(), j["id"]!.GetValue<string>(), "done", null, null));
 
     [Fact]
+    public void Worn_tools_use_a_durability_independent_transfer_name()
+    {
+        var (c, _, _, _) = Rig();
+        c.StorageOp("set", [Target], new StorageFilter { Allow = ["*"] }, "important", null);
+        c.AddContents(c.StorageAt(Source)!, new Stack(290, 34, 1));
+        var job = c.Next();
+        Assert.Equal("wooden_hoe", job["fetch"]![0]!["item"]!.GetValue<string>());
+        Assert.Equal("wooden_hoe", job["stash"]![0]!["items"]![0]!.GetValue<string>());
+    }
+
+    [Fact]
+    public void Failed_sorting_fetch_does_not_reopen_the_same_chest_in_a_tight_loop()
+    {
+        var (c, h, _, clock) = Rig(2);
+        c.StorageOp("set", [Target], new StorageFilter { Allow = ["*"] }, "important", null);
+        c.AddContents(c.StorageAt(Source)!, new Stack(290, 0, 1));
+        var job = c.Next();
+        Assert.Equal("go", job["kind"]!.GetValue<string>());
+        Assert.True(c.Report(c.P(), job["id"]!.GetValue<string>(), "failed",
+            $"no wooden hoe in the chest at {Source} (it had: wooden hoe x1)", null));
+        foreach (var p in c.Pawns.Values) Assert.Null(c.RebalanceJob(p, h.Live(p.Name)));
+        clock.Now += TimeSpan.FromSeconds(31);
+        Assert.NotNull(c.RebalanceJob(c.Pawns[c.P(1)], h.Live(c.P(1))));
+    }
+
+    [Fact]
     public void Continuous_fresh_drops_share_hauling_with_organization_and_probes_do_not_consume_the_turn()
     {
         var (c, h, w, clock) = Rig();

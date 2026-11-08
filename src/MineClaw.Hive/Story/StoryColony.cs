@@ -339,6 +339,7 @@ public sealed partial class StoryColony : IStoryPort
 
     private void Release(ActiveJob j)
     {
+        if (j.Source == "bill" && j.Kind == "smelt") MaterialsChanged();
         foreach (var k in j.MoreLeases) _leases.Remove(k);
         if (j.Lease == null) return;
         _leases.Remove(j.Lease);

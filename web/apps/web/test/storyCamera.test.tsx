@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import { forwardRef, useEffect, useImperativeHandle, useState } from 'react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { WorldViewerHandle, WorldViewerProps } from '@mineclaw/world-viewer';
@@ -15,6 +15,7 @@ const viewer = vi.hoisted(() => ({
   source: {},
   locked: false,
   aimClick: undefined as WorldViewerProps['onAimClick'],
+  resolveAim: undefined as WorldViewerProps['resolveAim'],
 }));
 vi.mock('@/features/story/chestBadges', () => ({ useContainerBadges: () => ({ current: new Map() }) }));
 vi.mock('@/features/world/integration', () => ({
@@ -23,6 +24,7 @@ vi.mock('@/features/world/integration', () => ({
 const MockViewer = forwardRef<WorldViewerHandle, WorldViewerProps>(function MockViewer(props, ref) {
   viewer.mode = props.cameraMode ?? '';
   viewer.aimClick = props.onAimClick;
+  viewer.resolveAim = props.resolveAim;
   useEffect(() => {
     viewer.mounts++;
   }, []);
@@ -111,23 +113,32 @@ it('moves free cam to the colony when its first home position arrives after the 
     },
   };
   const position = vi.fn();
+  const setBotBadges = vi.fn();
+  const matrix = { elements: new Array<number>(16).fill(0) };
   viewer.engine = {
     surface: { focus: viewer.focus },
     rig: { target, isoZoom: 44, flyPos: { set: position } },
+    camera: { matrixWorldInverse: matrix, projectionMatrix: matrix, matrixWorld: matrix, projectionMatrixInverse: matrix },
     setBotLabels: vi.fn(),
+    setBotBadges,
     setLevelCut: vi.fn(),
     setHolograms: vi.fn(),
   };
   const props = mapProps();
+  props.state = { pawns: [{ name: 'maid_chan_109', display: 'Nickname', job: { type: 'mine', label: 'Mining quarry' } }] } as unknown as StoryMapProps['state'];
   const { rerender } = render(<StoryMap {...props} view="fly" home={null} />);
   vi.spyOn(screen.getByLabelText<HTMLCanvasElement>(/Colony map/), 'getContext').mockReturnValue(null);
   frame(); // engine exists, but the asynchronous colony position has not arrived
   expect(position).toHaveBeenLastCalledWith(0, 12, 16);
+  expect(setBotBadges).toHaveBeenLastCalledWith([expect.objectContaining({ text: '109', activity: 'Mining quarry' })]);
   rerender(<StoryMap {...props} view="fly" home={[100, 63, 200]} />);
   frame();
   expect(position).toHaveBeenLastCalledWith(100.5, 76, 216.5);
   expect(viewer.mode).toBe('fly');
   expect(viewer.mounts).toBe(1);
+  rerender(<StoryMap {...props} view="top" />);
+  frame();
+  expect(setBotBadges).toHaveBeenLastCalledWith([]);
 });
 
 it('has an always-available free camera button, and flight keys cannot pause the colony or rotate a held tool', () => {
@@ -228,4 +239,48 @@ it('shows the crosshair only for this map while freecam owns pointer lock', () =
   expect(screen.queryByTestId('crosshair')).not.toBeInTheDocument();
   Object.defineProperty(document, 'pointerLockElement', { configurable: true, value: null });
   fireEvent(document, new Event('pointerlockchange'));
+});
+
+it('edits only in explicit mode, stacks on optimistic holograms and leaves ordinary inspection unchanged', async () => {
+  const props = mapProps();
+  let saved!: (reply: { buildId: string; rev: number }) => void;
+  const edit = vi.fn().mockImplementationOnce(() => new Promise((resolve) => { saved = resolve; })).mockResolvedValue({ buildId: 'new', rev: 8 });
+  props.state = { id: 'colony', version: '1.12.2', rev: 1, builds: [], ghosts: { rev: 1, blocks: [] } } as unknown as StoryMapProps['state'];
+  render(<StoryMap {...props} view="fly" canEdit onEditPlan={edit} />);
+  const block = { kind: 'block' as const, x: 0, y: 64, z: 3, id: 4, meta: 0, face: 2, name: 'Cobble', distance: 3 };
+  fireEvent.click(screen.getByRole('button', { name: 'Edit plan' }));
+  act(() => viewer.aimClick!(block, { shift: false, ctrl: false, button: 2 }));
+  expect(edit).not.toHaveBeenCalled(); // acquisition click never edits
+  viewer.locked = true;
+  act(() => viewer.aimClick!(block, { shift: false, ctrl: false, button: 2 }));
+  expect(edit).toHaveBeenCalledExactlyOnceWith([[0, 64, 2, 4, 0]], undefined);
+  const pending = viewer.resolveAim!(block, { origin: [0.5, 64.5, 0], direction: [0, 0, 1], max: 50 });
+  expect(pending).toMatchObject({ z: 2, face: 2 });
+  act(() => viewer.aimClick!(pending, { shift: false, ctrl: false, button: 2 }));
+  expect(edit).toHaveBeenCalledTimes(1); // waits for this new plan's id
+  await act(async () => { saved({ buildId: 'new', rev: 7 }); await Promise.resolve(); });
+  expect(edit).toHaveBeenLastCalledWith([[0, 64, 1, 4, 0]], 'new');
+  expect(props.onSelect).not.toHaveBeenCalled();
+  expect(props.onTool).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: 'Inspect' }));
+  act(() => viewer.aimClick!({ ...block, id: 54 }, { shift: false, ctrl: false, button: 2 }));
+  expect(props.onSelect).not.toHaveBeenCalled();
+  act(() => viewer.aimClick!({ ...block, id: 54 }, { shift: false, ctrl: false, button: 0 }));
+  expect(props.onSelect).toHaveBeenCalledOnce();
+});
+
+it('does not attach edits or additions to transient preserve repair items', () => {
+  const props = mapProps();
+  const edit = vi.fn().mockResolvedValue({ buildId: 'new', rev: 2 });
+  props.state = {
+    id: 'colony', version: '1.12.2', rev: 1,
+    builds: [{ id: 'repair', kind: 'preserve', label: 'Preserve repair' }],
+    ghosts: { rev: 1, blocks: [[0, 64, 3, 4, 0, 'repair', 'pending']] },
+  } as unknown as StoryMapProps['state'];
+  render(<StoryMap {...props} view="fly" canEdit onEditPlan={edit} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Edit plan' }));
+  expect(screen.queryByRole('option', { name: /Preserve repair/ })).not.toBeInTheDocument();
+  viewer.locked = true;
+  act(() => viewer.aimClick!({ kind: 'block', x: 0, y: 64, z: 3, id: 4, meta: 0, face: 2, name: 'Cobble', distance: 3, plan: 'repair' }, { shift: false, ctrl: false, button: 0 }));
+  expect(edit).toHaveBeenCalledExactlyOnceWith([[0, 64, 3, 0, 0]], undefined);
 });

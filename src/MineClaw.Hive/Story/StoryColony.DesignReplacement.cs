@@ -77,23 +77,7 @@ public sealed partial class StoryColony
                 && Pawns.TryGetValue(pawn, out var p))
                 Supersede(p, "replaced by a new design");
         foreach (var temp in (Meta.TempBlocks ?? []).Where(t => area.Contains(t.At)).ToList())
-        {
-            if (ReplacementAccessPawn(temp) is { } standing)
-            {
-                // The new replacement supersedes a previous keep/defer instruction, but its cleanup waits for safe footing.
-                temp.Cancelled = false;
-                temp.DeferredReason = null;
-                temp.RetryAfter = null;
-                temp.Misses = 0;
-                temp.Pawn = standing; // TempTick protects the pawn actually using the column, even when another pawn placed it
-                // Body-adopted access can have the generic "scaffold" label; its observed column is now known to support a pawn.
-                if (temp.Kind != "escape pillar") temp.Kind = "reach pillar";
-                _dirty = true;
-                continue;
-            }
-            KeepTemp(temp); // release the body's old cleanup ledger too; do not re-adopt it on the next tick
-            ForgetTemp(temp);
-        }
+            ReleaseReplacedTemporary(temp);
         foreach (var d in Designations.Where(d => cleanup.Contains(d.Id)).ToList())
         {
             _leases.Remove(DesignationKey(d));
@@ -113,5 +97,23 @@ public sealed partial class StoryColony
                     if (area.Contains(ZoneCells.KX(key), snap.Lo + i, ZoneCells.KZ(key))) { col[i] = PreserveSnap.Held; changed = true; }
             if (changed) { z.Preserve.Changed(); z.Rev = Touch(); }
         }
+    }
+
+    private void ReleaseReplacedTemporary(TempBlockState temp)
+    {
+        if (ReplacementAccessPawn(temp) is { } standing)
+        {
+            // A new plan replaces old keep/defer instructions, but cleanup waits for safe footing.
+            temp.Cancelled = false;
+            temp.DeferredReason = null;
+            temp.RetryAfter = null;
+            temp.Misses = 0;
+            temp.Pawn = standing;
+            if (temp.Kind != "escape pillar") temp.Kind = "reach pillar";
+            _dirty = true;
+            return;
+        }
+        KeepTemp(temp);
+        ForgetTemp(temp);
     }
 }

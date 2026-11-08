@@ -18,7 +18,7 @@ import { Poller, WorldSync, type Interest } from '../world/sync';
 // [blocks] the bundled block atlas + its animation pass
 import { meshAssets } from '../atlas/assets';
 import { BlockAtlas } from './blockAtlas';
-import { BlockEntityLayer, type BlockEntityLayerUpdate } from './blockEntityLayer'; // [blocks] sign text, banners, spawner mobs
+import { BlockEntityLayer } from './blockEntityLayer'; // [blocks] sign text, banners, spawner mobs
 import { capBackstop, createChunkMaterials, createChunkUniforms, type ChunkMaterials, type ChunkUniforms } from './chunkMaterial';
 import { EntityLayer } from './entityLayer';
 import { OverlayLayer } from './overlayLayer';
@@ -34,6 +34,7 @@ import { ChangeFlash } from './changeFlash';
 import { BlockDeltaFeed } from '../world/deltas';
 import { BlockEntityStore } from '../world/blockEntities';
 import { HologramLayer } from './holograms';
+import { BotBadgeLayer, type BotBadge } from './botBadges';
 
 export interface RuntimeOptions {
   /** Device pixel ratio cap for the primary view (default min(2, devicePixelRatio)). */
@@ -253,6 +254,7 @@ export class WorldRuntime {
   private readonly views = new Map<number, RuntimeView>();
   /** [holograms] Each view's build holograms (only that view draws them). */
   private readonly holoViews = new Map<number, HologramLayer>();
+  private readonly badgeViews = new Map<number, BotBadgeLayer>();
   /** Block changes as they are applied (dim, the changed cells). */
   readonly blockListeners = new Set<(dim: Dim, blocks: Array<[number, number, number]>) => void>();
   private primary: { view: RuntimeView; container: HTMLElement } | null = null;
@@ -442,10 +444,25 @@ export class WorldRuntime {
     return this.holoViews.get(viewId) ?? null;
   }
 
+  /** Per-view activity badges, sharing bot positions and the terrain depth buffer. */
+  setBotBadges(viewId: number, badges: readonly BotBadge[]): void {
+    let layer = this.badgeViews.get(viewId);
+    if (!layer && !badges.length) return;
+    if (!layer) {
+      layer = new BotBadgeLayer();
+      layer.group.visible = false;
+      this.badgeViews.set(viewId, layer);
+      this.scene.add(layer.group);
+    }
+    layer.set(badges);
+  }
+
   removeView(v: RuntimeView): void {
     this.views.delete(v.id);
     this.holoViews.get(v.id)?.dispose();
     this.holoViews.delete(v.id);
+    this.badgeViews.get(v.id)?.dispose();
+    this.badgeViews.delete(v.id);
     this.ghostViews.delete(v.id);
     // No views left (e.g. between pages, persistent runtime): stop the network loops, keep the world.
     if (!this.views.size) this.pause();
@@ -557,6 +574,8 @@ export class WorldRuntime {
     this.views.clear();
     for (const h of this.holoViews.values()) h.dispose();
     this.holoViews.clear();
+    for (const b of this.badgeViews.values()) b.dispose();
+    this.badgeViews.clear();
     this.chatOff?.();
     this.chatOff = null;
     this.entitiesOff?.();
@@ -834,7 +853,7 @@ export class WorldRuntime {
     const dims = new Set<Dim>();
     for (const v of this.views.values()) {
       const d = v.overlayDim();
-      if (d != null) dims.add(d);
+      if (d !== null) dims.add(d);
     }
     for (const d of dims) {
       const ov = normalizeOverlays(await this.source.overlays(d));
@@ -895,7 +914,7 @@ export class WorldRuntime {
       software: this.quality.state.profile.name === 'software',
       now,
       ticks: this.cache.timeNow(c.dim, Date.now()) ?? now / 50,
-      displayMobs: this.entities as unknown as BlockEntityLayerUpdate['displayMobs'],
+      displayMobs: this.entities,
       playerNear: this.playerNear,
     });
   }
@@ -987,7 +1006,6 @@ export class WorldRuntime {
   }
 
   private overlaysShown: Overlays | null = null;
-  private readonly labelLift = (key: string, bot: boolean): number => this.entities.labelLift(key, bot);
 
   /** Puts `dim`'s overlays in the shared overlay layer (rebuilt only when the data or the dimension changed). */
   private showOverlays(dim: Dim): void {
@@ -1145,8 +1163,8 @@ export class WorldRuntime {
     const cones = this.applyCutaways(s);
     this.showSections(s, cover, cones);
     this.showBodies(s, now, reach.radius, reach.fromCentre);
-    this.showBubbles(s, this.vpH);
     this.showViewLayers(s, now);
+    this.showBubbles(s, this.vpH);
     this.draw(s, primary, now, reach.radius);
   }
 
@@ -1188,7 +1206,7 @@ export class WorldRuntime {
   private applySky(s: ViewSetup, cover: number, st: ViewSky): void {
     const u = this.uniforms;
     const { nether, time, rain, thunder } = st;
-    u.uSkySub.value = nether || time == null ? 0 : skylightSubtractedSmooth(time, rain, thunder);
+    u.uSkySub.value = nether || time === null ? 0 : skylightSubtractedSmooth(time, rain, thunder);
     this.lastSky.set(s.viewId ?? -1, { time, skySub: u.uSkySub.value });
     u.uBase.value = nether ? 0.1 : 0;
     const sky = skyColour(time, rain, thunder, nether), fog = fogColour(time, rain, thunder, nether);
@@ -1274,12 +1292,14 @@ export class WorldRuntime {
     });
   }
 
-  /** After the entities: the name labels this view shows decide where the bubbles sit. */
+  /** After entities and per-view badges: the visible labels decide where speech bubbles sit. */
   private showBubbles(s: ViewSetup, h: number): void {
     const fallback = s.labels ? 'full' : 'compact';
     const mode = this.q.bubbles ? (s.bubbles ?? fallback) : 'off';
+    const badges = this.badgeViews.get(s.viewId ?? 0);
+    const labelLift = (key: string, bot: boolean) => Math.max(this.entities.labelLift(key, bot), bot ? badges?.labelLift(key) ?? 0 : 0);
     this.bubbles.showFor(
-      { dim: s.dim, camera: s.camera, height: h, pxScale: s.pxScale ?? 1, mode, bots: s.layers.bots, players: s.layers.entities, labelLift: this.labelLift },
+      { dim: s.dim, camera: s.camera, height: h, pxScale: s.pxScale ?? 1, mode, bots: s.layers.bots, players: s.layers.entities, labelLift },
       s.viewId ?? 0,
     );
   }
@@ -1293,6 +1313,10 @@ export class WorldRuntime {
     for (const [id, h] of this.holoViews) {
       h.group.visible = this.q.holograms && id === s.viewId;
       if (h.group.visible) h.show(s.holoPx ?? null);
+    }
+    for (const [id, badges] of this.badgeViews) {
+      badges.group.visible = id === s.viewId && s.layers.bots && s.labels && this.q.labels;
+      if (badges.group.visible) badges.show(s.camera, s.dim, this.vpH / Math.max(0.01, s.pxScale ?? 1), s.drawDistance, (name) => this.store.bot(name));
     }
     this.aids.showAt(s.aids ?? null);
     this.showOutlines(s.outlines ?? NO_OUTLINES);

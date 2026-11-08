@@ -15,23 +15,33 @@ public sealed partial class MinecraftClient
 {
     /// <summary>Places <paramref name="itemId"/> at <paramref name="pos"/> so the block there gets <paramref name="meta"/>'s facing,
     /// axis or half. A block whose meta the click doesn't decide is placed as by <see cref="PlaceBlockAsync"/>.</summary>
-    public Task<ActionResult> PlaceTurnedAsync(BlockPos pos, int itemId, int? damage, int meta, CancellationToken ct = default) =>
-        RunActionAsync("place", ct, c => PlaceTurnedCoreAsync(pos, itemId, damage, meta, c));
+    public Task<ActionResult> PlaceTurnedAsync(BlockPos pos, int itemId, int? damage, int meta, CancellationToken ct = default, bool exact = false) =>
+        RunActionAsync("place", ct, c => PlaceTurnedCoreAsync(pos, itemId, damage, meta, c, exact));
 
     /// <summary>A construction access session keeps its footing: place only against a visible face from here, including the
     /// requested orientation, without walking away or trying another stand after a rejected rotation.</summary>
-    public Task<ActionResult> PlaceHereAsync(BlockPos pos, int itemId, int? damage = null, int? meta = null, CancellationToken ct = default) =>
+    public Task<ActionResult> PlaceHereAsync(BlockPos pos, int itemId, int? damage = null, int? meta = null, CancellationToken ct = default, bool exact = false) =>
         RunActionAsync("place", ct, async c =>
         {
             int block = BlockOrientation.BlockOf(itemId);
+            if (exact)
+            {
+                if (meta is not { } wanted) return ActionResult.Fail("exact placement needs block metadata");
+                if (ExactPlaceRefusal(block, wanted, damage) is { } no) return ActionResult.Fail(no);
+                damage ??= BlockOrientation.ExactDamage(block, wanted, Modern);
+            }
             if (meta is not { } turn || !BlockOrientation.Turns(block, turn, Modern))
-                return await PlaceCoreAsync(pos, itemId, c, allowPathing: false, damage: damage).ConfigureAwait(false);
+            {
+                var plain = await PlaceCoreAsync(pos, itemId, c, allowPathing: false, damage: damage).ConfigureAwait(false);
+                return exact ? await ExactPlaceVerdictAsync(plain, pos, block, meta!.Value, c).ConfigureAwait(false) : plain;
+            }
             if (PlaceCellRefusal(pos, itemId, damage) is { } refused) return ActionResult.Fail(refused);
             if (TurnPlaceRefusal(pos, itemId, damage) is { } unavailable) return ActionResult.Fail(unavailable);
             if (PickTurn(pos, block, turn, Modern, World.Player.Position, visibleOnly: true) is not { } pick)
                 return ActionResult.Fail($"can't place {ItemName(itemId)} at {Fmt(pos)}: no visible support face for the requested rotation from here");
             var placed = await PlaceAgainstCoreAsync(pos, pick.Face, itemId, damage, pick.Yaw, allowHidden: false, c, cursor: pick.Cursor).ConfigureAwait(false);
             if (!placed.Ok) return placed;
+            if (exact) return await ExactPlaceVerdictAsync(placed, pos, block, turn, c).ConfigureAwait(false);
             bool correct = await WaitUntilAsync(() => World.GetBlock(pos) == block && BlockOrientation.Same(block, turn, World.GetMeta(pos), Modern),
                 TimeSpan.FromMilliseconds(400), c).ConfigureAwait(false);
             return correct ? placed : ActionResult.Fail($"placed with wrong rotation at {Fmt(pos)}: wants {BlockOrientation.Describe(block, turn, Modern)}");
@@ -39,10 +49,20 @@ public sealed partial class MinecraftClient
 
     private bool Modern => Options.Profile.Data.VersionId != "b1.8.1";
 
-    private async Task<ActionResult> PlaceTurnedCoreAsync(BlockPos pos, int itemId, int? damage, int meta, CancellationToken ct)
+    private async Task<ActionResult> PlaceTurnedCoreAsync(BlockPos pos, int itemId, int? damage, int meta, CancellationToken ct, bool exact = false)
     {
         int block = BlockOrientation.BlockOf(itemId);
         bool modern = Modern;
+        if (exact)
+        {
+            if (ExactPlaceRefusal(block, meta, damage) is { } no) return ActionResult.Fail(no);
+            damage ??= BlockOrientation.ExactDamage(block, meta, modern);
+            var placed = BlockOrientation.Turns(block, meta, modern)
+                ? await PlaceTurnedOnceAsync(pos, itemId, damage, block, meta, modern, avoidHere: false, ct).ConfigureAwait(false)
+                : await PlaceCoreAsync(pos, itemId, ct, damage: damage).ConfigureAwait(false);
+            // A later edit may have replaced it: report the mismatch without digging a cell the job no longer owns.
+            return await ExactPlaceVerdictAsync(placed, pos, block, meta, ct).ConfigureAwait(false);
+        }
         if (!BlockOrientation.Turns(block, meta, modern)) return await PlaceCoreAsync(pos, itemId, ct, damage: damage).ConfigureAwait(false);
         string want = BlockOrientation.Describe(block, meta, modern) ?? $"meta {meta}";
         for (int attempt = 0; ; attempt++)
@@ -55,6 +75,21 @@ public sealed partial class MinecraftClient
                 return ActionResult.Success($"placed {ItemName(itemId, damage ?? 0)} at {Fmt(pos)} {want}");
             if (await TakeBackWrongTurnAsync(pos, itemId, damage, block, modern, want, attempt, ct).ConfigureAwait(false) is { } failed) return failed;
         }
+    }
+
+    private string? ExactPlaceRefusal(int block, int meta, int? damage)
+    {
+        if (BlockOrientation.ExactPlacementRefusal(block, meta, Modern) is { } no) return "unsupported exact state: " + no;
+        return damage is { } variant && variant != BlockOrientation.ExactDamage(block, meta, Modern)
+            ? "the requested item variant does not match the exact block metadata" : null;
+    }
+
+    private async Task<ActionResult> ExactPlaceVerdictAsync(ActionResult placed, BlockPos at, int block, int meta, CancellationToken ct)
+    {
+        if (!placed.Ok) return placed;
+        bool correct = await WaitUntilAsync(() => World.GetBlock(at) == block && World.GetMeta(at) == meta,
+            TimeSpan.FromMilliseconds(400), ct).ConfigureAwait(false);
+        return correct ? placed : ActionResult.Fail($"placed with wrong exact state at {Fmt(at)}: wants {block}:{meta}, got {World.GetBlock(at)}:{World.GetMeta(at)}");
     }
 
     /// <summary>A placement that came out turned wrong: the first time (when its drop can be had) it is dug and collected for another

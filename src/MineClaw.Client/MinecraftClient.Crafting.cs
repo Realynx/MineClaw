@@ -387,8 +387,8 @@ public sealed partial class MinecraftClient
     /// <see cref="CollectFurnaceAsync"/> later.
     /// </summary>
     public Task<ActionResult> SmeltAsync(int inputItemId, int count, int? fuelItemId = null, bool wait = false,
-        BlockPos? furnace = null, CancellationToken ct = default) =>
-        RunActionAsync("smelt", ct, c => SmeltCoreAsync(inputItemId, count, fuelItemId, wait, furnace, c));
+        BlockPos? furnace = null, CancellationToken ct = default, int? inputMeta = null) =>
+        RunActionAsync("smelt", ct, c => SmeltCoreAsync(inputItemId, count, fuelItemId, wait, furnace, c, inputMeta));
 
     /// <summary>Takes finished items out of a furnace (given, last used, or nearest).</summary>
     public Task<ActionResult> CollectFurnaceAsync(BlockPos? furnace = null, CancellationToken ct = default) =>
@@ -420,16 +420,17 @@ public sealed partial class MinecraftClient
     private BlockPos? FindFurnace() =>
         World.FindNearestBlock(World.Player.Position, StationSearchRadius, Blocks.Furnace, Blocks.LitFurnace)?.Pos;
 
-    private async Task<ActionResult> SmeltCoreAsync(int inputId, int count, int? fuelId, bool wait, BlockPos? furnace, CancellationToken ct)
+    private async Task<ActionResult> SmeltCoreAsync(int inputId, int count, int? fuelId, bool wait, BlockPos? furnace, CancellationToken ct, int? inputMeta)
     {
+        if (inputMeta is < 0 or > short.MaxValue) return ActionResult.Fail("input metadata must be between 0 and 32767");
         // 1.12.2 keys some inputs by variant (wet sponge, stone bricks, cod/salmon): the carried stack's variant decides.
-        var carried = World.Inventory.PlayerSlots().Skip(9).FirstOrDefault(st => !st.IsEmpty && st.Id == inputId);
-        if (Smelting.ResultFor(inputId, carried.IsEmpty ? -1 : carried.Damage) is not { } recipe)
-            return ActionResult.Fail($"{ItemName(inputId)} can't be smelted");
+        var carried = World.Inventory.PlayerSlots().Skip(9).FirstOrDefault(st => !st.IsEmpty && st.Id == inputId && (inputMeta == null || st.Damage == inputMeta));
+        if (Smelting.ResultFor(inputId, inputMeta ?? (carried.IsEmpty ? -1 : carried.Damage)) is not { } recipe)
+            return ActionResult.Fail($"{ItemName(inputId, inputMeta ?? 0)} can't be smelted");
         // count 0: fuel only, for what the furnace already holds (a load left without fuel: Story Mode's refuel job).
         bool refuel = count <= 0;
-        int have = World.Inventory.CountItem(inputId);
-        if (have == 0 && !refuel) return ActionResult.Fail($"no {ItemName(inputId)} to smelt");
+        int have = World.Inventory.CountItem(inputId, inputMeta);
+        if (have == 0 && !refuel) return ActionResult.Fail($"no {ItemName(inputId, inputMeta ?? 0)} to smelt");
         count = Math.Min(count, have);
         var pos = furnace ?? FindFurnace();
         if (pos is null) return ActionResult.Fail($"no furnace within {StationSearchRadius:0} blocks");
@@ -440,9 +441,11 @@ public sealed partial class MinecraftClient
         var w = World.Inventory.OpenWindow!;
         try
         {
+            if (inputMeta is { } exact && w.Get(0) is { IsEmpty: false } existing && (existing.Id != inputId || existing.Damage != exact))
+                return ActionResult.Fail($"furnace is busy with {ItemName(existing.Id, existing.Damage)} x{existing.Count}");
             return refuel
                 ? await RefuelInWindowAsync(w, fuelId, pos.Value, ct).ConfigureAwait(false)
-                : await SmeltInWindowAsync(w, recipe, inputId, count, fuelId, wait, pos.Value, ct).ConfigureAwait(false);
+                : await SmeltInWindowAsync(w, recipe, inputId, count, fuelId, wait, pos.Value, ct, inputMeta).ConfigureAwait(false);
         }
         finally
         {
@@ -457,11 +460,13 @@ public sealed partial class MinecraftClient
     /// be loaded had been counted as the fuel.
     /// </summary>
     private async Task<ActionResult> SmeltInWindowAsync(Window w, SmeltingRecipe recipe, int inputId, int count, int? fuelId, bool wait, BlockPos pos,
-        CancellationToken ct)
+        CancellationToken ct, int? inputMeta)
     {
         var input = w.Get(0);
         if (!input.IsEmpty && input.Id != inputId)
             return ActionResult.Fail($"furnace is busy with {ItemName(input.Id, input.Damage)} x{input.Count}");
+        if (inputMeta != null && w.Get(2) is { IsEmpty: false } output && (output.Id != recipe.OutputId || output.Damage != recipe.OutputDamage))
+            return ActionResult.Fail($"furnace output holds {ItemName(output.Id, output.Damage)}; collect it before smelting {ItemName(inputId, inputMeta.Value)}");
         int already = input.IsEmpty ? 0 : input.Count;
         count = Math.Min(count, 64 - already);
         if (count <= 0) return ActionResult.Fail("furnace input slot is full");
@@ -470,16 +475,16 @@ public sealed partial class MinecraftClient
         var fuelSlot = await ClearOtherFuelAsync(w, fuelId, ct).ConfigureAwait(false);
         int fuel = ChooseFuel(fuelId, fuelSlot, inputId);
         if (PlanFuel(w, already, fuelSlot, fuel, inputId, ref count, out int fuelUnits) is { } noFuel) return ActionResult.Fail(noFuel);
-        int loaded = await LoadFuelAsync(w, fuel, fuelUnits, ct).ConfigureAwait(false);
+        int loaded = await LoadFuelAsync(w, fuel, fuelUnits, ct, fuel == inputId ? inputMeta : null, count).ConfigureAwait(false);
         count = Math.Min(count, Covered(w, BurnTicks(w, fuelSlot) + loaded * Smelting.FuelTicks(fuel)) - already);
         if (count <= 0) return ActionResult.Fail($"not enough fuel ({World.Inventory.CountItem(fuel)} {ItemName(fuel)})");
 
-        int putIn = await MoveIntoSlotAsync(w, s => s.Id == inputId, 0, count, ct).ConfigureAwait(false);
+        int putIn = await MoveIntoSlotAsync(w, s => s.Id == inputId && (inputMeta == null || s.Damage == inputMeta), 0, count, ct).ConfigureAwait(false);
         if (putIn <= 0) return ActionResult.Fail("couldn't load the furnace");
         int queued = putIn + already;
         string outName = ItemName(recipe.OutputId, recipe.OutputDamage);
         if (!wait)
-            return ActionResult.Success($"smelting {queued} {ItemName(inputId)} -> {outName} at {Fmt(pos)}, ready in ~{queued * 10}s", putIn);
+            return ActionResult.Success($"smelting {queued} {ItemName(inputId, inputMeta ?? 0)} -> {outName} at {Fmt(pos)}, ready in ~{queued * 10}s", putIn);
         return await CollectSmeltedAsync(w, queued, outName, ct).ConfigureAwait(false);
     }
 
@@ -502,10 +507,19 @@ public sealed partial class MinecraftClient
     }
 
     /// <summary>Moves <paramref name="units"/> of <paramref name="fuel"/> into the fuel slot; how many went in.</summary>
-    private async Task<int> LoadFuelAsync(Window w, int fuel, int units, CancellationToken ct)
+    private async Task<int> LoadFuelAsync(Window w, int fuel, int units, CancellationToken ct, int? reservedMeta = null, int reservedCount = 0)
     {
         if (units <= 0 || fuel <= 0) return 0;
-        int f = await MoveIntoSlotAsync(w, s => s.Id == fuel, 1, units, ct).ConfigureAwait(false);
+        int f;
+        if (reservedMeta is { } exact)
+        {
+            // The selected input variant must survive loading same-family fuel (e.g. spruce input beside birch fuel).
+            f = await MoveIntoSlotAsync(w, s => s.Id == fuel && s.Damage != exact, 1, units, ct).ConfigureAwait(false);
+            int spare = Math.Max(0, World.Inventory.CountItem(fuel, exact) - reservedCount);
+            if (f < units && spare > 0)
+                f += await MoveIntoSlotAsync(w, s => s.Id == fuel && s.Damage == exact, 1, Math.Min(units - f, spare), ct).ConfigureAwait(false);
+        }
+        else f = await MoveIntoSlotAsync(w, s => s.Id == fuel, 1, units, ct).ConfigureAwait(false);
         if (f < units) Log($"smelt: only loaded {f}/{units} fuel");
         return f;
     }

@@ -220,8 +220,8 @@ public sealed class ClaimAwareGameClient(IGameClient inner, IClaimBoard claims) 
         container is { } pos ? DepositHeld(pos, () => inner.DepositAllAsync(container, filter, ct), ct) : inner.DepositAllAsync(container, filter, ct);
     public Task<ActionResult> WithdrawAsync(int itemId, int count, BlockPos? container = null, int? damage = null, CancellationToken ct = default) =>
         Chest(container, () => inner.WithdrawAsync(itemId, count, container, damage, ct), ct, WithdrawWait);
-    public Task<ActionResult> SmeltAsync(int inputItemId, int count, int? fuelItemId = null, bool wait = false, BlockPos? furnace = null, CancellationToken ct = default) =>
-        Furnace(furnace, () => inner.SmeltAsync(inputItemId, count, fuelItemId, wait, furnace, ct), ct);
+    public Task<ActionResult> SmeltAsync(int inputItemId, int count, int? fuelItemId = null, bool wait = false, BlockPos? furnace = null, CancellationToken ct = default, int? inputMeta = null) =>
+        Furnace(furnace, () => inner.SmeltAsync(inputItemId, count, fuelItemId, wait, furnace, ct, inputMeta), ct);
     public Task<ActionResult> CollectFurnaceAsync(BlockPos? furnace = null, CancellationToken ct = default) =>
         Furnace(furnace, () => inner.CollectFurnaceAsync(furnace, ct), ct);
     public Task<ActionResult> DigBlockAsync(int x, int y, int z, CancellationToken ct = default) =>
@@ -230,8 +230,8 @@ public sealed class ClaimAwareGameClient(IGameClient inner, IClaimBoard claims) 
         Held(ClaimKey.Block(x, y, z, inner.World.Dimension), () => inner.PlaceBlockAsync(x, y, z, itemId, ct), ct);
     public Task<ActionResult> PlaceVariantAsync(int x, int y, int z, int itemId, int? damage, BlockFace? face, CancellationToken ct = default) =>
         Held(ClaimKey.Block(x, y, z, inner.World.Dimension), () => inner.PlaceVariantAsync(x, y, z, itemId, damage, face, ct), ct);
-    public Task<ActionResult> PlaceTurnedAsync(int x, int y, int z, int itemId, int? damage, int meta, CancellationToken ct = default) =>
-        Held(ClaimKey.Block(x, y, z, inner.World.Dimension), () => inner.PlaceTurnedAsync(x, y, z, itemId, damage, meta, ct), ct);
+    public Task<ActionResult> PlaceTurnedAsync(int x, int y, int z, int itemId, int? damage, int meta, CancellationToken ct = default, bool exact = false) =>
+        Held(ClaimKey.Block(x, y, z, inner.World.Dimension), () => inner.PlaceTurnedAsync(x, y, z, itemId, damage, meta, ct, exact), ct);
     public Task<ActionResult> HarvestGeneratorAsync(int x, int y, int z, int count, CancellationToken ct = default) =>
         GenHeld(new BlockPos(x, y, z), p => inner.HarvestGeneratorAsync(p.X, p.Y, p.Z, count, ct), ct);
     public Task<ActionResult> HarvestGeneratorAsync(int x, int y, int z, int count, BlockPos? stand, CancellationToken ct = default) =>

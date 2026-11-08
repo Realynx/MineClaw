@@ -7,13 +7,16 @@
  * preview). The overlay redraws in one animation-frame loop that also pans (keys, screen edge) and keeps it ≥ 40 fps on
  * software WebGL: no blur, no DOM per pawn, a few hundred canvas primitives.
  */
-import type { AimTarget, EntityView, PickedBlock, WorldViewerEngine, WorldViewerHandle } from '@mineclaw/world-viewer';
+import type { AimTarget, BotBadge, EntityView, PickedBlock, WorldViewerEngine, WorldViewerHandle } from '@mineclaw/world-viewer';
 import { getViewerQuality } from '@mineclaw/world-viewer/settings';
-import { designationCells, type StoryBuild, type StoryColonyState } from '@mineclaw/contracts';
+import { designationCells, type StoryBuild, type StoryColonyState, type StoryArchitectEntry } from '@mineclaw/contracts';
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef } from 'react';
 import { useWorldHost } from '@/features/world/integration';
 import { DotMap } from '@/features/world/DotMap';
 import { StoryFlyCrosshair } from './StoryFlyCrosshair';
+import { pawnBadges } from './pawnBadges';
+import { StoryFlyEditor, useStoryFlyEditor } from './StoryFlyEditor';
+import type { EditSend } from './flyEdit';
 import {
   assignAlong,
   cellAt,
@@ -133,6 +136,9 @@ export interface StoryMapHandle {
 
 export interface StoryMapProps {
   state: StoryColonyState | undefined;
+  canEdit?: boolean;
+  editPalette?: readonly StoryArchitectEntry[];
+  onEditPlan?: EditSend;
   selection: Selection;
   tool: MapTool;
   build: BuildOpts;
@@ -241,6 +247,7 @@ interface HoloSync {
   ghosts: unknown;
   builds: unknown;
   preview: string;
+  editRevision?: number;
 }
 
 /** The frame loop's centre report: when it last ran, the column it reported, the page's callback it reported to. */
@@ -442,7 +449,13 @@ const isShownAi = (a: AiBody): a is AiBody & { pos: NonNullable<AiBody['pos']> }
 export const StoryMap =forwardRef<StoryMapHandle, StoryMapProps>(function StoryMap(props, ref) {
   const { mod, source, ready } = useWorldHost();
   const viewer = useRef<WorldViewerHandle | null>(null);
-  const flyClick = useRef<(target: AimTarget | null, mods: { shift: boolean; ctrl: boolean }) => void>(() => undefined);
+  const flyClick = useRef<(target: AimTarget | null, mods: { shift: boolean; ctrl: boolean; button?: number }) => void>(() => undefined);
+  const editor = useStoryFlyEditor(props.state, props.editPalette, props.onEditPlan);
+  const editorRef = useRef(editor);
+  editorRef.current = editor;
+  const flyBadges = useMemo(() => pawnBadges(props.state?.pawns), [props.state?.pawns]);
+  const flyBadgesRef = useRef(flyBadges);
+  flyBadgesRef.current = flyBadges;
   const canvas = useRef<HTMLCanvasElement | null>(null);
   const wrap = useRef<HTMLDivElement | null>(null);
   const p = useRef(props);
@@ -646,6 +659,7 @@ export const StoryMap =forwardRef<StoryMapHandle, StoryMapProps>(function StoryM
       if (p.current.view === 'fly') startFly(e); // free cam chosen before the viewer finished loading
     }
     syncLevelCut(e);
+    e.setBotBadges(p.current.view === 'fly' ? flyBadgesRef.current : EMPTY_BADGES);
     if (placed.current && p.current.view !== 'fly') e.rig.target.y = p.current.level + 1;
     // Day and night: the viewer's index time and the colony clock are one anchor (the newer sample wins).
     p.current.clock?.syncViewer({
@@ -727,11 +741,13 @@ export const StoryMap =forwardRef<StoryMapHandle, StoryMapProps>(function StoryM
   const syncHolograms = (e: WorldViewerEngine) => {
     const st = p.current.state,
       h = holo.current;
-    if (h.ghosts !== st?.ghosts || h.builds !== st?.builds) {
+    const edit = editorRef.current;
+    if (h.ghosts !== st?.ghosts || h.builds !== st?.builds || h.editRevision !== edit.queue.revision) {
       h.ghosts = st?.ghosts;
       h.builds = st?.builds;
-      const { cells, rev } = hologramCells(st);
-      e.setHolograms(cells, rev);
+      const { rev } = hologramCells(st);
+      h.editRevision = edit.queue.revision;
+      e.setHolograms(edit.overlay, `${rev}|edit:${edit.queue.revision}`);
     }
     syncPlacementHologram(e, h);
   };
@@ -740,6 +756,15 @@ export const StoryMap =forwardRef<StoryMapHandle, StoryMapProps>(function StoryM
    * furniture being placed (in the chosen material, under the cursor and while dragging: the material selector's hover shows
    * here at once), else none. */
   const syncPlacementHologram = (e: WorldViewerEngine, h: HoloSync) => {
+    const edit = editorRef.current;
+    if (p.current.view === 'fly' && edit.enabled) {
+      const key = `edit:${edit.preview.flat().join(',')}`;
+      if (h.preview !== key) {
+        h.preview = key;
+        e.setHologramPreview(edit.preview.length ? edit.preview.flat() : null, key);
+      }
+      return;
+    }
     const tool = p.current.tool,
       d = drag.current,
       held = p.current.holoPreview;
@@ -1626,6 +1651,11 @@ export const StoryMap =forwardRef<StoryMapHandle, StoryMapProps>(function StoryM
   // The engine consumes the first click to lock. Later center-ray clicks only inspect furniture, regardless of the held tool.
   flyClick.current = (target, mods) => {
     if (p.current.view !== 'fly' || !viewer.current?.locked() || target?.kind !== 'block') return;
+    if (editorRef.current.enabled && p.current.canEdit) {
+      editorRef.current.click(target, mods.button ?? 0);
+      return;
+    }
+    if ((mods.button ?? 0) !== 0) return;
     if (selectBlock({ shiftKey: mods.shift }, target, p.current)) document.exitPointerLock?.();
   };
 
@@ -1869,6 +1899,8 @@ export const StoryMap =forwardRef<StoryMapHandle, StoryMapProps>(function StoryM
           drawDistance={112}
           hideHint={cameraMode !== 'fly'}
           onAimClick={(target, mods) => flyClick.current(target, mods)}
+          onAim={(target) => editorRef.current.setAimed(target)}
+          resolveAim={(target, ray) => p.current.view === 'fly' && p.current.canEdit ? editorRef.current.resolve(target, ray) : target}
           className="absolute inset-0"
         />
       ) : (
@@ -1901,6 +1933,7 @@ export const StoryMap =forwardRef<StoryMapHandle, StoryMapProps>(function StoryM
         onAuxClick={(e) => e.preventDefault()}
       />
       <StoryFlyCrosshair flying={props.view === 'fly'} host={wrap} />
+      <StoryFlyEditor editor={editor} state={props.state} flying={props.view === 'fly'} canEdit={!!props.canEdit} onStart={props.onDropTool} />
       <div
         ref={labelsEl}
         className="pointer-events-none absolute inset-0 overflow-hidden"
@@ -1923,6 +1956,7 @@ const LABEL_CLASS =
 /** A designation waiting for a tool ("Needs a stone pickaxe"): the same pill, neutral (it isn't failing). */
 const WAIT_LABEL_CLASS = LABEL_CLASS.replace('border-danger/50', 'border-border-strong text-muted');
 const EMPTY_SEL: Selection = { bodies: [], chests: [], bench: null };
+const EMPTY_BADGES: readonly BotBadge[] = [];
 const EMPTY_LIST: StoryColonyState['designations'] = [];
 const EMPTY_GHOSTS: NonNullable<StoryColonyState['ghosts']>['blocks'] = [];
 

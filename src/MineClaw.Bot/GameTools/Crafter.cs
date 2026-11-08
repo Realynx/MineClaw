@@ -151,7 +151,8 @@ public sealed class Crafter(IGameClient client)
             foreach (var step in withSmelt.Steps.Where(s => s.IsSmelt))
             {
                 var s = step.Smelt!;
-                var res = await client.SmeltAsync(s.InputId, step.Times, null, wait: true, furnace: furnace.Pos, ct: ct).ConfigureAwait(false);
+                var res = await client.SmeltAsync(s.InputId, step.Times, null, wait: true, furnace: furnace.Pos, ct: ct,
+                    inputMeta: s.InputDamage >= 0 ? s.InputDamage : null).ConfigureAwait(false);
                 if (!res.Ok) return ActionResult.Fail($"smelting {Names.Item(s.InputId)} failed: {res.Message}");
                 notes.Add($"smelted {Names.Item(s.OutputId, s.OutputDamage)} x{step.OutputCount}");
             }

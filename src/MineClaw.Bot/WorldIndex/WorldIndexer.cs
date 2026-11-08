@@ -181,7 +181,7 @@ public sealed partial class WorldIndexer : IDisposable
         if (w.Type is not (WindowType.Chest or WindowType.Furnace or WindowType.Dispenser)) return;
         var p = _world.Player.Snapshot;
         _containerEvents.Enqueue(new ContainerEvent(true, w, p.Position + new Vec3d(0, PlayerPhysics.EyeHeight, 0), p.Yaw, p.Pitch,
-            _feed.LastOpenedContainer, Volatile.Read(ref _inventoryVersion), null));
+            _feed.ContainerPosition(w), Volatile.Read(ref _inventoryVersion), null));
     }
 
     private void OnWindowClosed(Window w)

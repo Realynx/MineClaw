@@ -393,7 +393,7 @@ exports[`the mock director: a golden run > designations and builds: every op and
   ],
   [
     "after builds",
-    "5426b7da23d12a1e",
+    "64f3aba23265ab37",
   ],
   [
     "pause",
@@ -425,7 +425,7 @@ exports[`the mock director: a golden run > designations and builds: every op and
   ],
   [
     "after work",
-    "5cd55a7eb8287247",
+    "c341897b3dc148c8",
   ],
   [
     "retry all",
@@ -433,7 +433,7 @@ exports[`the mock director: a golden run > designations and builds: every op and
   ],
   [
     "end",
-    "de4e61aa3985d916",
+    "a83847cc82a22fe3",
   ],
 ]
 `;
@@ -775,7 +775,7 @@ exports[`the mock director: a golden run > records every request and the colony 
   ],
   [
     "delta built",
-    "ed6915a8e9cc47e3",
+    "0b7344c31d1df4c2",
   ],
   [
     "storage area",
@@ -963,11 +963,11 @@ exports[`the mock director: a golden run > records every request and the colony 
   ],
   [
     "state ordered",
-    "d15594137ae2a505",
+    "39694f93b385221f",
   ],
   [
     "delta work 0",
-    "8d792beacc952739",
+    "a2a3bac84adcf134",
   ],
   [
     "delta work 1",
@@ -1035,7 +1035,7 @@ exports[`the mock director: a golden run > records every request and the colony 
   ],
   [
     "state end",
-    "8a3ad6e1d5e62c49",
+    "7d180fedf81a878b",
   ],
   [
     "list",

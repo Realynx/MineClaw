@@ -7,6 +7,38 @@ namespace MineClaw.Bot.Tests;
 public sealed class TransferItemSelectorTests
 {
     [Theory]
+    [InlineData("wooden_hoe", 290)]
+    [InlineData("stone_pickaxe", 274)]
+    [InlineData("leather_boots", 301)]
+    public async Task Named_durable_items_can_be_withdrawn_with_any_wear(string selector, int id)
+    {
+        var (host, client) = TestBot.Create();
+        using var h = host;
+        client.World.SetBlock(3, 65, 1, Blocks.Chest, 0);
+        var result = await h.RunAs(null, "withdraw", new { item = selector, count = 1, at = "3,65,1" });
+        Assert.True(result.Ok, result.Text);
+        Assert.Contains($"withdraw {id} 1 3,65,1 dmg=", client.CallList);
+    }
+
+    [Fact]
+    public async Task Named_tool_delivery_accepts_worn_tools_while_explicit_damage_stays_exact()
+    {
+        var (host, client) = TestBot.Create();
+        using var h = host;
+        client.World.SetBlock(3, 65, 1, Blocks.Chest, 0);
+        client.Give(9, 290, 1, 34);
+        client.Effects["deposit"] = () =>
+        {
+            Assert.True(client.LastDepositFilter!(new ItemStack(290, 1, 34)));
+            Assert.False(client.LastDepositFilter!(new ItemStack(274, 1, 34)));
+            client.World.Inventory.SetSlot(0, 9, ItemStack.Empty);
+        };
+        Assert.True((await h.RunAs(null, DepositAtTool.ToolName, new { at = "3,65,1", items = new[] { "wooden_hoe" } })).Ok);
+        Assert.Equal(0, TransferItemSelector.Resolve("290:0")!.Value.Damage);
+        Assert.Equal(34, TransferItemSelector.Resolve("290:34")!.Value.Damage);
+    }
+
+    [Theory]
     [InlineData("17:0", 17, 0)]
     [InlineData("17:1", 17, 1)]
     [InlineData("1:0", 1, 0)]

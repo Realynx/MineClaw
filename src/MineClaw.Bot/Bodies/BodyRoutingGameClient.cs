@@ -118,8 +118,8 @@ public sealed class BodyRoutingGameClient(BodyRegistry registry, Func<IBody, IGa
         T().HarvestGeneratorAsync(cells, count, stand, ct);
     public Task<ActionResult> CollectDropsAsync(double radius = 8, CancellationToken ct = default, bool dryOnly = false) => T().CollectDropsAsync(radius, ct, dryOnly);
     public Task<ActionResult> CraftAsync(int itemId, int damage = -1, int count = 1, CancellationToken ct = default) => T().CraftAsync(itemId, damage, count, ct);
-    public Task<ActionResult> SmeltAsync(int inputItemId, int count, int? fuelItemId = null, bool wait = false, BlockPos? furnace = null, CancellationToken ct = default) =>
-        T().SmeltAsync(inputItemId, count, fuelItemId, wait, furnace, ct);
+    public Task<ActionResult> SmeltAsync(int inputItemId, int count, int? fuelItemId = null, bool wait = false, BlockPos? furnace = null, CancellationToken ct = default, int? inputMeta = null) =>
+        T().SmeltAsync(inputItemId, count, fuelItemId, wait, furnace, ct, inputMeta);
     public Task<ActionResult> CollectFurnaceAsync(BlockPos? furnace = null, CancellationToken ct = default) => T().CollectFurnaceAsync(furnace, ct);
     public Task<ActionResult> OpenContainerAsync(int x, int y, int z, CancellationToken ct = default) => T().OpenContainerAsync(x, y, z, ct);
     public Task<ActionResult> ClickSlotAsync(int slot, bool rightClick = false, bool shift = false, CancellationToken ct = default) => T().ClickSlotAsync(slot, rightClick, shift, ct);
@@ -131,8 +131,8 @@ public sealed class BodyRoutingGameClient(BodyRegistry registry, Func<IBody, IGa
     public Task<ActionResult> PlaceBlockAsync(int x, int y, int z, int itemId, CancellationToken ct = default) => T().PlaceBlockAsync(x, y, z, itemId, ct);
     public Task<ActionResult> PlaceVariantAsync(int x, int y, int z, int itemId, int? damage, BlockFace? face, CancellationToken ct = default) =>
         T().PlaceVariantAsync(x, y, z, itemId, damage, face, ct);
-    public Task<ActionResult> PlaceTurnedAsync(int x, int y, int z, int itemId, int? damage, int meta, CancellationToken ct = default) =>
-        T().PlaceTurnedAsync(x, y, z, itemId, damage, meta, ct);
+    public Task<ActionResult> PlaceTurnedAsync(int x, int y, int z, int itemId, int? damage, int meta, CancellationToken ct = default, bool exact = false) =>
+        T().PlaceTurnedAsync(x, y, z, itemId, damage, meta, ct, exact);
     public Task<ActionResult> DigBlockAsync(int x, int y, int z, CancellationToken ct = default) => T().DigBlockAsync(x, y, z, ct);
     public Task<ActionResult> ActivateBlockAsync(int x, int y, int z, CancellationToken ct = default) => T().ActivateBlockAsync(x, y, z, ct);
     public Task<ActionResult> UseItemOnBlockAsync(BlockPos pos, BlockFace face, int itemId, int? damage = null, CancellationToken ct = default) =>

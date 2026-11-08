@@ -35,6 +35,10 @@ public sealed partial class StoryColony
         else if (item is { } it) changed = ForgetTaken(w, st, it.Item.Id, m.Groups["had"]);
         else return false;
         if (changed) Recount(st); else st.Rev = Touch();
+        // A sorting trip may have seen the named item but failed to transfer its exact variant, or a stale
+        // observation may put it back in stock. Let other work proceed instead of reopening the chest every tick.
+        if (j.Lease?.StartsWith("resort:", StringComparison.Ordinal) == true)
+            _skip[j.Lease] = Now + TimeSpan.FromSeconds(30);
         _log_StaleFetch(p, name, at);
         return true;
     }

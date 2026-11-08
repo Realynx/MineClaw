@@ -1438,7 +1438,7 @@ export const ROUTES = {
     bridge: b('/v1/sup/story/colonies/{id}/builds', 'POST'),
     supervisor: '/api/story/colonies/{id}/builds',
     audit: 'story',
-    summary: 'The build queue: add, remove, pause, resume, reorder, or unprotect selected cells from builds and Preserve.',
+    summary: 'The build queue: add, edit exact plan cells, remove, pause, resume, reorder, or unprotect selected cells from builds and Preserve.',
   }),
   'story.storage': post('/api/story/colonies/:id/storage', {
     access: 'story',

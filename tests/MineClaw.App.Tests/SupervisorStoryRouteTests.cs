@@ -11,6 +11,32 @@ public sealed class SupervisorStoryRouteTests
     private const string Token = "s3cret";
 
     [Fact]
+    public async Task Build_cell_edits_validate_the_entire_sparse_payload_and_return_a_stable_owner_and_revision()
+    {
+        var (routes, _, world, _, _) = Make();
+        var colonyId = await Colony(routes);
+        var path = $"/api/story/colonies/{colonyId}/builds";
+        var (status, reply) = await Call(routes, "POST", path, new { op = "edit", cells = new[] { new[] { 3, 64, 3, 5, 0 }, new[] { 8, 64, 3, 0, 0 } } });
+        Assert.Equal(200, status);
+        var id = reply!["build_id"]!.GetValue<string>();
+        Assert.True(reply["rev"]!.GetValue<long>() > 0);
+        Assert.Equal(id, reply["ids"]![0]!.GetValue<string>());
+        Assert.Equal((0, 0), world.Block(3, 64, 3)); // plan edit, never a server block mutation
+        (status, reply) = await Call(routes, "POST", path, new { op = "edit", build_id = id, cells = new[] { new[] { 4, 64, 3, 4, 0 } } });
+        Assert.Equal(200, status);
+        Assert.Equal(id, reply!["build_id"]!.GetValue<string>());
+        var colony = routes.Colonies.Get(colonyId)!;
+        Assert.Equal(3, Assert.Single(colony.Builds).Ghosts.Count);
+        foreach (var bad in new object[]
+        {
+            new { op = "edit" }, new { op = "edit", build_id = 12, cells = new[] { new[] { 3, 64, 3, 4, 0 } } },
+            new { op = "edit", build_id = "missing", cells = new[] { new[] { 3, 64, 3, 4, 0 } } },
+            new { op = "edit", cells = new[] { new[] { 9, 64, 3, 4, 0 }, new[] { 10, 64, 3, 4, 16 } } },
+        }) Assert.Equal(400, (await Call(routes, "POST", path, bad)).Status);
+        Assert.Equal(3, Assert.Single(colony.Builds).Ghosts.Count);
+    }
+
+    [Fact]
     public async Task Selected_cells_can_be_unprotected_and_filter_entries_edited_without_replacing_the_filter()
     {
         var (r, _, w, _, _) = Make();

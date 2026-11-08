@@ -13,7 +13,7 @@ public sealed record Material(int Id, int Meta, string Item, string Name);
 /// window = glass panes in the wall; stairs = a staircase rising toward its facing; block/furniture = each block; remove = dig.
 /// Pure: the world is read only for "remove" (what is there now).
 /// </summary>
-public static class StoryConstruction
+public static partial class StoryConstruction
 {
     public static readonly IReadOnlyList<string> Kinds =
         ["wall", "floor", "roof", "door", "window", "stairs", "fence", "block", "remove", "mine", "water", "crafting_table", "furnace", "chest", "bed", "torch"];
@@ -183,6 +183,7 @@ public static class StoryConstruction
     /// <summary>The expanded blocks of one item, or why it can't be expanded.</summary>
     public static (List<GhostState> Ghosts, Material? Mat, string? Error) Expand(IGameData d, JsonObject item, IStoryWorld? world = null)
     {
+        if (item["cells"] != null) return ExactCells(d, item, world);
         var (x, err) = ParseItem(item);
         if (x == null) return ([], null, err);
         // Liquid sources poured from a bucket (docs/web/story-mode.md "Water"): each cell a still source of the item's liquid. A design's

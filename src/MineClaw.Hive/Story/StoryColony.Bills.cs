@@ -346,6 +346,7 @@ public sealed partial class StoryColony
     /// <summary>Each ingredient's source (a pawn's own stack, else a chest within the radius), or what's missing.</summary>
     private (List<(P3? Chest, Stack Stack)> Got, string? Missing) Ingredients(BillState b, StoryRecipe r, int crafts, WorkbenchState bench, PawnLive live)
     {
+        if (bench.Kind == "furnace") return FurnaceIngredients(b, r, crafts, bench, live);
         var got = new List<(P3?, Stack)>();
         var wood = WoodBudget(b, r);
         foreach (var input in r.Inputs)
@@ -362,22 +363,20 @@ public sealed partial class StoryColony
             // Whatever variants are stocked, several stacks if need be (vanilla's wildcard recipes take mixed planks; a family bill
             // takes any log): the most plentiful first, then the nearest. Live 11-04: "no oak wood planks" with birch in the chest.
             int left = need;
-            if (bench.Kind != "furnace")
-                foreach (var own in live.Inventory.Where(Ok))
-                {
-                    int n = WoodAvailable(wood, own.Id, own.Meta, Math.Min(left, own.Count));
-                    if (left <= 0) break;
-                    if (n <= 0) continue;
-                    got.Add((null, own with { Count = n }));
-                    WoodTaken(wood, own with { Count = n });
-                    left -= n;
-                }
+            foreach (var own in live.Inventory.Where(Ok))
+            {
+                int n = WoodAvailable(wood, own.Id, own.Meta, Math.Min(left, own.Count));
+                if (left <= 0) break;
+                if (n <= 0) continue;
+                got.Add((null, own with { Count = n }));
+                WoodTaken(wood, own with { Count = n });
+                left -= n;
+            }
             foreach (var (store, stack) in Storages.Where(s => s.Chest.Dist(bench.Pos) <= b.Radius && ChestOpen(s.Chest))
                          .SelectMany(s => s.Contents.Where(Ok).Select(c => (Store: s, Stack: c)))
                          .OrderByDescending(x => x.Stack.Count).ThenBy(x => x.Store.Chest.Dist(bench.Pos)))
             {
                 if (left <= 0) break;
-                if (r.Fuel && got.Any(g => g.Item1 != null && (g.Item2.Id != stack.Id || g.Item2.Meta != stack.Meta))) continue; // a furnace load is one item
                 int n = WoodAvailable(wood, stack.Id, stack.Meta, Math.Min(left, stack.Count));
                 if (n <= 0) continue;
                 got.Add((store.Chest, stack with { Count = n }));
@@ -444,6 +443,14 @@ public sealed partial class StoryColony
         // A loaded furnace: fuel for a load left without it, collecting one that is done (the bill's work type), else still smelting.
         if (bench.LoadedBill is { } lb) return only == null ? LoadedFurnaceJob(w, live, work, bench, lb, key) : null;
         if (StoryRecipes.Stations.Contains(bench.Kind) && (!StoryRecipes.SupportedIn(w.Data, bench.Kind) || StationGone(bench))) return null;
+        if (bench.Kind == "furnace" && only != null)
+        {
+            // A local manual bill making an urgent task's same product can satisfy that urgency. Keep its
+            // precedence even though an automatic fallback now remains queued beside it.
+            var recipes = bench.Tasks.Where(only).Select(t => t.Recipe).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            foreach (var manual in bench.Bills.Where(b => recipes.Contains(b.Recipe)))
+                if (BillOnBench(w, p, live, work, bench, manual, key) is { } urgent) return urgent;
+        }
         foreach (var bill in BenchQueue(bench, only)) // immediate tasks, the owner's bills, the other tasks
             if (BillOnBench(w, p, live, work, bench, bill, key) is { } job) return job;
         // Colony crafts can use any crafting table. Manual bills stay beside the supplies
@@ -557,7 +564,7 @@ public sealed partial class StoryColony
     // A large tool request must not strand pawns that can make a smaller batch from their pockets and storage.
     private int AvailableCraftBatch(BillState bill, StoryRecipe recipe, WorkbenchState bench, PawnLive live, int wanted)
     {
-        if (bench.Kind == "furnace") return wanted;
+        if (bench.Kind == "furnace") return FurnaceBatchSize(bill, recipe, bench, live, wanted);
         var wood = WoodBudget(bill, recipe);
         foreach (var input in recipe.Inputs)
         {
@@ -634,7 +641,8 @@ public sealed partial class StoryColony
             "bill", bill.Id, "working", f =>
             {
                 // A family smelt (charcoal from any logs) smelts the log it fetched (one item id per furnace load).
-                f["item"] = bench.Kind == "furnace" && r.Any && got.FirstOrDefault().Chest != null ? ItemName(got[0].Stack.Id, got[0].Stack.Meta) : r.ToolItem;
+                f["item"] = bench.Kind == "furnace" && r.Any && got.Count > 0 ? ItemName(got[0].Stack.Id, got[0].Stack.Meta) : r.ToolItem;
+                if (bench.Kind == "furnace" && got.Count > 0) f["input_meta"] = got[0].Stack.Meta;
                 f["n"] = bench.Kind == "furnace" ? crafts : crafts * r.Output.Count;
                 f["fetch"] = fetch;
                 f["recipe"] = r.Id;
@@ -645,6 +653,7 @@ public sealed partial class StoryColony
             job.Takes.Add((chest.Value, st));
         }
         if (bench.Kind != "furnace") return StashBatch(job, bench, bill, r, crafts);
+        job.Assign = MaterialsChanged;
         var own = got.Where(g => g.Chest == null).Select(g => g.Stack).ToList(); // its input from its own pockets is no fuel too
         return FuelBatch(job, bench, bill, r, crafts, live, auto, own);
     }
@@ -668,7 +677,7 @@ public sealed partial class StoryColony
     /// </summary>
     private ActiveJob? FuelBatch(ActiveJob job, WorkbenchState bench, BillState bill, StoryRecipe r, int crafts, PawnLive live, bool auto, IReadOnlyList<Stack> own)
     {
-        var (fuel, units, src, noFuel) = PickFuel(bench, bill, crafts, live, own);
+        var (fuel, units, src, noFuel) = PickFuel(bench, bill, crafts, live, own, job.Takes);
         if (noFuel != null && auto) return null;
         if (noFuel != null) { SuspendBill(bench, bill, r, noFuel); return null; }
         AddFuel(job, fuel, units, src);

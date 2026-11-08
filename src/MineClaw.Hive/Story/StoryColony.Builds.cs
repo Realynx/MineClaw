@@ -434,6 +434,12 @@ public sealed partial class StoryColony
             f => PlaceFields(f, item, want, cells, clear, g, stand, fetch), xp: Math.Min(60, 8 + 4 * cells.Count));
         job.Takes.AddRange(takes);
         if (ReplacementBuild(b)) job.Json["replace"] = true;
+        if (ExactBuild(b))
+        {
+            job.Json["exact_state"] = true;
+            job.Json["want_id"] = g.Id;
+            job.Json["metas"] = new JsonArray(cells.Select(c => (JsonNode)c.Meta).ToArray());
+        }
         if (scaffold is { } spot) job.Json["scaffold"] = new JsonObject { [g.At.ToString()] = spot.ToString() };
         return Claim(b, cells, p.Name, WithTool(clear.Count > 0 ? clearTool : null, job));
     }

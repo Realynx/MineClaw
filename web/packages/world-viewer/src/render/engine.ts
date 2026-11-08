@@ -18,8 +18,9 @@ import {
 import { blockName } from '../world/blocks';
 import type { BotView } from '../world/entities';
 import type { Interest } from '../world/sync';
-import { aimAt, outlineOf, type AimTarget } from './aim';
+import { aimAt, outlineOf, type AimTarget, type AimRay } from './aim';
 import type { BubbleKind, ShownBubble } from './bubbles';
+import type { BotBadge } from './botBadges';
 import { CameraRig, lookDir, type RigInput } from './cameraRig';
 import { newViewId, WorldRuntime, type RuntimeOptions, type RuntimeView, type ViewSetup } from './runtime';
 import type { HoloCell, HologramStats } from './holograms';
@@ -44,7 +45,9 @@ export interface EngineOptions extends RuntimeOptions {
   /** Free cam with the mouse locked: what the crosshair points at, whenever it changes (null = nothing or unlocked). */
   onAim?: (t: AimTarget | null) => void;
   /** A left click with the mouse locked, on what the crosshair points at. Without it the click picks as before. */
-  onAimClick?: (t: AimTarget | null, mods: { shift: boolean; ctrl: boolean }) => void;
+  onAimClick?: (t: AimTarget | null, mods: { shift: boolean; ctrl: boolean; button?: number }) => void;
+  /** Adds application plan cells to the center-ray pick, without changing the physical world. */
+  resolveAim?: (physical: AimTarget | null, ray: AimRay) => AimTarget | null;
 }
 
 const XRAY_RANGE = 48; // FreecamXRay.Range
@@ -199,6 +202,11 @@ export class WorldViewerEngine implements RuntimeView {
     this.botLabels = on;
   }
 
+  /** Activity badges shown only in this view; an empty list removes them. */
+  setBotBadges(badges: readonly BotBadge[]): void {
+    this.runtime.setBotBadges(this.id, badges);
+  }
+
   /**
    * [holograms] Queued build cells drawn in this view as translucent block holograms (render/holograms.ts). Rebuilt only when
    * `rev` changes (or a block change lands on one of the cells: a built cell disappears); cheap to call every frame.
@@ -261,8 +269,9 @@ export class WorldViewerEngine implements RuntimeView {
   async aimNow(): Promise<AimTarget | null> {
     const o = this.camera.position;
     const d = this.camera.getWorldDirection(new THREE.Vector3());
+    const ray: AimRay = { origin: [o.x, o.y, o.z], direction: [d.x, d.y, d.z], max: this.drawDistance + 32 };
     const bots = this.layers.bots ? this.runtime.store.bots().filter((b) => b.dim === this.dim) : [];
-    const t = await aimAt(
+    const physical = await aimAt(
       [o.x, o.y, o.z],
       [d.x, d.y, d.z],
       bots,
@@ -270,6 +279,7 @@ export class WorldViewerEngine implements RuntimeView {
       (id) => blockName(this.runtime.version ?? 'b1.8.1', id),
       this.drawDistance + 32,
     );
+    const t = this.opts.resolveAim ? this.opts.resolveAim(physical, ray) : physical;
     this.setAim(t);
     return t;
   }
@@ -281,7 +291,7 @@ export class WorldViewerEngine implements RuntimeView {
       (!!a &&
         !!t &&
         a.kind === t.kind &&
-        (a.kind === 'bot' ? a.name === (t as typeof a).name : a.x === t.x && a.y === t.y && a.z === t.z));
+        (a.kind === 'bot' ? a.name === (t as typeof a).name : t.kind === 'block' && a.x === t.x && a.y === t.y && a.z === t.z && a.face === t.face && a.id === t.id && a.meta === t.meta && a.plan === t.plan));
     this.aimed = t;
     if (!same) this.opts.onAim?.(t);
   }
@@ -289,7 +299,7 @@ export class WorldViewerEngine implements RuntimeView {
   setCallbacks(
     c: Pick<
       EngineOptions,
-      'onSelectBot' | 'onPick' | 'onStats' | 'onNotes' | 'onCameraModeChange' | 'onError' | 'onAim' | 'onAimClick'
+      'onSelectBot' | 'onPick' | 'onStats' | 'onNotes' | 'onCameraModeChange' | 'onError' | 'onAim' | 'onAimClick' | 'resolveAim'
     >,
   ): void {
     this.opts = { ...this.opts, ...c };
@@ -649,7 +659,7 @@ export class WorldViewerEngine implements RuntimeView {
       // Free cam plays like the game: the first click locks and hides the cursor (Esc releases it); that click picks nothing.
       if (this.rig.mode === 'fly' && e.button === 0 && document.pointerLockElement !== c) {
         this.drag = null;
-        c.requestPointerLock?.();
+        void c.requestPointerLock?.();
         return;
       }
       this.drag = { x: e.clientX, y: e.clientY, t: performance.now(), button: e.button, moved: false };
@@ -686,12 +696,12 @@ export class WorldViewerEngine implements RuntimeView {
       const d = this.drag;
       this.drag = null;
       if (c.hasPointerCapture?.(e.pointerId)) c.releasePointerCapture(e.pointerId);
-      if (!isClick(d)) return;
       const locked = document.pointerLockElement === c;
+      if (!isClick(d, locked && !!this.opts.onAimClick)) return;
       if (locked && this.opts.onAimClick) {
-        const mods = { shift: e.shiftKey, ctrl: e.ctrlKey || e.metaKey };
+        const mods = { shift: e.shiftKey, ctrl: e.ctrlKey || e.metaKey, button: e.button };
         void this.aimNow().then((t) => {
-          if (!this.disposed) this.opts.onAimClick?.(t, mods);
+          if (!this.disposed && document.pointerLockElement === c && this.rig.mode === 'fly') this.opts.onAimClick?.(t, mods);
         });
         return;
       }
@@ -751,8 +761,8 @@ export class WorldViewerEngine implements RuntimeView {
 const FLOOR_DEPTH = 32;
 
 /** A press that counts as a click: the left button, not dragged, released within half a second. */
-function isClick(d: { t: number; button: number; moved: boolean } | null): boolean {
-  return !!d && !d.moved && performance.now() - d.t <= 500 && d.button === 0;
+function isClick(d: { t: number; button: number; moved: boolean } | null, right = false): boolean {
+  return !!d && !d.moved && performance.now() - d.t <= 500 && (d.button === 0 || (right && d.button === 2));
 }
 
 /** The x-ray's floor: the cut never goes below the lowest subject's feet (0 without subjects). */

@@ -362,7 +362,7 @@ export function useStoryModeState() {
   const bodies = useBodies(data.state, order, ui.selection.bodies);
   const materials = useMaterialSelector(
     tools.tool,
-    { id: data.id, state: data.state, tab: ui.tab },
+    { id: data.id, state: data.state, tab: level.view === 'fly' ? 'architect' : ui.tab },
     bodies.stock,
     tools.build,
     tools.setBuild,

@@ -62,6 +62,7 @@ import {
   type StoryBuildMaterial,
   type StoryBuildItem,
   type StoryBuildRequest,
+  StoryBuildRequest as BuildRequestSchema,
   type StoryColonyOptions,
   type StoryOptionsRequest,
   type StoryWorkbenchesRequest,
@@ -203,6 +204,7 @@ interface Colony {
   builds: Map<Key, Fn<StoryBuild>>;
   ghostCells: Map<Key, GhostCell[]>;
   replacementClears: Set<Key>;
+  editedBuilds: Set<Key>;
   preserveExcluded: Map<Key, Set<string>>;
   ghostsRev: number;
   storages: Map<string, Fn<StoryStorage>>;
@@ -416,7 +418,7 @@ function plantBills(
 
 /** The state's `ghosts`: every blueprint cell. */
 const ghostsState = (c: Colony) => ({ ghosts: { rev: c.ghostsRev,
-  blocks: [...c.ghostCells].flatMap(([id, cells]) => c.replacementClears.has(id) ? cells.filter((g) => g[6] !== 'done') : cells) } });
+  blocks: [...c.ghostCells].flatMap(([id, cells]) => c.replacementClears.has(id) ? cells.filter((g) => g[7] !== 'dig' || g[6] !== 'done') : cells) } });
 
 /** A delta's `removed`: what went since `since`, by kind (no key when nothing did). */
 function removedSince(gone: Colony['removed'], since: number) {
@@ -849,6 +851,7 @@ export class StorySim {
       builds: new Map(),
       ghostCells: new Map(),
       replacementClears: new Set(),
+      editedBuilds: new Set(),
       preserveExcluded: new Map(),
       ghostsRev: 1,
       storages: new Map(),
@@ -1989,6 +1992,7 @@ export class StorySim {
 
   builds(id: string, body: StoryBuildRequest): BuildsAck {
     const c = this.colony(id);
+    if (body.op === 'edit') return this.editBuilds(c, body);
     if (body.op === 'unprotect') return this.unprotectCells(c, body.cells);
     if (body.op === 'retry' || body.op === 'retry_all') return this.retryBuilds(c, body);
     if (body.op === 'preview') {
@@ -2018,6 +2022,67 @@ export class StorySim {
     c.ghostsRev = this.bump(c);
     this.plan(c);
     return { ok: true, rev: c.rev };
+  }
+
+  /** Editing keeps the source building's group and replaces only the explicitly changed cells. */
+  private editBuilds(c: Colony, body: Extract<StoryBuildRequest, { op: 'edit' }>): BuildsAck {
+    BuildRequestSchema.parse(body);
+    const explicit = body.buildId ? c.builds.get(body.buildId)?.v : undefined;
+    const fail = (why: string): never => { throw Object.assign(new Error(why), { status: 400 }); };
+    if (body.buildId && !explicit) fail('no such build');
+    if (explicit?.kind === 'preserve') fail('select a building, not a Preserve repair');
+    const keys = new Set(body.cells.map((cell) => cell.slice(0, 3).join(',')));
+    if (keys.size !== body.cells.length) fail('duplicate edit cell');
+    if (body.cells.some((cell) => cell[1] >= 256)) fail('cell above world height');
+    const owners = new Map<string, StoryBuild>();
+    for (const [id, cells] of c.ghostCells) {
+      const b = c.builds.get(id)?.v;
+      if (b && b.kind !== 'preserve') for (const g of cells) owners.set(g.slice(0, 3).join(','), b);
+    }
+    const freshGroup = `freecam-${c.seq++}`;
+    const destinations = body.cells.map((cell) => {
+      const owner = explicit ?? owners.get(cell.slice(0, 3).join(','));
+      return { cell, group: owner?.group ?? (owner ? `build-${owner.id}` : freshGroup), owner };
+    });
+    // Retire old leases before their completion can put back a previous version of an edited block.
+    for (const p of c.pawns.values())
+      if (p.task?.target && keys.has(keyOf(p.task.target))) this.drop(c, p);
+    const touched = new Set<Key>();
+    for (const [id, cells] of c.ghostCells) {
+      const rest = cells.filter((g) => !keys.has(g.slice(0, 3).join(',')));
+      if (rest.length === cells.length) continue;
+      c.ghostCells.set(id, rest); touched.add(id);
+    }
+    const ids: Key[] = [];
+    for (const { cell, group, owner } of destinations) {
+      if (owner && !owner.group) owner.group = group;
+      let build = [...c.builds.values()].find((f) => c.editedBuilds.has(f.v.id) && f.v.group === group)?.v;
+      if (!build) {
+        const id = `b${c.seq++}`;
+        build = { id, kind: 'block', group, ...(owner?.name ? { name: owner.name } : {}),
+          label: owner?.name ? `${owner.name} edits` : 'Freecam edits', status: owner?.status === 'paused' ? 'paused' : 'queued',
+          blocksTotal: 0, blocksDone: 0, order: Math.max(0, ...[...c.builds.values()].map((f) => f.v.order)) + 1,
+          created: this.iso(), materials: [] };
+        c.builds.set(id, { rev: this.bump(c), v: build });
+        c.ghostCells.set(id, []); c.editedBuilds.add(id); c.replacementClears.add(id);
+      }
+      const [x, y, z, id, meta] = cell, actual = this.opts.world.blockAt(x, y, z);
+      const done = actual[0] === id && (id === 0 || actual[1] === meta);
+      c.ghostCells.get(build.id)!.push([x, y, z, id, meta, build.id, done ? 'done' : 'todo', id === 0 ? 'dig' : 'place']);
+      touched.add(build.id);
+      if (!ids.includes(build.id)) ids.push(build.id);
+    }
+    for (const id of touched) {
+      const build = c.builds.get(id), cells = c.ghostCells.get(id) ?? [];
+      if (!cells.length) { this.removeBuild(c, String(id)); continue; }
+      if (!build) continue;
+      build.v.blocksTotal = cells.length; build.v.blocksDone = cells.filter((g) => g[6] === 'done').length;
+      if (build.v.status !== 'paused') build.v.status = build.v.blocksDone === cells.length ? 'done' : 'queued';
+      build.v.reason = null; build.rev = this.bump(c);
+    }
+    c.ghostsRev = this.bump(c);
+    this.plan(c);
+    return { ok: true, ids, buildId: String(ids[0]), rev: c.rev };
   }
 
   /** Release exact cells, retaining all other build work and the rest of each preserved zone. */
@@ -2133,6 +2198,8 @@ export class StorySim {
     const b: StoryBuild = {
       id: bid,
       kind: item.kind,
+      ...(item.group ? { group: item.group } : {}),
+      ...(item.name ? { name: item.name } : {}),
       label: liquid ? waterBuildLabel(item, liquid, cells.length) : buildLabel(item.kind, cells.length, item.material),
       status: 'queued',
       ...(liquid ? { liquid, renewable: false } : {}),
@@ -2195,6 +2262,7 @@ export class StorySim {
   private removeBuild(c: Colony, bid: string): void {
     c.builds.delete(bid);
     c.replacementClears.delete(bid);
+    c.editedBuilds.delete(bid);
     c.ghostCells.delete(bid);
     c.removed.push({ rev: this.bump(c), kind: 'builds', key: bid });
     for (const p of c.pawns.values()) if (p.task?.ref === bid) this.drop(c, p);
@@ -2604,6 +2672,7 @@ export class StorySim {
       const b = f.v;
       if (b.status === 'done' || b.status === 'paused' || b.kind === 'remove') continue;
       if (b.kind === 'water') this.planWater(c, f, pool);
+      else if (c.editedBuilds.has(b.id)) this.planEditedBuild(c, f, pool, benches, wants);
       else this.planBuild(c, f, pool, benches, wants);
     }
     // Auto bills follow the wants: targets track the shortfall, the rest go, new ones join the bench's front.
@@ -2620,6 +2689,7 @@ export class StorySim {
       if (!build || build.v.status === 'paused') continue;
       let changed = false;
       for (const g of cells) {
+        if (g[7] !== 'dig') continue;
         const owned = owners.get(g.slice(0, 3).join(',')) === id;
         if (g[6] === 'leased' && owned) continue;
         if (!owned) for (const p of c.pawns.values())
@@ -2658,6 +2728,33 @@ export class StorySim {
   }
 
   /** One build's materials: stock reserved from the pool, the shortfall crafted (an auto bill) or short; its status. */
+  private planEditedBuild(c: Colony, f: Fn<StoryBuild>, pool: Map<string, number>, benches: PlanBenches, wants: PlanWant[]): void {
+    const needs = new Map<string, { cat: ArchitectEntry | undefined; label: string; need: number }>();
+    for (const g of c.ghostCells.get(f.v.id) ?? []) {
+      if (g[7] === 'dig' || g[6] === 'done') continue;
+      const cat = architectEntryOf(g[3], g[4]), key = cat ? `${cat[4][0]}:${cat[4][1]}` : `${g[3]}:${g[4]}`;
+      const n = needs.get(key) ?? { cat, label: cat?.[1] ?? storyItemLabel(g[3], g[4]), need: 0 };
+      n.need++; needs.set(key, n);
+    }
+    const materials: StoryBuildMaterial[] = [];
+    let short = 0, crafting = 0;
+    let station: StoryBuild['station'] = null;
+    for (const [key, n] of needs) {
+      const have = Math.min(n.need, pool.get(key) ?? 0);
+      pool.set(key, (pool.get(key) ?? 0) - have);
+      const missing = n.need - have;
+      const made = this.planShortfall(c, f.v, n.cat, n.label, missing, pool, benches, wants);
+      short += missing; crafting += made.crafting; station ??= made.station;
+      materials.push({ item: n.cat?.[0] ?? key, label: n.label, need: n.need, have,
+        crafting: made.crafting, short: missing - made.crafting, via: made.via, chain: made.chain, raw: made.raw });
+    }
+    const status = planStatus(f.v.status, short, crafting), reason = planReason(short, crafting, 'blocks');
+    if (JSON.stringify([materials, station, status, reason]) === JSON.stringify([f.v.materials, f.v.station ?? null, f.v.status, f.v.reason ?? null])) return;
+    Object.assign(f.v, { materials, station, status, reason });
+    f.rev = this.bump(c);
+  }
+
+  /** One ordinary item has one material; edited plans use planEditedBuild for their individual blocks. */
   private planBuild(c: Colony, f: Fn<StoryBuild>, pool: Map<string, number>, benches: PlanBenches, wants: PlanWant[]): void {
     const b = f.v;
     const { left, cat, key, label } = this.placedOf(c, b);
@@ -3933,6 +4030,7 @@ type DesignationsAck = {
 type BuildsAck = {
   ok: boolean;
   ids?: Key[];
+  buildId?: string;
   rev: number;
   warnings?: string[];
   flow?: { spread: number; cells: Array<[number, number, number]> };

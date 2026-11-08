@@ -53,7 +53,7 @@ public sealed class StoryWorkbenchValidityTests
     [InlineData(true, 58, 67)]
     public void A_suspended_automatic_task_moves_from_a_removed_bench_and_runs_at_an_existing_one(bool modern, int benchId, int output)
     {
-        var (c, _, w, t) = Rig(modern, benchId);
+        var (c, _, w, t) = Rig(modern, benchId, alternate: false);
         Build(c, output);
         var old = c.Benches.Single(b => b.Pos == First);
         var task = Assert.Single(old.Tasks);
@@ -65,6 +65,10 @@ public sealed class StoryWorkbenchValidityTests
             t.Now += TimeSpan.FromMinutes(11);
         }
         Assert.NotNull(task.SuspendedReason);
+        // Introduce the replacement after the task exists: furnace work now spreads across all registered
+        // stations, while this regression specifically checks migration of the original task identity.
+        w.Set(Second.X, Second.Y, Second.Z, benchId);
+        Assert.Null(c.WorkbenchOp("designate", Second).Error);
         w.Set(First.X, First.Y, First.Z, 0);
         c.EnsureMaterials(); // no stock or queue mutation: block validity itself must invalidate the cached plan
         var next = c.Next();
@@ -117,11 +121,14 @@ public sealed class StoryWorkbenchValidityTests
     [InlineData(true, true)]
     public void A_real_lit_or_unloaded_furnace_keeps_its_loaded_output_and_task(bool modern, bool unloaded)
     {
-        var (c, _, w, t) = Rig(modern, 61);
+        var (c, _, w, t) = Rig(modern, 61, alternate: false);
         Build(c, 20);
         var job = c.Next();
         Assert.Equal("smelt", Kind(job));
         Assert.True(c.Report(c.P(), Id(job), "done", "smelting", null));
+        // Once the whole request is loaded, adding another furnace must not duplicate that committed output.
+        w.Set(Second.X, Second.Y, Second.Z, 61);
+        Assert.Null(c.WorkbenchOp("designate", Second).Error);
         var first = c.Benches.Single(b => b.Pos == First);
         var loaded = first.LoadedBill;
         int count = first.LoadedCount;

@@ -15,6 +15,8 @@ export interface AimBot {
   h?: number;
 }
 
+export interface AimRay { origin: V3; direction: V3; max: number }
+
 export type AimTarget =
   | { kind: 'bot'; name: string; x: number; y: number; z: number; distance: number }
   | {
@@ -27,6 +29,8 @@ export type AimTarget =
       face: number;
       name: string;
       distance: number;
+      /** An application-owned plan cell that the ray hit before the physical world. */
+      plan?: string | number;
     };
 
 /** Slab test: the distance along the (unit) ray where it enters the box, or null when it misses or the box is behind. */
@@ -34,14 +38,14 @@ export function rayBox(o: V3, d: V3, min: V3, max: V3): number | null {
   let t0 = 0,
     t1 = Infinity;
   for (let i = 0; i < 3; i++) {
-    const oi = o[i]!,
-      di = d[i]!;
+    const oi = o[i],
+      di = d[i];
     if (Math.abs(di) < 1e-12) {
-      if (oi < min[i]! || oi > max[i]!) return null;
+      if (oi < min[i] || oi > max[i]) return null;
       continue;
     }
-    let a = (min[i]! - oi) / di,
-      b = (max[i]! - oi) / di;
+    let a = (min[i] - oi) / di,
+      b = (max[i] - oi) / di;
     if (a > b) [a, b] = [b, a];
     t0 = Math.max(t0, a);
     t1 = Math.min(t1, b);

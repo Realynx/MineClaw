@@ -223,7 +223,8 @@ public static class GameToolSet
             }, longRunning: true);
         tools.Register("smelt", "Load a furnace with items + fuel. wait=stay and collect.",
             ToolSchema.Create().Str("item", "input").Int("count", required: false).Str("fuel", required: false)
-                .Bool("wait", required: false).Str("at", "furnace " + At, required: false).Build(),
+                .Bool("wait", required: false).Str("at", "furnace " + At, required: false)
+                .Int("input_meta", "exact input item variant", required: false).Build(),
             async (i, ct) =>
             {
                 if (Items.ByName(i.ReqStr("item")) is not { } input) return ToolResult.Error($"unknown item '{i.Str("item")}'");
@@ -232,8 +233,10 @@ public static class GameToolSet
                 var at = OptionalAt(i, places, out var err);
                 if (err != null) return err;
                 // An explicit count 0 only tops up the fuel for what the furnace holds (Story Mode's refuel of a load left without fuel).
-                int count = i.Int("count") is { } n ? Math.Clamp(n, 0, 576) : Math.Clamp(c.World.Inventory.CountItem(input.Id), 1, 576);
-                return R(await c.SmeltAsync(input.Id, count, fuel, i.Bool("wait") == true, at, ct));
+                int? inputMeta = i.Int("input_meta");
+                if (inputMeta is < 0 or > short.MaxValue) return ToolResult.Error("input_meta must be between 0 and 32767");
+                int count = i.Int("count") is { } n ? Math.Clamp(n, 0, 576) : Math.Clamp(c.World.Inventory.CountItem(input.Id, inputMeta), 1, 576);
+                return R(await c.SmeltAsync(input.Id, count, fuel, i.Bool("wait") == true, at, ct, inputMeta));
             }, longRunning: true);
         tools.Register("collect_furnace", "Take finished items from a furnace (last used if omitted).",
             ToolSchema.Create().Str("at", At, required: false).Build(),

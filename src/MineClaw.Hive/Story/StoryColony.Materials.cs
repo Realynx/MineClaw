@@ -59,6 +59,11 @@ public sealed partial class StoryColony
         foreach (var s in Storages) if (!ChestUnreachable(s.Chest)) foreach (var c in s.Contents) PoolAdd(pool, c.Id, c.Meta, c.Count); // nobody gets there: not stock
         var cats = StoryCategories.For(w.Data);
         foreach (var p in Pawns.Values) PoolPawn(pool, cats, p);
+        // A reserved furnace load is already committed, even while its pawn is fetching the input.
+        // Count its promised output so another furnace only receives the remaining shortfall.
+        foreach (var job in _current.Values.Where(j => j.Source == "bill" && j.Kind == "smelt"))
+            if (job.Json["recipe"]?.GetValue<string>() is { } recipe && StoryRecipes.Get(w.Data, recipe) is { } r)
+                PoolAdd(pool, r.Output.Id, r.Output.Meta, job.Count);
         foreach (var bench in Benches)
             if (LoadedOutput(w, bench) is { } r)
                 PoolAdd(pool, r.Output.Id, r.Output.Meta, bench.LoadedCount); // even when its bill is gone: it is collected all the same
@@ -220,9 +225,9 @@ public sealed partial class StoryColony
         using var scope = ReferenceEquals(GameData.Current, w.Data) ? null : GameData.Override(w.Data);
         var pool = Pool(w);
         var near = Home() ?? Builds.SelectMany(b => b.Ghosts).Select(g => g.At).FirstOrDefault();
-        _plannerFuels = BenchFor("furnace", near) is { } fb
-            ? StoryFuels.For(w.Data, FuelChoice(fb, null)).Select(f => (f.Item.Id, f.Item.Meta, 1 / f.ItemsPerUnit)).ToList()
-            : null;
+        var furnaces = Benches.Where(b => b.Kind == "furnace" && BenchAvailable(b)).OrderBy(b => b.Pos.Dist(near)).ToList();
+        _plannerFuels = furnaces.Count > 0 ? furnaces.SelectMany(b => StoryFuels.For(w.Data, FuelChoice(b, null)))
+            .Select(f => (f.Item.Id, f.Item.Meta, 1 / f.ItemsPerUnit)).Distinct().ToList() : null;
         var pass = new MaterialsPass(this, w, pool);
         pass.Pool = ToolCrafts(w, pass.Pool, pass.Reserved, pass.Wants, pass.HasTable); // tools a waiting job needs, spare tools: auto bills "for tools" (StoryColony.Gear.cs)
         pass.ProtectWood();
@@ -332,8 +337,7 @@ public sealed partial class StoryColony
             var hidden = _wood?.Hide(Pool, acc.Build.Id, item) ?? new();
             var before = new Dictionary<(int Id, int Meta), int>(Pool);
             var prior = _plannerFuelAllowance;
-            var furnace = c.BenchFor("furnace", c.Home() ?? acc.Build.Ghosts.First().At);
-            _plannerFuelAllowance = furnace != null && FuelChoice(furnace, null) is not (StoryFuels.Auto or "any") ? hidden : null;
+            _plannerFuelAllowance = c.NamedFurnaceFuelAllowance(hidden);
             try { GroupCore(acc, grp); }
             finally
             {
@@ -436,8 +440,9 @@ public sealed partial class StoryColony
                 var s = plan.Steps[i];
                 bool anyVariant = s.OutputId != key.Id && !plan.Steps.Skip(i + 1).Any(next => RequiresVariant(next, s.OutputId));
                 if (RecipeOf(w.Data, s, intermediate: anyVariant) is not { } r) continue;
-                // An owner's bill already makes this step (smelting the iron ore into ingots): no second, automatic one.
-                if (c.OwnerMakes(w, s.OutputId)) { acc.Step++; continue; }
+                // Crafting remains shared with owner bills. Smelting keeps an automatic fallback on all usable
+                // furnaces; only committed loads count toward that shortfall, not an idle manual bill's existence.
+                if (!s.IsSmelt && c.OwnerMakes(w, s.OutputId)) { acc.Step++; continue; }
                 int outputs = s.OutputCount;
                 // A step whose bench the colony hasn't got yet waits (the bench is on its way, or asked for).
                 if (s.IsSmelt) { if (HasFurnace) Wants.Add(new Want(b.Id, b.Order, item, r, outputs, acc.Step++, "furnace")); }
@@ -521,7 +526,8 @@ public sealed partial class StoryColony
         foreach (var bench in Benches)
             if (DropFinishedNeeds(bench)) bench.Rev = Touch();
         var placed = new HashSet<(string, string)>();
-        foreach (var bench in Benches)
+        ReconcileFurnaceTasks(merged, near, placed);
+        foreach (var bench in Benches.Where(b => b.Kind != "furnace"))
             if (KeepAutoBills(bench, merged, placed)) bench.Rev = Touch();
         foreach (var want in merged.Where(x => !placed.Contains((x.Build, x.Recipe.Id))))
         {

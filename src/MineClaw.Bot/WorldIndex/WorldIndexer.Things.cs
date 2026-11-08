@@ -367,6 +367,7 @@ public sealed partial class WorldIndexer
     {
         var want = ContainerBlocks(ev.Window.Type);
         if (ev.FeedPos is { } fp && want.Contains(_world.GetBlock(fp))) return fp;
+        if (_feed.AuthoritativeContainers) return null;
         if (Raycast.Cast(_world, ev.Eye, ev.Yaw, ev.Pitch, 6) is { } hit)
         {
             if (want.Contains(hit.BlockId)) return hit.Pos;

@@ -71,6 +71,8 @@ beforeAll(async () => {
         return json(res, 400, { ok: false, message: 'refused: protected fact', reembedded: false });
       case '/v1/sup/admin/backup':
         return json(res, 500, { error: 'disk full at /var/lib/mineclaw' });
+      case '/v1/sup/story/colonies/story-1/builds':
+        return json(res, 200, { ids: ['b1'], build_id: 'b1' });
       case '/v1/sup/world/chunks': {
         if (req.headers['if-none-match'] === '"c1"') {
           res.writeHead(304, { ETag: '"c1"' }).end();
@@ -113,6 +115,19 @@ afterAll(async () => {
 });
 
 describe('JSON forwarding', () => {
+  it('forwards exact freecam plan edits and their build identity without changing metadata', async () => {
+    const cells = [[1, 64, 2, 53, 3], [1, 65, 2, 0, 0]];
+    const response = await fox.agent.post('/api/story/colonies/story-1/builds')
+      .set('Origin', ORIGIN).set('X-CSRF-Token', fox.csrf)
+      .send({ op: 'edit', buildId: 'b1', cells }).expect(200);
+    expect(response.body).toMatchObject({ ids: ['b1'], buildId: 'b1' });
+    expect(JSON.parse(last('/v1/sup/story/colonies/story-1/builds').body.toString()))
+      .toEqual({ op: 'edit', build_id: 'b1', cells });
+    await robin.agent.post('/api/story/colonies/story-1/builds')
+      .set('Origin', ORIGIN).set('X-CSRF-Token', robin.csrf)
+      .send({ op: 'edit', cells }).expect(403);
+  });
+
   it('camelCases replies but keeps opaque maps (params, args, blackboard) intact', async () => {
     const r = await fox.agent.get('/api/bodies/b1/script').expect(200);
     expect(r.body.snapshot.params).toEqual({ n: 80, store_at: 'home' });

@@ -8,6 +8,8 @@ export interface LabelStyle {
   /** Second, smaller line (held item, status). */
   sub?: string | null;
   border?: string | null;
+  /** Optional filled activity glyph in a 16-unit box. */
+  icon?: string | null;
 }
 
 interface CacheEntry {
@@ -24,7 +26,7 @@ export class LabelFactory {
   private cache = new Map<string, CacheEntry>();
 
   private key(text: string, s: LabelStyle): string {
-    return `${text}\u0000${s.fg}\u0000${s.bg}\u0000${s.sub ?? ''}\u0000${s.border ?? ''}`;
+    return `${text}\u0000${s.fg}\u0000${s.bg}\u0000${s.sub ?? ''}\u0000${s.border ?? ''}\u0000${s.icon ?? ''}`;
   }
 
   private draw(text: string, s: LabelStyle): CacheEntry {
@@ -35,7 +37,7 @@ export class LabelFactory {
     let w = 64;
     if (ctx) {
       ctx.font = font;
-      w = Math.ceil(ctx.measureText(text).width);
+      w = Math.ceil(ctx.measureText(text).width) + (s.icon ? PX + 6 : 0);
       if (s.sub) {
         ctx.font = subFont;
         w = Math.max(w, Math.ceil(ctx.measureText(s.sub).width));
@@ -59,7 +61,14 @@ export class LabelFactory {
       ctx.fillStyle = s.fg;
       ctx.font = font;
       ctx.textBaseline = 'top';
-      ctx.fillText(text, pad, 5);
+      if (s.icon && typeof Path2D !== 'undefined') {
+        ctx.save();
+        ctx.translate(pad, 5);
+        ctx.scale(PX / 16, PX / 16);
+        ctx.fill(new Path2D(s.icon), 'evenodd');
+        ctx.restore();
+      }
+      ctx.fillText(text, pad + (s.icon ? PX + 6 : 0), 5);
       if (s.sub) {
         ctx.font = subFont;
         ctx.globalAlpha = 0.85;
@@ -91,7 +100,7 @@ export class LabelFactory {
 
   release(sp: THREE.Sprite): void {
     const k = sp.userData.labelKey as string | undefined;
-    (sp.material as THREE.SpriteMaterial).dispose();
+    sp.material.dispose();
     if (!k) return;
     const e = this.cache.get(k);
     if (!e) return;

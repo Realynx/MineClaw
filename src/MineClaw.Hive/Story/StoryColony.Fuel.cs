@@ -21,7 +21,7 @@ public sealed partial class StoryColony
     /// <param name="ownInputs">What the batch's input takes from the pawn's own pockets: never counted as its fuel too (charcoal from logs
     /// burning logs: live 11-04, the one log it carried was both, and the furnace got a log and no fuel).</param>
     internal (StoryFuel? Fuel, int Units, (P3 Chest, Stack Stack)? From, string? Missing) PickFuel(WorkbenchState bench, BillState bill, int items, PawnLive? live,
-        IReadOnlyList<Stack>? ownInputs = null)
+        IReadOnlyList<Stack>? ownInputs = null, IReadOnlyList<(P3 Chest, Stack Stack)>? reservedInputs = null)
     {
         var d = World!.Data;
         var choice = FuelChoice(bench, bill);
@@ -31,7 +31,7 @@ public sealed partial class StoryColony
         if (net <= 0) return (fuels[0], 0, null, null);
         // Auto (and any) leave the builds' and bills' reserved stock alone unless nothing else is there; a named fuel is what was asked.
         bool guard = bill.ForBuild == null && choice is StoryFuels.Auto or "any" && _reserved.Count > 0;
-        var need = new FuelNeed(net, bench, bill, live, ownInputs);
+        var need = new FuelNeed(net, bench, bill, live, ownInputs, reservedInputs);
         for (int pass = guard ? 0 : 1; pass < 2; pass++)
             if (FuelPass(fuels, need, unreservedOnly: pass == 0) is { } got) return got;
         return (null, 0, null, $"needs fuel: no {StoryFuels.Describe(choice)} within {bill.Radius} blocks");
@@ -39,7 +39,8 @@ public sealed partial class StoryColony
 
     /// <summary>What a fuel pass looks for: the items to cover, at which furnace, for which bill (its radius), the pawn and what its batch
     /// already takes from its pockets.</summary>
-    private sealed record FuelNeed(int Net, WorkbenchState Bench, BillState Bill, PawnLive? Live, IReadOnlyList<Stack>? OwnInputs);
+    private sealed record FuelNeed(int Net, WorkbenchState Bench, BillState Bill, PawnLive? Live, IReadOnlyList<Stack>? OwnInputs,
+        IReadOnlyList<(P3 Chest, Stack Stack)>? ReservedInputs);
 
     /// <summary>The first fuel the pawn carries enough of, or a chest within the bill's radius holds the rest of (with
     /// <paramref name="unreservedOnly"/>: only from what the builds and bills haven't reserved).</summary>
@@ -61,7 +62,11 @@ public sealed partial class StoryColony
             int own = ownStacks.Sum(s => s.Count);
             if (own >= units) return (f, units, null, null);
             foreach (var stack in ownStacks) WoodTaken(wood, stack);
-            if (FindStored(s => Ok(s) && WoodAvailable(wood, s.Id, s.Meta, s.Count) >= units - own, need.Bench.Pos, need.Bill.Radius) is not { } fs) continue;
+            var fs = Storages.Where(s => s.Chest.Dist(need.Bench.Pos) <= need.Bill.Radius && ChestOpen(s.Chest))
+                .OrderBy(s => s.Chest.Dist(need.Bench.Pos))
+                .SelectMany(s => FurnaceStock(s, need.ReservedInputs).Where(t => Ok(t) && WoodAvailable(wood, t.Id, t.Meta, t.Count) >= units - own)
+                    .Select(t => (Store: s, Stack: t))).FirstOrDefault();
+            if (fs.Store == null) continue;
             if (unreservedOnly && Unreserved((id, meta) => f.Item.Matches(id, meta)) < units - own) continue;
             return (f, units, (fs.Store.Chest, fs.Stack with { Count = units - own }), null);
         }

@@ -1356,12 +1356,37 @@ override it), and awards fish only inside the bite window. Modern tests receive 
 
 `POST …/builds`:
 - `{op:"add", items:[Item]}` → `{ids}`. At most 64 items, each at most 4096 blocks.
+- `{op:"edit", build_id?, cells:[[x,y,z,id,meta], ...]}` → `{ids, build_id, rev}`. Edit up to 4096 distinct cells in a placed
+  plan, retaining exact block states. Block id `0` means intentional air: remove the block and keep that cell empty. The
+  whole request is validated before changing ownership. `build_id` attaches additions to a particular placed building;
+  otherwise existing ownership is inferred at each edited cell, with a new freecam plan for unowned cells.
 - `{op:"remove", ids}`, `{op:"pause", ids}` or `{op:"resume", ids}` → `{ids}`.
 - `{op:"reorder", ids}` → `{ids}`: the whole queue order, with the named ones first and the rest after them in their order.
 
 Item: `{kind: wall|floor|roof|door|window|stairs|fence|block|remove|water|crafting_table|furnace|chest|bed|torch, area?:[x1,y1,z1,x2,y2,z2],
 blocks?:[[x,y,z]], material?: <block name> | [id,meta], height?:1..12, roof?:{style: flat|slab|gable|none, material?, overhang?:0|1},
 facing?: n|e|s|w, level?:y, name?, group?, replace_area?, infinite?, indoor?}` (`water`, `infinite`, `indoor`: see "Water").
+
+### Editing a placed building in freecam
+
+Switch to **Freecam**, then **Edit plan**. Choose a block in the palette and its facing, half or axis. Left-click a block
+or hologram to remove it from the desired building; right-click a face to add the selected block beside it. Changes are
+holograms and work orders: pawns fetch materials, clear replaced blocks and build the result. The camera itself does not
+change Minecraft blocks. **Inspect** restores the normal chest, furnace and workbench selection controls.
+Doors, beds, signs and rails continue to use the Architect tools; their paired blocks or special placement rules are not
+offered as independent exact-state placements in this editor.
+
+An edit to an existing building joins that building's group, including when construction is still in progress or already
+finished. Select a building explicitly to attach an extension to it. Original cells outside the edit remain unchanged;
+edited cells move into a persistent edit item with their exact states. The old plan and Preserve snapshots release their
+previous intent, so they cannot restore a removed block or undo a new orientation. In-flight work on changed cells is
+cancelled, materials are recalculated, and subsequent repairs use the revised plan. This updates the placed building;
+the reusable design in the palette remains its own saved template.
+
+Pending edits appear immediately and can support further hologram placement while their requests are saved in order.
+A failed save retains its preview and dependent edits with **Retry** and **Discard** controls. Confirmed previews remain
+until the colony has received the server's corresponding revision. Unsupported placement states are refused instead of
+quietly substituting a different orientation.
 
 `{op:"preview", items}` → `{cells, done, error, warnings, flow:{spread, cells}}` checks water items and says where the water would
 run; nothing is queued (see "Water").
@@ -1986,6 +2011,9 @@ Execution:
   product in the bill's chest, else by the storage rules.
 - A furnace is loaded and left to smelt (10 s an item) with the fuel its choice allows (see "Fuel" below). A later job of the same
   work type collects it, and the output is stored.
+- Automatic build smelting spreads the remaining demand across available owned furnaces. A paused or blocked manual bill
+  leaves its furnace available for automatic work; runnable manual bills keep their local queue precedence. Inputs and fuel
+  being fetched by another pawn are reserved, and each load uses one exact input variant.
 - Missing ingredients or fuel set `suspended_reason` and raise an alert. Resume clears it.
 - An owner's bill leaves what the builds reserved: when the stored ingredient is only there for a build, the bill is suspended
   with "the … in storage is reserved for builds".
@@ -2025,8 +2053,9 @@ of the chain that crafts it (the 3 iron ore a water build's bucket is smelted fr
 `reservations: [{item, count, build, for_item, chain}]`.
 - **A step of the chain is the chain's.** An owner's bill that makes one of a chain's step outputs may use that chain's reserved input
   (smelting the bucket's iron ore into ingots is what the build needs): its product lands in storage or the furnace and the build's
-  next pass counts it (the furnace's load too), reserving the ingots instead. While an owner's live bill makes a step, the build adds
-  no automatic bill for it (no double smelting).
+  next pass counts it (the furnace's load too), reserving the ingots instead. An owner's crafting bill suppresses duplicate
+  automatic crafting. For smelting, only committed loads count toward the demand: an unfulfilled manual bill does not prevent
+  other furnaces from helping, and assigned loads count before their pawns finish fetching inputs.
 - **Partial batches.** Only what is free (plus what the pawn holds) is used: a bill runs a smaller batch when some is free and waits
   only when none is, naming the builds and the amounts: "3 iron ore reserved for build b12 (iron ore) — 0 free".
 - **Release.** `POST …/bills {op:"release_claim", build, item}` → `{build, item, done}`: a chain claim cancels the build's crafting of
@@ -2187,8 +2216,9 @@ materials pass runs whenever storage, the queue, benches or bills change (and ev
   Craft commands use an unambiguous variant name or an explicit `id:meta` selector (normal stone bricks are `98:0`), while saved
   recipe IDs and deliberate "any" recipes keep their existing names.
 - **Craft tasks, not bills.** Each step is a craft task "for build #N" (`for_build`, `for_item`, `step`, a `reason` such as "for the
-  fence of build b4") on the colony's crafting table or furnace nearest home, radius 256: one task per build and recipe with a
-  count, in the bench's task list, never in its bill list (see "Craft tasks" below). Its target is `done` + what is still to make,
+  fence of build b4"), radius 256. Crafting uses a shared task per build and recipe; smelting divides the remaining count among
+  available furnaces, with each assigned or loaded task staying at its own furnace until collected. These live in the bench's
+  task list, never its bill list (see "Craft tasks" below). A target is `done` + what is still to make,
   so it follows the build and goes when nothing is left to make (a loaded furnace's task stays until collected). A step whose
   ingredient isn't there yet waits quietly (an earlier step makes it; the task's `blocked` says what). The owner can only cancel a
   task (`bills` `remove` with its id; `update`, `pause`, `resume`, `reorder` answer 400): the build then waits for that item
@@ -2541,12 +2571,16 @@ The design grew while it was built. The wire forms are in `docs/web/api.md` §6 
 - **Stop rebuilding here.** Right-click a block or build ghost (including a Preserve repair ghost) and choose this action.
   It releases only that cell from every build and preserved snapshot; it does not break the block or disable the zone.
   The request is `story.builds {op:"unprotect",cells:[[x,y,z],...]}` (up to 4,096 cells). Released cells stay excluded from that
-  snapshot until it is explicitly retaken.
+  snapshot until it is explicitly retaken. The placed plan's saved cells are updated too, so re-importing it cannot restore
+  the released blocks. A mine's original walking-floor footprint remains protected.
 
-- **Free-camera inspection.** While flying with the mouse locked, the center crosshair identifies the block being clicked.
+- **Free-camera inspection.** In **Inspect** mode while flying with the mouse locked, the center crosshair identifies the block being clicked.
   Left-click a chest (either half), trapped chest, crafting table, or furnace to open the same storage or bills inspector as
   the top-down map. This releases the mouse for editing and keeps the camera pose; click the view again to resume flying.
   These clicks only inspect furniture, even when a Mine or Build tool was previously selected.
+- **Free-camera pawn badges.** Each visible pawn has its number, the map's work icon, and a short current-activity label
+  above its head. Badges follow the interpolated player position, hide behind terrain, and fade at distance. Their textures
+  change only when the displayed activity changes; camera movement does not redraw the text or request more pawn data.
 
 - **Orders.** A right-click with pawns selected opens a context menu for the target:
   - a block gives move, mine or chop

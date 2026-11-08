@@ -72,6 +72,9 @@ export function StoryMapSlot({ c }: Props) {
     <StoryMap
       ref={map}
       state={state}
+      canEdit={c.canWrite && !!state}
+      editPalette={c.architect.data?.entries}
+      onEditPlan={(cells, buildId) => c.write('story.builds', { op: 'edit', cells, ...(buildId ? { buildId } : {}) })}
       selection={selection}
       tool={tool}
       build={matHover ? { ...build, material: matHover.material } : build}

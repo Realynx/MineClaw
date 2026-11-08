@@ -5,9 +5,8 @@ using MineClaw.World;
 namespace MineClaw.Bot.WorldIndex;
 
 /// <summary>
-/// What the indexer needs from the client beyond <see cref="WorldState"/>. The real client exposes sign texts as a
-/// polled dictionary and keeps the opened container's position private, so this is a stub-able seam: when the Client
-/// grows <c>SignUpdated</c> / <c>ContainerOpened(BlockPos, Window)</c> events, implement them here and nothing else changes.
+/// What the indexer needs from the client beyond <see cref="WorldState"/>: sign texts and the authoritative block
+/// associated with each opened window. Manual hosts can retain the older look-based attribution fallback.
 /// </summary>
 public interface IWorldIndexFeed
 {
@@ -17,14 +16,19 @@ public interface IWorldIndexFeed
     /// <summary>Block position of the container the bot opened last, when the client exposes it (else null and the
     /// indexer resolves it by raycast from the bot's look direction).</summary>
     BlockPos? LastOpenedContainer { get; }
+
+    BlockPos? ContainerPosition(Window window) => LastOpenedContainer;
+    /// <summary>True when a missing position means unknown, never permission to guess another nearby container.</summary>
+    bool AuthoritativeContainers => false;
 }
 
 /// <summary>Feed over the real <see cref="MinecraftClient"/>.</summary>
 public sealed class ClientIndexFeed(MinecraftClient client) : IWorldIndexFeed
 {
     public IReadOnlyDictionary<BlockPos, string[]> Signs => client.Signs;
-    // TODO(client): MinecraftClient._lastContainerPos is private; expose it (or a ContainerOpened event) to skip the raycast.
-    public BlockPos? LastOpenedContainer => null;
+    public BlockPos? LastOpenedContainer => client.World.Inventory.OpenWindow is { } w ? ContainerPosition(w) : null;
+    public BlockPos? ContainerPosition(Window window) => client.OpenedContainerPosition(window.Id);
+    public bool AuthoritativeContainers => true;
 }
 
 /// <summary>Settable feed for tests and hosts without a real client.</summary>

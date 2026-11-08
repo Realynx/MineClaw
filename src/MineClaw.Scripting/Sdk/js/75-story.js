@@ -20,7 +20,11 @@
     report(j, 'progress', 'cell ' + c + (good(r) ? ' done' : (NO_SUPPORT.test(why(r)) ? ' waiting: ' : ' failed: ') + why(r)));
     return good(r) ? 1 : 0;
   };
-  const isBuilt = (j, c) => j.want && H.block(c) == j.want;
+  const isBuilt = (j, c, m) => {
+    if (!j.exact_state) return j.want && H.block(c) == j.want;
+    const state = H.storyBlockState(c);
+    return state.id === j.want_id && state.meta === m;
+  };
   const BUILT = Object.freeze({ ok: true });
   const ON_IT = /I'm standing on/i;
   // A dig of a build's own cell: clear_dig (soft protection on natural ground yields). Only an explicit palette replacement also
@@ -28,9 +32,9 @@
   const clearDig = (c, j) => typeof globalThis.clear_dig === 'function'
     ? (j && j.replace ? call('clear_dig', c, true) : call('clear_dig', c)) : call('dig', c);
   const digHere = c => (typeof globalThis.dig_here === 'function' ? call('dig_here', c) : call('dig', c));
-  const putHere = (b, c, m) => typeof globalThis.place_here === 'function'
-    ? (m == null ? call('place_here', b, c) : call('place_here', b, c, m))
-    : (m == null ? call('place', b, c) : call('place_turned', b, c, m));
+  const putHere = (b, c, m, exact) => typeof globalThis.place_here === 'function'
+    ? (exact ? call('place_here', b, c, m, true) : m == null ? call('place_here', b, c) : call('place_here', b, c, m))
+    : (exact ? call('place_turned', b, c, m, true) : m == null ? call('place', b, c) : call('place_turned', b, c, m));
   // A cell to clear (j.clear: another block in it, or its own block turned wrong) -> null once it is out, else why not ("can't clear
   // the cell …: protected …"): never "occupied by" for a dig that was refused. Standing on it, the pawn steps to the stand first.
   const clearOut = (j, c) => {
@@ -52,7 +56,7 @@
     if (!s) return null;
     const b = scaffoldBlock(j), keep = { ...j._keep }, bid = H.item(b).id;
     keep[bid] = (keep[bid] || 0) + 1;
-    const r = j.reach ? buildPut({ ...j, block: b, _keep: keep }, s, null, access, act)
+    const r = j.reach ? buildPut({ ...j, block: b, exact_state: false, _keep: keep }, s, null, access, act)
       : act(() => call('place', b, s));
     if (r && r.cancelled) return r;
     if (!good(r)) return { ok: false, msg: 'no scaffold at ' + s + ' for ' + c + ': ' + why(r) };
@@ -64,17 +68,18 @@
     if (good(r) || H.block(s) == 'air') temp(s, false, 'build scaffold');
   };
   // The placing, tried once more after stepping closer (or back to the stand).
-  const putCell = (j, c, put) => {
+  const putCell = (j, c, m, put) => {
     const r = put(), w = why(r);
     if (good(r)) return r;
-    if (!TURN.test(w) && isBuilt(j, c)) return { ok: true };
+    if (!TURN.test(w) && isBuilt(j, c, m)) return { ok: true };
     if (!FAR.test(w) && !IN_WAY.test(w)) return r;
     if (IN_WAY.test(w) && j.stand) call('go', j.stand, 0); else call('go', c, 2);
     return put();
   };
   // One placing: dug first when it is to be cleared, walked to when far, on a scaffold when it floats.
   const placeCell = (j, c, m, clear, access, act) => {
-    const put = () => (m == null ? call('place', j.block, c) : call('place_turned', j.block, c, m));
+    const put = () => (j.exact_state ? call('place_turned', j.block, c, m, true)
+      : m == null ? call('place', j.block, c) : call('place_turned', j.block, c, m));
     if (clear.includes(c)) { const r = releaseAccess(access); if (r) return r; }
     const no = clear.includes(c) ? act(() => clearOut(j, c)) : null;
     if (no) return no;
@@ -82,7 +87,7 @@
     const s = scaffoldUp(j, c, access, act);
     if (s && s.ok === false) return s;
     try {
-      return j.reach ? buildPut(j, c, m, access, act) : act(() => putCell(j, c, put));
+      return j.reach ? buildPut(j, c, m, access, act) : act(() => putCell(j, c, m, put));
     } finally { if (s) scaffoldDown(s, access.placed.length > 0); }
   };
   const releaseAccess = access => {
@@ -94,7 +99,7 @@
   // One shared access for an ordered construction run. Try the visible face without moving; recover the tower before changing
   // approach. The stationary tool also preserves requested rotation, so a retry cannot walk off our temporary footing.
   const buildPut = (j, c, m, access, act) => {
-    const put = () => act(() => putHere(j.block, c, m));
+    const put = () => act(() => putHere(j.block, c, m, !!j.exact_state));
     const r = put();
     if (good(r) || (r && r.cancelled) || !REACH.test(why(r))) return r;
     const pending = releaseAccess(access);
@@ -103,7 +108,7 @@
   };
   // A cell of place(): already built -> BUILT; a batch out of items -> null (the rest go back); else the placing's result.
   const placeOne = (j, c, m, clear, access, act) => {
-    if (!clear.includes(c) && isBuilt(j, c)) return BUILT;
+    if (!clear.includes(c) && isBuilt(j, c, m)) return BUILT;
     if (j.cells && !(H.inv(j.block) > 0)) return null;
     return placeCell(j, c, m, clear, access, act);
   };
@@ -693,9 +698,12 @@
     }
     return { ok: true };
   };
+  const smelt = (j, at) => j.input_meta == null ? call('smelt', j.item, j.n, j.fuel, false, at)
+    : call('smelt', j.item, j.n, j.fuel, false, at, j.input_meta);
   /** story.next(s)|report(job, status, note?)|during|idle|work|fetch|stash|go|dig|escape|sweep - the job loop */
   def('story', Object.freeze({
     chop,
+    smelt,
     next: s => H.storyNext(s == null ? 0 : s),
     report,
     during,

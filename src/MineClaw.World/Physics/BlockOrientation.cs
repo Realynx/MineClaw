@@ -134,6 +134,32 @@ public static class BlockOrientation
         return Reachable(id, meta, modern);
     }
 
+    /// <summary>Known states a single ordinary placement cannot reproduce exactly. Legacy orientation-only placement keeps its
+    /// permissive behavior; live cell edits use this before spending an item, then verify the complete server state.</summary>
+    public static string? ExactPlacementRefusal(int id, int meta, bool modern)
+    {
+        if (meta is < 0 or > 15) return "exact block metadata must be between 0 and 15";
+        var rule = RuleOf(id, modern);
+        if (rule is Rule.Door or Rule.Bed || id == 175) return "paired blocks require editing both halves together";
+        if (id is 27 or 28 or 66 or 157) return "exact rail shapes depend on neighboring rails";
+        if (id is 63 or 68 or 106 or 127 or 144 or 176 or 177) return "exact placement of this attached block is not supported";
+        if (id is 43 or 125 or 181 or 204) return "double slabs require two placements";
+        if (id is 62 or 74 or 94 or 150) return "this active block state is controlled by the world";
+        if (!modern && (id == 17 && meta > 2 || id == 44 && (meta & 8) != 0))
+            return "this axis or half is not available in b1.8.1";
+        if (rule == Rule.None) return null; // ordinary item variants are verified after placing
+        var at = new BlockPos(0, 64, 0);
+        foreach (var feet in new Vec3d[] { new(.5, 64, 3.5), new(1.5, 65, .5), new(.5, 62, 1.5) })
+            foreach (var t in Solve(id, meta, at, feet, modern, _ => true))
+                if (Predict(id, Damage(id, meta), at, new PlaceInput(t.Face, t.Yaw ?? 0, feet, t.CursorX, t.CursorY, t.CursorZ), modern) == meta)
+                    return null;
+        return "the requested facing, half, axis or active state cannot be produced by placement";
+    }
+
+    /// <summary>The inventory variant for an exact cell: ordinary variant blocks keep their meta, turned blocks keep only their
+    /// material bits (a spruce slab or log, never its half or axis).</summary>
+    public static int ExactDamage(int id, int meta, bool modern) => Mask(id, modern) == 0 ? meta : Damage(id, meta);
+
     /// <summary>Whether a placed meta is the wanted one as far as the placement goes (the variant bits are the caller's): the facing,
     /// axis or half bits agree, a b1.8.1 flipped door counts as its look, a b1.8.1 floor lever as either floor meta.</summary>
     public static bool Same(int id, int want, int got, bool modern)

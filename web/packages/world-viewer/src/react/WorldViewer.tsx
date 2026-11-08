@@ -2,7 +2,7 @@ import { forwardRef, useEffect, useImperativeHandle, useRef, useState, useSyncEx
 import { WorldViewerEngine, type EngineOptions } from '../render/engine';
 import type { CameraMode, Dim, LayerToggles, PickedBlock, ViewerStats, WorldSource, XRayMode } from '../types';
 import type { BotView } from '../world/entities';
-import type { AimTarget } from '../render/aim';
+import type { AimTarget, AimRay } from '../render/aim';
 import type { BubbleKind, ShownBubble } from '../render/bubbles';
 import { useWorldRuntime } from './WorldThumbnail';
 import { getViewerQuality, subscribeViewerQuality } from '../render/viewerQuality';
@@ -27,7 +27,8 @@ export interface WorldViewerProps {
   /** Free cam, mouse locked: what the crosshair points at (null = nothing, or the mouse was released). */
   onAim?: (t: AimTarget | null) => void;
   /** A left click with the mouse locked, on the crosshair's target (replaces the plain pick while locked). */
-  onAimClick?: (t: AimTarget | null, mods: { shift: boolean; ctrl: boolean }) => void;
+  onAimClick?: (t: AimTarget | null, mods: { shift: boolean; ctrl: boolean; button?: number }) => void;
+  resolveAim?: (physical: AimTarget | null, ray: AimRay) => AimTarget | null;
   /** A target block marker drawn in the world. */
   marker?: [number, number, number] | null;
   /** Bots outlined in the world (a selection). */
@@ -108,6 +109,7 @@ export const WorldViewer = forwardRef<WorldViewerHandle, WorldViewerProps>(funct
       onError: (r, err) => cbs.current.onError?.(r, err),
       onAim: (t) => cbs.current.onAim?.(t),
       onAimClick: (t, m) => (cbs.current.onAimClick ? cbs.current.onAimClick(t, m) : undefined),
+      resolveAim: (t, ray) => cbs.current.resolveAim ? cbs.current.resolveAim(t, ray) : t,
     });
     if (!props.onAimClick) e.setCallbacks({ onAimClick: undefined });
     engine.current = e;

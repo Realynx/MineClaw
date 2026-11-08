@@ -63,12 +63,14 @@ public class StoryClaimsTests
         Assert.Equal((3, build, "bucket", true), (ore["count"]!.GetValue<int>(), ore["build"]!.GetValue<string>(), ore["for_item"]!.GetValue<string>(), ore["chain"]!.GetValue<bool>()));
         Assert.Contains(Fur(c).Tasks, b => b.ForBuild == build);
 
-        // The owner smelts iron: not "reserved for builds" — it is exactly the chain's step. The automatic one goes.
+        // The owner smelts iron: not "reserved for builds" — it is exactly the chain's step. The automatic task
+        // remains as a fallback until a real load is committed; an idle manual bill cannot monopolize build demand.
         var id = Bill(c, new JsonObject { ["recipe"] = "smelt:iron_ore", ["target"] = 3 });
         c.EnsureMaterials();
-        Assert.DoesNotContain(Fur(c).Tasks, b => b.ForBuild == build);
+        Assert.Contains(Fur(c).Tasks, b => b.ForBuild == build);
         var j = c.Next();
         Assert.Equal("smelt", j["kind"]!.GetValue<string>());
+        Assert.Equal(id, c.CurrentOf(c.P())!.SourceId);
         Assert.Null(Fur(c).Bills.Single(b => b.Id == id).SuspendedReason);
         Assert.Equal(3, j["n"]!.GetValue<int>());
 

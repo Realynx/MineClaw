@@ -18,7 +18,11 @@ public sealed partial class StoryColony
                     Supersede(p, "owner stopped rebuilding these blocks");
             foreach (var (b, g) in hits) DropGhost(b, g);
             foreach (var b in hits.Select(h => h.Build).Distinct())
-                if (b.Ghosts.Count == 0 && b.Kind != "preserve") RemoveBuild(b);
+            {
+                if (b.Kind == "preserve") continue;
+                if (b.Ghosts.Count == 0) RemoveBuild(b);
+                else SaveSparseBuildSpec(b); // the saved plan must not regenerate the cells the owner released
+            }
             int preserved = 0;
             foreach (var z in Zones.Where(z => z.Preserve is { On: true, Data: not null }))
             {

@@ -161,9 +161,8 @@ public sealed partial class StoryHost : IStoryHost
         if (_observations is not { } obs) return null;
         try
         {
-            foreach (var p in new[] { at, at.Add(-1, 0, 0), at.Add(0, 0, -1), at.Add(1, 0, 0), at.Add(0, 0, 1) })
-                if (obs.Get("chest", MineClaw.Agent.Rag.ObservationStore.KeyFor(p.X, p.Y, p.Z)) is { ContentsAt: { } seen } row)
-                    return (obs.Contents(row.Id).Select(c => new Stack(c.ItemId, c.Damage, c.Count)).ToList(), seen);
+            if (ChestMemory(at) is { ContentsAt: { } seen } row)
+                return (obs.Contents(row.Id).Select(c => new Stack(c.ItemId, c.Damage, c.Count)).ToList(), seen);
         }
         catch (Exception ex) { _log.LogDebug(ex, "story: chest memory at {At}", at); }
         return null;
@@ -175,9 +174,8 @@ public sealed partial class StoryHost : IStoryHost
         if (_observations is not { } obs) return null;
         try
         {
-            foreach (var p in new[] { at, at.Add(-1, 0, 0), at.Add(0, 0, -1), at.Add(1, 0, 0), at.Add(0, 0, 1) })
-                if (obs.Get("chest", MineClaw.Agent.Rag.ObservationStore.KeyFor(p.X, p.Y, p.Z)) is { } row)
-                    return obs.Contents(row.Id).Select(c => new Stack(c.ItemId, c.Damage, c.Count)).ToList();
+            if (ChestMemory(at) is { } row)
+                return obs.Contents(row.Id).Select(c => new Stack(c.ItemId, c.Damage, c.Count)).ToList();
         }
         catch (Exception ex) { _log.LogDebug(ex, "story: chest memory at {At}", at); }
         return null;

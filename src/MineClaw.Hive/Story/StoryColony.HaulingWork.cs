@@ -7,6 +7,8 @@ public sealed partial class StoryColony
 
     private string HaulItemName(Stack stack)
     {
+        if (World is { } world && world.Data.ItemExists(stack.Id) && world.Data.Item(stack.Id) is { MaxDamage: > 0 } durable)
+            return durable.Name;
         var name = BillTakeName(stack);
         return World?.Data.ItemByNameWithDamage(name) is { } item && item.Item.Id == stack.Id && item.Damage == stack.Meta
             ? name : $"{stack.Id}:{stack.Meta}";

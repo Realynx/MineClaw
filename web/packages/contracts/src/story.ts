@@ -634,6 +634,8 @@ export const StoryBuild = z.object({
   kind: z.string(),
   label: z.string(),
   status: z.string().describe('queued | active | waiting (its materials are being crafted) | paused | blocked | done'),
+  group: z.string().nullish().describe('items belonging to one placed building'),
+  name: z.string().nullish().describe('name of the placed building'),
   reason: z.string().nullish(),
   blocksTotal: z.number().int().default(0),
   blocksDone: z.number().int().default(0),
@@ -1433,8 +1435,21 @@ export const StoryBuildItem = z
   .strict();
 export type StoryBuildItem = z.infer<typeof StoryBuildItem>;
 
+/** Exact desired world cell, including intentionally empty space (id 0). */
+export const StoryBuildCell = z.tuple([
+  z.number().int().min(-30_000_000).max(30_000_000), z.number().int().min(1).max(255),
+  z.number().int().min(-30_000_000).max(30_000_000),
+  z.number().int().min(0).max(4095), z.number().int().min(0).max(15),
+]).refine((cell) => cell[3] !== 0 || cell[4] === 0, 'air must have metadata 0');
+export type StoryBuildCell = z.infer<typeof StoryBuildCell>;
+
 export const StoryBuildRequest = z.discriminatedUnion('op', [
   z.object({ op: z.literal('add'), items: z.array(StoryBuildItem).min(1).max(64) }).strict(),
+  z.object({
+    op: z.literal('edit'),
+    buildId: z.string().min(1).optional(),
+    cells: z.array(StoryBuildCell).min(1).max(4096),
+  }).strict().describe('edit exact placed-plan cells and their protection; id 0 queues removal and owns the resulting air'),
   z.object({ op: z.literal('unprotect'), cells: z.array(Vec3i).min(1).max(4096) }).strict()
     .describe('stop rebuilding only these cells: release build ownership and preserved snapshots without changing blocks'),
   z
@@ -1503,6 +1518,7 @@ export type StoryLiquidFlow = z.infer<typeof StoryLiquidFlow>;
 export const StoryBuildResponse = z.object({
   ok: z.boolean().nullish(),
   ids: z.array(z.union([z.string(), z.number()])).nullish(),
+  buildId: z.string().nullish().describe('edit: primary placed plan for subsequent extensions'),
   rev: z.number().int().nullish(),
   warnings: z
     .array(z.string())

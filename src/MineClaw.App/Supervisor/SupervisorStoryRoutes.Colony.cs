@@ -237,6 +237,11 @@ public sealed partial class SupervisorStoryRoutes
     private static SupervisorReply BuildsAction(StoryColony c, JsonObject b)
     {
         var bop = S(b, "op") ?? "";
+        if (bop == "edit")
+        {
+            if (b["build_id"] != null && (b["build_id"] is not JsonValue id || !id.TryGetValue<string>(out _))) return Bad("build_id must be a string");
+            return Result(c.EditBuildCells(S(b, "build_id"), b["cells"] as JsonArray));
+        }
         if (bop is not ("retry" or "retry_all" or "unprotect")) return Result(c.BuildsOp(bop, b["items"] as JsonArray, Names(b["ids"])));
         var cells = Points(b["cells"], out var badCells);
         if (badCells) return Bad("cells must be [[x,y,z], ...]");

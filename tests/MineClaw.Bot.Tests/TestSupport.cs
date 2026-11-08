@@ -123,8 +123,12 @@ public sealed class FakeGameClient : IGameClient
     }
     /// <summary>The variant of the last craft call (-1 = any): the call string keeps its old "craft id count" shape.</summary>
     public int LastCraftDamage { get; private set; } = -1;
-    public Task<ActionResult> SmeltAsync(int inputItemId, int count, int? fuelItemId = null, bool wait = false, MineClaw.World.BlockPos? furnace = null, CancellationToken ct = default) =>
-        Act($"smelt {inputItemId} {count} fuel={fuelItemId} wait={wait} at={furnace?.X},{furnace?.Y},{furnace?.Z}");
+    public Task<ActionResult> SmeltAsync(int inputItemId, int count, int? fuelItemId = null, bool wait = false, MineClaw.World.BlockPos? furnace = null, CancellationToken ct = default, int? inputMeta = null)
+    {
+        LastSmeltInputMeta = inputMeta;
+        return Act($"smelt {inputItemId} {count} fuel={fuelItemId} wait={wait} at={furnace?.X},{furnace?.Y},{furnace?.Z}");
+    }
+    public int? LastSmeltInputMeta { get; private set; }
     public Task<ActionResult> CollectFurnaceAsync(MineClaw.World.BlockPos? furnace = null, CancellationToken ct = default) => Act($"collect_furnace {furnace}");
     public Task<ActionResult> OpenContainerAsync(int x, int y, int z, CancellationToken ct = default)
     {
