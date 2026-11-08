@@ -132,6 +132,7 @@ export function GameAssets() {
       await action();
       await refresh();
     } catch (e) {
+      setMessage('');
       const detail = e instanceof Error ? e.message : String(e);
       setError(
         `${detail} ${step === 'remove' ? 'Try removing the imports again.' : 'Choose the file or folder again to retry.'}`,
