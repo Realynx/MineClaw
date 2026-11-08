@@ -854,7 +854,7 @@ export type Target =
   | { kind: 'item'; entity: number; name: string; x: number; y: number; z: number }
   /** A player (an entity) or an AI bot (no entity id in the viewer: attacked by name). Never the colony's own pawns. */
   | { kind: 'player'; entity: number | null; name: string; bot: boolean; x: number; y: number; z: number }
-  /** A build's ghost; `repair`: a preserved zone's repair (never cancelled by hand: Preserve goes off in the zone). */
+  /** A build's ghost; `repair`: a preserved zone's repair (only its selected cell can be released by hand). */
   | { kind: 'ghost'; build: string | number; label: string; x: number; y: number; z: number; repair?: boolean }
   | { kind: 'ground'; x: number; y: number; z: number };
 
@@ -864,7 +864,7 @@ export interface MenuItem {
   hint?: string;
   order?: StoryOrderSpec;
   /** A non-order action (ghost cancel/prioritise, open storage…). */
-  action?: 'cancel-build' | 'first-build' | 'storage' | 'bills' | 'gear';
+  action?: 'cancel-build' | 'first-build' | 'storage' | 'bills' | 'gear' | 'unprotect';
   directive?: StoryDirectiveSpec;
   /** action 'gear': the bulk gear op for the selected pawns. */
   gear?: StoryGearOp;
@@ -952,6 +952,10 @@ export function contextMenu(t: Target, hasPawns: boolean, hasAi: boolean): MenuI
     if (acting) out.push({ id, label, order: spec, directive: d });
   };
   (TARGET_ITEMS[t.kind] as (t: Target, c: MenuCtx) => void)(t, { out, order, at, p, acting });
+  if (t.kind === 'block' || t.kind === 'ghost') out.push({
+    id: 'unprotect', label: 'Stop rebuilding here', action: 'unprotect',
+    hint: 'Release this block from builds and Preserve; leave other cells unchanged',
+  });
   if (acting) {
     out.push({ id: 'hold', label: 'Hold position', order: { kind: 'hold' }, directive: { kind: 'guard' } });
     out.push({ id: 'stop', label: 'Stop', order: { kind: 'stop' }, directive: { kind: 'text', text: 'stop what you are doing' } });

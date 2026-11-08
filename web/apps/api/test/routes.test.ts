@@ -175,6 +175,34 @@ describe('role gating per route table', () => {
     expect(r.status).toBe(404);
     expect(r.body).toEqual({ error: 'not found', code: 'not_found' });
   });
+
+  it('accepts bulk storage entry edits while remove remains a separate deregistration operation', async () => {
+    const s = sessions.get('story')!;
+    const path = '/api/story/colonies/story-1/storage';
+    const sendBody = (body: unknown) => s.agent.post(path).set('Origin', ORIGIN).set('X-CSRF-Token', s.csrf).send(body as object);
+    const registered = await sendBody({ op: 'assign_area', area: [14, 60, 0, 30, 70, 10] });
+    expect(registered.status).toBe(200);
+    const chests = registered.body.chests as number[][];
+    expect(chests.length).toBeGreaterThan(0);
+    for (const op of ['add', 'remove_entries']) {
+      const edited = await sendBody({ op, chests, filter: { allow: ['food'], deny: [] } });
+      expect(edited.status, JSON.stringify(edited.body)).toBe(200);
+      expect(edited.body.count).toBe(chests.length);
+    }
+    const state = await s.agent.get('/api/story/colonies/story-1');
+    expect(state.body.storages.some((storage: { chest: number[] }) => JSON.stringify(storage.chest) === JSON.stringify(chests[0]))).toBe(true);
+    expect((await sendBody({ op: 'remove_entries', chests })).status).toBe(400);
+  });
+
+  it('accepts bounded exact-cell unprotect requests through the build route', async () => {
+    const s = sessions.get('story')!;
+    const sendBody = (body: unknown) => s.agent.post('/api/story/colonies/story-1/builds')
+      .set('Origin', ORIGIN).set('X-CSRF-Token', s.csrf).send(body as object);
+    const reply = await sendBody({ op: 'unprotect', cells: [[20, 64, 10]] });
+    expect(reply.status).toBe(200);
+    expect(reply.body.cells).toBe(1);
+    expect((await sendBody({ op: 'unprotect', cells: [] })).status).toBe(400);
+  });
 });
 
 describe('CSRF and Origin', () => {

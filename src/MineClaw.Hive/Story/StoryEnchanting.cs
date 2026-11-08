@@ -117,7 +117,7 @@ public sealed partial class StoryColony
     {
         var d = World!.Data;
         bool gear = d.ItemExists(r.Output.Id) && d.Item(r.Output.Id).MaxDamage > 0;
-        var dst = bill.Store is JsonObject so && P3.Parse(so["chest"]) is { } c && !ChestDeconstructing(c) ? StorageAt(c) : gear ? null : BestChest(r.Output.Id, 0, near);
+        var dst = bill.Store is JsonObject so && P3.Parse(so["chest"]) is { } c && !ChestDeconstructing(c) && SignAllows(c, r.Output.Id, 0) ? StorageAt(c) : gear ? null : BestChest(r.Output.Id, 0, near);
         if (dst == null) return;
         job.Json["stash"] = new JsonArray(new JsonObject { ["to"] = dst.Chest.ToString(), ["items"] = new JsonArray(ItemName(r.Output.Id, 0)) });
         job.Puts.Add((dst.Chest, [r.Output with { Meta = 0, Count = 1 }]));

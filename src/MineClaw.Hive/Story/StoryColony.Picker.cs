@@ -42,6 +42,7 @@ public sealed partial class StoryColony
     /// <summary>The job for <paramref name="p"/> now. Never null: with nothing to do it idles (and the colony hears about it).</summary>
     internal ActiveJob Pick(PawnState p, PawnLive live)
     {
+        ReconcileStorageSigns();
         _pickEnts = null; // the world's entities are read once per pick
         _toolPlans.Clear(); // and each block's tool once per pick
         _pickPawn = p.Name; _pickClaims = null; // chests this pawn can't reach are left out of its plans (StoryColony.Ledger.cs)
@@ -312,7 +313,7 @@ public sealed partial class StoryColony
         [WorkTypes.Craft] = static (c, p, live) => c.BillJob(p, live, WorkTypes.Craft) ?? c.SupplyJob(p, live), // the builds' own crafts (a bench to place, a 2×2 craft)
         [WorkTypes.Hunt] = static (c, p, live) => c.HuntJob(p, live),
         [WorkTypes.Fish] = static (c, p, live) => c.FishJob(p, live), // StoryColony.Fishing.cs
-        [WorkTypes.Build] = static (c, p, live) => c.GhostJob(p, live) ?? c.DesignationJob(p, live, live.Block, WorkTypes.Build, "deconstruct", "dig", "deconstructing"),
+        [WorkTypes.Build] = static (c, p, live) => c.StorageSignRemovalJob(p, live) ?? c.GhostJob(p, live) ?? c.DesignationJob(p, live, live.Block, WorkTypes.Build, "deconstruct", "dig", "deconstructing"),
         [WorkTypes.Farm] = static (c, p, live) => c.DesignationJob(p, live, live.Block, WorkTypes.Farm, "harvest", "harvest", "harvesting") ?? c.FarmZoneJob(p, live),
         [WorkTypes.Mine] = static (c, p, live) => c.DesignationJob(p, live, live.Block, WorkTypes.Mine, "mine", "dig", "mining") ?? c.ZoneJob(p, live.Block, WorkTypes.Mine, "mine", live),
         [WorkTypes.Chop] = static (c, p, live) => c.ChopJob(p, live),
@@ -492,6 +493,7 @@ public sealed partial class StoryColony
             j =>
             {
                 if (chest) j["deconstruct"] = true;
+                FillStorageSignJob(d, j);
                 if (d.Replant != null) j["replant"] = d.Replant;
                 if (kind == "chop") ChopFill(j, d.Blocks);
                 if (stand is { } st) j["stand"] = st.ToString(); // it stands on its target: step off to the side first

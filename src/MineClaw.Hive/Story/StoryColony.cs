@@ -416,6 +416,7 @@ public sealed partial class StoryColony : IStoryPort
             RenewHeldLeases();
             ExpireLeases();
             ReleaseOffline();
+            ReconcileStorageSigns();
             if (Meta.Active) CollectRestarts(restart);
             if (Now - _benchScan > TimeSpan.FromSeconds(30)) { _benchScan = Now; ScanBenches(); RefreshSeen(Storages); RetrySuspended(); } // missing ingredients may be stored by now
             _pickEnts = null; // the tick's searches read the world's entities once (and never a pick's old list)

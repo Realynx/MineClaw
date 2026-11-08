@@ -46,12 +46,14 @@ import {
 import { useMemo, useRef, useState, type ReactNode } from 'react';
 import { Dialog } from '@/components/ui/overlays';
 import { Button, Input } from '@/components/ui/primitives';
+import { errorText } from '@/lib/api/client';
 import { cn } from '@/lib/utils';
 import { ContainerContents } from '@/features/world/ContainerPanel';
 import { InventorySection } from '@/features/live/inventory/InventoryPanel';
 import { benchTaskLine } from './CraftNeeds';
 import { retryIn, shortReason } from './failedLabels';
 import { BillRow } from './inspector/BillRow';
+import { StorageEntryActions, StorageSigns } from './inspector/StorageSigns';
 import { WORK_LABELS, WORK_TYPES } from './model';
 import { panel } from './StoryHud';
 import { DirectiveList } from './StoryPanels';
@@ -83,6 +85,7 @@ import {
   searchRecipes,
   searchTree,
   storageSetBody,
+  storageEntriesBody,
   toggleItem,
   toggleNode,
   updateBillBody,
@@ -945,6 +948,7 @@ function StorageSettings({
   clip,
   onClip,
   set,
+  entries,
   write,
 }: {
   first: StoryStorage | undefined;
@@ -956,16 +960,17 @@ function StorageSettings({
   clip: StorageClip | null;
   onClip: (c: StorageClip) => void;
   set: (patch: StoragePatch) => void;
+  entries: (op: 'add' | 'remove_entries', entries: string) => void;
   write: StoryWrite;
 }) {
   return (
     <>
       <div className="flex items-center gap-1.5">
         <label className="flex items-center gap-1">
-          Priority
+          {first?.pendingPriority ? 'Requested priority' : 'Priority'}
           <select
             aria-label="Storage priority"
-            value={first?.priority ?? 'normal'}
+            value={first?.pendingPriority ?? first?.priority ?? 'normal'}
             disabled={!canWrite}
             onChange={(e) => set({ priority: e.target.value })}
             className="h-6 rounded border border-border bg-surface-2 px-1"
@@ -979,7 +984,7 @@ function StorageSettings({
         </label>
         <button
           type="button"
-          onClick={() => onClip({ filter, priority: first?.priority ?? 'normal' })}
+          onClick={() => onClip({ filter, priority: first?.pendingPriority ?? first?.priority ?? 'normal' })}
           className="ml-auto inline-flex items-center gap-1 rounded bg-surface-2 px-1.5 py-0.5 hover:bg-surface-3"
           title="Copy these settings"
         >
@@ -1006,6 +1011,7 @@ function StorageSettings({
         />
       ) : null}
       <FilterTree tree={tree} filter={filter} onChange={(f) => canWrite && set({ filter: f })} />
+      <StorageEntryActions tree={tree} canWrite={canWrite} apply={entries} />
       <Button
         size="sm"
         variant="ghost"
@@ -1041,17 +1047,26 @@ export function StorageInspector({
   const list = chests.map((c) => storageOf(storages, c));
   const first = list.find((s): s is StoryStorage => !!s);
   const [pending, setPending] = useState<StoryFilter | null>(null);
-  const filter = pending ?? first?.filter ?? CLEAR_FILTER;
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const filter = pending ?? first?.pendingFilter ?? first?.filter ?? CLEAR_FILTER;
   const registered = list.every(Boolean);
-  const keys = chests.map((c, i) => list[i]?.chest ?? c);
+  const keys = [...new Map(chests.map((c, i) => { const at = list[i]?.chest ?? c; return [k3(at), at] as const; })).values()];
+  const selected = [...new Map(list.filter((s): s is StoryStorage => !!s).map((s) => [k3(s.chest), s])).values()];
+  const send = (body: ReturnType<typeof storageSetBody> | ReturnType<typeof storageEntriesBody>) => {
+    setSaving(true);
+    setError(null);
+    void write('story.storage', body as never).catch((e: unknown) => setError(errorText(e)))
+      .finally(() => { setPending(null); setSaving(false); });
+  };
   const set = (patch: StoragePatch) => {
     if (patch.filter) setPending(patch.filter);
-    void write('story.storage', storageSetBody(keys, patch) as never).finally(() => setPending(null));
+    send(storageSetBody(keys, patch));
   };
   return (
     <Shell
       title={storageTitle(chests, first)}
-      sub={storageSub(registered, first, tree, filter)}
+      sub={storageSub(registered, first, tree, first?.filter ?? CLEAR_FILTER)}
       onClose={onClose}
       testid="storage-inspector"
       wide
@@ -1066,6 +1081,10 @@ export function StorageInspector({
           canWrite={canWrite}
           write={write}
         />
+        <StorageSigns storages={selected} tree={tree} />
+        {saving ? <p role="status">Saving requested settings…</p> : null}
+        {error ? <p role="alert" className="text-red-300">{error}</p> : null}
+        {pending || first?.pendingFilter ? <p className="font-medium">Requested filter (not active yet)</p> : null}
         {registered ? (
           <StorageSettings
             first={first}
@@ -1073,10 +1092,11 @@ export function StorageInspector({
             keys={keys}
             tree={tree}
             filter={filter}
-            canWrite={canWrite}
+            canWrite={canWrite && !saving}
             clip={clip}
             onClip={onClip}
             set={set}
+            entries={(op, text) => send(storageEntriesBody(keys, op, text))}
             write={write}
           />
         ) : (

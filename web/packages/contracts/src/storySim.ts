@@ -29,6 +29,7 @@ import {
 } from './storyZones.js';
 import { applyPreserveOp, preserveWarnings, preserveZoneFields, withPreserveState } from './storySimPreserve.js';
 import { guardedMobs, guardVisible } from './storySimGuard.js';
+import { changeStorageEntries, compareStoragePriority, storageSignFilter } from './storyStorageFilters.js';
 
 const QUARRY_TOO_NARROW =
   'a quarry needs at least 2×2 (a 1-wide strip is a trench: paint it as Ores only, or designate Mine)';
@@ -86,6 +87,8 @@ import {
   type StoryRole,
   type StoryRolesRequest,
   type StoryStorage,
+  type StoryStorageSign,
+  type StoryStack,
   type StoryStorageRequest,
   type StoryWorkbench,
   type StoryZone,
@@ -135,6 +138,8 @@ export interface StoryWorld {
   canSee?(from: readonly [number, number, number], target: SimEntity): boolean;
   /** Optional: the sim changed a block (a tree felled, a ghost built). */
   setBlock?(x: number, y: number, z: number, id: number, meta: number): void;
+  /** Recognized filter signs physically attached to this chest or its double half. */
+  storageSigns?(chest: readonly [number, number, number]): StoryStorageSign[];
   /** AI bodies (main, hives, subhive bodies) to show beside the pawns. */
   ai?(): StoryAiBody[];
 }
@@ -167,6 +172,8 @@ interface PawnSim {
   work: number;
   task: { kind: string; ref: Key | null; label: string; target: [number, number, number] | null; type: string;
     entity?: number;
+    storageSource?: string;
+    storageItem?: StoryStack;
   } | null;
   idleSince: number;
   lastAlert: number;
@@ -196,8 +203,10 @@ interface Colony {
   builds: Map<Key, Fn<StoryBuild>>;
   ghostCells: Map<Key, GhostCell[]>;
   replacementClears: Set<Key>;
+  preserveExcluded: Map<Key, Set<string>>;
   ghostsRev: number;
   storages: Map<string, Fn<StoryStorage>>;
+  storageBase: Map<string, Pick<StoryStorage, 'filter' | 'priority'>>;
   benches: Map<string, Fn<StoryWorkbench>>;
   beds: Map<string, StoryBed>;
   bedsRev: number;
@@ -840,8 +849,10 @@ export class StorySim {
       builds: new Map(),
       ghostCells: new Map(),
       replacementClears: new Set(),
+      preserveExcluded: new Map(),
       ghostsRev: 1,
       storages: new Map(),
+      storageBase: new Map(),
       benches: new Map(),
       beds: new Map(),
       bedsRev: 1,
@@ -973,7 +984,7 @@ export class StorySim {
       workTypes: [...STORY_WORK_TYPES],
       pawns: [...c.pawns.values()].filter((p) => full || p.rev > s).map((p) => structuredClone(p.p)),
       seats: this.seatsState(c),
-      zones: pick(c.zones).map((z) => withPreserveState(this.growStatus(c, z))),
+      zones: pick(c.zones).map((z) => withPreserveState(this.growStatus(c, z), c.preserveExcluded.get(z.id))),
       ...(full ? { plants: STORY_SIM_PLANTS } : {}),
       designations: pick(c.designations),
       orders: pick(c.orders),
@@ -1399,8 +1410,9 @@ export class StorySim {
     const f = c.zones.get(String(body.id));
     if (!f) throw Object.assign(new Error('id: no such zone'), { status: 404 });
     f.v = applyPreserveOp(f.v, body, this.iso());
+    if (body.retake || body.on === false) c.preserveExcluded.delete(f.v.id);
     f.rev = this.bump(c);
-    const z = withPreserveState(f.v);
+    const z = withPreserveState(f.v, c.preserveExcluded.get(f.v.id));
     const warnings = preserveWarnings(z, [...c.zones.values()].map((x) => x.v));
     return { id: z.id, preserve: z.preserve ?? null, warnings, rev: c.rev };
   }
@@ -1977,6 +1989,7 @@ export class StorySim {
 
   builds(id: string, body: StoryBuildRequest): BuildsAck {
     const c = this.colony(id);
+    if (body.op === 'unprotect') return this.unprotectCells(c, body.cells);
     if (body.op === 'retry' || body.op === 'retry_all') return this.retryBuilds(c, body);
     if (body.op === 'preview') {
       const r = this.checkWater(c, body.items);
@@ -2005,6 +2018,39 @@ export class StorySim {
     c.ghostsRev = this.bump(c);
     this.plan(c);
     return { ok: true, rev: c.rev };
+  }
+
+  /** Release exact cells, retaining all other build work and the rest of each preserved zone. */
+  private unprotectCells(c: Colony, selected: readonly [number, number, number][]): BuildsAck {
+    const keys = new Set(selected.map(keyOf));
+    let buildCells = 0, preservedCells = 0;
+    for (const [id, cells] of c.ghostCells) {
+      const rest = cells.filter((g) => !keys.has(keyOf([g[0], g[1], g[2]])));
+      if (rest.length === cells.length) continue;
+      buildCells += cells.length - rest.length;
+      for (const p of c.pawns.values()) if (p.task?.ref === id && p.task.target && keys.has(keyOf(p.task.target))) this.drop(c, p);
+      if (!rest.length) this.removeBuild(c, String(id));
+      else {
+        c.ghostCells.set(id, rest);
+        const f = c.builds.get(id);
+        if (f) { f.v.blocksTotal = rest.length; f.v.blocksDone = rest.filter((g) => g[6] === 'done').length; f.rev = this.bump(c); }
+      }
+    }
+    for (const f of c.zones.values()) {
+      const z = withPreserveState(f.v), p = z.preserve;
+      if (!p?.on) continue;
+      const columns = zoneCellSet(z), excluded = c.preserveExcluded.get(z.id) ?? new Set<string>();
+      for (const key of keys) {
+        const [x, y, zz] = key.split(',').map(Number);
+        if (y! < p.y1 || y! > p.y2 || !columns.has(cellKey(x!, zz!))) continue;
+        excluded.add(key); preservedCells++;
+      }
+      c.preserveExcluded.set(z.id, excluded);
+      f.rev = this.bump(c);
+    }
+    c.ghostsRev = this.bump(c);
+    this.plan(c);
+    return { ok: true, cells: keys.size, buildCells, preservedCells, rev: c.rev };
   }
 
   /** Failed (blocked) cells start over: all of a build's, the given ones, or every build's. */
@@ -2216,16 +2262,27 @@ export class StorySim {
   ): void {
     const k = keyOf(p);
     const prev = c.storages.get(k)?.v;
+    const base = c.storageBase.get(k) ?? storageSettings(prev, undefined, undefined);
+    c.storageBase.set(k, base);
     const s: StoryStorage = {
       chest: p,
       doubleWith: other ?? null,
       label: prev?.label ?? null,
-      ...storageSettings(prev, filter, priority),
+      ...storageSettings(prev ? { ...prev, ...base } : undefined, undefined, priority),
       contents: prev?.contents ?? this.stock(c, seedContents(p)),
       freeSlots: prev?.freeSlots ?? (other ? 46 : 22),
       knownAt: this.iso(),
+      ...(prev?.signs ? { signs: prev.signs } : {}),
+      ...(prev?.pendingFilter ? { pendingFilter: prev.pendingFilter } : {}),
+      ...(prev?.pendingPriority ? { pendingPriority: prev.pendingPriority } : {}),
     };
     c.storages.set(k, { rev: this.bump(c), v: s });
+    this.syncStorageSigns(c);
+    if (priority) {
+      if (prev && s.signs?.length) s.pendingPriority = priority as NonNullable<StoryStorage['pendingPriority']>;
+      else { base.priority = priority; if (!s.signs?.length) s.priority = priority; }
+    }
+    if (filter) this.requestStorageFilter(c, s, filter);
   }
 
   storage(
@@ -2233,6 +2290,7 @@ export class StorySim {
     body: StoryStorageRequest,
   ): { ok: boolean; count: number; chests?: Array<[number, number, number]>; rev: number } {
     const c = this.colony(id);
+    this.syncStorageSigns(c);
     switch (body.op) {
       case 'assign_area': {
         const chests = this.discover(c, body.area, body.filter ?? undefined, body.priority ?? 'normal');
@@ -2240,6 +2298,9 @@ export class StorySim {
       }
       case 'set':
         return { ok: true, count: this.setStorages(c, body), rev: c.rev };
+      case 'add':
+      case 'remove_entries':
+        return { ok: true, count: this.setStorageEntries(c, body), rev: c.rev };
       case 'copy':
         return { ok: true, count: this.copyStorage(c, body), rev: c.rev };
       case 'remove':
@@ -2265,13 +2326,63 @@ export class StorySim {
         f = this.findStorage(c, p);
       }
       if (!f) continue;
-      if (body.filter) f.v.filter = body.filter;
-      if (body.priority) f.v.priority = body.priority;
+      if (body.filter) this.requestStorageFilter(c, f.v, body.filter);
+      if (body.priority) {
+        if (f.v.signs?.length) f.v.pendingPriority = body.priority;
+        else { c.storageBase.get(keyOf(f.v.chest))!.priority = body.priority; f.v.priority = body.priority; }
+      }
       if (body.label !== undefined) f.v.label = body.label || null;
       f.rev = this.bump(c);
       n++;
     }
     return n;
+  }
+
+  private setStorageEntries(c: Colony, body: Extract<StoryStorageRequest, { op: 'add' | 'remove_entries' }>): number {
+    const changed = new Set<StoryStorage>();
+    for (const at of body.chests) {
+      const f = this.findStorage(c, at);
+      if (!f || changed.has(f.v)) continue;
+      this.requestStorageFilter(c, f.v, changeStorageEntries(f.v.pendingFilter ?? f.v.filter, body.filter, body.op));
+      f.rev = this.bump(c);
+      changed.add(f.v);
+    }
+    return changed.size;
+  }
+
+  private requestStorageFilter(c: Colony, storage: StoryStorage, filter: StoryFilter): void {
+    if (storage.signs?.length) storage.pendingFilter = structuredClone(filter);
+    else {
+      c.storageBase.get(keyOf(storage.chest))!.filter = structuredClone(filter);
+      storage.filter = structuredClone(filter);
+      delete storage.pendingFilter;
+    }
+  }
+
+  /** A requested filter activates only after the world confirms every controlling sign is gone. */
+  private syncStorageSigns(c: Colony): void {
+    for (const f of c.storages.values()) {
+      const s = f.v, before = JSON.stringify([s.signs, s.pendingFilter, s.pendingPriority, s.filter, s.priority]);
+      const signs = (this.opts.world.storageSigns?.(s.chest) ?? s.signs ?? [])
+        .filter((sign) => [63, 68].includes(this.opts.world.blockAt(...sign.at)[0]));
+      const base = c.storageBase.get(keyOf(s.chest)) ?? { filter: s.filter, priority: s.priority };
+      c.storageBase.set(keyOf(s.chest), base);
+      if (signs.length) {
+        const edited = signs.some((sign) => s.signs?.some((old) => keyOf(old.at) === keyOf(sign.at)
+          && JSON.stringify([old.lines, old.allow, old.deny]) !== JSON.stringify([sign.lines, sign.allow, sign.deny])));
+        if (edited) { delete s.pendingFilter; delete s.pendingPriority; }
+        s.signs = structuredClone(signs);
+        s.filter = storageSignFilter(signs);
+        s.priority = 'critical';
+      } else {
+        if (s.pendingFilter) { base.filter = s.pendingFilter; delete s.pendingFilter; }
+        if (s.pendingPriority) { base.priority = s.pendingPriority; delete s.pendingPriority; }
+        if (s.signs) delete s.signs;
+        s.filter = base.filter;
+        s.priority = base.priority;
+      }
+      if (before !== JSON.stringify([s.signs, s.pendingFilter, s.pendingPriority, s.filter, s.priority])) f.rev = this.bump(c);
+    }
   }
 
   /** storage copy: the source storage's filter and priority onto each storage listed; how many took them. */
@@ -2282,8 +2393,9 @@ export class StorySim {
     for (const p of body.to) {
       const f = this.findStorage(c, p);
       if (!f) continue;
-      f.v.filter = structuredClone(src.v.filter);
-      f.v.priority = src.v.priority;
+      this.requestStorageFilter(c, f.v, src.v.pendingFilter ?? src.v.filter);
+      if (f.v.signs?.length) f.v.pendingPriority = (src.v.pendingPriority ?? src.v.priority) as NonNullable<StoryStorage['pendingPriority']>;
+      else { c.storageBase.get(keyOf(f.v.chest))!.priority = src.v.priority; f.v.priority = src.v.priority; }
       f.rev = this.bump(c);
       n++;
     }
@@ -2297,6 +2409,7 @@ export class StorySim {
       const f = this.findStorage(c, p);
       if (!f) continue;
       c.storages.delete(keyOf(f.v.chest));
+      c.storageBase.delete(keyOf(f.v.chest));
       c.removed.push({ rev: this.bump(c), kind: 'storages', key: f.v.chest });
       n++;
     }
@@ -2886,6 +2999,7 @@ export class StorySim {
   /** One colony's step: the clock, the builds' plan, pawns coming back, the pawns' work; listeners hear of a change. */
   private stepColony(c: Colony, dtMs: number): void {
     const before = c.rev;
+    this.syncStorageSigns(c);
     c.tod = (c.tod + dtMs / 50) % 24000;
     const range = this.allowedTimeRange;
     if (range && this.timeControl().available && !(range.start < range.end
@@ -3097,6 +3211,8 @@ export class StorySim {
   private pickWork(c: Colony, p: PawnSim): boolean {
     const here: [number, number, number] = [p.x, p.y, p.z];
     const cands: WorkCand[] = [];
+    this.storageSignWork(c, p, here, cands);
+    this.storagePullWork(c, p, here, cands);
     this.designationWork(c, p, here, cands);
     this.buildWork(c, p, here, cands);
     this.billWork(c, p, here, cands);
@@ -3105,6 +3221,40 @@ export class StorySim {
     cands.sort((a, b) => a.pri - b.pri || a.col - b.col || b.skill - a.skill || a.d - b.d);
     cands[0]!.take();
     return true;
+  }
+
+  private storageSignWork(c: Colony, p: PawnSim, here: [number, number, number], cands: WorkCand[]): void {
+    for (const f of c.storages.values()) {
+      if (!f.v.pendingFilter && !f.v.pendingPriority) continue;
+      for (const sign of f.v.signs ?? []) {
+        if ([...c.pawns.values()].some((other) => other.task?.kind === 'storage_sign' && keyOf(other.task.target ?? []) === keyOf(sign.at))) continue;
+        this.addWork(p.p, here, cands, 'build', sign.at, () => {
+          p.task = { kind: 'storage_sign', ref: keyOf(f.v.chest), label: 'Removing chest filter sign', target: sign.at, type: 'build' };
+          p.goal = sign.at;
+          p.work = 1500;
+        });
+      }
+    }
+  }
+
+  /** Signed storage pulls matching stock from ordinary accepting chests as room allows. */
+  private storagePullWork(c: Colony, p: PawnSim, here: [number, number, number], cands: WorkCand[]): void {
+    const stores = [...c.storages.values()].map((f) => f.v);
+    const signed = stores.filter((s) => s.signs?.length && (s.freeSlots ?? 0) > 0).sort(compareStoragePriority);
+    for (const src of stores) {
+      if ([...c.pawns.values()].some((other) => other.task?.kind === 'storage_pull' && other.task.storageSource === keyOf(src.chest))) continue;
+      const item = src.contents.find(([id, meta, count]) => count > 0 && signed.some((dst) => dst !== src
+        && compareStoragePriority(dst, src) < 0 && filterAccepts(STORY_DEFAULT_CATEGORIES, dst.filter, id, meta)));
+      if (!item) continue;
+      const dst = signed.find((s) => s !== src && compareStoragePriority(s, src) < 0
+        && filterAccepts(STORY_DEFAULT_CATEGORIES, s.filter, item[0], item[1]))!;
+      this.addWork(p.p, here, cands, 'haul', src.chest, () => {
+        p.task = { kind: 'storage_pull', ref: keyOf(dst.chest), label: 'Moving items to signed storage', target: dst.chest, type: 'haul',
+          storageSource: keyOf(src.chest), storageItem: [...item] };
+        p.goal = dst.chest;
+        p.work = 2500;
+      });
+    }
   }
 
   /** Shared sightings let guards converge; every guard can join, without an exclusive entity lease. */
@@ -3270,12 +3420,37 @@ export class StorySim {
     if (t.kind === 'eat') p.p.food = 20;
     else if (t.kind.startsWith('order:')) this.finishOrder(c, p);
     else if (t.kind === 'bill') this.finishBill(c, p, t);
+    else if (t.kind === 'storage_sign' && t.target) {
+      const s = c.storages.get(String(t.ref))?.v;
+      if ((s?.pendingFilter || s?.pendingPriority) && s.signs?.some((sign) => keyOf(sign.at) === keyOf(t.target!))) {
+        this.opts.world.setBlock?.(...t.target, 0, 0);
+        this.syncStorageSigns(c);
+      }
+    }
+    else if (t.kind === 'storage_pull') this.finishStoragePull(c, t);
     else if (t.kind === 'build' && t.ref !== null && t.ref !== undefined) this.finishBuild(c, p, t, t.ref);
     else if (t.ref !== null && t.ref !== undefined) this.finishDesignation(c, p, t.ref);
     p.task = null;
     p.goal = null;
     p.p.job = null;
     p.rev = this.bump(c);
+  }
+
+  private finishStoragePull(c: Colony, task: NonNullable<PawnSim['task']>): void {
+    const src = c.storages.get(task.storageSource ?? ''), dst = c.storages.get(String(task.ref));
+    const [id, meta] = task.storageItem ?? [];
+    const item = src?.v.contents.find((stack) => stack[0] === id && stack[1] === meta);
+    if (!src || !dst || !item || !dst.v.signs?.length || (dst.v.freeSlots ?? 0) <= 0
+      || !filterAccepts(STORY_DEFAULT_CATEGORIES, dst.v.filter, item[0], item[1])) return;
+    const count = Math.min(64, item[2]);
+    item[2] -= count;
+    src.v.contents = src.v.contents.filter((stack) => stack[2] > 0);
+    const existing = dst.v.contents.find((stack) => stack[0] === item[0] && stack[1] === item[1]);
+    if (existing) existing[2] += count;
+    else dst.v.contents.push([item[0], item[1], count]);
+    src.v.freeSlots = Math.max(0, (src.v.doubleWith ? 54 : 27) - src.v.contents.reduce((n, stack) => n + Math.ceil(stack[2] / 64), 0));
+    dst.v.freeSlots = Math.max(0, (dst.v.doubleWith ? 54 : 27) - dst.v.contents.reduce((n, stack) => n + Math.ceil(stack[2] / 64), 0));
+    src.rev = dst.rev = this.bump(c);
   }
 
   private finishOrder(c: Colony, p: PawnSim): void {
@@ -3378,11 +3553,10 @@ export class StorySim {
       [287, 0],
     ];
     const [id, meta] = options[Math.floor(r() * options.length)]!;
-    const order = ['critical', 'important', 'preferred', 'normal', 'low'];
     const best = [...c.storages.values()]
       .map((f) => f)
       .filter((f) => filterAccepts(STORY_DEFAULT_CATEGORIES, f.v.filter, id, meta) && (f.v.freeSlots ?? 1) > 0)
-      .sort((a, b) => order.indexOf(a.v.priority) - order.indexOf(b.v.priority))[0];
+      .sort((a, b) => compareStoragePriority(a.v, b.v))[0];
     if (!best) {
       this.alert(c, 'warn', `No storage accepts ${storyItemLabel(id, meta).toLowerCase()}.`, p.p.name, {
         tab: 'storage',
@@ -3763,6 +3937,8 @@ type BuildsAck = {
   warnings?: string[];
   flow?: { spread: number; cells: Array<[number, number, number]> };
   cells?: number;
+  buildCells?: number;
+  preservedCells?: number;
   done?: number;
   error?: string | null;
   reopened?: number;

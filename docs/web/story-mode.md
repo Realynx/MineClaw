@@ -1794,6 +1794,9 @@ Storage is chests; there are no ground stockpiles (a `dump` zone is only where l
 "Hauling"). `POST …/storage`:
 - `{op:"set", chests:[[x,y,z]], filter?:{allow:[…], deny:[…]}, priority?, label?}`. A double chest is one storage: its other half
   is found from the world.
+- `{op:"add", chests, filter:{allow:[…], deny:[…]}}` adds entries to each selected chest without replacing its other rules.
+  `{op:"remove_entries", chests, filter:{allow:[…], deny:[…]}}` excludes the selected allowed entries with an explicit deny,
+  including when a broader category is allowed later. Allowing an entry again clears its matching deny. `remove` still means stop using the chest as storage.
 - `{op:"remove", chests}`, `{op:"copy", from:[x,y,z], to:[[x,y,z]]}` or `{op:"assign_area", area, filter?, priority?, label?}`
   (every chest in the area) → `{chests:[[x,y,z]]}`.
 
@@ -1801,6 +1804,24 @@ Filters:
 - Entries are `"*"`, a category id (any level), `"id"` or `"id:meta"`.
 - An item is accepted when an allow entry covers it and no deny entry does. A new chest allows `"*"`.
 - Priority is one of `low|normal|preferred|important|critical`.
+
+A wooden sign physically attached to either half of a chest controls its effective filter when it contains recognized entries.
+Category aliases such as `food`, `wood`, and `seeds` can be separated by commas or sign lines; a `-` prefix excludes an entry.
+Ordinary labels with no recognized entries do not control storage. Multiple controlling signs combine their entries, with deny
+winning. Nearby signs on other supports do not count. Signed chests have the highest hauling priority, above ordinary critical
+storage, and pull matching items from ordinary accepting chests as space allows. Their filters are strict, including fallback
+deliveries. The configured priority returns after the signs are gone.
+
+Viewer filter or priority edits, including copy/paste and bulk Allow/Exclude entries, queue physical removal of controlling signs.
+The sign settings stay in effect until the signs are actually removed; a blocked or cancelled removal does not activate the edit.
+State includes `signs:[{at,lines,allow,deny}]`, `pending_filter:{allow,deny}` and `pending_priority` when a priority edit is waiting.
+The inspector shows the effective filter, attached sign text, highest sign priority, and requested settings waiting for removal separately.
+
+The main and hive chat agents use `colony_storage` for the same settings. `list` finds chests and building bounds; `catalog` lists
+filter categories. Edits accept explicit `chests`, an inclusive six-number `area`, or `build_id` plus optional `y_min`/`y_max` to
+select one floor. `set` replaces rules, `add` allows/excludes additional entries, and this tool's `remove` excludes allowed entries
+or removes explicit denies; it does not deregister storage. `allow`/`deny` accept category IDs, item names, or `id:meta`.
+An optional `colony` selects among multiple colonies. Remote hive requests execute on the owning main colony through the authenticated bus.
 
 Storage: `{chest, double_with, label, priority, filter:{allow, deny}, contents:[[id,meta,count]], free_slots, known_at}`. The
 contents start from what the bot remembers of the chest. The director keeps them up to date after each deposit and withdrawal.
@@ -2501,6 +2522,16 @@ The design grew while it was built. The wire forms are in `docs/web/api.md` §6 
 - **Selection.**
   - A left-drag box selects many pawns, or objects (trees, blocks, drops) in designation mode.
   - A click selects one, shift adds, a double-click selects every visible pawn of the same kind, and Esc clears.
+- **Stop rebuilding here.** Right-click a block or build ghost (including a Preserve repair ghost) and choose this action.
+  It releases only that cell from every build and preserved snapshot; it does not break the block or disable the zone.
+  The request is `story.builds {op:"unprotect",cells:[[x,y,z],...]}` (up to 4,096 cells). Released cells stay excluded from that
+  snapshot until it is explicitly retaken.
+
+- **Free-camera inspection.** While flying with the mouse locked, the center crosshair identifies the block being clicked.
+  Left-click a chest (either half), trapped chest, crafting table, or furnace to open the same storage or bills inspector as
+  the top-down map. This releases the mouse for editing and keeps the camera pose; click the view again to resume flying.
+  These clicks only inspect furniture, even when a Mine or Build tool was previously selected.
+
 - **Orders.** A right-click with pawns selected opens a context menu for the target:
   - a block gives move, mine or chop
   - a mob gives attack

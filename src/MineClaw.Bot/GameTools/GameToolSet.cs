@@ -349,6 +349,7 @@ public static class GameToolSet
         ClearDigTool.Register(tools, c); // hidden: clear_dig{at} (a Story build's cell holding another block: dug out first)
         DeconstructChestTool.Register(tools, c); // hidden: explicit empty-only chest removal
         DepositAtTool.Register(tools, c); // hidden: a chest evacuation never falls back to its source
+        RemoveStorageSignTool.Register(tools, c); // hidden: remove only the unchanged label attached to the intended chest
         StationaryDigTool.Register(tools, c); // hidden: dig_here{at} (quarry batches keep their access while digging nearby cells)
         StationaryPlaceTool.Register(tools, c); // hidden: place_here{block,at,meta?} (construction batches keep their shared access)
         ClearTemporaryTool.Register(tools, c); // hidden: clear_temporary{} (a Story pawn takes back its own scaffolds after each job)

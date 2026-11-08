@@ -11,6 +11,9 @@ public sealed record StoryEntity(int Id, string Kind, string Name, double X, dou
     public P3 Block => new((int)Math.Floor(X), (int)Math.Floor(Y), (int)Math.Floor(Z));
 }
 
+/// <summary>A currently loaded wooden sign and its four observed plain-text lines.</summary>
+public sealed record StorySign(P3 At, IReadOnlyList<string> Lines);
+
 /// <summary>The colony's world view (main's: one world for the colony), read-only. Tests fake it.</summary>
 public interface IStoryWorld
 {
@@ -23,6 +26,8 @@ public interface IStoryWorld
     int Height { get; }
     (int Id, int Meta) Block(int x, int y, int z);
     IReadOnlyList<StoryEntity> Entities();
+    /// <summary>Sign text actually received from the server, only where the current loaded world still has a sign.</summary>
+    IReadOnlyList<StorySign> Signs() => [];
     /// <summary>The view's dimension (0 overworld, -1 nether, 1 end).</summary>
     int Dimension => 0;
     /// <summary>The column at x,z is in the view (an unloaded one reads as air: never a spot to send a pawn to).</summary>
@@ -47,6 +52,8 @@ public sealed record PawnLive(bool Online, int Hp, int Food, double X, double Y,
 /// <summary>What the director needs from whatever hosts the pawn bodies (main's hive hierarchy and body registry; tests fake it).</summary>
 public interface IStoryHost
 {
+    /// <summary>Publishes copied physical-sign rules for all controlled bodies; action callbacks never enter the colony lock.</summary>
+    void PublishStorageSignRules(string colony, int dimension, IReadOnlyList<StoryStorageSignRule> rules) { }
     /// <summary>The colony's world view; null = not in game yet.</summary>
     IStoryWorld? World { get; }
     /// <summary>Spawns up to <paramref name="n"/> script-only bodies for the colony group (accounts it had before first).</summary>
@@ -197,6 +204,9 @@ public sealed class WorldStateStoryWorld(Func<WorldState?> world, IGameData data
 
     public IReadOnlyList<StoryEntity> Entities() => world() is { } w ? EntitiesOf(w, data) : [];
 
+    public IReadOnlyList<StorySign> Signs() => world() is { } w
+        ? StorySignObservations.Read(w).Select(s => new StorySign(s.At, s.Lines.ToArray())).ToList() : [];
+
     /// <summary>What one body's tracker holds as the colony sees it (drops, mobs, players).</summary>
     internal static List<StoryEntity> EntitiesOf(WorldState w, IGameData data)
     {
@@ -298,6 +308,25 @@ public sealed class MergedStoryWorld(Func<WorldState?> main, Func<IReadOnlyList<
         Col(x, z, out _) is { } c && (uint)y < (uint)c.Height ? (c.GetBlock(x & 15, y, z & 15), c.GetMeta(x & 15, y, z & 15)) : (0, 0);
 
     public int? NightLight(int x, int y, int z) => At(x, z) is { } w ? w.Light.LightLevel(x, y, z, LightEngine.NightSubtracted) : null;
+
+    /// <summary>Text may arrive on a different body from the one that supplied the shared block column. Use the latest
+    /// observation in this dimension, while the selected live column remains authoritative about the sign's existence.</summary>
+    public IReadOnlyList<StorySign> Signs()
+    {
+        var found = new Dictionary<P3, (IReadOnlyList<string> Lines, long Revision)>();
+        void Add(WorldState w)
+        {
+            foreach (var sign in StorySignObservations.Read(w))
+            {
+                if (Block(sign.At.X, sign.At.Y, sign.At.Z).Id is not (63 or 68)) continue;
+                if (!found.TryGetValue(sign.At, out var old) || sign.Revision > old.Revision)
+                    found[sign.At] = (sign.Lines, sign.Revision);
+            }
+        }
+        if (main() is { } m) Add(m);
+        foreach (var w in Others()) if (w.Dimension == Dimension) Add(w);
+        return found.Select(s => new StorySign(s.Key, s.Value.Lines.ToArray())).ToList();
+    }
 
     /// <summary>Every body's entities by id: the freshest copy (the body nearest it gets its moves) with the earliest first sighting
     /// (a drop's age). A mob only one body's tracker still holds keeps that body's last update, so the colony can tell it is stale.</summary>

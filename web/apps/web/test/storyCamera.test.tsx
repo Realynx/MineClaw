@@ -7,22 +7,32 @@ import { StoryMap, type StoryMapProps } from '@/features/story/StoryMap';
 import { useStoryKeys } from '@/features/story/mode/keys';
 import type { Story } from '@/features/story/mode/commands';
 
-const viewer = vi.hoisted(() => ({ mounts: 0, mode: '', focus: vi.fn(), engine: {}, source: {} }));
+const viewer = vi.hoisted(() => ({
+  mounts: 0,
+  mode: '',
+  focus: vi.fn(),
+  engine: {},
+  source: {},
+  locked: false,
+  aimClick: undefined as WorldViewerProps['onAimClick'],
+}));
 vi.mock('@/features/story/chestBadges', () => ({ useContainerBadges: () => ({ current: new Map() }) }));
 vi.mock('@/features/world/integration', () => ({
   useWorldHost: () => ({ ready: true, source: viewer.source, mod: { WorldViewer: MockViewer } }),
 }));
 const MockViewer = forwardRef<WorldViewerHandle, WorldViewerProps>(function MockViewer(props, ref) {
   viewer.mode = props.cameraMode ?? '';
+  viewer.aimClick = props.onAimClick;
   useEffect(() => {
     viewer.mounts++;
   }, []);
-  useImperativeHandle(ref, () => ({ engine: () => viewer.engine }) as WorldViewerHandle);
+  useImperativeHandle(ref, () => ({ engine: () => viewer.engine, locked: () => viewer.locked }) as WorldViewerHandle);
   return <div data-testid="fake-viewer" data-camera={props.cameraMode} />;
 });
 
 beforeEach(() => {
   viewer.mounts = 0;
+  viewer.locked = false;
   viewer.focus.mockClear();
   viewer.engine = {
     surface: { focus: viewer.focus },
@@ -167,4 +177,55 @@ it('has an always-available free camera button, and flight keys cannot pause the
   expect(screen.getByRole('button', { name: 'Return to the top-down map' })).toBeTruthy();
   fireEvent.click(screen.getByRole('button', { name: 'Return to the top-down map' }));
   expect(screen.getByRole('button', { name: 'Switch to the angled view' })).toBeTruthy();
+});
+
+it.each([54, 146, 58, 61, 62])(
+  'opens the shared furniture inspector for freecam block %s while a build tool is held',
+  (id) => {
+    const props = mapProps();
+    props.tool = { kind: 'build', id: 'block' };
+    props.state = { storages: [{ chest: [2, 64, 3], doubleWith: [3, 64, 3] }] } as StoryMapProps['state'];
+    const { rerender } = render(<StoryMap {...props} view="fly" />);
+    const target = { kind: 'block' as const, id, x: 3, y: 64, z: 3, meta: 0, face: 2, name: 'Furniture', distance: 4 };
+    const unlock = vi.fn();
+    Object.defineProperty(document, 'exitPointerLock', { configurable: true, value: unlock });
+    viewer.aimClick!(target, { shift: false, ctrl: false });
+    expect(props.onSelect).not.toHaveBeenCalled(); // initial unlocked click cannot inspect or place
+    viewer.locked = true;
+    const position = (viewer.engine as { rig: { flyPos: { set: ReturnType<typeof vi.fn> } } }).rig.flyPos.set;
+    const seeded = position.mock.calls.length;
+    viewer.aimClick!(target, { shift: false, ctrl: false });
+    expect(props.onSelect).toHaveBeenCalledExactlyOnceWith(
+      id === 54 || id === 146
+        ? { bodies: [], chests: [[2, 64, 3]], bench: null }
+        : { bodies: [], chests: [], bench: [3, 64, 3] },
+    );
+    expect(unlock).toHaveBeenCalledOnce();
+    expect(position.mock.calls).toHaveLength(seeded); // unlocking does not reset the free camera's pose
+    expect(props.onTool).not.toHaveBeenCalled();
+    expect(props.onContext).not.toHaveBeenCalled();
+    rerender(<StoryMap {...props} view="top" />);
+    viewer.aimClick!(target, { shift: false, ctrl: false });
+    expect(props.onSelect).toHaveBeenCalledOnce(); // an old asynchronous ray reply cannot act after switching views
+  },
+);
+
+it('shows the crosshair only for this map while freecam owns pointer lock', () => {
+  const props = mapProps();
+  const { rerender } = render(<StoryMap {...props} view="fly" />);
+  expect(screen.queryByTestId('crosshair')).not.toBeInTheDocument();
+  Object.defineProperty(document, 'pointerLockElement', {
+    configurable: true,
+    value: screen.getByTestId('fake-viewer'),
+  });
+  fireEvent(document, new Event('pointerlockchange'));
+  expect(screen.getByTestId('crosshair')).toBeInTheDocument();
+  rerender(<StoryMap {...props} view="top" />);
+  expect(screen.queryByTestId('crosshair')).not.toBeInTheDocument();
+  rerender(<StoryMap {...props} view="fly" />);
+  Object.defineProperty(document, 'pointerLockElement', { configurable: true, value: document.body });
+  fireEvent(document, new Event('pointerlockchange'));
+  expect(screen.queryByTestId('crosshair')).not.toBeInTheDocument();
+  Object.defineProperty(document, 'pointerLockElement', { configurable: true, value: null });
+  fireEvent(document, new Event('pointerlockchange'));
 });

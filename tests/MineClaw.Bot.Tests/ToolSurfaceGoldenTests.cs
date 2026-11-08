@@ -54,7 +54,7 @@ public class ToolSurfaceGoldenTests
     /// <summary>Generated from the pre-refactor code (WP03).</summary>
     private static readonly string[] Expected =
     [
-        "fake all: stop,remember_waypoint,mark_structure,describe_structure,remember_note,recall,recall_detail,forget,list_memory,where_is,identity,save_routine,run_routine,ask_player,standing_order,reflect_self,run_command,delegate,amend_task,ask_memory,say,activity,status,inventory,look,window,goto,follow,mine,harvest_generator,collect_drops,craft,smelt,collect_furnace,deposit,withdraw,organize_chest,place,dig,use_block,eat,chop_tree,fish,place_turned,acquire,equip,face,escape_dig,clear_dig,deconstruct_chest,deposit_at,dig_here,place_here,clear_temporary,ask_stand,watch_demo,act,find_skill,skill,design,build,blueprint,script,see,do",
+        "fake all: stop,remember_waypoint,mark_structure,describe_structure,remember_note,recall,recall_detail,forget,list_memory,where_is,identity,save_routine,run_routine,ask_player,standing_order,reflect_self,run_command,delegate,amend_task,ask_memory,say,activity,status,inventory,look,window,goto,follow,mine,harvest_generator,collect_drops,craft,smelt,collect_furnace,deposit,withdraw,organize_chest,place,dig,use_block,eat,chop_tree,fish,place_turned,acquire,equip,face,escape_dig,clear_dig,deconstruct_chest,deposit_at,remove_storage_sign,dig_here,place_here,clear_temporary,ask_stand,watch_demo,act,find_skill,skill,design,build,blueprint,script,see,do",
         "fake acquire 4B46011A8047BAAF",
         "fake act 1BA285CCCBFEF603",
         "fake activity 18EE0AA639868F61",
@@ -104,6 +104,7 @@ public class ToolSurfaceGoldenTests
         "fake reflect_self E37552F7AE8CF71A",
         "fake remember_note BB0E3B9B6CF2558F",
         "fake remember_waypoint 33A7AECDFC1EC868",
+        "fake remove_storage_sign 18E3EE9FF1D9688B",
         "fake run_command 882DE5AEB2331A4C",
         "fake run_routine 20940BC752A0AD08",
         "fake save_routine A994D1F6DDB7FAFF",
@@ -123,7 +124,7 @@ public class ToolSurfaceGoldenTests
         "fake Main: stop,remember_waypoint,mark_structure,describe_structure,remember_note,recall_detail,forget,list_memory,where_is,identity,run_routine,ask_player,standing_order,reflect_self,run_command,delegate,amend_task,ask_memory,say,status,inventory,look,ask_stand,watch_demo,design,script,see,do",
         "fake Worker: remember_waypoint,recall,where_is,save_routine,run_routine,status,inventory,look,window,goto,mine,harvest_generator,collect_drops,craft,smelt,collect_furnace,deposit,withdraw,organize_chest,place,dig,use_block,eat,chop_tree,find_skill,skill,build,script,see",
         "fake Cheap: stop,remember_waypoint,remember_note,recall,recall_detail,list_memory,where_is,identity,reflect_self,activity,status,inventory,look",
-        "real all: stop,remember_waypoint,mark_structure,describe_structure,remember_note,recall,recall_detail,forget,list_memory,where_is,identity,save_routine,run_routine,ask_player,standing_order,reflect_self,run_command,delegate,amend_task,ask_memory,say,activity,status,inventory,look,window,goto,follow,mine,harvest_generator,collect_drops,craft,smelt,collect_furnace,deposit,withdraw,organize_chest,place,dig,use_block,eat,chop_tree,fish,place_turned,acquire,equip,face,escape_dig,clear_dig,deconstruct_chest,deposit_at,dig_here,place_here,clear_temporary,ask_stand,watch_demo,spar,stop_spar,defend,guard,attack,combat_status,act,find_skill,skill,design,build,blueprint,script,see,do",
+        "real all: stop,remember_waypoint,mark_structure,describe_structure,remember_note,recall,recall_detail,forget,list_memory,where_is,identity,save_routine,run_routine,ask_player,standing_order,reflect_self,run_command,delegate,amend_task,ask_memory,say,activity,status,inventory,look,window,goto,follow,mine,harvest_generator,collect_drops,craft,smelt,collect_furnace,deposit,withdraw,organize_chest,place,dig,use_block,eat,chop_tree,fish,place_turned,acquire,equip,face,escape_dig,clear_dig,deconstruct_chest,deposit_at,remove_storage_sign,dig_here,place_here,clear_temporary,ask_stand,watch_demo,spar,stop_spar,defend,guard,attack,combat_status,act,find_skill,skill,design,build,blueprint,script,see,do",
         "real acquire 4B46011A8047BAAF",
         "real act 1BA285CCCBFEF603",
         "real activity 18EE0AA639868F61",
@@ -177,6 +178,7 @@ public class ToolSurfaceGoldenTests
         "real reflect_self E37552F7AE8CF71A",
         "real remember_note BB0E3B9B6CF2558F",
         "real remember_waypoint 33A7AECDFC1EC868",
+        "real remove_storage_sign 18E3EE9FF1D9688B",
         "real run_command 882DE5AEB2331A4C",
         "real run_routine 20940BC752A0AD08",
         "real save_routine A994D1F6DDB7FAFF",

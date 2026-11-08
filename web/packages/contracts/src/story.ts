@@ -699,12 +699,23 @@ export const StoryFilter = z.object({
 });
 export type StoryFilter = z.infer<typeof StoryFilter>;
 
+export const StoryStorageSign = z.object({
+  at: Vec3i,
+  lines: z.array(z.string()).max(4),
+  allow: z.array(z.string()),
+  deny: z.array(z.string()),
+});
+export type StoryStorageSign = z.infer<typeof StoryStorageSign>;
+
 export const StoryStorage = z.object({
   chest: Vec3i,
   doubleWith: Vec3i.nullish().describe('the other half of a double chest'),
   label: z.string().nullish(),
   priority: z.string().default('normal'),
   filter: StoryFilter.default({ allow: [], deny: [] }),
+  signs: z.array(StoryStorageSign).nullish().describe('recognized filter signs physically attached to either chest half; their combined filter takes precedence'),
+  pendingFilter: StoryFilter.nullish().describe('requested viewer filter waiting for the controlling signs to be removed'),
+  pendingPriority: StoryStoragePriority.nullish().describe('requested priority waiting for the controlling signs to be removed'),
   contents: z.array(StoryStack).default([]),
   freeSlots: z.number().int().nullish(),
   knownAt: When.nullish().describe('when a pawn last saw inside'),
@@ -1424,6 +1435,8 @@ export type StoryBuildItem = z.infer<typeof StoryBuildItem>;
 
 export const StoryBuildRequest = z.discriminatedUnion('op', [
   z.object({ op: z.literal('add'), items: z.array(StoryBuildItem).min(1).max(64) }).strict(),
+  z.object({ op: z.literal('unprotect'), cells: z.array(Vec3i).min(1).max(4096) }).strict()
+    .describe('stop rebuilding only these cells: release build ownership and preserved snapshots without changing blocks'),
   z
     .object({ op: z.literal('preview'), items: z.array(StoryBuildItem).min(1).max(64) })
     .strict()
@@ -1497,6 +1510,8 @@ export const StoryBuildResponse = z.object({
     .describe('add / preview of water items: the liquid will spread, or meet lava; add: blocks in a preserved zone'),
   flow: StoryLiquidFlow.nullish().describe('add / preview of water items: where the liquid would run'),
   cells: z.number().int().nullish().describe('preview: the water cells'),
+  buildCells: z.number().int().nullish().describe('unprotect: build cells released'),
+  preservedCells: z.number().int().nullish().describe('unprotect: preserved cells released'),
   done: z.number().int().nullish().describe('preview: cells already holding the source'),
   error: z.string().nullish().describe('preview: why the items would be refused'),
   reopened: z.number().int().nullish().describe('retry: the failed cells that start over'),
@@ -1518,6 +1533,8 @@ export const StoryStorageRequest = z.discriminatedUnion('op', [
       label: z.string().max(40).optional(),
     })
     .strict(),
+  z.object({ op: z.literal('add'), chests: Chests, filter: StoryFilter }).strict(),
+  z.object({ op: z.literal('remove_entries'), chests: Chests, filter: StoryFilter }).strict(),
   z.object({ op: z.literal('remove'), chests: Chests }).strict(),
   z.object({ op: z.literal('copy'), from: Vec3i, to: Chests }).strict(),
   z

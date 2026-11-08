@@ -6976,7 +6976,14 @@ exports[`contextMenu > every target kind and selection 1`] = `
       "label": "Equip tools for their work",
     },
   ],
-  "block 1 - -": [],
+  "block 1 - -": [
+    {
+      "action": "unprotect",
+      "hint": "Release this block from builds and Preserve; leave other cells unchanged",
+      "id": "unprotect",
+      "label": "Stop rebuilding here",
+    },
+  ],
   "block 1 - ai": [
     {
       "directive": {
@@ -7021,6 +7028,12 @@ exports[`contextMenu > every target kind and selection 1`] = `
           "z": -1,
         },
       },
+    },
+    {
+      "action": "unprotect",
+      "hint": "Release this block from builds and Preserve; leave other cells unchanged",
+      "id": "unprotect",
+      "label": "Stop rebuilding here",
     },
     {
       "directive": {
@@ -7088,6 +7101,12 @@ exports[`contextMenu > every target kind and selection 1`] = `
           "z": -1,
         },
       },
+    },
+    {
+      "action": "unprotect",
+      "hint": "Release this block from builds and Preserve; leave other cells unchanged",
+      "id": "unprotect",
+      "label": "Stop rebuilding here",
     },
     {
       "directive": {
@@ -7187,6 +7206,12 @@ exports[`contextMenu > every target kind and selection 1`] = `
       },
     },
     {
+      "action": "unprotect",
+      "hint": "Release this block from builds and Preserve; leave other cells unchanged",
+      "id": "unprotect",
+      "label": "Stop rebuilding here",
+    },
+    {
       "directive": {
         "kind": "guard",
       },
@@ -7244,6 +7269,12 @@ exports[`contextMenu > every target kind and selection 1`] = `
       "id": "storage",
       "label": "Storage settings",
     },
+    {
+      "action": "unprotect",
+      "hint": "Release this block from builds and Preserve; leave other cells unchanged",
+      "id": "unprotect",
+      "label": "Stop rebuilding here",
+    },
   ],
   "block 146 - ai": [
     {
@@ -7294,6 +7325,12 @@ exports[`contextMenu > every target kind and selection 1`] = `
           "z": -1,
         },
       },
+    },
+    {
+      "action": "unprotect",
+      "hint": "Release this block from builds and Preserve; leave other cells unchanged",
+      "id": "unprotect",
+      "label": "Stop rebuilding here",
     },
     {
       "directive": {
@@ -7366,6 +7403,12 @@ exports[`contextMenu > every target kind and selection 1`] = `
           "z": -1,
         },
       },
+    },
+    {
+      "action": "unprotect",
+      "hint": "Release this block from builds and Preserve; leave other cells unchanged",
+      "id": "unprotect",
+      "label": "Stop rebuilding here",
     },
     {
       "directive": {
@@ -7470,6 +7513,12 @@ exports[`contextMenu > every target kind and selection 1`] = `
       },
     },
     {
+      "action": "unprotect",
+      "hint": "Release this block from builds and Preserve; leave other cells unchanged",
+      "id": "unprotect",
+      "label": "Stop rebuilding here",
+    },
+    {
       "directive": {
         "kind": "guard",
       },
@@ -7521,7 +7570,14 @@ exports[`contextMenu > every target kind and selection 1`] = `
       "label": "Equip tools for their work",
     },
   ],
-  "block 161 - -": [],
+  "block 161 - -": [
+    {
+      "action": "unprotect",
+      "hint": "Release this block from builds and Preserve; leave other cells unchanged",
+      "id": "unprotect",
+      "label": "Stop rebuilding here",
+    },
+  ],
   "block 161 - ai": [
     {
       "directive": {
@@ -7566,6 +7622,12 @@ exports[`contextMenu > every target kind and selection 1`] = `
           "z": -1,
         },
       },
+    },
+    {
+      "action": "unprotect",
+      "hint": "Release this block from builds and Preserve; leave other cells unchanged",
+      "id": "unprotect",
+      "label": "Stop rebuilding here",
     },
     {
       "directive": {
@@ -7633,6 +7695,12 @@ exports[`contextMenu > every target kind and selection 1`] = `
           "z": -1,
         },
       },
+    },
+    {
+      "action": "unprotect",
+      "hint": "Release this block from builds and Preserve; leave other cells unchanged",
+      "id": "unprotect",
+      "label": "Stop rebuilding here",
     },
     {
       "directive": {
@@ -7732,6 +7800,12 @@ exports[`contextMenu > every target kind and selection 1`] = `
       },
     },
     {
+      "action": "unprotect",
+      "hint": "Release this block from builds and Preserve; leave other cells unchanged",
+      "id": "unprotect",
+      "label": "Stop rebuilding here",
+    },
+    {
       "directive": {
         "kind": "guard",
       },
@@ -7783,7 +7857,14 @@ exports[`contextMenu > every target kind and selection 1`] = `
       "label": "Equip tools for their work",
     },
   ],
-  "block 162 - -": [],
+  "block 162 - -": [
+    {
+      "action": "unprotect",
+      "hint": "Release this block from builds and Preserve; leave other cells unchanged",
+      "id": "unprotect",
+      "label": "Stop rebuilding here",
+    },
+  ],
   "block 162 - ai": [
     {
       "directive": {
@@ -7828,6 +7909,12 @@ exports[`contextMenu > every target kind and selection 1`] = `
           "z": -1,
         },
       },
+    },
+    {
+      "action": "unprotect",
+      "hint": "Release this block from builds and Preserve; leave other cells unchanged",
+      "id": "unprotect",
+      "label": "Stop rebuilding here",
     },
     {
       "directive": {
@@ -7895,6 +7982,12 @@ exports[`contextMenu > every target kind and selection 1`] = `
           "z": -1,
         },
       },
+    },
+    {
+      "action": "unprotect",
+      "hint": "Release this block from builds and Preserve; leave other cells unchanged",
+      "id": "unprotect",
+      "label": "Stop rebuilding here",
     },
     {
       "directive": {
@@ -7994,6 +8087,12 @@ exports[`contextMenu > every target kind and selection 1`] = `
       },
     },
     {
+      "action": "unprotect",
+      "hint": "Release this block from builds and Preserve; leave other cells unchanged",
+      "id": "unprotect",
+      "label": "Stop rebuilding here",
+    },
+    {
       "directive": {
         "kind": "guard",
       },
@@ -8045,7 +8144,14 @@ exports[`contextMenu > every target kind and selection 1`] = `
       "label": "Equip tools for their work",
     },
   ],
-  "block 17 - -": [],
+  "block 17 - -": [
+    {
+      "action": "unprotect",
+      "hint": "Release this block from builds and Preserve; leave other cells unchanged",
+      "id": "unprotect",
+      "label": "Stop rebuilding here",
+    },
+  ],
   "block 17 - ai": [
     {
       "directive": {
@@ -8090,6 +8196,12 @@ exports[`contextMenu > every target kind and selection 1`] = `
           "z": -1,
         },
       },
+    },
+    {
+      "action": "unprotect",
+      "hint": "Release this block from builds and Preserve; leave other cells unchanged",
+      "id": "unprotect",
+      "label": "Stop rebuilding here",
     },
     {
       "directive": {
@@ -8157,6 +8269,12 @@ exports[`contextMenu > every target kind and selection 1`] = `
           "z": -1,
         },
       },
+    },
+    {
+      "action": "unprotect",
+      "hint": "Release this block from builds and Preserve; leave other cells unchanged",
+      "id": "unprotect",
+      "label": "Stop rebuilding here",
     },
     {
       "directive": {
@@ -8256,6 +8374,12 @@ exports[`contextMenu > every target kind and selection 1`] = `
       },
     },
     {
+      "action": "unprotect",
+      "hint": "Release this block from builds and Preserve; leave other cells unchanged",
+      "id": "unprotect",
+      "label": "Stop rebuilding here",
+    },
+    {
       "directive": {
         "kind": "guard",
       },
@@ -8307,7 +8431,14 @@ exports[`contextMenu > every target kind and selection 1`] = `
       "label": "Equip tools for their work",
     },
   ],
-  "block 18 - -": [],
+  "block 18 - -": [
+    {
+      "action": "unprotect",
+      "hint": "Release this block from builds and Preserve; leave other cells unchanged",
+      "id": "unprotect",
+      "label": "Stop rebuilding here",
+    },
+  ],
   "block 18 - ai": [
     {
       "directive": {
@@ -8352,6 +8483,12 @@ exports[`contextMenu > every target kind and selection 1`] = `
           "z": -1,
         },
       },
+    },
+    {
+      "action": "unprotect",
+      "hint": "Release this block from builds and Preserve; leave other cells unchanged",
+      "id": "unprotect",
+      "label": "Stop rebuilding here",
     },
     {
       "directive": {
@@ -8419,6 +8556,12 @@ exports[`contextMenu > every target kind and selection 1`] = `
           "z": -1,
         },
       },
+    },
+    {
+      "action": "unprotect",
+      "hint": "Release this block from builds and Preserve; leave other cells unchanged",
+      "id": "unprotect",
+      "label": "Stop rebuilding here",
     },
     {
       "directive": {
@@ -8518,6 +8661,12 @@ exports[`contextMenu > every target kind and selection 1`] = `
       },
     },
     {
+      "action": "unprotect",
+      "hint": "Release this block from builds and Preserve; leave other cells unchanged",
+      "id": "unprotect",
+      "label": "Stop rebuilding here",
+    },
+    {
       "directive": {
         "kind": "guard",
       },
@@ -8575,6 +8724,12 @@ exports[`contextMenu > every target kind and selection 1`] = `
       "id": "storage",
       "label": "Storage settings",
     },
+    {
+      "action": "unprotect",
+      "hint": "Release this block from builds and Preserve; leave other cells unchanged",
+      "id": "unprotect",
+      "label": "Stop rebuilding here",
+    },
   ],
   "block 54 - ai": [
     {
@@ -8625,6 +8780,12 @@ exports[`contextMenu > every target kind and selection 1`] = `
           "z": -1,
         },
       },
+    },
+    {
+      "action": "unprotect",
+      "hint": "Release this block from builds and Preserve; leave other cells unchanged",
+      "id": "unprotect",
+      "label": "Stop rebuilding here",
     },
     {
       "directive": {
@@ -8697,6 +8858,12 @@ exports[`contextMenu > every target kind and selection 1`] = `
           "z": -1,
         },
       },
+    },
+    {
+      "action": "unprotect",
+      "hint": "Release this block from builds and Preserve; leave other cells unchanged",
+      "id": "unprotect",
+      "label": "Stop rebuilding here",
     },
     {
       "directive": {
@@ -8801,6 +8968,12 @@ exports[`contextMenu > every target kind and selection 1`] = `
       },
     },
     {
+      "action": "unprotect",
+      "hint": "Release this block from builds and Preserve; leave other cells unchanged",
+      "id": "unprotect",
+      "label": "Stop rebuilding here",
+    },
+    {
       "directive": {
         "kind": "guard",
       },
@@ -8858,6 +9031,12 @@ exports[`contextMenu > every target kind and selection 1`] = `
       "id": "bills",
       "label": "Bills",
     },
+    {
+      "action": "unprotect",
+      "hint": "Release this block from builds and Preserve; leave other cells unchanged",
+      "id": "unprotect",
+      "label": "Stop rebuilding here",
+    },
   ],
   "block 58 - ai": [
     {
@@ -8908,6 +9087,12 @@ exports[`contextMenu > every target kind and selection 1`] = `
           "z": -1,
         },
       },
+    },
+    {
+      "action": "unprotect",
+      "hint": "Release this block from builds and Preserve; leave other cells unchanged",
+      "id": "unprotect",
+      "label": "Stop rebuilding here",
     },
     {
       "directive": {
@@ -8980,6 +9165,12 @@ exports[`contextMenu > every target kind and selection 1`] = `
           "z": -1,
         },
       },
+    },
+    {
+      "action": "unprotect",
+      "hint": "Release this block from builds and Preserve; leave other cells unchanged",
+      "id": "unprotect",
+      "label": "Stop rebuilding here",
     },
     {
       "directive": {
@@ -9084,6 +9275,12 @@ exports[`contextMenu > every target kind and selection 1`] = `
       },
     },
     {
+      "action": "unprotect",
+      "hint": "Release this block from builds and Preserve; leave other cells unchanged",
+      "id": "unprotect",
+      "label": "Stop rebuilding here",
+    },
+    {
       "directive": {
         "kind": "guard",
       },
@@ -9141,6 +9338,12 @@ exports[`contextMenu > every target kind and selection 1`] = `
       "id": "bills",
       "label": "Bills",
     },
+    {
+      "action": "unprotect",
+      "hint": "Release this block from builds and Preserve; leave other cells unchanged",
+      "id": "unprotect",
+      "label": "Stop rebuilding here",
+    },
   ],
   "block 61 - ai": [
     {
@@ -9191,6 +9394,12 @@ exports[`contextMenu > every target kind and selection 1`] = `
           "z": -1,
         },
       },
+    },
+    {
+      "action": "unprotect",
+      "hint": "Release this block from builds and Preserve; leave other cells unchanged",
+      "id": "unprotect",
+      "label": "Stop rebuilding here",
     },
     {
       "directive": {
@@ -9263,6 +9472,12 @@ exports[`contextMenu > every target kind and selection 1`] = `
           "z": -1,
         },
       },
+    },
+    {
+      "action": "unprotect",
+      "hint": "Release this block from builds and Preserve; leave other cells unchanged",
+      "id": "unprotect",
+      "label": "Stop rebuilding here",
     },
     {
       "directive": {
@@ -9367,6 +9582,12 @@ exports[`contextMenu > every target kind and selection 1`] = `
       },
     },
     {
+      "action": "unprotect",
+      "hint": "Release this block from builds and Preserve; leave other cells unchanged",
+      "id": "unprotect",
+      "label": "Stop rebuilding here",
+    },
+    {
       "directive": {
         "kind": "guard",
       },
@@ -9424,6 +9645,12 @@ exports[`contextMenu > every target kind and selection 1`] = `
       "id": "bills",
       "label": "Bills",
     },
+    {
+      "action": "unprotect",
+      "hint": "Release this block from builds and Preserve; leave other cells unchanged",
+      "id": "unprotect",
+      "label": "Stop rebuilding here",
+    },
   ],
   "block 62 - ai": [
     {
@@ -9474,6 +9701,12 @@ exports[`contextMenu > every target kind and selection 1`] = `
           "z": -1,
         },
       },
+    },
+    {
+      "action": "unprotect",
+      "hint": "Release this block from builds and Preserve; leave other cells unchanged",
+      "id": "unprotect",
+      "label": "Stop rebuilding here",
     },
     {
       "directive": {
@@ -9546,6 +9779,12 @@ exports[`contextMenu > every target kind and selection 1`] = `
           "z": -1,
         },
       },
+    },
+    {
+      "action": "unprotect",
+      "hint": "Release this block from builds and Preserve; leave other cells unchanged",
+      "id": "unprotect",
+      "label": "Stop rebuilding here",
     },
     {
       "directive": {
@@ -9648,6 +9887,12 @@ exports[`contextMenu > every target kind and selection 1`] = `
           "z": -1,
         },
       },
+    },
+    {
+      "action": "unprotect",
+      "hint": "Release this block from builds and Preserve; leave other cells unchanged",
+      "id": "unprotect",
+      "label": "Stop rebuilding here",
     },
     {
       "directive": {
@@ -9968,6 +10213,12 @@ exports[`contextMenu > every target kind and selection 1`] = `
       "id": "cancel-build",
       "label": "Cancel "Hut wall"",
     },
+    {
+      "action": "unprotect",
+      "hint": "Release this block from builds and Preserve; leave other cells unchanged",
+      "id": "unprotect",
+      "label": "Stop rebuilding here",
+    },
   ],
   "ghost - ai": [
     {
@@ -10002,6 +10253,12 @@ exports[`contextMenu > every target kind and selection 1`] = `
           "z": -4,
         },
       },
+    },
+    {
+      "action": "unprotect",
+      "hint": "Release this block from builds and Preserve; leave other cells unchanged",
+      "id": "unprotect",
+      "label": "Stop rebuilding here",
     },
     {
       "directive": {
@@ -10058,6 +10315,12 @@ exports[`contextMenu > every target kind and selection 1`] = `
           "z": -4,
         },
       },
+    },
+    {
+      "action": "unprotect",
+      "hint": "Release this block from builds and Preserve; leave other cells unchanged",
+      "id": "unprotect",
+      "label": "Stop rebuilding here",
     },
     {
       "directive": {
@@ -10144,6 +10407,12 @@ exports[`contextMenu > every target kind and selection 1`] = `
           "z": -4,
         },
       },
+    },
+    {
+      "action": "unprotect",
+      "hint": "Release this block from builds and Preserve; leave other cells unchanged",
+      "id": "unprotect",
+      "label": "Stop rebuilding here",
     },
     {
       "directive": {

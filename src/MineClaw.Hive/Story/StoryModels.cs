@@ -339,6 +339,16 @@ public sealed class StorageState
     public string? Label { get; set; }
     public string Priority { get; set; } = "normal";
     public StorageFilter Filter { get; set; } = new();
+    public List<StorageSignState> Signs { get; set; } = new();
+    public StorageFilter? PendingFilter { get; set; }
+    public string? PendingPriority { get; set; }
+    public bool PendingUnregister { get; set; }
+    public List<StorageSignRemoval> SignRemovals { get; set; } = new();
+    [JsonIgnore] public StorageFilter EffectiveFilter => Signs.Count == 0 ? Filter : new StorageFilter
+    {
+        Allow = Signs.SelectMany(s => s.Allow).Distinct().ToList(),
+        Deny = Signs.SelectMany(s => s.Deny).Distinct().ToList(),
+    };
     public List<Stack> Contents { get; set; } = new();
     public int FreeSlots { get; set; } = 27;
     public DateTimeOffset? KnownAt { get; set; }
@@ -349,6 +359,9 @@ public sealed class StorageState
     public long Rev { get; set; }
     public int Slots => DoubleWith != null ? 54 : 27;
 }
+
+public sealed record StorageSignState(P3 At, IReadOnlyList<string> Lines, List<string> Allow, List<string> Deny);
+public sealed record StorageSignRemoval(P3 At, P3 Chest, IReadOnlyList<string> Lines, string Designation);
 
 /// <summary>One build queue item (Architect): its expansion is cached as <see cref="Ghosts"/>.</summary>
 public sealed class BuildState

@@ -59,7 +59,7 @@ public sealed class PreserveState
 /// </summary>
 internal sealed class PreserveSnap(int lo, int hi, Dictionary<long, int[]> cols)
 {
-    public const int Unknown = -1, Held = -2;
+    public const int Unknown = -1, Held = -2, Unprotected = -3;
 
     private static long _serials;
 

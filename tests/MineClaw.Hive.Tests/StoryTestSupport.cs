@@ -11,6 +11,8 @@ internal sealed class FakeStoryWorld(IGameData? data = null) : IStoryWorld
     public int Height => 128;
     public System.Collections.Concurrent.ConcurrentDictionary<P3, (int Id, int Meta)> Blocks { get; } = new(); // a test may change a block while a report waits
     public List<StoryEntity> Ents { get; } = new();
+    public List<StorySign> SignRows { get; } = new();
+    public IReadOnlyList<StorySign> Signs() => SignRows.Where(s => Loaded(s.At.X, s.At.Z) && Block(s.At.X, s.At.Y, s.At.Z).Id is 63 or 68).ToList();
     public (int Id, int Meta) Block(int x, int y, int z) =>
         Unloaded.Count > 0 && Unloaded.Contains((x, z)) ? (0, 0) : Blocks.TryGetValue(new P3(x, y, z), out var b) ? b : y <= 63 ? (1, 0) : (0, 0);
     public IReadOnlyList<StoryEntity> Entities() => Ents.ToList();
@@ -30,6 +32,8 @@ internal sealed class FakeStoryWorld(IGameData? data = null) : IStoryWorld
 /// <summary>Pawn bodies as the director sees them: live state per account, starts and interrupts recorded.</summary>
 internal sealed class FakeStoryHost(FakeStoryWorld world) : IStoryHost
 {
+    public IReadOnlyList<StoryStorageSignRule> StorageSignRules { get; private set; } = [];
+    public void PublishStorageSignRules(string colony, int dimension, IReadOnlyList<StoryStorageSignRule> rules) => StorageSignRules = rules;
     public IStoryWorld? World => world;
     public Dictionary<string, PawnLive> Lives { get; } = new(StringComparer.OrdinalIgnoreCase);
     public List<string> Started { get; } = new();

@@ -45,6 +45,7 @@ internal static class StoryWiring
             },
         };
         var colonies = new StoryColonies(host, new StoryStore(rt.Memory.Db), log: log);
+        host.AttachStorageSignGuards(client);
         // Every pawn of an active colony is the colony's, online or still waiting for a seat: the startup reconcile never takes it
         // off the whitelist (live 11-03: it raced the colony's respawn and four pawns were kicked "not white-listed" for good).
         hierarchy?.AddOwner(colonies.Owns);
@@ -55,6 +56,8 @@ internal static class StoryWiring
         }
         catch (Exception ex) { log.LogWarning(ex, "story: loading the saved colonies failed"); }
         colonies.Start();
+        StoryStorageTool.RegisterMain(rt.Tools, colonies);
+        if (hierarchy?.Bus is { } storageBus) StoryStorageTool.AttachBus(storageBus, colonies);
         ContainerKnowledge.Story = new StoryChests(colonies, () => client.World.Dimension); // the viewer's container panel reads the ledgers
         StoryDirectives? directives = viewer == null ? null : new StoryDirectives(viewer, feed)
         {

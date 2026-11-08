@@ -36,6 +36,7 @@ public static class BusTypes
     public const string Handover = "handover";       // AssignReq → text (move a job to a child the asker owns)
     public const string Release = "release";         // ReleaseReq → text (the asker's subtree only)
     public const string List = "list";               // (no body) → text (the asker's subtree)
+    public const string StoryStorage = "story_storage"; // colony storage discovery/filter edits, executed on main
     // notifications
     public const string Status = "status";           // StatusMsg (progress of a hive's own work)
     public const string Result = "result";           // ResultBusMsg
@@ -49,7 +50,7 @@ public static class BusTypes
     public const string SubhiveGone = "subhive_gone"; // SubhiveGoneMsg (hive → main: that body logged out for good: whitelist remove)
 
     public static readonly IReadOnlySet<string> All = new HashSet<string>(
-        [Whitelist, Spawn, Assign, Handover, Release, List, Status, Result, Observation, NeedHelp, MemWrite, MemChanged, Host, SubhiveGone],
+        [Whitelist, Spawn, Assign, Handover, Release, List, StoryStorage, Status, Result, Observation, NeedHelp, MemWrite, MemChanged, Host, SubhiveGone],
         StringComparer.Ordinal);
 
     /// <summary>Types only main may send.</summary>

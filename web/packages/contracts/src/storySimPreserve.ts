@@ -11,7 +11,7 @@ import {
   type StoryZonePreserve,
   type StoryZoneRequest,
 } from './story.js';
-import { zoneCellSet } from './storyZones.js';
+import { cellKey, zoneCellSet } from './storyZones.js';
 
 type PreserveOp = Extract<StoryZoneRequest, { op: 'preserve' }>;
 type ZoneAdd = Extract<StoryZoneRequest, { op: 'add' }>;
@@ -62,9 +62,18 @@ export function preserveOf(
 }
 
 /** The zone as the state reports it: its Preserve follows its cells and level (a zone without one as it is). */
-export function withPreserveState(z: StoryZone): StoryZone {
+export function withPreserveState(z: StoryZone, excluded?: ReadonlySet<string>): StoryZone {
   const p = z.preserve;
-  return p ? { ...z, preserve: preserveOf(z, p.below, p.above, p.takenAt) } : z;
+  if (!p) return z;
+  const preserve = preserveOf(z, p.below, p.above, p.takenAt);
+  if (excluded?.size) {
+    const columns = zoneCellSet(z);
+    for (const key of excluded) {
+      const [x, y, zz] = key.split(',').map(Number);
+      if (y! >= preserve.y1 && y! <= preserve.y2 && columns.has(cellKey(x!, zz!))) preserve.cells--;
+    }
+  }
+  return { ...z, preserve };
 }
 
 /** A newly painted Preserve zone's range (its `below` / `above`, checked against its size); nothing for other kinds. */

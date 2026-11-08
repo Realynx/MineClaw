@@ -112,7 +112,10 @@ public sealed partial class MinecraftClient
         var before = InventoryCounts();
         bool full = await DepositStacksAsync(w, filter ?? DefaultDepositFilter, c).ConfigureAwait(false);
         var summary = DiffSummary(before, InventoryCounts(), out int moved);
+        bool signRejected = Enumerable.Range(w.MainStart, w.SlotCount - w.MainStart).Select(w.Get)
+            .Any(s => !s.IsEmpty && (filter ?? DefaultDepositFilter)(s) && !ReservedItems.Contains(s.Id) && !StorageSignAccepts(s));
         if (container is not null) await EnsureNoWindowAsync(c).ConfigureAwait(false);
+        if (signRejected) return ActionResult.Fail("storage sign rejected remaining items" + (moved > 0 ? $"; deposited {summary}" : ""), moved);
         return DepositResult(summary, moved, full);
     }
 
@@ -127,7 +130,7 @@ public sealed partial class MinecraftClient
         for (int slot = w.MainStart; slot < w.SlotCount; slot++)
         {
             var s = w.Get(slot);
-            if (s.IsEmpty || !filter(s) || ReservedItems.Contains(s.Id) || noRoom.Contains((s.Id, s.Damage))) continue;
+            if (s.IsEmpty || !filter(s) || ReservedItems.Contains(s.Id) || noRoom.Contains((s.Id, s.Damage)) || !StorageSignAccepts(s)) continue;
             await ClickCoreAsync(slot, false, true, c).ConfigureAwait(false);
             if (!w.Get(slot).IsEmpty)
             {
@@ -322,6 +325,7 @@ public sealed partial class MinecraftClient
     {
         bool right = button == 1 && (mode is ClickMode.Pickup or ClickMode.QuickMove), shift = mode == ClickMode.QuickMove;
         ThrowIfClickUnsupported(mode);
+        GuardStorageSignClick(slot, mode, button);
         int version = Volatile.Read(ref _windowItemsVersion);
         var marker = new ClickInFlight(World.Inventory.ActiveWindow.Id, -1, null, true);
         _clickInFlight = marker; // a slot packet between here and the real marker counts as a race (conservative)

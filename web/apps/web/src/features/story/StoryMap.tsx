@@ -7,12 +7,13 @@
  * preview). The overlay redraws in one animation-frame loop that also pans (keys, screen edge) and keeps it ≥ 40 fps on
  * software WebGL: no blur, no DOM per pawn, a few hundred canvas primitives.
  */
-import type { EntityView, PickedBlock, WorldViewerEngine, WorldViewerHandle } from '@mineclaw/world-viewer';
+import type { AimTarget, EntityView, PickedBlock, WorldViewerEngine, WorldViewerHandle } from '@mineclaw/world-viewer';
 import { getViewerQuality } from '@mineclaw/world-viewer/settings';
 import { designationCells, type StoryBuild, type StoryColonyState } from '@mineclaw/contracts';
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef } from 'react';
 import { useWorldHost } from '@/features/world/integration';
 import { DotMap } from '@/features/world/DotMap';
+import { StoryFlyCrosshair } from './StoryFlyCrosshair';
 import {
   assignAlong,
   cellAt,
@@ -441,6 +442,7 @@ const isShownAi = (a: AiBody): a is AiBody & { pos: NonNullable<AiBody['pos']> }
 export const StoryMap =forwardRef<StoryMapHandle, StoryMapProps>(function StoryMap(props, ref) {
   const { mod, source, ready } = useWorldHost();
   const viewer = useRef<WorldViewerHandle | null>(null);
+  const flyClick = useRef<(target: AimTarget | null, mods: { shift: boolean; ctrl: boolean }) => void>(() => undefined);
   const canvas = useRef<HTMLCanvasElement | null>(null);
   const wrap = useRef<HTMLDivElement | null>(null);
   const p = useRef(props);
@@ -1585,7 +1587,7 @@ export const StoryMap =forwardRef<StoryMapHandle, StoryMapProps>(function StoryM
   };
 
   /** Selects the chest, bed or workbench a block is; false when it is none of them. */
-  const selectBlock = (ev: React.PointerEvent, block: PickedBlock, props: StoryMapProps): boolean => {
+  const selectBlock = (ev: Pick<React.PointerEvent, 'shiftKey'>, block: Pick<PickedBlock, 'x' | 'y' | 'z' | 'id'>, props: StoryMapProps): boolean => {
     if (block.id === 54 || block.id === 146) {
       selectChest(ev, [block.x, block.y, block.z], props);
       return true;
@@ -1601,7 +1603,7 @@ export const StoryMap =forwardRef<StoryMapHandle, StoryMapProps>(function StoryM
   };
 
   /** A chest block selects its storage's chest (a double chest's first half); Shift toggles it in the selection. */
-  const selectChest = (ev: React.PointerEvent, pos: V3, props: StoryMapProps) => {
+  const selectChest = (ev: Pick<React.PointerEvent, 'shiftKey'>, pos: V3, props: StoryMapProps) => {
     const s = (props.state?.storages ?? []).find(
       (x) => k3(x.chest) === k3(pos) || (x.doubleWith && k3(x.doubleWith) === k3(pos)),
     );
@@ -1616,10 +1618,16 @@ export const StoryMap =forwardRef<StoryMapHandle, StoryMapProps>(function StoryM
   };
 
   /** The bed a bed block belongs to (its foot or head, a block apart). */
-  const bedOfBlock = (block: PickedBlock, props: StoryMapProps) =>
+  const bedOfBlock = (block: Pick<PickedBlock, 'x' | 'y' | 'z'>, props: StoryMapProps) =>
     (props.state?.beds ?? []).find(
       (b) => Math.abs(b.pos[0] - block.x) + Math.abs(b.pos[2] - block.z) <= 1 && Math.abs(b.pos[1] - block.y) <= 1,
     );
+
+  // The engine consumes the first click to lock. Later center-ray clicks only inspect furniture, regardless of the held tool.
+  flyClick.current = (target, mods) => {
+    if (p.current.view !== 'fly' || !viewer.current?.locked() || target?.kind !== 'block') return;
+    if (selectBlock({ shiftKey: mods.shift }, target, p.current)) document.exitPointerLock?.();
+  };
 
   /** A tool: a click is a 1×1 drag; a designate tool sends what its drag previewed (or scans now). */
   const toolUp = async (ev: React.PointerEvent, d: DragState, props: StoryMapProps) => {
@@ -1860,6 +1868,7 @@ export const StoryMap =forwardRef<StoryMapHandle, StoryMapProps>(function StoryM
           xray="off"
           drawDistance={112}
           hideHint={cameraMode !== 'fly'}
+          onAimClick={(target, mods) => flyClick.current(target, mods)}
           className="absolute inset-0"
         />
       ) : (
@@ -1891,6 +1900,7 @@ export const StoryMap =forwardRef<StoryMapHandle, StoryMapProps>(function StoryM
         onContextMenu={(e) => e.preventDefault()}
         onAuxClick={(e) => e.preventDefault()}
       />
+      <StoryFlyCrosshair flying={props.view === 'fly'} host={wrap} />
       <div
         ref={labelsEl}
         className="pointer-events-none absolute inset-0 overflow-hidden"

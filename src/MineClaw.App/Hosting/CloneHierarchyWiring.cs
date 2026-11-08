@@ -21,6 +21,7 @@ internal static class CloneHierarchyWiring
         // Low verbosity: unasked lines are budgeted per hive; muted text goes to main as progress (BotAgent.Muted).
         rt.Agent.SpeechGate = HiveSpeech.Wrap(rt.Agent.SpeechGate, new ChatVerbosityBudget(hive.Accounts.ChatLinesPerMinute));
         if (host.BusToken == null) return null; // an older main without a bus: local writes to the shared db, as before
+        MineClaw.Hive.Story.StoryStorageTool.RegisterRemote(rt.Tools, host);
 
         var brain = welcome.Task?.Kind == "script" ? null : string.IsNullOrWhiteSpace(welcome.Task?.Profile) ? "opus" : welcome.Task!.Profile;
         var mem = new MemoryBusClient((env, timeout) => host.SendBusAsync(env, timeout), clone, host.BusToken, rt.Db, new MemProvenance(clone, clone, brain), log)

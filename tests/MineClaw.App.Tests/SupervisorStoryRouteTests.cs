@@ -10,6 +10,22 @@ public sealed class SupervisorStoryRouteTests
 {
     private const string Token = "s3cret";
 
+    [Fact]
+    public async Task Selected_cells_can_be_unprotected_and_filter_entries_edited_without_replacing_the_filter()
+    {
+        var (r, _, w, _, _) = Make();
+        var id = await Colony(r);
+        var path = $"/api/story/colonies/{id}/";
+        w.Blocks[new P3(3, 64, 2)] = (54, 0);
+        Assert.Equal(200, (await Call(r, "POST", path + "storage", new { op = "set", chests = new[] { new[] { 3, 64, 2 } }, filter = new { allow = new[] { "food" } } })).Status);
+        Assert.Equal(200, (await Call(r, "POST", path + "storage", new { op = "add", chests = new[] { new[] { 3, 64, 2 } }, filter = new { deny = new[] { "apple" } } })).Status);
+        Assert.Equal(new[] { "food" }, r.Colonies.Get(id)!.Storages.Single().Filter.Allow);
+        Assert.Equal(new[] { "260" }, r.Colonies.Get(id)!.Storages.Single().Filter.Deny);
+        Assert.Equal(400, (await Call(r, "POST", path + "builds", new { op = "unprotect" })).Status);
+        Assert.Equal(200, (await Call(r, "POST", path + "builds", new { op = "unprotect", cells = new[] { new[] { 3, 64, 2 } } })).Status);
+        Assert.Equal((54, 0), w.Blocks[new P3(3, 64, 2)]);
+    }
+
     internal sealed class World : IStoryWorld
     {
         public IGameData Data { get; init; } = Beta181GameData.Instance;

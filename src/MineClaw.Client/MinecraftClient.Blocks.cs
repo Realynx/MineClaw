@@ -60,12 +60,13 @@ public sealed partial class MinecraftClient
     /// <param name="ordered">A Story build's cell to clear (<see cref="DigForBuildAsync"/>): the owner ordered that block out, so soft
     /// protection on natural ground yields there (<see cref="OrderedClearYields"/>).</param>
     private async Task<ActionResult> DigCoreAsync(BlockPos pos, CancellationToken ct, bool allowPathing = true, bool ignoreProtection = false,
-        bool generator = false, bool noShears = false, bool floorGuard = false, bool requested = false, bool ordered = false)
+        bool generator = false, bool noShears = false, bool floorGuard = false, bool requested = false, bool ordered = false, Func<string?>? verify = null)
     {
         int id = World.GetBlock(pos);
         var d = new DigJob(pos, id, BlockName(id, World.GetMeta(pos)), allowPathing, ignoreProtection, generator, floorGuard, requested, ordered);
         if (!World.IsLoaded(pos.X, pos.Z)) return ActionResult.Fail($"{Fmt(pos)} is not loaded");
         if (id == 0 || BlockShapes.IsLiquid(id)) return ActionResult.Success($"{Fmt(pos)} already clear");
+        if (verify?.Invoke() is { } stale) return ActionResult.Fail(stale);
         if (DigRefusal(d) is { } no) return ActionResult.Fail(no);
 
         await EnsureNoWindowAsync(ct).ConfigureAwait(false);
@@ -77,7 +78,7 @@ public sealed partial class MinecraftClient
         if (StrictHarvestRefusal(d, held) is { } lose) return ActionResult.Fail(lose);
         int ticks = DigTicksHere(pos, id);
         if (ticks == int.MaxValue) return ActionResult.Fail($"{d.Name} can't be dug");
-        await DigForTicksAsync(pos, id, aim!.Value, ticks, ct).ConfigureAwait(false);
+        if (await DigForTicksAsync(pos, id, aim!.Value, ticks, ct, verify).ConfigureAwait(false) is { } changed) return ActionResult.Fail(changed);
         return await DigVerdictAsync(d, ticks, held, ct).ConfigureAwait(false);
     }
 

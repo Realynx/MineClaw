@@ -1438,7 +1438,7 @@ export const ROUTES = {
     bridge: b('/v1/sup/story/colonies/{id}/builds', 'POST'),
     supervisor: '/api/story/colonies/{id}/builds',
     audit: 'story',
-    summary: 'The build queue: add, remove, pause, resume, reorder.',
+    summary: 'The build queue: add, remove, pause, resume, reorder, or unprotect selected cells from builds and Preserve.',
   }),
   'story.storage': post('/api/story/colonies/:id/storage', {
     access: 'story',
@@ -1449,7 +1449,7 @@ export const ROUTES = {
     bridge: b('/v1/sup/story/colonies/{id}/storage', 'POST'),
     supervisor: '/api/story/colonies/{id}/storage',
     audit: 'story',
-    summary: 'Chest storage settings: set, remove, copy, assign an area.',
+    summary: 'Chest storage settings: set, add/exclude filter entries, remove, copy, assign an area. Attached filter signs take precedence until removed.',
   }),
   'story.bills': post('/api/story/colonies/:id/bills', {
     access: 'story',

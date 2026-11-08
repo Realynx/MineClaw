@@ -270,6 +270,7 @@ public sealed partial class StoryColony
             var gone = Designations.Where(d => RemovalHits(d, kind, area, blocks, ids)).ToList();
             foreach (var d in gone)
             {
+                CancelStorageSignMark(d);
                 CancelTempCleanup(d);
                 Designations.Remove(d);
                 Removed("designation", d.Id);

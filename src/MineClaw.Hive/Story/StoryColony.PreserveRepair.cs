@@ -105,6 +105,7 @@ public sealed partial class StoryColony
     private bool ScanCell(PreserveScan s, ZoneState z, int[] col, int i, P3 p, bool held, PreserveCounts counts, List<Damage> damage)
     {
         int v = col[i];
+        if (v == PreserveSnap.Unprotected) return false;
         if (held)
         {
             counts.Held++;

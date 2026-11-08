@@ -237,9 +237,10 @@ public sealed partial class SupervisorStoryRoutes
     private static SupervisorReply BuildsAction(StoryColony c, JsonObject b)
     {
         var bop = S(b, "op") ?? "";
-        if (bop is not ("retry" or "retry_all")) return Result(c.BuildsOp(bop, b["items"] as JsonArray, Names(b["ids"])));
+        if (bop is not ("retry" or "retry_all" or "unprotect")) return Result(c.BuildsOp(bop, b["items"] as JsonArray, Names(b["ids"])));
         var cells = Points(b["cells"], out var badCells);
         if (badCells) return Bad("cells must be [[x,y,z], ...]");
+        if (bop == "unprotect") return Result(c.UnprotectCells(cells));
         var rids = S(b, "id") is { } one ? new List<string> { one } : Names(b["ids"]);
         return Result(c.RetryBuilds(bop, rids, cells));
     }
@@ -254,6 +255,7 @@ public sealed partial class SupervisorStoryRoutes
             if (chests.Count != ca.Count) return Bad("chests must be [[x,y,z], ...]");
         }
         var filter = StorageFilterOf(b["filter"]);
+        if (filter != null && op is "add" or "remove_entries" && b["filter"]?["allow"] == null) filter.Allow = [];
         Area? area = b["area"] != null ? Area.Parse(b["area"]) : null;
         return Result(c.StorageOp(op, chests, filter, S(b, "priority"), S(b, "label"), P3.Parse(b["from"]), area));
     }

@@ -79,12 +79,12 @@ public sealed partial class StoryColony
         return null;
     }
 
-    private bool Denied(StorageState s, int id, int meta) => Cats is { } c && c.AnyCovers(s.Filter.Deny, id, meta);
+    private bool Denied(StorageState s, int id, int meta) => Cats is { } c && c.AnyCovers(s.EffectiveFilter.Deny, id, meta);
 
     /// <summary>"Unfiltered storage takes anything": a chest with room that doesn't deny it, open ("*") chests first, then the lowest
     /// priority (general storage), then the nearest.</summary>
     private StorageState? Fallback(int id, int meta, P3 from, StorageState? except) =>
-        Storages.Where(s => s != except && !ChestDeconstructing(s.Chest) && ChestOpen(s.Chest) && HasRoom(s, id, meta) && !Denied(s, id, meta))
+        Storages.Where(s => s != except && s.Signs.Count == 0 && !ChestDeconstructing(s.Chest) && ChestOpen(s.Chest) && HasRoom(s, id, meta) && !Denied(s, id, meta))
             .OrderBy(s => s.Filter.Allow.Contains("*") ? 0 : 1).ThenBy(s => StoragePriority.Rank(s.Priority)).ThenBy(s => s.Chest.Dist(from))
             .FirstOrDefault();
 
@@ -475,7 +475,7 @@ public sealed partial class StoryColony
     {
         bool allowed = Accepts(src, st.Id, st.Meta);
         var dst = BestChest(st.Id, st.Meta, src.Chest, except: src);
-        if (dst != null && (!allowed || StoragePriority.Rank(dst.Priority) > StoragePriority.Rank(src.Priority))) { moves.Add((src, st, dst, false)); return; }
+        if (dst != null && (!allowed || StorageRank(dst) > StorageRank(src))) { moves.Add((src, st, dst, false)); return; }
         if (!allowed) ResortUnwanted(src, st, moves);
     }
 
@@ -483,10 +483,10 @@ public sealed partial class StoryColony
     /// or kept with <see cref="ColonyMeta.KeepDisallowed"/>).</summary>
     private void ResortUnwanted(StorageState src, Stack st, List<(StorageState, Stack, StorageState?, bool)> moves)
     {
-        if (Meta.UnfilteredTakesAnything && !Denied(src, st.Id, st.Meta) && _fallbackStored.Contains((src.Chest, st.Id, st.Meta))) return;
+        if (src.Signs.Count == 0 && Meta.UnfilteredTakesAnything && !Denied(src, st.Id, st.Meta) && _fallbackStored.Contains((src.Chest, st.Id, st.Meta))) return;
         if (Meta.UnfilteredTakesAnything && Fallback(st.Id, st.Meta, src.Chest, src) is { } fb) { moves.Add((src, st, fb, true)); return; }
         Unstored(st.Id, st.Meta);
-        if (!Meta.KeepDisallowed) moves.Add((src, st, null, false));
+        if (src.Signs.Count == 0 && !Meta.KeepDisallowed) moves.Add((src, st, null, false));
     }
 
     /// <summary>One re-sort trip: from the chest with the most to move (lowest priority, then nearest), as many stacks as the pawn has

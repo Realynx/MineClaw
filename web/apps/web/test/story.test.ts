@@ -472,6 +472,7 @@ describe('orders, designations and the mixed selection', () => {
     expect(tree.map((i) => i.id)).toEqual([
       'chop',
       'move',
+      'unprotect',
       'hold',
       'stop',
       'gear-arm',
@@ -496,10 +497,10 @@ describe('orders, designations and the mixed selection', () => {
     });
     expect(
       contextMenu({ kind: 'block', x: 1, y: 2, z: 3, id: 54, name: 'chest' }, false, false).map((i) => i.id),
-    ).toEqual(['storage']);
+    ).toEqual(['storage', 'unprotect']);
     expect(
       contextMenu({ kind: 'ghost', build: 'b1', label: 'Wall', x: 0, y: 0, z: 0 }, false, false).map((i) => i.action),
-    ).toEqual(['first-build', 'cancel-build']);
+    ).toEqual(['first-build', 'cancel-build', 'unprotect']);
     expect(orderBody([], tree[0]!, false)).toBeNull();
   });
 

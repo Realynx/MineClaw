@@ -17,7 +17,9 @@ public sealed partial class StoryColony
 
     public StorageState? StorageAt(P3 at) => Storages.FirstOrDefault(s => s.Chest == at || s.DoubleWith == at);
 
-    private bool Accepts(StorageState s, int id, int meta) => Cats is { } c && c.Accepts(s.Filter, id, meta);
+    private bool Accepts(StorageState s, int id, int meta) => Cats is { } c && c.Accepts(s.EffectiveFilter, id, meta);
+
+    private static int StorageRank(StorageState s) => s.Signs.Count > 0 ? 5 : StoragePriority.Rank(s.Priority);
 
     private bool HasRoom(StorageState s, int id, int meta) =>
         s.FreeSlots > 0 || s.Contents.Any(c => c.Id == id && c.Meta == meta && c.Count % MaxStack(id) != 0);
@@ -26,8 +28,11 @@ public sealed partial class StoryColony
     public StorageState? BestChest(int id, int meta, P3 from, StorageState? except = null)
     {
         lock (_lock)
+        {
+            ReconcileStorageSigns();
             return Storages.Where(s => s != except && !ChestDeconstructing(s.Chest) && ChestOpen(s.Chest) && Accepts(s, id, meta) && HasRoom(s, id, meta))
-                .OrderByDescending(s => StoragePriority.Rank(s.Priority)).ThenBy(s => s.Chest.Dist(from)).FirstOrDefault();
+                .OrderByDescending(StorageRank).ThenBy(s => s.Chest.Dist(from)).FirstOrDefault();
+        }
     }
 
     private void Recount(StorageState s)
@@ -82,16 +87,27 @@ public sealed partial class StoryColony
     public (JsonNode? Result, string? Error) StorageOp(string op, IReadOnlyList<P3>? chests, StorageFilter? filter, string? priority, string? label,
         P3? from = null, Area? area = null)
     {
-        if (StorageArgsError(filter, priority) is { } err) return (null, err);
         lock (_lock)
+        {
+            if (filter != null && World is { } w)
+            {
+                var entries = filter.Allow.Concat(filter.Deny).Select(e => (Raw: e, Key: StoryStorageKeywords.Normalize(e, w.Data))).ToList();
+                if (entries.FirstOrDefault(e => e.Key == null) is { Raw: not null } invalid) return (null, $"unknown filter entry '{invalid.Raw}' (a category id, *, id or id:meta)");
+                filter = new StorageFilter { Allow = entries.Take(filter.Allow.Count).Select(e => e.Key!).Distinct().ToList(),
+                    Deny = entries.Skip(filter.Allow.Count).Select(e => e.Key!).Distinct().ToList() };
+            }
+            if (StorageArgsError(filter, priority) is { } err) return (null, err);
+            ReconcileStorageSigns(force: true);
             return op switch
             {
                 "set" => SetChests(chests, filter, priority, label),
+                "add" or "remove_entries" => PatchChestFilters(op, chests, filter, priority, label),
                 "remove" => RemoveChests(chests),
                 "copy" => CopyChests(from, chests),
                 "assign_area" => AssignChestArea(area, filter, priority, label),
-                _ => (null, "op must be set|remove|copy|assign_area"),
+                _ => (null, "op must be set|add|remove_entries|remove|copy|assign_area"),
             };
+        }
     }
 
     private string? StorageArgsError(StorageFilter? filter, string? priority)
@@ -117,7 +133,11 @@ public sealed partial class StoryColony
     {
         if (chests is not { Count: > 0 }) return (null, "chests required");
         foreach (var c in chests)
-            if (StorageAt(c) is { } s) { Storages.Remove(s); Removed("storage", s.Chest.ToString()); }
+            if (StorageAt(c) is { } s)
+            {
+                if (s.Signs.Count > 0) { RequestStorageFilter(s, new()); s.PendingUnregister = true; }
+                else { Storages.Remove(s); Removed("storage", s.Chest.ToString()); }
+            }
         return (ChestsAnswer(chests), null);
     }
 
@@ -126,7 +146,8 @@ public sealed partial class StoryColony
     {
         if (from is not { } f || StorageAt(f) is not { } src) return (null, "from must be a registered chest");
         if (chests is not { Count: > 0 }) return (null, "to required");
-        foreach (var c in chests) Set(c, new StorageFilter { Allow = [.. src.Filter.Allow], Deny = [.. src.Filter.Deny] }, src.Priority, null);
+        var filter = CloneFilter(src.EffectiveFilter);
+        foreach (var c in chests) Set(c, filter, src.Signs.Count > 0 ? "critical" : src.Priority, null);
         return (ChestsAnswer(chests), null);
     }
 
@@ -153,10 +174,38 @@ public sealed partial class StoryColony
             Storages.Add(s);
             Recount(s);
         }
-        if (filter != null) s.Filter = filter;
-        if (priority != null) s.Priority = priority;
+        if (filter != null || priority != null && s.Signs.Count > 0) RequestStorageFilter(s, filter ?? s.PendingFilter ?? s.EffectiveFilter);
+        if (priority != null)
+        {
+            if (s.Signs.Count > 0) s.PendingPriority = priority;
+            else s.Priority = priority;
+        }
         if (label != null) s.Label = label.Length > 40 ? label[..40] : label;
         s.Rev = Touch();
+    }
+
+    private (JsonNode? Result, string? Error) PatchChestFilters(string op, IReadOnlyList<P3>? chests, StorageFilter? entries, string? priority, string? label)
+    {
+        if (chests is not { Count: > 0 }) return (null, "chests required");
+        if (entries == null || entries.Allow.Count + entries.Deny.Count == 0) return (null, "filter entries required");
+        foreach (var c in chests.Select(c => StorageAt(c)?.Chest ?? c).Distinct())
+        {
+            var storage = StorageAt(c);
+            var filter = CloneFilter(storage?.PendingFilter ?? storage?.EffectiveFilter ?? new());
+            foreach (var entry in entries.Allow)
+            {
+                if (op == "add") { filter.Deny.Remove(entry); if (!filter.Allow.Contains(entry)) filter.Allow.Add(entry); }
+                else { filter.Allow.Remove(entry); if (!filter.Deny.Contains(entry)) filter.Deny.Add(entry); }
+            }
+            foreach (var entry in entries.Deny)
+            {
+                if (op == "add") { filter.Allow.Remove(entry); if (!filter.Deny.Contains(entry)) filter.Deny.Add(entry); }
+                else filter.Deny.Remove(entry);
+            }
+            Set(c, filter, priority, label);
+        }
+        WakeIdle();
+        return (ChestsAnswer(chests), null);
     }
 
     /// <summary>

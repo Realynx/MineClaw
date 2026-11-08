@@ -15,7 +15,7 @@ namespace MineClaw.App.Supervisor;
 /// lane on its own body with <see cref="ScriptRequest.NoModel"/> (no patch turn, no brain wake). The world view is main's.
 /// Works the same on b1.8.1 and 1.12.2 (the version's own game data), and with in-process hives.
 /// </summary>
-public sealed class StoryHost : IStoryHost
+public sealed partial class StoryHost : IStoryHost
 {
     private readonly HiveHierarchy? _hierarchy;
     private readonly Func<BodyRegistry?> _bodies;

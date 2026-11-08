@@ -174,6 +174,12 @@ export function storageSetBody(chests: readonly V3[], patch: { filter?: StoryFil
   return { op: 'set' as const, chests: chests.map((c) => [c[0], c[1], c[2]] as V3), ...patch };
 }
 
+/** Add allowed entries or exclude entries on every selected chest, keeping its other filter settings. */
+export function storageEntriesBody(chests: readonly V3[], op: 'add' | 'remove_entries', entries: string) {
+  const allow = [...new Set(entries.split(/[,\n]/).map((entry) => entry.trim()).filter(Boolean))];
+  return { op, chests: chests.map((c) => [c[0], c[1], c[2]] as V3), filter: { allow, deny: [] } };
+}
+
 /** Paste copied settings onto other chests. */
 export function pasteBody(clip: StorageClip, chests: readonly V3[]) {
   return storageSetBody(chests, { filter: clip.filter, priority: clip.priority });

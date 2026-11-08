@@ -88,6 +88,15 @@ const isBlockPick = (item: MenuItem, target: Target | undefined): target is Bloc
 export async function pickMenu(c: Story, item: MenuItem, queue: boolean) {
   const target = c.menu?.target;
   c.setMenu(null);
+  if (item.action === 'unprotect' && (target?.kind === 'block' || target?.kind === 'ghost')) {
+    if (!c.canWrite) return c.say('Needs the story role', 'warn');
+    const at = [Math.floor(target.x), Math.floor(target.y), Math.floor(target.z)] as [number, number, number];
+    await c.write('story.builds', { op: 'unprotect', cells: [at] }).then(
+      () => c.say(`Stopped rebuilding at ${at.join(', ')}`),
+      (e) => c.say(errorText(e), 'warn'),
+    );
+    return;
+  }
   if (item.action === 'gear' && item.gear) return pickGear(c, item.gear);
   if (item.confirm && c.split.pawns.length) return pickAttack(c, item, item.confirm, queue);
   if (isBlueprintPick(item, target)) return pickBlueprint(c, item, target.build);

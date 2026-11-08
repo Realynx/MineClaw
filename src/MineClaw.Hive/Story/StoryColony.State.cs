@@ -61,17 +61,7 @@ public sealed partial class StoryColony
                     ["blocks"] = new JsonArray(Builds.SelectMany(b => b.Ghosts.Where(g => New(g.Rev)
                         && !(ReplacementAir(b, g) && g.State == "done")).Select(g => GhostJson(b, g))).ToArray()),
                 },
-                ["storages"] = new JsonArray(Storages.Where(st => New(st.Rev)).Select(st => (JsonNode)new JsonObject
-                {
-                    ["chest"] = st.Chest.Json(), ["double_with"] = st.DoubleWith?.Json(), ["label"] = st.Label, ["priority"] = st.Priority,
-                    ["filter"] = new JsonObject
-                    {
-                        ["allow"] = new JsonArray(st.Filter.Allow.Select(a => (JsonNode)a!).ToArray()),
-                        ["deny"] = new JsonArray(st.Filter.Deny.Select(a => (JsonNode)a!).ToArray()),
-                    },
-                    ["contents"] = new JsonArray(st.Contents.Select(c => (JsonNode)c.Json()).ToArray()), ["free_slots"] = st.FreeSlots, ["known_at"] = st.KnownAt,
-                    ["enchanted"] = EnchantedJson(st),
-                }).ToArray()),
+                ["storages"] = new JsonArray(Storages.Where(st => New(st.Rev)).Select(st => (JsonNode)StorageJson(st)).ToArray()),
                 ["reservations"] = ClaimsJson(), // who holds what (StoryColony.Claims.cs), every time: it moves with the stock
                 ["craft_tasks"] = CraftTasksJson(w), // the colony's own crafts, never bills (StoryColony.CraftTasks.cs), every time
                 ["workbenches"] = new JsonArray(Benches.Where(b => New(b.Rev)).Select(b => (JsonNode)new JsonObject
