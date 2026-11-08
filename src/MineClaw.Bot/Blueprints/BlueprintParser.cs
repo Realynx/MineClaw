@@ -32,7 +32,9 @@ public static partial class BlueprintParser
     // 64 a side (a base-63 pyramid has 32 layers); a capture stays 32 (StructureCapture); the author is asked for ≤ 24
     public const int MaxSide = 64, MaxHeight = 32;
     /// <summary>A mine design's height (<c>kind mine</c>: bedrock to over the surface; b1.8.1's whole world).</summary>
-    public const int MaxMineHeight = 128;
+    public const int MaxMineHeight = 128, MaxMineSide = 256;
+
+    public static int SideLimit(Blueprint bp) => bp.Mine ? MaxMineSide : MaxSide;
 
     /// <summary>The height limit of a design of this kind.</summary>
     public static int HeightLimit(Blueprint bp) => bp.Mine ? MaxMineHeight : MaxHeight;

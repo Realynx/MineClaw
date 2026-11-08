@@ -20,20 +20,42 @@ public sealed class OreVeins
     private static readonly ConditionalWeakTable<MineTerrain, OreVeins> Cache = new();
 
     private readonly MineTerrain _terrain;
+    private readonly int _size;
     private readonly Dictionary<BlockPos, int> _veinOf = new();
     private readonly List<(OreBand Ore, int Size)> _veins = [];
 
-    private OreVeins(MineTerrain terrain)
+    private OreVeins(MineTerrain terrain, int size = DesignerCanvas.Size, bool scan = true)
     {
         _terrain = terrain;
+        _size = size;
+        if (!scan) return;
         for (int y = 0; y < MineTerrain.Height; y++)
-            for (int z = 0; z < DesignerCanvas.Size; z++)
-                for (int x = 0; x < DesignerCanvas.Size; x++)
+            for (int z = 0; z < size; z++)
+                for (int x = 0; x < size; x++)
                     if (!_veinOf.ContainsKey(new BlockPos(x, y, z)) && OreAt(x, y, z) is { } ore) Fill(new BlockPos(x, y, z), ore);
     }
 
     /// <summary>The veins of a terrain's plot (worked out once per terrain).</summary>
     public static OreVeins For(MineTerrain terrain) => Cache.GetValue(terrain, t => new OreVeins(t));
+
+    /// <summary>Follow only ore touching an authored mine across the expanded plot; do not scan its entire terrain.</summary>
+    public static IReadOnlyList<(OreBand Ore, int Veins, int Blocks)> Following(MineTerrain terrain, IReadOnlyCollection<BlockPos> dug)
+    {
+        var found = new OreVeins(terrain, DesignerCanvas.MineSize, scan: false);
+        void Touch(BlockPos p)
+        {
+            if (p.X is < 0 or >= DesignerCanvas.MineSize || p.Z is < 0 or >= DesignerCanvas.MineSize || p.Y is < 0 or >= MineTerrain.Height
+                || found._veinOf.ContainsKey(p)) return;
+            if (found.OreAt(p.X, p.Y, p.Z) is { } ore) found.Fill(p, ore);
+        }
+        foreach (var p in dug)
+        {
+            Touch(p);
+            foreach (var (dx, dy, dz) in OreIdentity.Neighbors) Touch(new BlockPos(p.X + dx, p.Y + dy, p.Z + dz));
+        }
+        return found._veins.GroupBy(v => v.Ore.Id).Select(g => (g.First().Ore, g.Count(), g.Sum(v => v.Size)))
+            .OrderBy(v => v.Ore.Veins).ThenBy(v => v.Ore.Size).ToList();
+    }
 
     /// <summary>Per ore (rarest first): what digging <paramref name="dug"/> finds by following every vein it touches.</summary>
     public IReadOnlyList<OreYield> Yield(IEnumerable<BlockPos> dug)
@@ -71,7 +93,7 @@ public sealed class OreVeins
             foreach (var (dx, dy, dz) in OreIdentity.Neighbors)
             {
                 var n = new BlockPos(c.X + dx, c.Y + dy, c.Z + dz);
-                if (n.X is < 0 or >= DesignerCanvas.Size || n.Z is < 0 or >= DesignerCanvas.Size || n.Y is < 0 or >= MineTerrain.Height
+                if (n.X < 0 || n.X >= _size || n.Z < 0 || n.Z >= _size || n.Y is < 0 or >= MineTerrain.Height
                     || _veinOf.ContainsKey(n) || OreAt(n.X, n.Y, n.Z)?.Id != ore.Id) continue;
                 _veinOf[n] = index;
                 queue.Enqueue(n);

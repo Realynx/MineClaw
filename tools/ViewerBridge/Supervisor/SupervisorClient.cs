@@ -4,14 +4,15 @@ using System.Net;
 namespace MineClaw.ViewerBridge.Supervisor;
 
 /// <summary>
-/// The one HttpClient to the bot's Supervisor on loopback: a small connection pool (the supervisor serves at most 8 requests at
-/// once, and the bot's own page needs some), the token in the <c>X-Supervisor-Token</c> header only (never <c>?token=</c>),
-/// per-call timeouts. Never logs a URL with a query or the token.
+/// Bounded HTTP pools to the bot's Supervisor on loopback: a reserved lane for live motion and health, with the remaining
+/// connections for ordinary requests. The total stays within SupervisorConnections (the supervisor serves at most 8 requests
+/// at once). The token is sent only in <c>X-Supervisor-Token</c>, never a URL. Never logs queries or the token.
 /// </summary>
 public sealed class SupervisorClient : IDisposable
 {
     public const string TokenHeader = "X-Supervisor-Token";
     private readonly HttpClient _http;
+    private readonly HttpClient _live;
     private readonly string? _token;
     private double _latencyMs = -1;
 
@@ -19,17 +20,34 @@ public sealed class SupervisorClient : IDisposable
     {
         _token = config.SupervisorToken;
         BaseUrl = config.SupervisorUrl;
-        handler ??= new SocketsHttpHandler
-        {
-            MaxConnectionsPerServer = Math.Clamp(config.Bridge.SupervisorConnections, 1, 7),
-            ConnectTimeout = TimeSpan.FromSeconds(2),
-            PooledConnectionIdleTimeout = TimeSpan.FromSeconds(30),
-            PooledConnectionLifetime = TimeSpan.FromMinutes(10),
-            AutomaticDecompression = DecompressionMethods.None,
-            UseProxy = false,
-            AllowAutoRedirect = false,
-        };
-        _http = new HttpClient(handler, disposeHandler: true) { Timeout = Timeout.InfiniteTimeSpan, BaseAddress = new Uri(BaseUrl + "/") };
+        int total = Math.Clamp(config.Bridge.SupervisorConnections, 1, 7);
+        int reserved = total >= 4 ? 2 : 1;
+        bool shared = total == 1 || handler != null;
+        _http = Client(handler ?? Handler(shared ? total : total - reserved));
+        _live = shared ? _http : Client(Handler(reserved));
+    }
+
+    private static SocketsHttpHandler Handler(int connections) => new()
+    {
+        MaxConnectionsPerServer = connections,
+        ConnectTimeout = TimeSpan.FromSeconds(2),
+        PooledConnectionIdleTimeout = TimeSpan.FromSeconds(30),
+        PooledConnectionLifetime = TimeSpan.FromMinutes(10),
+        AutomaticDecompression = DecompressionMethods.None,
+        UseProxy = false,
+        AllowAutoRedirect = false,
+    };
+
+    private HttpClient Client(HttpMessageHandler handler) =>
+        new(handler, disposeHandler: true) { Timeout = Timeout.InfiniteTimeSpan, BaseAddress = new Uri(BaseUrl + "/") };
+
+    /// <summary>Only quick live reads use the reserve; chunk, index, render and command traffic cannot queue in front of them.</summary>
+    internal static bool IsLiveRead(HttpMethod method, string relative)
+    {
+        if (method != HttpMethod.Get) return false;
+        int query = relative.IndexOf('?');
+        var path = (query < 0 ? relative : relative[..query]).TrimStart('/');
+        return path is "api/world/entities" or "api/world/blocks" or "api/status";
     }
 
     public string BaseUrl { get; }
@@ -57,7 +75,8 @@ public sealed class SupervisorClient : IDisposable
         var sw = Stopwatch.StartNew();
         try
         {
-            var res = await _http.SendAsync(req, stream ? HttpCompletionOption.ResponseHeadersRead : HttpCompletionOption.ResponseContentRead, cts.Token).ConfigureAwait(false);
+            var http = IsLiveRead(method, relative) ? _live : _http;
+            var res = await http.SendAsync(req, stream ? HttpCompletionOption.ResponseHeadersRead : HttpCompletionOption.ResponseContentRead, cts.Token).ConfigureAwait(false);
             var ms = sw.Elapsed.TotalMilliseconds;
             _latencyMs = _latencyMs < 0 ? ms : _latencyMs * 0.8 + ms * 0.2;
             LastOk = DateTimeOffset.UtcNow;
@@ -83,7 +102,11 @@ public sealed class SupervisorClient : IDisposable
         return ((int)res.StatusCode, body, res.Content.Headers.ContentType?.ToString(), res.Headers.RetryAfter?.Delta);
     }
 
-    public void Dispose() => _http.Dispose();
+    public void Dispose()
+    {
+        if (!ReferenceEquals(_http, _live)) _live.Dispose();
+        _http.Dispose();
+    }
 }
 
 public sealed class SupervisorUnavailableException(string message) : Exception(message);

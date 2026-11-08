@@ -91,7 +91,7 @@ public static class DesignerTools
         var (lo, hi) = canvas.Terrain!.SurfaceRange();
         var presets = string.Join(", ", MinePresets.For(canvas.Version).Select(p => p.Id));
         return $"You are the Design Studio builder: you co-design an underground MINE for Minecraft {pal.Version} with {player ?? "the player"} on a sandbox " +
-        $"canvas over generated terrain (not the world). Plot x,z 0..63 (+x east, +z south), ABSOLUTE world y 1..127; the surface is y {lo}..{hi} here, " +
+        $"canvas over generated terrain (not the world). Plot x,z 0..255 (+x east, +z south), ABSOLUTE world y 1..127; the surface is y {lo}..{hi} here, " +
         "bedrock y 0-4. The design is the cells to mine out: remove digs a box (never bedrock), \"earth\" fills dug cells back; blocks you " +
         "place (torches, ladders, rails, chests) go in after their cell is dug. Prefer the templates: spiral_shaft (a walkable spiral " +
         "staircase around a core, from the surface down), strip_mine (main corridor + 1x2 branches, spacing solid blocks apart), remove for " +
@@ -276,7 +276,7 @@ public static class DesignerTools
     /// <summary>The replace box: from..to, else the whole canvas.</summary>
     private static ((int X, int Y, int Z) Lo, (int X, int Y, int Z) Hi) ReplaceBox(DesignerCanvas canvas, JsonElement input) =>
         input.TryGetProperty("from", out _) ? Norm(P(input, "from"), P(input, "to"))
-            : ((0, canvas.YRange.Min, 0), (DesignerCanvas.Size - 1, canvas.YRange.Max, DesignerCanvas.Size - 1));
+            : ((0, canvas.YRange.Min, 0), (canvas.PlotSize - 1, canvas.YRange.Max, canvas.PlotSize - 1));
 
     private static bool InBox(MineClaw.World.BlockPos p, (int X, int Y, int Z) lo, (int X, int Y, int Z) hi) =>
         p.X >= lo.X && p.X <= hi.X && p.Y >= lo.Y && p.Y <= hi.Y && p.Z >= lo.Z && p.Z <= hi.Z;
@@ -321,8 +321,10 @@ public static class DesignerTools
         var dug = canvas.Dug;
         var stats = MineStats.Of(terrain, dug);
         if (stats.YRange == null) return stats.Text();
-        var found = OreVeins.For(terrain).Yield(dug).Where(y => y.Blocks > 0)
-            .Select(y => string.Create(CultureInfo.InvariantCulture, $"{y.Ore.Id} {y.Blocks} in {y.Veins} veins ({y.Coverage:P0} of the plot's)"));
+        var found = dug.Any(p => p.X >= DesignerCanvas.Size || p.Z >= DesignerCanvas.Size)
+            ? OreVeins.Following(terrain, dug).Select(y => string.Create(CultureInfo.InvariantCulture, $"{y.Ore.Id} {y.Blocks} in {y.Veins} veins"))
+            : OreVeins.For(terrain).Yield(dug).Where(y => y.Blocks > 0)
+                .Select(y => string.Create(CultureInfo.InvariantCulture, $"{y.Ore.Id} {y.Blocks} in {y.Veins} veins ({y.Coverage:P0} of the plot's)"));
         return stats.Text() + "; following the veins: " + string.Join(", ", found.DefaultIfEmpty("nothing"));
     }
 

@@ -184,8 +184,8 @@ public static class MineTemplates
     /// </summary>
     public static MineCells Strip(StripSpec s)
     {
-        int len = Math.Clamp(s.Length, 1, 64), w = Math.Clamp(s.Width, 1, 2), h = Math.Clamp(s.Height, 2, 3), sp = Math.Clamp(s.Spacing, 1, 8),
-            bl = Math.Clamp(s.BranchLength, 0, 64);
+        int len = Math.Clamp(s.Length, 1, 192), w = Math.Clamp(s.Width, 1, 2), h = Math.Clamp(s.Height, 2, 3), sp = Math.Clamp(s.Spacing, 1, 8),
+            bl = Math.Clamp(s.BranchLength, 0, 96);
         var f = new StripFrame(s.X, s.Z, char.ToLowerInvariant(s.Axis) != 'z');
         var cells = new List<CanvasCell>();
         for (int a = 0; a < len; a++)

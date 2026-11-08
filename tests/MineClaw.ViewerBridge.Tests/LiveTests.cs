@@ -116,6 +116,40 @@ public class LiveTests
     }
 
     [Fact]
+    public async Task Entity_events_are_emitted_even_when_no_bot_or_entity_pose_changed()
+    {
+        await using var h = await BridgeHost.StartAsync();
+        int calls = 0;
+        h.Sup.Routes["/api/world/entities"] = req =>
+        {
+            Interlocked.Increment(ref calls);
+            return FakeSupervisor.Json(req.Query["since"] == "0"
+                ? """{"at":1,"rev":1,"full":true,"bots":[],"entities":[],"removed":[],"events":[]}"""
+                : req.Query["since"] == "1"
+                    ? """{"at":2,"rev":2,"full":false,"bots":[],"entities":[],"removed":[],"events":[{"at":2,"dim":0,"id":7,"kind":"hurt"}]}"""
+                    : """{"at":3,"rev":2,"full":false,"bots":[],"entities":[],"removed":[],"events":[]}""");
+        };
+        var hub = h.Services.GetRequiredService<LiveHub>();
+        var (client, _, _) = hub.Subscribe(null);
+        try
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            var entities = new List<LiveHub.Frame>();
+            while (entities.Count < 2)
+            {
+                var frame = await client.Reader.ReadAsync(timeout.Token);
+                if (frame.Event == "entities") entities.Add(frame);
+            }
+            Assert.Contains("\"kind\":\"hurt\"", entities[1].Text);
+            for (int i = 0; i < 50 && Volatile.Read(ref calls) < 4; i++) await Task.Delay(20, timeout.Token);
+            Assert.True(Volatile.Read(ref calls) >= 4);
+            while (client.Reader.TryRead(out var frame)) Assert.NotEqual("entities", frame.Event);
+            Assert.Contains(h.Sup.Seen, request => request.Target == "/api/world/entities?since=2");
+        }
+        finally { hub.Unsubscribe(client); }
+    }
+
+    [Fact]
     public async Task Stream_polls_only_while_connected_and_emits_typed_frames()
     {
         await using var h = await BridgeHost.StartAsync();

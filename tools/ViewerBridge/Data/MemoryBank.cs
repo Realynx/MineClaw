@@ -24,6 +24,7 @@ public sealed class MemoryBank : IDisposable
     private Dictionary<string, int> _nodeOfRef = new(StringComparer.Ordinal);
     private GraphModel? _graph;
     private readonly object _graphLock = new();
+    private int _disposed;
 
     private MemoryBank(string path, AgentDb db, RagIndex rag, IEmbeddingProvider embeddings)
     {
@@ -54,6 +55,8 @@ public sealed class MemoryBank : IDisposable
     public static async Task<MemoryBank> OpenAsync(string path, AgentOptions options, IEmbeddingProvider provider, CancellationToken ct = default)
     {
         var db = AgentDb.OpenReadOnly(path);
+        RagIndex? rag = null;
+        MemoryBank? bank = null;
         try
         {
             if (provider.IsAvailable && provider.Dimensions > 0 && db.TableExists("vectors"))
@@ -62,14 +65,15 @@ public sealed class MemoryBank : IDisposable
                 long same = db.ScalarLong("SELECT count(*) FROM vectors WHERE dims = $d AND model = $m", ("$d", provider.Dimensions), ("$m", provider.Model));
                 if (same == 0 && other > 0) provider = NullEmbeddingProvider.Instance;
             }
-            var rag = new RagIndex(db, options.Rag, provider, usage: null, options.Embeddings, backgroundEmbedding: false);
-            var bank = new MemoryBank(path, db, rag, provider) { MoodHalfLifeHours = options.Self.MoodHalfLifeHours };
+            rag = new RagIndex(db, options.Rag, provider, usage: null, options.Embeddings, backgroundEmbedding: false);
+            bank = new MemoryBank(path, db, rag, provider) { MoodHalfLifeHours = options.Self.MoodHalfLifeHours };
             await Task.Run(() => bank.LoadTreeAsync(options, ct), ct).ConfigureAwait(false);
             return bank;
         }
         catch
         {
-            db.Dispose();
+            if (bank != null) bank.Dispose();
+            else { rag?.Dispose(); db.Dispose(); }
             throw;
         }
     }
@@ -87,6 +91,7 @@ public sealed class MemoryBank : IDisposable
         bool loaded;
         try { loaded = await raptor.LoadAsync(ct).ConfigureAwait(false); }
         catch (Microsoft.Data.Sqlite.SqliteException) { loaded = false; }
+        catch { raptor.Dispose(); throw; }
         if (!loaded) { TreeNote = "the stored tree could not be loaded"; raptor.Dispose(); return; }
         Raptor = raptor;
         if (VectorSearch) Rag.Augmenter = raptor;
@@ -144,6 +149,7 @@ public sealed class MemoryBank : IDisposable
 
     public void Dispose()
     {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
         Raptor?.Dispose();
         Rag.Dispose();
         Db.Dispose();
@@ -181,6 +187,7 @@ public sealed class ReadOnlySummarizer : ISummarizer
 public sealed class BankHost(BridgeConfig config, ILogger<BankHost> log) : IDisposable
 {
     private readonly SemaphoreSlim _open = new(1, 1);
+    private readonly object _reloadLock = new();
     private MemoryBank? _bank;
     private string? _signature;
     private DateTimeOffset _checked;
@@ -220,24 +227,36 @@ public sealed class BankHost(BridgeConfig config, ILogger<BankHost> log) : IDisp
 
     private void MaybeCheck(MemoryBank b)
     {
-        var now = DateTimeOffset.UtcNow;
-        if (now - _checked < TimeSpan.FromSeconds(Math.Max(1, config.Bridge.ReloadCheckSeconds)) || _reload is { IsCompleted: false }) return;
-        _checked = now;
-        _reload = Task.Run(async () =>
+        // Requests arrive concurrently. Check and publish the pending reload together so only one replacement bank
+        // can be built while the active bank remains available to in-flight readers.
+        lock (_reloadLock)
         {
-            try
+            var now = DateTimeOffset.UtcNow;
+            if (_disposed || now - _checked < TimeSpan.FromSeconds(Math.Max(1, config.Bridge.ReloadCheckSeconds)) || _reload is { IsCompleted: false }) return;
+            _checked = now;
+            _reload = Task.Run(() => ReloadAsync(b));
+        }
+    }
+
+    private async Task ReloadAsync(MemoryBank b)
+    {
+        try
+        {
+            var sig = Signature(b.Db);
+            if (sig == _signature) return;
+            var fresh = await MemoryBank.OpenAsync(b.Path, config.Agent, Embeddings ?? config.CreateEmbeddings());
+            MemoryBank? old;
+            lock (_reloadLock)
             {
-                var sig = Signature(b.Db);
-                if (sig == _signature) return;
-                var fresh = await MemoryBank.OpenAsync(b.Path, config.Agent, Embeddings ?? config.CreateEmbeddings());
                 if (_disposed) { fresh.Dispose(); return; }
-                var old = Interlocked.Exchange(ref _bank, fresh);
-                _signature = Signature(fresh.Db);
-                log.LogInformation("reloaded the agent db caches (the bot changed the tree, docs or vectors)");
-                if (old != null) _ = Task.Delay(TimeSpan.FromSeconds(30)).ContinueWith(_ => old.Dispose(), TaskScheduler.Default);
+                old = Interlocked.Exchange(ref _bank, fresh);
+                _signature = sig; // A change during loading must trigger another refresh, not be mistaken for loaded data.
             }
-            catch (Exception ex) { log.LogWarning("db reload check failed: {Message}", ex.Message); }
-        });
+            log.LogInformation("reloaded the agent db caches (the bot changed the tree, docs or vectors)");
+            if (old != null) _ = Task.Delay(TimeSpan.FromSeconds(30)).ContinueWith(_ => old.Dispose(), TaskScheduler.Default);
+        }
+        catch (Exception ex) { log.LogWarning("db reload check failed: {Message}", ex.Message); }
+        finally { lock (_reloadLock) _reload = null; }
     }
 
     /// <summary>What the bank caches: the tree meta, the docs and the vectors (cheap aggregate reads).</summary>
@@ -251,9 +270,12 @@ public sealed class BankHost(BridgeConfig config, ILogger<BankHost> log) : IDisp
 
     public void Dispose()
     {
-        _disposed = true;
-        _bank?.Dispose();
-        _bank = null;
+        lock (_reloadLock)
+        {
+            _disposed = true;
+            _bank?.Dispose();
+            _bank = null;
+        }
     }
 }
 

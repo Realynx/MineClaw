@@ -1,3 +1,4 @@
+using System.Buffers;
 using MineClaw.Data;
 
 namespace MineClaw.World;
@@ -242,6 +243,8 @@ public static class Parkour
         return new ParkourOutcome(true, null, run.Margin, run.Contact, run.Distance, run.Peak, run.Track);
     }
 
+    [ThreadStatic] private static List<AABB>? _supportBoxes;
+
     /// <summary>
     /// How far the contact point could have been shorter (positive: the hitbox centre is over support with that much to
     /// spare backwards along the flight direction, capped at 0.6) or how far it is short of the support (negative, the
@@ -251,10 +254,11 @@ public static class Parkour
     {
         double rad = yaw * Math.PI / 180;
         double fx = -Math.Sin(rad), fz = Math.Cos(rad);
-        var boxes = new List<AABB>(8);
+        var boxes = _supportBoxes ??= new List<AABB>(8);
         var area = new AABB(feet.X - 1.0, feet.Y - 0.06, feet.Z - 1.0, feet.X + 1.0, feet.Y - 0.0005, feet.Z + 1.0);
         BlockShapes.GetCollidingBoxes(w, area, boxes);
-        boxes.RemoveAll(b => b.MaxY < feet.Y - 0.06 || b.MaxY > feet.Y + 1e-6);
+        for (int i = boxes.Count - 1; i >= 0; i--)
+            if (boxes[i].MaxY < feet.Y - 0.06 || boxes[i].MaxY > feet.Y + 1e-6) boxes.RemoveAt(i);
         bool Supported(double t)
         {
             double x = feet.X + fx * t, z = feet.Z + fz * t;
@@ -292,9 +296,10 @@ public static class Parkour
     {
         why = null;
         // Every simulation below reads the same few hundred blocks: snapshot them once (≈5x faster physics ticks).
-        w = new RegionSnapshot(w, Math.Min(from.X, to.X) - 3, Math.Max(from.X, to.X) + 3,
+        using var snapshot = new RegionSnapshot(w, Math.Min(from.X, to.X) - 3, Math.Max(from.X, to.X) + 3,
             (int)Math.Floor(Math.Min(fromFloor, toFloor)) - 6, (int)Math.Floor(Math.Max(fromFloor, toFloor)) + 4,
             Math.Min(from.Z, to.Z) - 3, Math.Max(from.Z, to.Z) + 3);
+        w = snapshot;
         var startPos = new Vec3d(from.X + 0.5, fromFloor, from.Z + 0.5);
         double tx = to.X + 0.5, tz = to.Z + 0.5;
         float yaw = (float)(Math.Atan2(-(tx - startPos.X), tz - startPos.Z) * 180 / Math.PI);
@@ -445,10 +450,16 @@ public static class Parkour
     {
         int level = (int)Math.Floor(Math.Min(fromFloor, toFloor) + 1e-6);
         var seen = new HashSet<(int, int)>();
+        Span<(double X, double Z)> corners = stackalloc (double, double)[5];
         for (int i = Math.Max(0, jumpTick); i <= Math.Min(track.Count - 1, landTick + 1); i++)
         {
             var bb = AABB.ForPlayer(track[i]).Grow(0.3, 0, 0.3); // the hitbox plus the perturbation range
-            foreach (var (x, z) in new[] { (bb.MinX, bb.MinZ), (bb.MaxX, bb.MinZ), (bb.MinX, bb.MaxZ), (bb.MaxX, bb.MaxZ), (track[i].X, track[i].Z) })
+            corners[0] = (bb.MinX, bb.MinZ);
+            corners[1] = (bb.MaxX, bb.MinZ);
+            corners[2] = (bb.MinX, bb.MaxZ);
+            corners[3] = (bb.MaxX, bb.MaxZ);
+            corners[4] = (track[i].X, track[i].Z);
+            foreach (var (x, z) in corners)
             {
                 int cx = (int)Math.Floor(x), cz = (int)Math.Floor(z);
                 if (!seen.Add((cx, cz))) continue;
@@ -563,13 +574,14 @@ public static class Parkour
 }
 
 /// <summary>A dense copy of a box of blocks (ids, metas, loaded columns); reads outside it go to the source world.</summary>
-internal sealed class RegionSnapshot : IBlockAccess
+internal sealed class RegionSnapshot : IBlockAccess, IDisposable
 {
     private readonly IBlockAccess _inner;
     private readonly int _x0, _y0, _z0, _sx, _sy, _sz;
-    private readonly int[] _ids;
-    private readonly byte[] _metas;
-    private readonly bool[] _loaded;
+    private readonly int[] _ids = [];
+    private readonly byte[] _metas = [];
+    private readonly bool[] _loaded = [];
+    private bool _disposed;
 
     public RegionSnapshot(IBlockAccess inner, int x0, int x1, int y0, int y1, int z0, int z1)
     {
@@ -578,9 +590,26 @@ internal sealed class RegionSnapshot : IBlockAccess
         y1 = Math.Min(_inner.WorldHeight - 1, y1);
         (_x0, _y0, _z0) = (x0, y0, z0);
         (_sx, _sy, _sz) = (x1 - x0 + 1, Math.Max(0, y1 - y0 + 1), z1 - z0 + 1);
-        _ids = new int[_sx * _sy * _sz];
-        _metas = new byte[_ids.Length];
-        _loaded = new bool[_sx * _sz];
+        int cells = _sx * _sy * _sz;
+        try
+        {
+            _ids = ArrayPool<int>.Shared.Rent(cells);
+            _metas = ArrayPool<byte>.Shared.Rent(cells);
+            _loaded = ArrayPool<bool>.Shared.Rent(_sx * _sz);
+            // Unloaded columns and air metadata must never inherit a previous jump's blocks.
+            _ids.AsSpan(0, cells).Clear();
+            _metas.AsSpan(0, cells).Clear();
+            Copy(inner, x0, y0, z0);
+        }
+        catch
+        {
+            Dispose();
+            throw;
+        }
+    }
+
+    private void Copy(IBlockAccess inner, int x0, int y0, int z0)
+    {
         for (int x = 0; x < _sx; x++)
         for (int z = 0; z < _sz; z++)
         {
@@ -593,6 +622,15 @@ internal sealed class RegionSnapshot : IBlockAccess
                 if (id != 0) _metas[i] = (byte)inner.GetMeta(x0 + x, y0 + y, z0 + z);
             }
         }
+    }
+
+    public void Dispose()
+    {
+        if (_disposed) return;
+        _disposed = true;
+        if (_ids.Length > 0) ArrayPool<int>.Shared.Return(_ids);
+        if (_metas.Length > 0) ArrayPool<byte>.Shared.Return(_metas);
+        if (_loaded.Length > 0) ArrayPool<bool>.Shared.Return(_loaded);
     }
 
     private int Index(int x, int y, int z)

@@ -104,7 +104,7 @@ public static partial class DesignerSave
         var cells = snap.Blocks.Keys.Concat(snap.Air).ToList();
         var min = new BlockPos(cells.Min(p => p.X), cells.Min(p => p.Y), cells.Min(p => p.Z));
         int w = cells.Max(p => p.X) - min.X + 1, d = cells.Max(p => p.Z) - min.Z + 1;
-        var target = new BlockPos(Math.Clamp(mine.Min.X, 0, Math.Max(0, DesignerCanvas.Size - w)), mine.Min.Y, Math.Clamp(mine.Min.Z, 0, Math.Max(0, DesignerCanvas.Size - d)));
+        var target = new BlockPos(Math.Clamp(mine.Min.X, 0, Math.Max(0, DesignerCanvas.MineSize - w)), mine.Min.Y, Math.Clamp(mine.Min.Z, 0, Math.Max(0, DesignerCanvas.MineSize - d)));
         var off = new BlockPos(target.X - min.X, target.Y - min.Y, target.Z - min.Z);
         BlockPos Shift(BlockPos p) => new(p.X + off.X, p.Y + off.Y, p.Z + off.Z);
         canvas.Load(snap.Blocks.Select(kv => KeyValuePair.Create(Shift(kv.Key), kv.Value)), snap.Air.Where(p => !snap.Blocks.ContainsKey(p)).Select(Shift));

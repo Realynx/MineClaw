@@ -64,7 +64,7 @@ public static partial class MineDesign
 
     /// <summary>
     /// The DSL of a mine: <paramref name="snap"/>'s blocks and its air (the cells to dig) in plot coordinates with absolute y.
-    /// Null + why when it can't be drawn (over 64 wide or 128 high, below y 1, nothing in it).
+    /// Null + why when it can't be drawn (over 256 wide or 128 high, below y 1, nothing in it).
     /// </summary>
     public static (string? Dsl, BlockPos Min, int Mismatched, string? Why) Draw(string name, DesignSnapshot snap, BlockPos? entry, string? seed,
         string? preferredFor, string? version, int height = MineTerrain.Height)
@@ -95,11 +95,11 @@ public static partial class MineDesign
         return why == null ? (dsl, min, bad, null) : (null, min, 0, why);
     }
 
-    /// <summary>Why a mine of this size can't be a design (over 64 a side or 128 high), or null.</summary>
+    /// <summary>Why a mine of this size can't be a design (over 256 a side or 128 high), or null.</summary>
     private static string? TooBig(int wx, int hy, int dz) =>
-        wx > BlueprintParser.MaxSide || dz > BlueprintParser.MaxSide || hy > BlueprintParser.MaxMineHeight
+        wx > BlueprintParser.MaxMineSide || dz > BlueprintParser.MaxMineSide || hy > BlueprintParser.MaxMineHeight
             ? string.Create(CultureInfo.InvariantCulture,
-                $"it would be {wx}×{hy}×{dz} (a mine holds at most {BlueprintParser.MaxSide} a side and {BlueprintParser.MaxMineHeight} high)")
+                $"it would be {wx}×{hy}×{dz} (a mine holds at most {BlueprintParser.MaxMineSide} a side and {BlueprintParser.MaxMineHeight} high)")
             : null;
 
     /// <summary>The mine's header lines: kind, absolute anchor, entry, seed and version preference.</summary>

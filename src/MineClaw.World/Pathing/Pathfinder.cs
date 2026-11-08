@@ -1277,13 +1277,13 @@ public sealed partial class Pathfinder
     /// null when one of them can't be opened.</summary>
     private List<DoorToggle>? ThroughToggles(int x, int y, int z, int tx, int tz)
     {
-        var list = new List<DoorToggle>(2);
+        List<DoorToggle>? list = null;
         for (int yy = y; yy <= y + 1; yy++)
         {
             if (!ClosedInTheWay(tx, yy, tz, y)) continue;
             var tg = MakeToggle(new BlockPos(tx, yy, tz), new BlockPos(x, y, z), new BlockPos(tx, y, tz));
             if (tg is null) return null;
-            list.Add(tg);
+            (list ??= new List<DoorToggle>(2)).Add(tg);
         }
         return list;
     }

@@ -586,8 +586,8 @@ strip q weird 0x9 t4
   strip mine at y20 along x: 1×3 × 17, 4 branch rows 3 apart (4 long, weird) | entry (4, 20, 6) path 17 (4, 20, 6)..(20, 20, 6) cells 55 614cb320
 strip q weird 0x9 t5
   strip mine at y20 along x: 1×3 × 17, 4 branch rows 3 apart (4 long, weird) | entry (4, 20, 6) path 17 (4, 20, 6)..(20, 20, 6) cells 54 d4a44b1f
-  strip mine at y5 along x: 1×2 × 1, 0 branch rows 1 apart (64 long, both) | entry (0, 5, 0) path 1 (0, 5, 0)..(0, 5, 0) cells 2 b8d66548
-  strip mine at y5 along x: 1×2 × 64, 7 branch rows 8 apart (12 long, both) | entry (0, 5, 0) path 64 (0, 5, 0)..(63, 5, 0) cells 485 c12a0317
+  strip mine at y5 along x: 1×2 × 1, 0 branch rows 1 apart (96 long, both) | entry (0, 5, 0) path 1 (0, 5, 0)..(0, 5, 0) cells 2 b8d66548
+  strip mine at y5 along x: 1×2 × 99, 11 branch rows 8 apart (12 long, both) | entry (0, 5, 0) path 99 (0, 5, 0)..(98, 5, 0) cells 758 31830bce
 step {} no terrain
   spiral shaft 4×4 (core 2×2) y64→11 | entry (30, 64, 30) path 54 (30, 64, 30)..(33, 11, 32) cells 162 58c36433
 step {} no terrain as strip
@@ -653,13 +653,13 @@ step {"template":"strip","axis":"  ","branch_length":3,"torch_every":2,"sides":"
 step {"template":"strip","axis":"  ","branch_length":3,"torch_every":2,"sides":"right","length":12,"spacing":0} terrain as strip
   strip mine at y11 along x: 1×2 × 12, 6 branch rows 1 apart (3 long, right) | entry (0, 11, 0) path 12 (0, 11, 0)..(11, 11, 0) cells 65 43fca9ba
 step {"template":"strip","axis":"xyz","length":100,"width":5,"height":1,"spacing":20,"branchLength":-3,"sides":"none"} no terrain
-  strip mine at y11 along x: 2×2 × 64, 7 branch rows 8 apart (0 long, none) | entry (0, 11, 0) path 64 (0, 11, 0)..(63, 11, 0) cells 256 62d28245
+  strip mine at y11 along x: 2×2 × 100, 11 branch rows 8 apart (0 long, none) | entry (0, 11, 0) path 100 (0, 11, 0)..(99, 11, 0) cells 400 4a65c205
 step {"template":"strip","axis":"xyz","length":100,"width":5,"height":1,"spacing":20,"branchLength":-3,"sides":"none"} no terrain as strip
-  strip mine at y11 along x: 2×2 × 64, 7 branch rows 8 apart (0 long, none) | entry (0, 11, 0) path 64 (0, 11, 0)..(63, 11, 0) cells 256 62d28245
+  strip mine at y11 along x: 2×2 × 100, 11 branch rows 8 apart (0 long, none) | entry (0, 11, 0) path 100 (0, 11, 0)..(99, 11, 0) cells 400 4a65c205
 step {"template":"strip","axis":"xyz","length":100,"width":5,"height":1,"spacing":20,"branchLength":-3,"sides":"none"} terrain
-  strip mine at y11 along x: 2×2 × 64, 7 branch rows 8 apart (0 long, none) | entry (0, 11, 0) path 64 (0, 11, 0)..(63, 11, 0) cells 256 62d28245
+  strip mine at y11 along x: 2×2 × 100, 11 branch rows 8 apart (0 long, none) | entry (0, 11, 0) path 100 (0, 11, 0)..(99, 11, 0) cells 400 4a65c205
 step {"template":"strip","axis":"xyz","length":100,"width":5,"height":1,"spacing":20,"branchLength":-3,"sides":"none"} terrain as strip
-  strip mine at y11 along x: 2×2 × 64, 7 branch rows 8 apart (0 long, none) | entry (0, 11, 0) path 64 (0, 11, 0)..(63, 11, 0) cells 256 62d28245
+  strip mine at y11 along x: 2×2 × 100, 11 branch rows 8 apart (0 long, none) | entry (0, 11, 0) path 100 (0, 11, 0)..(99, 11, 0) cells 400 4a65c205
 step {"template":"tunnel"} no terrain
   THROW ArgumentException: no mine template 'tunnel' (spiral, strip)
 step {"template":"tunnel"} no terrain as strip

@@ -335,7 +335,8 @@ public sealed class LiveHub : IDisposable
             if (node is not JsonObject o) return;
             long newRev = o["rev"]?.GetValue<long>() ?? rev;
             bool full = o["full"]?.GetValue<bool>() == true;
-            bool changed = full || o["entities"] is JsonArray { Count: > 0 } || o["removed"] is JsonArray { Count: > 0 };
+            bool changed = full || o["entities"] is JsonArray { Count: > 0 } || o["removed"] is JsonArray { Count: > 0 }
+                || o["events"] is JsonArray { Count: > 0 };
             var bots = Normalized(o["bots"], "age_seconds", "pose_age", "age");
             changed |= bots != prevBots;
             prevBots = bots;

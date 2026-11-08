@@ -49,7 +49,7 @@ public sealed class Blueprint
     public string Kind { get; set; } = "build";
     public bool Mine => Kind == "mine";
     /// <summary><c>anchor absolute X,Y,Z</c>: the world y of layer 0 (ore heights matter, so a placed mine keeps it); X,Z = where its
-    /// min corner sat on the Design Studio's 64×64 plot (its terrain preview). Null = surface-relative (<see cref="Ground"/>).</summary>
+    /// min corner sat on the Design Studio's mine plot (its terrain preview). Null = surface-relative (<see cref="Ground"/>).</summary>
     public int? AbsoluteY { get; set; }
     public (int X, int Z)? PlotAt { get; set; }
     /// <summary><c>entry x,y,z</c> (local): a mine's top, where its shaft meets the surface; a placement puts this column on the

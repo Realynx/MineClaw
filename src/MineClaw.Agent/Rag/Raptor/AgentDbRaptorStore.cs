@@ -55,7 +55,7 @@ public sealed class AgentDbRaptorStore : IRaptorStore
     }
 
     private sealed record TreeRow(long Id, int Idx, int Layer, string Ref, string Kind, string? Source, string Title, string Body,
-        int Tokens, int Flags, long Seq, byte[]? Vec);
+        int Tokens, int Flags, long Seq, float[]? Vec);
 
     private RaptorSnapshot? LoadLocked()
     {
@@ -98,7 +98,8 @@ public sealed class AgentDbRaptorStore : IRaptorStore
         WHERE d.raptor_idx IS NOT NULL
         """, r => new TreeRow(r.GetInt64(0), (int)r.GetInt64(1), (int)r.GetInt64(2), r.GetString(3), r.GetString(4),
             AgentDb.StrOrNull(r, 5), r.GetString(6), r.GetString(7), (int)r.GetInt64(8),
-            (int)r.GetInt64(9), r.GetInt64(10), r.IsDBNull(11) ? null : (byte[])r.GetValue(11)),
+            // Release the transient SQLite blob per row; records and tree nodes reuse the resulting float array.
+            (int)r.GetInt64(9), r.GetInt64(10), r.IsDBNull(11) ? null : VectorMath.FromBlob((byte[])r.GetValue(11))),
         ("$m", meta.EmbeddingModel), ("$d", meta.Dimensions));
 
     private Dictionary<int, SortedSet<int>> QueryTreeChildren()
@@ -176,7 +177,7 @@ public sealed class AgentDbRaptorStore : IRaptorStore
         bool leaf = r.Layer == 0;
         int flags = r.Flags | (dirty.Contains(r.Idx) ? 2 : 0);
         return new RaptorNodeRecord(r.Idx, r.Layer, leaf ? RaptorTreePolicy.LeafText(r.Title, r.Body) : r.Body,
-            VectorMath.FromBlob(r.Vec!), r.Tokens, children.TryGetValue(r.Idx, out var cs) ? cs.ToArray() : [],
+            r.Vec!, r.Tokens, children.TryGetValue(r.Idx, out var cs) ? cs.ToArray() : [],
             leaf ? r.Ref : null, 0, leaf ? r.Kind : null, leaf ? r.Source : null,
             (flags & 1) != 0, (flags & 2) != 0, (flags & 4) != 0, r.Seq);
     }

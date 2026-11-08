@@ -64,7 +64,6 @@ public sealed class MemoryCloudService(BridgeConfig config, ILogger<MemoryCloudS
         string version = VersionOf(key, arrangement);
         lock (_lock)
         {
-            _bank = bank;
             var slot = _slots[arrangement];
             if (slot.Ready is { } r && r.Version == version) return r with { Arrangements = Statuses(key) };
             if (slot.Failed == version)
@@ -72,6 +71,7 @@ public sealed class MemoryCloudService(BridgeConfig config, ILogger<MemoryCloudS
                 {
                     Status = "error", Note = "the memory cloud layout failed (see the bridge log)", Arrangements = Statuses(key),
                 };
+            _bank = bank;
             Enqueue(arrangement);
             var stale = slot.Ready;
             var dto = stale != null
@@ -138,6 +138,10 @@ public sealed class MemoryCloudService(BridgeConfig config, ILogger<MemoryCloudS
                 {
                     _running = null;
                     _looping = false;
+                    // Layout DTOs and anchors are self-contained. Keeping the last bank here (or in the completed
+                    // async state machine) would retain its flat index and tree through every later bank reload.
+                    _bank = null;
+                    _job = Task.CompletedTask;
                     return;
                 }
                 arrangement = _queue[0];

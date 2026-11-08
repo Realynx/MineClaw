@@ -32,7 +32,8 @@ public sealed class BridgeOptions
     public string? ServerVersion { get; set; }
     /// <summary>Supervisor base URL; default <c>http://127.0.0.1:{Supervisor:Port}</c>.</summary>
     public string? SupervisorUrl { get; set; }
-    /// <summary>Connections to the supervisor (its MaxConnections is 8, the bot's own UI needs some).</summary>
+    /// <summary>Total connections to the supervisor (its MaxConnections is 8). Two of four or more are reserved for live motion
+    /// and status; smaller pools reserve one, except a single connection remains shared.</summary>
     public int SupervisorConnections { get; set; } = 4;
     /// <summary>Memory heat decay half-life (seconds).</summary>
     public double HeatHalfLifeS { get; set; } = 120;

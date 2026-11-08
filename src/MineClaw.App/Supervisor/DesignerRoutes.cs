@@ -454,7 +454,7 @@ public sealed class DesignerRoutes
             compat = compat == null ? null : ReportJson(compat),
             server_compat = serverCompat,
             // A mine: absolute y 0..127 ([-depth, height)).
-            plot = s.Canvas.Mine ? new { size = DesignerCanvas.Size, height = DesignerCanvas.MineHeight, depth = 0 }
+            plot = s.Canvas.Mine ? new { size = DesignerCanvas.MineSize, height = DesignerCanvas.MineHeight, depth = 0 }
                 : new { size = DesignerCanvas.Size, height = DesignerCanvas.Height, depth = DesignerCanvas.Depth },
             revisions = revs,
             created = s.Created.ToUnixTimeMilliseconds(), updated = s.Updated.ToUnixTimeMilliseconds(),

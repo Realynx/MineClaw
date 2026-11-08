@@ -78,10 +78,12 @@ public class DesignerMineTests
     {
         var c = MineCanvas();
         Assert.True(c.Contains(0, 0, 0));
-        Assert.True(c.Contains(63, 127, 63));
+        Assert.True(c.Contains(255, 127, 255));
         Assert.False(c.Contains(0, 128, 0));
         Assert.False(c.Contains(0, -1, 0));
-        Assert.False(c.Contains(64, 10, 0));
+        Assert.False(c.Contains(256, 10, 0));
+        Assert.False(c.Contains(0, 10, 256));
+        Assert.False(new DesignerCanvas().Contains(64, 10, 0));
         Assert.Equal((0, 127), c.YRange);
         var t = c.Terrain!;
         int top = t.Surface(10, 10);
@@ -228,6 +230,49 @@ public class DesignerMineTests
     }
 
     [Fact]
+    public void Expanded_mine_round_trip_preserves_256_width_and_far_edge_placement()
+    {
+        using var db = AgentDb.Open(null);
+        var service = Designs(db);
+        foreach (var minX in new[] { 0, 200 })
+        {
+            var canvas = MineCanvas();
+            canvas.Apply([new CanvasCell(minX, 11, 255, 0, 0), new CanvasCell(255, 12, 255, 0, 0), new CanvasCell(255, 11, 255, Blocks.Torch, 5)]);
+            var anchor = new BlockPos(255, 12, 255);
+            var session = new DesignerSessionRecord { Canvas = canvas, Owner = "poofimafox", Anchor = anchor };
+            var result = DesignerSave.Save(service, session, $"expanded mine {minX}", null, "poofimafox", false);
+            Assert.True(result.Ok, result.Text);
+            var record = service.Store.Get(result.DesignId)!;
+            var (blueprint, issues) = BlueprintParser.Parse(record.Dsl);
+            Assert.DoesNotContain(issues, i => i.Level == IssueLevel.Error);
+            Assert.Equal(256 - minX, blueprint.W);
+            var loaded = DesignerSave.LoadDesign(service, result.DesignId);
+            Assert.Null(loaded.Why);
+            Assert.Equal(anchor, loaded.Anchor);
+            Assert.Equal(canvas.Dug.ToHashSet(), loaded.Canvas!.Dug.ToHashSet());
+            Assert.Equal(canvas.Blocks.ToDictionary(), loaded.Canvas.Blocks.ToDictionary());
+            Assert.Equal((Blocks.Torch, 5), loaded.Canvas.Get(255, 11, 255));
+        }
+    }
+
+    [Fact]
+    public async Task Mine_canvas_route_persists_coordinate_255_and_rejects_256()
+    {
+        var server = Server(new ScriptedModel(), out _);
+        var session = J(await server.HandleAsync(Req("POST", "/api/designer/sessions", new { player = "poofimafox", kind = "mine", seed = "4242", version = "1.12.2" })));
+        long id = session.GetProperty("id").GetInt64();
+        J(await server.HandleAsync(Req("POST", $"/api/designer/sessions/{id}/canvas", new
+        {
+            rev = 0,
+            ops = new[] { new { kind = "dig", label = "far edge", cells = new[] { new[] { 255, 127, 255, 0, 0 }, new[] { 256, 127, 255, 0, 0 } } } },
+        })));
+        var loaded = J(await server.HandleAsync(Req("GET", $"/api/designer/sessions/{id}")));
+        var dug = loaded.GetProperty("dug").EnumerateArray().ToList();
+        Assert.Single(dug);
+        Assert.Equal(new[] { 255, 127, 255 }, dug[0].EnumerateArray().Select(v => v.GetInt32()));
+    }
+
+    [Fact]
     public void A_build_design_never_grows_past_32_high_and_a_mine_never_digs_below_y_1()
     {
         var tall = "blueprint t\nsize 3x40x3\nversion 1.12.2\npalette A=stone\nlayer 0\nAAA\nAAA\nAAA\n";
@@ -256,6 +301,7 @@ public class DesignerMineTests
         long id = s.GetProperty("id").GetInt64();
         Assert.Equal("mine", s.GetProperty("kind").GetString());
         Assert.Equal("777", s.GetProperty("seed").GetString());
+        Assert.Equal(256, s.GetProperty("plot").GetProperty("size").GetInt32());
         Assert.Equal(128, s.GetProperty("plot").GetProperty("height").GetInt32());
         Assert.Equal(0, s.GetProperty("plot").GetProperty("depth").GetInt32());
         // Edits at absolute y; the seed and the preference change in place.
@@ -273,6 +319,7 @@ public class DesignerMineTests
         Assert.True(ask.GetProperty("needs_clear").GetBoolean());
         var done = J(await server.HandleAsync(Req("POST", $"/api/designer/sessions/{id}/version", new { version = "1.12.2", kind = "build", apply = true })));
         Assert.Equal("build", done.GetProperty("session").GetProperty("kind").GetString());
+        Assert.Equal(64, done.GetProperty("session").GetProperty("plot").GetProperty("size").GetInt32());
         Assert.Equal(0, done.GetProperty("session").GetProperty("dug").GetArrayLength());
         Assert.Equal(16, done.GetProperty("session").GetProperty("plot").GetProperty("depth").GetInt32());
         Assert.Equal(JsonValueKind.Null, done.GetProperty("session").GetProperty("preferred_for").ValueKind);

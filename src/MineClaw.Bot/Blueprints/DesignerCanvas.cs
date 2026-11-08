@@ -24,7 +24,7 @@ public readonly record struct CanvasCell(int X, int Y, int Z, int Id, int Meta)
 /// two-cell blocks are kept whole (<see cref="DesignFacing.Partner"/>): a door or a double plant as its two halves (upper = lower
 /// | 8, as the normalizer draws a door), a bed as foot + head (head = foot | 8, one step along its facing); a chest placed beside
 /// a single chest takes its facing (they pair, as the game pairs them).
-/// <para>A <b>mine</b> canvas (<see cref="Kind"/> "mine", docs/web/api.md "Mine designs") is the same 64×64 plot over generated
+/// <para>A <b>mine</b> canvas (<see cref="Kind"/> "mine", docs/web/api.md "Mine designs") is a 256×256 plot over generated
 /// terrain (<see cref="MineTerrain"/> of its <see cref="Seed"/> and version) at absolute world y 0..127: a cell is undisturbed
 /// ground where that terrain is solid; air there digs it (never bedrock), earth fills it back; blocks go anywhere.</para>
 /// </summary>
@@ -50,7 +50,7 @@ public sealed class DesignerCanvas
     public (int Min, int Max) YRange => Mine ? (0, MineHeight - 1) : (-Depth, Height - 1);
 
     /// <summary>Inside the plot for this canvas's kind.</summary>
-    public bool Contains(int x, int y, int z) => Mine ? x is >= 0 and < Size && z is >= 0 and < Size && y >= 0 && y < MineHeight : Inside(x, y, z);
+    public bool Contains(int x, int y, int z) => Mine ? x is >= 0 and < MineSize && z is >= 0 and < MineSize && y >= 0 && y < MineHeight : Inside(x, y, z);
 
     /// <summary>Ground that is earth until dug: below the grass (build), solid generated terrain (mine).</summary>
     public bool Ground(int x, int y, int z) => Mine ? Terrain!.Solid(x, y, z) : Underground(y);
@@ -64,11 +64,13 @@ public sealed class DesignerCanvas
     public DesignPalette Palette => DesignPalette.For(Version);
 
     public const int Size = 64, Height = 48;
+    public const int MineSize = BlueprintParser.MaxMineSide;
+    public int PlotSize => Mine ? MineSize : Size;
     /// <summary>Layers of ground under the grass the canvas reaches (y -Depth..-1).</summary>
     public const int Depth = 16;
     /// <summary>The wire id of undisturbed ground (a dug cell filled back in); below ground a missing cell is earth, above it air.</summary>
     public const int Earth = -1;
-    /// <summary>Cells one op may change (a full plot fill is refused: a design holds at most 32³).</summary>
+    /// <summary>Cells one op may change; large edits must be split into bounded batches.</summary>
     public const int MaxCellsPerOp = 40_000;
 
     private readonly Dictionary<BlockPos, (int Id, int Meta)> _blocks = new();
@@ -425,7 +427,7 @@ public sealed class DesignerCanvas
         if (Mine && Terrain is { } t && Bounds == null)
         {
             var (lo, hi) = t.SurfaceRange();
-            return $"r{Rev} empty mine (plot x,z 0..63, absolute y 1..127 over generated terrain: surface y{lo}..{hi}, bedrock y0-4)";
+            return $"r{Rev} empty mine (plot x,z 0..255, absolute y 1..127 over generated terrain: surface y{lo}..{hi}, bedrock y0-4)";
         }
         if (Bounds is not { } b) return $"r{Rev} empty (plot x,z 0..63, y -16..47; y0 stands on the grass, below is solid ground)";
         var sb = new StringBuilder();
@@ -440,11 +442,11 @@ public sealed class DesignerCanvas
         return sb.ToString();
     }
 
-    /// <summary>" OVER the 32 limit" (a mine: 64 wide / 128 high) when the box is bigger than a design holds, else "".</summary>
+    /// <summary>" OVER the 32 limit" (a mine: 256 wide / 128 high) when the box is bigger than a design holds, else "".</summary>
     private string OverLimit(int w, int h, int d)
     {
-        if (w <= BlueprintParser.MaxSide && d <= BlueprintParser.MaxSide && h <= (Mine ? BlueprintParser.MaxMineHeight : BlueprintParser.MaxHeight)) return "";
-        return Mine ? " OVER the 64 wide / 128 high limit" : " OVER the 32 limit";
+        if (w <= (Mine ? BlueprintParser.MaxMineSide : BlueprintParser.MaxSide) && d <= (Mine ? BlueprintParser.MaxMineSide : BlueprintParser.MaxSide) && h <= (Mine ? BlueprintParser.MaxMineHeight : BlueprintParser.MaxHeight)) return "";
+        return Mine ? " OVER the 256 wide / 128 high limit" : " OVER the 32 limit";
     }
 
     /// <summary>"y-4 49 cobblestone · y-3--1 28 cobblestone, 21 dug · y0 49 cobblestone" (layers with the same text merged).</summary>

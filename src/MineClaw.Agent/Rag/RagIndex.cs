@@ -882,15 +882,17 @@ public sealed class RagIndex : IRetrievalIndex, IDisposable
     private void LoadVectors(bool clear = false)
     {
         if (!_embedder.IsAvailable) return;
+        // Convert each blob before advancing the reader. Retaining every blob and then every float array doubled
+        // the live vector payload during a refresh (including the bridge's old bank and its replacement).
         var rows = _db.Query("""
             SELECT v.doc_id, d.kind, d.tag, v.vec, CASE WHEN d.min_x IS NULL THEN NULL ELSE d.dimension END
             FROM vectors v JOIN docs d ON d.id = v.doc_id WHERE v.model = $m AND v.dims = $d AND v.hash = d.hash
-            """, r => (r.GetInt64(0), r.GetString(1), AgentDb.StrOrNull(r, 2), (byte[])r.GetValue(3), r.IsDBNull(4) ? (int?)null : (int)r.GetInt64(4)),
+            """, r => (r.GetInt64(0), r.GetString(1), AgentDb.StrOrNull(r, 2), VectorMath.FromBlob((byte[])r.GetValue(3)), r.IsDBNull(4) ? (int?)null : (int)r.GetInt64(4)),
             ("$m", VecModel), ("$d", _embedder.Dimensions));
         lock (_vecLock)
         {
             if (clear) _vecs.Clear();
-            foreach (var (id, kind, tag, blob, dim) in rows) _vecs[id] = new VecEntry(kind, tag, VectorMath.FromBlob(blob), dim);
+            foreach (var (id, kind, tag, vector, dim) in rows) _vecs[id] = new VecEntry(kind, tag, vector, dim);
         }
     }
 

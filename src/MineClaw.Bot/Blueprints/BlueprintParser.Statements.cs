@@ -34,7 +34,7 @@ public static partial class BlueprintParser
     private static bool IsSizeLine(string raw) => SizeHeadRx().IsMatch(raw) || SizeRx().IsMatch(raw.Replace(" ", ""));
 
     private static string SizeOutOfRange(Blueprint bp, int heightLimit) =>
-        $"size {bp.W}x{bp.H}x{bp.D} out of range (1..{MaxSide} wide/deep, 1..{heightLimit} high)";
+        $"size {bp.W}x{bp.H}x{bp.D} out of range (1..{SideLimit(bp)} wide/deep, 1..{heightLimit} high)";
 
     /// <summary>One parse: the line cursor, the blueprint being filled and its issues.</summary>
     private sealed class ParseRun(Blueprint bp, string[] lines)
@@ -83,7 +83,7 @@ public static partial class BlueprintParser
         private void SetSize((int W, int H, int D) sz, int ln)
         {
             (bp.W, bp.H, bp.D) = sz;
-            if (bp.W is < 1 or > MaxSide || bp.D is < 1 or > MaxSide || bp.H is < 1 or > MaxMineHeight)
+            if (bp.W is < 1 or > MaxMineSide || bp.D is < 1 or > MaxMineSide || bp.H is < 1 or > MaxMineHeight)
                 Err(ln, "size", SizeOutOfRange(bp, MaxHeight));
             sized = true;
             sizeLine = ln;
@@ -222,16 +222,16 @@ public static partial class BlueprintParser
             bp.D = bp.Layers.Values.Max(l => l.Rows.Count);
             bp.H = bp.Layers.Keys.Max() + 1;
             Issues.Add(new BlueprintIssue(IssueLevel.Warning, "size-inferred", $"no size line: inferred {bp.W}x{bp.H}x{bp.D} from the layers"));
-            if (bp.W > MaxSide || bp.D > MaxSide || bp.H > HeightLimit(bp)) Err(0, "size", SizeOutOfRange(bp, HeightLimit(bp)));
+            if (bp.W > SideLimit(bp) || bp.D > SideLimit(bp) || bp.H > HeightLimit(bp)) Err(0, "size", SizeOutOfRange(bp, HeightLimit(bp)));
         }
 
         private void CheckHeights()
         {
             if (bp.Ground > 0 && bp.H > 0 && bp.Ground > bp.H) Err(0, "ground", $"ground {bp.Ground} is deeper than the design (size is {bp.H} high)");
-            // Only a mine reaches past 32 high (the kind line may come after the size line).
-            if (sized && !bp.Mine && bp.H > MaxHeight && bp.W <= MaxSide && bp.D <= MaxSide) Err(sizeLine, "size", SizeOutOfRange(bp, MaxHeight));
+            // Only a mine reaches past 64 wide/deep or 32 high (kind may come after size).
+            if (sized && !bp.Mine && (bp.W > MaxSide || bp.D > MaxSide || bp.H > MaxHeight) && bp.W <= MaxMineSide && bp.D <= MaxMineSide && bp.H <= MaxMineHeight) Err(sizeLine, "size", SizeOutOfRange(bp, MaxHeight));
         }
 
-        private bool Normalizable() => bp.W > 0 && bp.H > 0 && bp.D > 0 && bp.W <= MaxSide && bp.D <= MaxSide && bp.H <= HeightLimit(bp);
+        private bool Normalizable() => bp.W > 0 && bp.H > 0 && bp.D > 0 && bp.W <= SideLimit(bp) && bp.D <= SideLimit(bp) && bp.H <= HeightLimit(bp);
     }
 }

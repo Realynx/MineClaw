@@ -2,6 +2,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\MineClaw.Data\MineClaw.Data.csproj" />
+    <InternalsVisibleTo Include="MineClaw.World.Tests" />
   </ItemGroup>
 
   <PropertyGroup>
