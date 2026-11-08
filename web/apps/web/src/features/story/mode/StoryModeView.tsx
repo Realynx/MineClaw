@@ -13,6 +13,7 @@ import { draftedOf, rememberConfirm } from '../assign/gear';
 import { MaterialBar } from '../MaterialBar';
 import { ColonyWorkspace } from '../ColonyWorkspace';
 import { RetainedPanel } from '../RetainedPanel';
+import { buildGroups } from '../buildGroups';
 import { clickBody, EMPTY_SELECTION, slowestSpeed } from '../model';
 import {
   ColonistBar,
@@ -320,7 +321,7 @@ function ChatSlot({ c }: Props) {
 
 /** The badges on the tab bar: unfinished builds and directives in flight. */
 function TabBarSlot({ c }: Props) {
-  const queued = (c.state?.builds ?? []).filter((b) => b.status !== 'done').length;
+  const queued = buildGroups(c.state?.builds ?? []).filter((g) => g.active.length > 0).length;
   const directivesLive = (c.state?.directives ?? []).filter(
     (d) => d.status === 'sent' || d.status === 'acknowledged',
   ).length;
