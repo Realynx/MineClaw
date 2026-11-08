@@ -345,7 +345,7 @@ public sealed class DesignerRoutes
         s.Offset = default;
         if (!mine) s.PreferredFor = null;
         var switched = mine ? $"the canvas is now a mine over generated {target} terrain (seed {s.Canvas.Seed}, absolute y)" : "the canvas is a grassland build plot again";
-        s.PendingEdits = s.PendingEdits.Length == 0 ? switched : Clip(s.PendingEdits + "; " + switched, 600);
+        s.PendingEdits = s.PendingEdits.Length == 0 ? switched : DesignerText.Clip(s.PendingEdits + "; " + switched, 600);
         _store.AddMessage(s.Id, "assistant", mine ? $"Switched to a mine design over generated terrain (seed {s.Canvas.Seed})." : "Switched back to a build design.");
     }
 
@@ -354,7 +354,7 @@ public sealed class DesignerRoutes
     {
         if (newSeed is not { Length: > 0 } || !s.Canvas.Mine || MineTerrain.NormalizeSeed(newSeed) == s.Canvas.Seed) return false;
         s.Canvas.Seed = MineTerrain.NormalizeSeed(newSeed);
-        s.PendingEdits = Clip((s.PendingEdits.Length == 0 ? "" : s.PendingEdits + "; ") + $"the terrain seed is now {s.Canvas.Seed}", 600);
+        s.PendingEdits = DesignerText.Clip((s.PendingEdits.Length == 0 ? "" : s.PendingEdits + "; ") + $"the terrain seed is now {s.Canvas.Seed}", 600);
         return true;
     }
 
@@ -387,7 +387,7 @@ public sealed class DesignerRoutes
         var from = s.Version;
         var report = Convert(s, target);
         var line = $"the canvas was converted {report.Text()}" + (report.Missing.Count > 0 ? " (left out)" : "");
-        s.PendingEdits = s.PendingEdits.Length == 0 ? line : Clip(s.PendingEdits + "; " + line, 600);
+        s.PendingEdits = s.PendingEdits.Length == 0 ? line : DesignerText.Clip(s.PendingEdits + "; " + line, 600);
         using (DesignVersions.Use(s.Version)) Settle(s);
         _store.Update(s);
         _store.AddMessage(s.Id, "assistant", $"Converted the design from {from} to {target}: {report.Text()}.");
@@ -420,7 +420,7 @@ public sealed class DesignerRoutes
         var fixedCells = s.Canvas.FixAllAttachments();
         if (fixedCells.Count == 0) return false;
         var line = "the canvas opened with " + DesignerCanvas.FixText(fixedCells);
-        s.PendingEdits = s.PendingEdits.Length == 0 ? line : Clip(s.PendingEdits + "; " + line, 600);
+        s.PendingEdits = s.PendingEdits.Length == 0 ? line : DesignerText.Clip(s.PendingEdits + "; " + line, 600);
         return true;
     }
 
@@ -516,7 +516,7 @@ public sealed class DesignerRoutes
     private static void NotePendingEdits(DesignerSessionRecord s, List<CanvasCell> changed, List<CanvasCell> fixedCells)
     {
         var line = DesignerCanvas.Summarize(changed, on: s.Canvas) + (DesignerCanvas.FixText(fixedCells) is { Length: > 0 } fix ? $" ({fix})" : "");
-        s.PendingEdits = s.PendingEdits.Length == 0 ? line : Clip(s.PendingEdits + "; " + line, 600);
+        s.PendingEdits = s.PendingEdits.Length == 0 ? line : DesignerText.Clip(s.PendingEdits + "; " + line, 600);
     }
 
     private SupervisorReply Canvas(long id, SupervisorRequest r)
@@ -547,7 +547,8 @@ public sealed class DesignerRoutes
             _store.Update(s);
             return Reply(429, new { error = refusal, retry_after_ms = 60_000 });
         }
-        var history = _store.Messages(s.Id, 40);
+        // Enough records for the history's turns (a turn may hold notes besides its user line and reply).
+        var history = _store.Messages(s.Id, Math.Max(40, _o.Viewer.Designer.HistoryTurns * 4));
         var player = Requester(b.Player, b.Who);
         var userLine = _store.AddMessage(s.Id, "user", text);
         (int[] Min, int[] Max)? sel = b.Selection is { Min: { Length: 3 } mn, Max: { Length: 3 } mx } ? (mn, mx) : null;
@@ -556,7 +557,7 @@ public sealed class DesignerRoutes
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _store.Update(s);
-            var line = _store.AddMessage(s.Id, "assistant", "(the model call failed: " + Clip(ex.Message, 160) + ")", model.Model);
+            var line = _store.AddMessage(s.Id, "assistant", DesignerAgent.FailureText(ex), model.Model);
             return Reply(502, new { error = "the model call failed", message = MessageJson(line) });
         }
         s.PendingEdits = "";
@@ -613,8 +614,6 @@ public sealed class DesignerRoutes
     // ------------------------------------------------------------------ helpers
 
     private static T? Parse<T>(string? body) where T : class => string.IsNullOrWhiteSpace(body) ? null : JsonSerializer.Deserialize<T>(body, Json);
-
-    private static string Clip(string s, int n) => s.Length <= n ? s : s[..(n - 1)] + "…";
 
     private static SupervisorReply NotAllowed(string allow) =>
         Reply(405, new { error = $"{allow} only" }, new Dictionary<string, string> { ["Allow"] = allow });

@@ -770,10 +770,22 @@ and tools in src/MineClaw.Bot/Blueprints/Designer*.cs). Never the live world. Be
   prompt carries a compact category summary of the palette (about 200 tokens: the base names per category, `<colour>_` and
   `<wood>_` families folded, the colour and wood words), never the whole list; the whole turn runs in the session's version.
   The system prompt
-  and tools are cached, history is the last `HistoryTurns` exchanges as plain text. Spend is recorded on the bot's
+  and tools are cached, history is the last `HistoryTurns` exchanges as plain text (`DesignerConversation`: from a user line
+  on, same-role neighbours merged so every provider gets alternating turns, each line ≤1200 chars, an AI line led by
+  `[your edits: …]`, the labels of the ops it made). Spend is recorded on the bot's
   `UsageTracker` (the shared daily/monthly caps; `designer` purpose rollup); a paused budget answers 429, the cheap-only
   stage refuses Claude models above the memory tier, and a message stops at `MaxUsdPerMessage`. A second write while a
   message runs is 409 (the bridge maps it to a retryable 429).
+- **The tool loop never loses work (added 2026-11-08).** Every tool input is checked against its schema first (the brain's
+  `ToolInputValidator`); an error says what was wrong and the tool's usage (`error: $.from: expected array (usage: box {b,
+  from, to, mode?})`), whole numbers written `3.0` and `place`'s `at` as one `[x,y,z]` are taken, an unknown tool lists the
+  tools, a result is at most 6000 chars. Before each call the request is fitted to `MaxContextTokens` (32K; an Ollama model's
+  `num_ctx` lowers it) by cutting older tool results (`ContextManager.FitMessages`, the worker's own rule); one that still
+  can't fit isn't sent. A reply cut at `MaxTokens` (8000) runs its complete calls and answers the cut one "not run: … send it
+  again in smaller pieces". The message ends early, with the edits so far and why in the reply, when `MaxFailedRounds` (3)
+  rounds in a row failed every call, at the round or cost limit ("say \"go on\" to continue"), on a refusal, or when a call
+  after the first fails (200 with the ops the server's canvas now holds, so the browser never drifts); only a first call that
+  fails is a 502.
 - **`POST sessions/{id}/canvas {rev, ops:[{kind, label, cells}], anchor?, clear_anchor?}`** → `{rev, applied, stale}`: the
   user's own edits (manual tools, undo of AI ops), and the anchor ("move origin").
 - **`POST sessions/{id}/save {name, summary?, as_new?}`** → `{design_id, rev, name, blocks, created, text}`. The canvas is

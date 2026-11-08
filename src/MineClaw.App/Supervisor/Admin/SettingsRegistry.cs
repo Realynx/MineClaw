@@ -172,6 +172,10 @@ public static class SettingsRegistry
                 { Min = 256, Max = 32_000, Unit = "tokens" },
             new("Supervisor:Viewer:Designer:MaxUsdPerMessage", "story", "Design Studio", "Cost per message", "A message stops calling the model past this.", SettingKind.Number, Live: true)
                 { Min = 0.01, Max = 20, Unit = "USD" },
+            new("Supervisor:Viewer:Designer:MaxContextTokens", "story", "Design Studio", "Context per call", "A studio request's ceiling; older tool results are cut to fit (an Ollama num_ctx lowers it).", SettingKind.Int, Live: true)
+                { Min = 4_000, Max = 200_000, Unit = "tokens" },
+            new("Supervisor:Viewer:Designer:MaxFailedRounds", "story", "Design Studio", "Failed rounds", "Rounds in a row of only failing tool calls before a message gives up.", SettingKind.Int, Live: true)
+                { Min = 1, Max = 10 },
             new("Supervisor:Viewer:Designer:HistoryTurns", "story", "Design Studio", "History turns", "Earlier exchanges sent with each message.", SettingKind.Int, Live: true) { Min = 0, Max = 40 },
             new("Supervisor:Viewer:Designer:Effort", "story", "Design Studio", "Studio effort", "Effort of studio calls (empty = the tier's).", SettingKind.Enum, Live: true) { Options = Efforts },
 

@@ -456,8 +456,16 @@ public sealed class DesignerCanvas
             if (layers.Count > 0 && layers[^1].Text == text) layers[^1] = (layers[^1].Y0, y, text);
             else layers.Add((y, y, text));
         }
-        return string.Join(" · ", layers.Select(l => (l.Y0 == l.Y1 ? $"y{l.Y0}" : $"y{l.Y0}-{l.Y1}") + " " + l.Text));
+        static string Group((int Y0, int Y1, string Text) l) => (l.Y0 == l.Y1 ? $"y{l.Y0}" : $"y{l.Y0}-{l.Y1}") + " " + l.Text;
+        if (layers.Count <= MaxLayerGroups) return string.Join(" · ", layers.Select(Group));
+        // A tall, varied canvas (a deep mine): the bottom and the top, the middle left to describe y (it rides in every message).
+        int head = MaxLayerGroups * 2 / 3, tail = MaxLayerGroups - head;
+        return string.Join(" · ", layers.Take(head).Select(Group)) + $" · … {layers.Count - head - tail} more layer groups (describe y for one) … · "
+            + string.Join(" · ", layers.TakeLast(tail).Select(Group));
     }
+
+    /// <summary>Layer groups the summary lists before it folds the middle ones.</summary>
+    private const int MaxLayerGroups = 36;
 
     /// <summary>One layer's count and two most common names, and its dug cells: "28 cobblestone+planks, 21 dug".</summary>
     private string LayerText(int y)

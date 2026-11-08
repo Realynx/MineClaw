@@ -882,7 +882,7 @@ public sealed partial class BotAgent
     public int LastRequestTokens { get; private set; }
 
     internal static int EstimateRequestTokens(LlmRequest r, int maxOut) =>
-        r.System.Sum(s => TextUtil.EstimateTokens(s.Text)) + Worker.WorkerAgent.ToolTokens(r.Tools) + ContextManager.EstimateTokens(r.Messages) + maxOut;
+        ContextManager.FixedTokens(r.System, r.Tools, maxOut) + ContextManager.EstimateTokens(r.Messages);
 
     /// <summary>
     /// Enforces <see cref="ContextOptions.MaxTokens"/> (× <see cref="ContextOptions.HardCapSafety"/>) before a call, whatever
@@ -893,7 +893,7 @@ public sealed partial class BotAgent
     {
         var o = _context.Options;
         int cap = (int)(o.MaxTokens * Math.Clamp(o.HardCapSafety, 0.1, 1.0));
-        int fixedTokens = system.Sum(s => TextUtil.EstimateTokens(s.Text)) + Worker.WorkerAgent.ToolTokens(tools) + maxOut + 16;
+        int fixedTokens = ContextManager.FixedTokens(system, tools, maxOut) + 16;
         int History() => tier == ModelTier.Main ? _context.EstimateTokens() : _context.EstimateCheapTokens();
         int cur = ContextManager.EstimateTokens(current);
         if (fixedTokens + History() + cur <= cap) return true;

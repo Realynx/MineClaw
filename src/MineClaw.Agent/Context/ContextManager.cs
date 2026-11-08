@@ -525,6 +525,28 @@ public sealed class ContextManager
         }
     }
 
+    /// <summary>Estimated tokens of the system blocks of a request.</summary>
+    public static int SystemTokens(IEnumerable<LlmSystemBlock> system) => system.Sum(s => TextUtil.EstimateTokens(s.Text));
+
+    /// <summary>Estimated tokens of tool definitions (they lead the cached prefix).</summary>
+    public static int ToolTokens(IEnumerable<LlmToolDefinition> tools) =>
+        tools.Sum(t => TextUtil.EstimateTokens(t.Name + t.Description + t.InputSchema.GetRawText()) + 6);
+
+    /// <summary>Estimated tokens of a request's fixed part: system blocks, tools and the output it may write.</summary>
+    public static int FixedTokens(IEnumerable<LlmSystemBlock> system, IEnumerable<LlmToolDefinition> tools, int maxOut) =>
+        SystemTokens(system) + ToolTokens(tools) + maxOut;
+
+    /// <summary>
+    /// Fits an in-flight loop's messages into <paramref name="budget"/> tokens next to the fixed part (system + tools + output),
+    /// cutting older tool results first (<see cref="Shrink"/>). False = it can't fit (don't call the model).
+    /// </summary>
+    public static bool FitMessages(List<LlmMessage> messages, IEnumerable<LlmSystemBlock> system, IEnumerable<LlmToolDefinition> tools, int maxOut,
+        int budget, int toolResultChars = 80)
+    {
+        int room = budget - FixedTokens(system, tools, maxOut);
+        return room > 0 && Shrink(messages, room, toolResultChars) <= room;
+    }
+
     public static int EstimateTokens(IEnumerable<LlmMessage> messages) =>
         messages.Sum(m => 4 + m.Content.Sum(b => b switch
         {
