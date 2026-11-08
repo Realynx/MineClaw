@@ -594,6 +594,7 @@ public sealed partial class StoryColony
         var list = new List<(StorageState S, Stack St, int N, int Fetchers)>();
         foreach (var s in Storages)
         {
+            if (!ChestOpen(s.Chest)) continue;
             var st = s.Contents.FirstOrDefault(c => c.Id == key.Id && c.Meta == key.Meta);
             if (st == null) continue;
             var (inFlight, fetchers) = InFlightFrom(s, key);

@@ -99,6 +99,45 @@ public sealed class StoryBuildFastTests
         Assert.Equal("active", c3.Builds.Single().Status);
     }
 
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public void A_builder_leaves_a_failed_chest_out_of_its_next_fetch(bool didntOpen, bool alternateStock)
+    {
+        var (c, _, _) = Rig(2, planksB: alternateStock ? 64 : 0);
+        var build = Floor(c, 4, 12, 5, 13);
+        var first = c.Next(0);
+        Assert.Equal("place", first["kind"]!.GetValue<string>());
+        Assert.Equal(ChestA.ToString(), first["fetch"]![0]!["from"]!.GetValue<string>());
+
+        var why = didntOpen ? $"chest at {ChestA} didn't open (blocked above, or protected?)"
+            : $"can't reach chest at {ChestA}: no walkable spot that sees it (no route)";
+        Assert.True(c.Report(c.P(0), Id(first), "failed", why, null));
+        Assert.All(build.Ghosts, g => Assert.Equal("todo", g.State));
+        Assert.Empty(c.Leases());
+
+        var next = c.Next(0); // the same instant: chest cooldown, not a target failure, must break the retry loop
+        if (alternateStock)
+        {
+            Assert.Equal("place", next["kind"]!.GetValue<string>());
+            Assert.Equal(first["at"]!.GetValue<string>(), next["at"]!.GetValue<string>());
+            Assert.All(next["fetch"]!.AsArray(), f => Assert.Equal(ChestB.ToString(), f!["from"]!.GetValue<string>()));
+        }
+        else
+        {
+            Assert.NotEqual("place", next["kind"]!.GetValue<string>());
+            Assert.All(build.Ghosts, g => Assert.Equal("todo", g.State));
+        }
+
+        // One pawn's failed route does not hide that chest from another builder.
+        var other = c.Next(1);
+        Assert.Equal("place", other["kind"]!.GetValue<string>());
+        Assert.Equal(ChestA.ToString(), other["fetch"]![0]!["from"]!.GetValue<string>());
+        Assert.DoesNotContain(build.Ghosts, g => g.State == "blocked");
+    }
+
     [Fact]
     public void Cells_are_reported_one_by_one_and_the_ledger_follows_the_fetch_not_the_end_of_the_batch()
     {
