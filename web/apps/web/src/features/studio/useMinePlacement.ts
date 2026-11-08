@@ -9,6 +9,8 @@ import type * as ViewerMod from './studio-viewer';
 import { MineModuleController } from './mine/MineModuleController';
 import { decodeModuleDrag, MINE_MODULE_MIME, moduleCells, snapModuleAt, type MineModuleInstance, type MineModuleSpec } from './mine/modules';
 import { minePlanePoint, mineRayBox } from './mine/placementRay';
+import { pictureDistance } from './PictureControls';
+import { mineCameraGesture } from './studioPointer';
 
 const NONE: readonly MineModuleInstance[] = [];
 const noSubscription = () => () => undefined;
@@ -63,6 +65,23 @@ export function useMinePlacement(p: {
     nativeDrag.current = false;
     overlay.setMinePlacement(null);
   }, [overlay]);
+
+  const frame = useCallback((id = live.current.selectedId) => {
+    const item = controller?.snapshot().find((m) => m.id === id);
+    const engine = viewer.current?.engine();
+    if (!item || !engine) return;
+    cancel(); select(item.id);
+    const bounds = studio.selection!;
+    const center = bounds.min.map((value, axis) => (value + bounds.max[axis]!) / 2) as V3;
+    engine.focus(...center, { distance: pictureDistance(bounds, engine.camera.aspect, engine.camera.fov) });
+    engine.surface.focus();
+  }, [cancel, controller, select, studio, viewer]);
+
+  const position = useCallback((id: string, at: V3) => {
+    if (!controller || !live.current.canEdit) return;
+    if (controller.move(id, at)) select(id);
+    else live.current.notice(controller.lastError);
+  }, [controller, select]);
 
   const arm = useCallback((spec: MineModuleSpec, id: string | null = null, options?: { drag?: boolean }) => {
     if (!live.current.canEdit) return;
@@ -123,7 +142,7 @@ export function useMinePlacement(p: {
     const surface = viewer.current?.engine()?.surface;
     if (!surface) return;
     const down = (event: PointerEvent) => {
-      if (event.button !== 0 || document.pointerLockElement) return;
+      if (event.button !== 0 || mineCameraGesture(event) || document.pointerLockElement) return;
       if (live.current.placing) {
         event.preventDefault(); event.stopImmediatePropagation(); commit(event.clientX, event.clientY); return;
       }
@@ -140,13 +159,17 @@ export function useMinePlacement(p: {
       }
       if (nearest) { event.preventDefault(); event.stopImmediatePropagation(); select(nearest.id); surface.focus(); }
     };
-    const move = (event: PointerEvent) => { if (live.current.placing) preview(event.clientX, event.clientY); };
+    const move = (event: PointerEvent) => { if (live.current.placing && !event.altKey && !(event.buttons & 4)) preview(event.clientX, event.clientY); };
     const leave = () => { overlay.setMinePlacement(null); lastPreview.current = ''; setHover(null); };
     const key = (event: KeyboardEvent) => {
       if (event.key === 'Escape' && live.current.placing) {
         event.preventDefault(); event.stopImmediatePropagation(); cancel(); return;
       }
-      if (document.activeElement !== surface || !live.current.selectedId || !live.current.canEdit) return;
+      if (document.activeElement !== surface || !live.current.selectedId) return;
+      if (!event.ctrlKey && !event.metaKey && (event.code === 'KeyF' || event.code === 'NumpadDecimal')) {
+        event.preventDefault(); event.stopImmediatePropagation(); frame(); return;
+      }
+      if (!live.current.canEdit) return;
       const item = controller.snapshot().find((m) => m.id === live.current.selectedId);
       if (!item) return;
       if (event.key === 'Delete' || event.key === 'Backspace') {
@@ -170,7 +193,7 @@ export function useMinePlacement(p: {
       window.removeEventListener('keydown', key, true);
       window.removeEventListener('dragend', dragEnd);
     };
-  }, [cancel, commit, controller, overlay, preview, rayAt, ready, select, viewer]);
+  }, [cancel, commit, controller, frame, overlay, preview, rayAt, ready, select, viewer]);
 
   const moveSelected = useCallback((delta: V3, group?: string) => {
     const item = controller?.snapshot().find((m) => m.id === selectedId);
@@ -195,7 +218,7 @@ export function useMinePlacement(p: {
   };
 
   return {
-    modules, selectedId: selected?.id ?? null, placing, placementY, hover, setPlacementY, select, arm, cancel, moveSelected,
+    modules, selectedId: selected?.id ?? null, placing, placementY, hover, setPlacementY, select, arm, cancel, moveSelected, frame, position,
     updatePlacing: (spec: MineModuleSpec) => { if (live.current.canEdit) { setPlacing(spec); lastPreview.current = ''; } },
     rememberDesign: (id: number, revision: number) => controller?.rememberDesign(id, revision),
     dragOver, drop,

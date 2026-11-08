@@ -77,6 +77,7 @@ import {
   VersionDialog,
 } from './StudioChrome';
 import { brushPreview, type Drag, dragPreview, groundEditable, studioKey, studioPress, studioRelease } from './studioInput';
+import { bindStudioPointer, type PointerPosition, type StudioPointerActions } from './studioPointer';
 
 type Mod = typeof ViewerMod;
 
@@ -278,7 +279,7 @@ function StudioBody({
   const [ready, setReady] = useState(false);
   const [aim, setAim] = useState<AimTarget | null>(null);
   const [locked, setLocked] = useState(false);
-  const [tool, setTool] = useState<Tool>('build');
+  const [tool, setTool] = useState<Tool>(mine ? 'select' : 'build');
   const chooseTool = useCallback((next: Tool) => {
     if (!mine || MINE_TOOLS.some((t) => t.id === next)) setTool(next);
   }, [mine]);
@@ -504,10 +505,12 @@ function StudioBody({
         e.runtime.scene.add(overlay.group);
         attached = true;
         // Start over the plot's south-east corner, looking down at its centre.
-        e.rig.flyYaw = 135;
+        if (mine) e.rig.orbitYaw = 135;
+        else e.rig.flyYaw = 135;
         e.focus(31, surface ? surface.max : 63, 31, { distance: surface ? 44 : 34, pitch: 38 });
         setReady(true);
       }
+      if (e && mine) overlay.updateGizmoScale(e.camera, e.surface.clientHeight);
       overlay.tick(performance.now());
       raf = requestAnimationFrame(loop);
     };
@@ -516,7 +519,7 @@ function StudioBody({
       cancelAnimationFrame(raf);
       overlay.dispose();
     };
-  }, [overlay, surface]);
+  }, [overlay, surface, mine]);
 
   useEffect(() => overlay.setSelection(snap.selection), [overlay, snap.selection]);
   // Only authored excavations and veins exposed by those routes; seed caves never create outlines.
@@ -553,7 +556,10 @@ function StudioBody({
   }, []);
 
   const current = slots[active] ?? null;
-  const look = useCallback((): Dir => facing ?? dirOfMcYaw(viewer.current?.engine()?.rig.flyYaw ?? 0), [facing]);
+  const look = useCallback((): Dir => {
+    const rig = viewer.current?.engine()?.rig;
+    return facing ?? dirOfMcYaw((mine ? rig?.orbitYaw : rig?.flyYaw) ?? 0);
+  }, [facing, mine]);
 
   // ------------------------------------------------------------------ previews (drag box, brush, paste ghost)
 
@@ -627,6 +633,7 @@ function StudioBody({
     target?: number;
     timer: ReturnType<typeof setInterval> | null;
   } | null>(null);
+  const pointerActions = useRef<StudioPointerActions>(null!);
 
   const brushAt = useCallback(
     (h: Hit | null, button: number, group: string, target?: number) => {
@@ -666,7 +673,10 @@ function StudioBody({
         void viewer.current
           ?.engine()
           ?.aimNow()
-          .then((tt) => brushAt(hitOf(tt, studio.canvas, st.current.under !== null), button, group, target));
+          .then((tt) => {
+            if (stroke.current?.group === group && pointerActions.current.canEdit)
+              brushAt(hitOf(tt, studio.canvas, st.current.under !== null), button, group, target);
+          });
       }, 140);
       stroke.current = { button, group, target, timer };
     },
@@ -674,9 +684,11 @@ function StudioBody({
   );
 
   const down = useCallback(
-    async (button: number, mods: { shift: boolean; ctrl: boolean }) => {
-      const t = (await viewer.current?.engine()?.aimNow()) ?? null;
+    async (button: number, mods: { shift: boolean; ctrl: boolean }, at?: PointerPosition, signal?: AbortSignal) => {
+      const engine = viewer.current?.engine();
+      const t = (await (at ? engine?.aimAtPointer(at.x, at.y) : engine?.aimNow())) ?? null;
       const s = st.current;
+      if (signal?.aborted || (!pointerActions.current.canEdit && (s.tool !== 'select' || s.pasting))) return;
       const h = hitOf(t, studio.canvas, s.under !== null);
       if (!h) return;
       studioPress({
@@ -685,7 +697,7 @@ function StudioBody({
         button,
         mods,
         s,
-        setDrag,
+        setDrag: (next) => { st.current.drag = next; setDrag(next); },
         setPasting,
         pick,
         placeAt,
@@ -697,129 +709,43 @@ function StudioBody({
   );
 
   const up = useCallback(
-    async (button: number, mods: { shift: boolean }) => {
+    async (button: number, mods: { shift: boolean }, at?: PointerPosition, signal?: AbortSignal) => {
       if (stroke.current && stroke.current.button === button) {
         if (stroke.current.timer) clearInterval(stroke.current.timer);
         stroke.current = null;
       }
       const d = st.current.drag;
       if (!d || d.button !== button) return;
+      st.current.drag = null;
       setDrag(null);
-      const t = (await viewer.current?.engine()?.aimNow()) ?? null;
+      const engine = viewer.current?.engine();
+      const t = (await (at ? engine?.aimAtPointer(at.x, at.y) : engine?.aimNow())) ?? null;
       const s = st.current;
+      if (signal?.aborted || (!pointerActions.current.canEdit && s.tool !== 'select')) return;
       studioRelease(studio, s, d, hitOf(t, studio.canvas, s.under !== null), button, mods.shift);
     },
     [studio],
   );
 
-  // Mouse: with the mouse locked the studio takes every button (the viewer never picks); unlocked, the gizmo can be dragged.
   useEffect(() => {
-    if (!ready) return;
-    const e = viewer.current?.engine();
-    if (!e) return;
-    const c = e.surface;
-    let giz: {
-      axis: 'x' | 'y' | 'z';
-      x0: number;
-      y0: number;
-      dir: [number, number];
-      px: number;
-      applied: number;
-      group: string;
-    } | null = null;
-    const onDown = (ev: PointerEvent) => {
-      if (document.pointerLockElement === c) {
-        ev.stopPropagation();
-        ev.preventDefault();
-        void down(ev.button, { shift: ev.shiftKey, ctrl: ev.ctrlKey || ev.metaKey });
-        return;
-      }
-      if (ev.button !== 0 || !studio.selection) return;
-      const r = c.getBoundingClientRect();
-      const ndc = new mod.Vector2(
-        ((ev.clientX - r.left) / r.width) * 2 - 1,
-        -((ev.clientY - r.top) / r.height) * 2 + 1,
-      );
-      const ray = new mod.Raycaster();
-      ray.setFromCamera(ndc, e.camera);
-      const axis = overlay.pickHandle(ray);
-      if (!axis) return;
-      ev.stopPropagation();
-      ev.preventDefault();
-      const o = overlay.gizmo.position.clone();
-      const unit = new mod.Vector3(axis === 'x' ? 1 : 0, axis === 'y' ? 1 : 0, axis === 'z' ? 1 : 0);
-      const p0 = o.clone().project(e.camera),
-        p1 = o.clone().add(unit).project(e.camera);
-      const dx = ((p1.x - p0.x) * r.width) / 2,
-        dy = (-(p1.y - p0.y) * r.height) / 2;
-      const len = Math.hypot(dx, dy) || 1;
-      giz = {
-        axis,
-        x0: ev.clientX,
-        y0: ev.clientY,
-        dir: [dx / len, dy / len],
-        px: len,
-        applied: 0,
-        group: `gizmo-${Date.now()}`,
-      };
+    pointerActions.current = {
+      canEdit: canWrite && !snap.busy && !saving && !versionBusy,
+      down, up, move: moveSel, setDrag,
+      cancel: () => {
+        if (stroke.current?.timer) clearInterval(stroke.current.timer);
+        stroke.current = null;
+        st.current.drag = null;
+        setDrag(null);
+      },
+      error: (error) => setNotice(errorText(error)),
     };
-    const onMove = (ev: PointerEvent) => {
-      if (!giz) return;
-      const steps = Math.round(((ev.clientX - giz.x0) * giz.dir[0] + (ev.clientY - giz.y0) * giz.dir[1]) / giz.px);
-      const diff = steps - giz.applied;
-      if (diff === 0) return;
-      giz.applied = steps;
-      const d: V3 = [giz.axis === 'x' ? diff : 0, giz.axis === 'y' ? diff : 0, giz.axis === 'z' ? diff : 0];
-      moveSel(d, giz.group);
-    };
-    const onUp = (ev: PointerEvent) => {
-      if (giz) {
-        giz = null;
-        return;
-      }
-      if (document.pointerLockElement === c) {
-        ev.stopPropagation();
-        void up(ev.button, { shift: ev.shiftKey });
-      }
-    };
-    const onAux = (ev: MouseEvent) => ev.button === 1 && ev.preventDefault();
-    const onWheel = (ev: WheelEvent) => {
-      const s = st.current;
-      if (s.tool !== 'select') return;
-      if (s.drag) {
-        ev.preventDefault();
-        ev.stopPropagation();
-        setDrag((d) =>
-          d ? { ...d, dy: Math.max(-plotMode().maxY, Math.min(plotMode().maxY, d.dy + (ev.deltaY < 0 ? 1 : -1))) } : d,
-        );
-      } else if (studio.selection) {
-        ev.preventDefault();
-        ev.stopPropagation();
-        const cur = studio.selection;
-        studio.setSelection({
-          ...cur,
-          mask: null,
-          max: [
-            cur.max[0],
-            Math.max(cur.min[1], Math.min(plotMode().maxY, cur.max[1] + (ev.deltaY < 0 ? 1 : -1))),
-            cur.max[2],
-          ],
-        });
-      }
-    };
-    c.addEventListener('pointerdown', onDown, true);
-    window.addEventListener('pointermove', onMove);
-    window.addEventListener('pointerup', onUp, true);
-    c.addEventListener('mousedown', onAux);
-    c.addEventListener('wheel', onWheel, { capture: true, passive: false });
-    return () => {
-      c.removeEventListener('pointerdown', onDown, true);
-      window.removeEventListener('pointermove', onMove);
-      window.removeEventListener('pointerup', onUp, true);
-      c.removeEventListener('mousedown', onAux);
-      c.removeEventListener('wheel', onWheel, { capture: true });
-    };
-  }, [ready, down, up, studio, overlay, mod, moveSel]);
+  }, [canWrite, snap.busy, saving, versionBusy, down, up, moveSel]);
+  useEffect(() => {
+    const engine = ready ? viewer.current?.engine() : null;
+    if (!engine) return;
+    return bindStudioPointer({ surface: engine.surface, camera: engine.camera, studio, overlay, mod, mine,
+      state: () => st.current, actions: () => pointerActions.current });
+  }, [ready, studio, overlay, mod, mine]);
 
   const openChat = useCallback(() => {
     if (document.pointerLockElement) document.exitPointerLock();
@@ -858,7 +784,7 @@ function StudioBody({
         toggleHud: () => setHud((v) => !v),
         applyTransform,
         setTool: chooseTool,
-        turnFacing: (by) => setFacing((f) => turn(f ?? dirOfMcYaw(viewer.current?.engine()?.rig.flyYaw ?? 0), by)),
+        turnFacing: (by) => setFacing(turn(look(), by)),
         togglePalette: () => {
           if (document.pointerLockElement) document.exitPointerLock();
           setPaletteOpen((v) => !v);
@@ -868,7 +794,7 @@ function StudioBody({
       });
     window.addEventListener('keydown', onKey, true);
     return () => window.removeEventListener('keydown', onKey, true);
-  }, [studio, moveSel, applyTransform, openChat, doCopy, chooseTool]);
+  }, [studio, moveSel, applyTransform, openChat, doCopy, chooseTool, look]);
 
   // ------------------------------------------------------------------ chat, save, build
 
@@ -1017,20 +943,22 @@ function StudioBody({
           <mod.WorldViewer
             ref={viewer}
             source={world.source}
-            cameraMode="fly"
+            cameraMode={mine ? 'follow' : 'fly'}
+            controls={mine ? 'editor' : undefined}
             xray="off"
             drawDistance={96}
             layers={LAYERS}
             hideHint
             onAim={(t) => {
               setAim(t);
-              const yaw = viewer.current?.engine()?.rig.flyYaw;
+              const rig = viewer.current?.engine()?.rig;
+              const yaw = mine ? rig?.orbitYaw : rig?.flyYaw;
               if (yaw !== undefined) setLookNow(dirOfMcYaw(yaw));
             }}
             onStats={(s) => setFps(Math.round(s.fps))}
             className="absolute inset-0"
           />
-          <StageHints locked={locked} ready={ready} />
+          <StageHints locked={locked} ready={ready} mine={mine} />
           {minePlacement.placing ? <div className="absolute top-3 left-14 rounded border border-purple-400/50 bg-black/80 px-3 py-2 text-xs text-white">
             {minePlacement.hover ? `Place at ${minePlacement.hover.join(', ')}` : `Point inside the plot at Y ${minePlacement.placementY}`}
             <button type="button" onClick={minePlacement.cancel} className="ml-3 underline">Cancel</button>
@@ -1111,7 +1039,7 @@ function StudioBody({
             onXray={setXray}
             at={selMin(sel)}
             canWrite={canWrite}
-            busy={busy}
+            busy={busy || saving}
             onSeed={(seed) => void changeSeed(seed)}
             onInsert={(m) => insertMine(m)}
             onPreset={(p, m) => void applyPreset(p, m)}
@@ -1122,7 +1050,9 @@ function StudioBody({
             onPlacementY={minePlacement.setPlacementY}
             onPickModule={(spec, options) => { chooseTool('select'); minePlacement.arm(spec, null, options); }}
             onUpdatePlacement={minePlacement.updatePlacing}
-            onSelectModule={(id) => { chooseTool('select'); minePlacement.select(id); viewer.current?.engine()?.surface.focus(); }}
+            onSelectModule={(id) => { chooseTool('select'); minePlacement.cancel(); minePlacement.select(id); }}
+            onFrameModule={minePlacement.frame}
+            onPositionModule={minePlacement.position}
             onUpdateModule={minePlacement.update}
             onMoveModule={minePlacement.move}
             onRemoveModule={minePlacement.remove}
@@ -1266,12 +1196,13 @@ function ToolColumn(p: {
 }
 
 /** The crosshair while the mouse is locked; the controls hint once the world is up and it isn't. */
-function StageHints({ locked, ready }: { locked: boolean; ready: boolean }) {
+function StageHints({ locked, ready, mine }: { locked: boolean; ready: boolean; mine: boolean }) {
   if (locked) return <Crosshair />;
   if (!ready) return null;
   return (
-    <div className="pointer-events-none absolute bottom-24 left-1/2 -translate-x-1/2 rounded bg-black/55 px-2.5 py-1 font-mono text-[11px] whitespace-nowrap text-white">
-      Click to build · WASD fly · Space/E up · Q down · B blocks · T chat · Ctrl+Z undo
+    <div className="pointer-events-none absolute right-3 bottom-24 left-14 mx-auto w-fit max-w-full rounded bg-black/55 px-2.5 py-1 text-center font-mono text-[11px] text-white">
+      {mine ? 'Middle drag: orbit · Shift + middle: pan · Wheel: zoom · Alt + left drag also orbits · F: frame selection'
+        : 'Click to build · WASD fly · Space/E up · Q down · B blocks · T chat · Ctrl+Z undo'}
     </div>
   );
 }

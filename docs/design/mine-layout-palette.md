@@ -4,6 +4,14 @@ The Mine Designer offers six reusable excavation pieces: a narrow exploration tu
 
 Select a piece to rotate, resize, move or remove it. Dimensions commit on blur or Enter so typing a new number does not repeatedly rebuild the mine. Nearby opposing entrances on the same feet level snap to adjacent cells; the snapping does not silently change the chosen height. A piece must fit completely inside the 64 × 64 plot and Y1–127 and may not excavate bedrock. Placement refuses invalid geometry instead of clipping it.
 
+## Selecting and navigating
+
+The **Components** outliner stays at the top right, above the scrolling properties and layout palette. It lists existing layout pieces with their coordinates. Click a row to select it through terrain, then use its axis handles, arrow keys / PgUp / PgDn, or the inspector's X/Y/Z fields to move it. Selecting another component reveals its inspector without scrolling the page. Coordinate edits commit on blur or Enter; Escape cancels the draft. Double-click a row or use the frame button to centre the camera on the whole component. With the canvas focused, **F** or **Numpad .** frames the selection.
+
+Mine Designer keeps the cursor visible. **Middle-drag orbits**, **Shift + middle-drag pans**, and the **wheel zooms** around the focus point. **Alt + left-drag** and **Shift + Alt + left-drag** offer the same orbit and pan gestures without a middle button. Plain left clicks select components or use the selected excavation tool; missing a movement handle never enters immersive freecam. Handles keep a readable screen size while zooming. Builder retains its click-to-lock, WASD freecam controls.
+
+The list represents layout components created with the palette, including locally recovered saved components. Manual excavation and older cell-only presets remain editable cells rather than guessed component groups.
+
 ## Layout choices and evidence
 
 The palette separates extraction from access. Narrow tunnels expose fresh rock at low excavation cost; branch networks organize that exploration around a shared corridor. Chambers and junctions are connection and working space, not yield optimizations. Straight stairs and compact spirals provide stepped access with three blocks of clearance. The defaults leave a solid supporting block under each descent path cell.

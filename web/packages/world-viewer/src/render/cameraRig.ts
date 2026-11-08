@@ -213,6 +213,27 @@ export class CameraRig {
     }
   }
 
+  /** Editor orbit: turn around the focus point, including views from below, without pointer lock. */
+  orbit(dx: number, dy: number): void {
+    this.orbitYaw = (this.orbitYaw + dx * 0.3 + 360) % 360;
+    this.orbitPitch = Math.max(-89.9, Math.min(89.9, this.orbitPitch + dy * 0.3));
+  }
+
+  /** Editor pan: translate the focus point in the camera's screen plane, scaled to the visible distance. */
+  panOrbit(dx: number, dy: number, viewHeightPx: number, cam: THREE.PerspectiveCamera): void {
+    const distance = Math.max(1, cam.position.distanceTo(this.target));
+    const scale = 2 * distance * Math.tan(cam.fov * Math.PI / 360) / Math.max(1, viewHeightPx);
+    const right = new THREE.Vector3(1, 0, 0).applyQuaternion(cam.quaternion);
+    const up = new THREE.Vector3(0, 1, 0).applyQuaternion(cam.quaternion);
+    this.target.addScaledVector(right, -dx * scale).addScaledVector(up, dy * scale);
+  }
+
+  /** Editor dolly: the wheel changes the distance to the focus point, never the fly speed. */
+  dolly(deltaY: number): void {
+    if (!deltaY) return;
+    this.orbitDist = Math.max(1, Math.min(256, this.orbitDist * (deltaY > 0 ? 1.12 : 1 / 1.12)));
+  }
+
   /** Iso: drag the target across the ground plane. */
   pan(dx: number, dy: number, viewHeightPx: number): void {
     const k = this.isoZoom / Math.max(1, viewHeightPx);

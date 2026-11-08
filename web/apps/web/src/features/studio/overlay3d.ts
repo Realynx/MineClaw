@@ -89,6 +89,9 @@ export class Overlay3D {
   private flashStart = 0;
   readonly gizmo = new THREE.Group();
   private readonly handles: THREE.Mesh[] = [];
+  private readonly paddedHandles: THREE.Mesh[] = [];
+  private screenSizedGizmo = false;
+  private readonly gizmoDepth = new THREE.Vector3();
   private readonly tmp = new THREE.Object3D();
   private readonly colour = new THREE.Color();
 
@@ -150,6 +153,17 @@ export class Overlay3D {
       head.position.y = 1.85;
       const g = new THREE.Group();
       g.add(shaft, head);
+      // Only cursor-first editors use these forgiving targets. They never draw, and do not enlarge the visible arrows.
+      const pickMaterial = new THREE.MeshBasicMaterial({ visible: false });
+      const pickShaft = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.16, 1.5, 8), pickMaterial);
+      const pickHead = new THREE.Mesh(new THREE.ConeGeometry(0.28, 0.7, 12), pickMaterial);
+      pickShaft.position.y = 0.85;
+      pickHead.position.y = 1.85;
+      for (const target of [pickShaft, pickHead]) {
+        target.userData.axis = axis;
+        this.paddedHandles.push(target);
+        g.add(target);
+      }
       if (axis === 'x') g.rotation.z = -Math.PI / 2;
       if (axis === 'z') g.rotation.x = Math.PI / 2;
       for (const m of [shaft, head]) {
@@ -203,6 +217,16 @@ export class Overlay3D {
     placeBox(this.selection, s.min, s.max, 0.03);
     this.gizmo.position.set((s.min[0] + s.max[0] + 1) / 2, s.max[1] + 1 + base() + 0.2, (s.min[2] + s.max[2] + 1) / 2);
     this.gizmo.visible = true;
+  }
+
+  /** Cursor editors keep an axis about 80 px long at its origin, with a padded hit target. Builder arrows stay unchanged. */
+  updateGizmoScale(camera: THREE.PerspectiveCamera, viewHeightPx: number): void {
+    this.screenSizedGizmo = true;
+    if (!this.gizmo.visible || viewHeightPx <= 0) return;
+    this.gizmo.getWorldPosition(this.gizmoDepth).applyMatrix4(camera.matrixWorldInverse);
+    const depth = Math.max(camera.near, -this.gizmoDepth.z);
+    const perPixel = 2 * depth * Math.tan(THREE.MathUtils.degToRad(camera.getEffectiveFOV()) / 2) / viewHeightPx;
+    this.gizmo.scale.setScalar(Math.max(0.02, Math.min(128, perPixel * 80 / 2.1)));
   }
 
   setDrag(b: { min: V3; max: V3 } | null): void {
@@ -303,8 +327,9 @@ export class Overlay3D {
 
   /** The gizmo axis under a ray (unlocked mouse), or null. */
   pickHandle(ray: THREE.Raycaster): Axis | null {
-    if (!this.gizmo.visible) return null;
-    const hit = ray.intersectObjects(this.handles, false)[0];
+    if (!this.group.visible || !this.gizmo.visible) return null;
+    this.gizmo.updateWorldMatrix(true, true);
+    const hit = ray.intersectObjects(this.screenSizedGizmo ? this.paddedHandles : this.handles, false)[0];
     return (hit?.object.userData.axis as Axis | undefined) ?? null;
   }
 

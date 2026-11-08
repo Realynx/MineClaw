@@ -16,6 +16,8 @@ export interface WorldViewerProps {
   layers?: Partial<LayerToggles>;
   /** Initial camera mode (change it later with the handle or this prop). */
   cameraMode?: CameraMode;
+  /** Cursor-first orbit/pan/zoom for editors; never enables immersive pointer lock. */
+  controls?: EngineOptions['controls'];
   xray?: XRayMode;
   /** Blocks, 32..256: the most this view draws (the viewer settings' draw distance applies below it). Absent = the setting. */
   drawDistance?: number;
@@ -24,7 +26,7 @@ export interface WorldViewerProps {
   onStats?: (s: ViewerStats) => void;
   onCameraModeChange?: (m: CameraMode) => void;
   onError?: (route: string, e: unknown) => void;
-  /** Free cam, mouse locked: what the crosshair points at (null = nothing, or the mouse was released). */
+  /** What the locked freecam crosshair or editor cursor points at (null = nothing or inactive). */
   onAim?: (t: AimTarget | null) => void;
   /** A left click with the mouse locked, on the crosshair's target (replaces the plain pick while locked). */
   onAimClick?: (t: AimTarget | null, mods: { shift: boolean; ctrl: boolean; button?: number }) => void;
@@ -37,7 +39,7 @@ export interface WorldViewerProps {
   hideHint?: boolean;
   /** Runtime tuning when the viewer has no WorldViewerProvider above (poll periods, LRU size, worker factory, pixel ratio).
    * Read once at mount. Inside a provider the shared runtime's options apply. */
-  options?: Omit<EngineOptions, 'source' | 'runtime' | 'dim' | 'follow' | 'layers' | 'cameraMode' | 'xray' | 'drawDistance' | 'onSelectBot' | 'onPick' | 'onStats' | 'onNotes' | 'onCameraModeChange' | 'onError'>;
+  options?: Omit<EngineOptions, 'source' | 'runtime' | 'dim' | 'follow' | 'layers' | 'cameraMode' | 'controls' | 'xray' | 'drawDistance' | 'onSelectBot' | 'onPick' | 'onStats' | 'onNotes' | 'onCameraModeChange' | 'onError'>;
   className?: string;
   style?: CSSProperties;
 }
@@ -50,7 +52,7 @@ export interface WorldViewerHandle {
   followBot(name: string | null): void;
   bots(): BotView[];
   stats(): ViewerStats | null;
-  /** The crosshair's current target (free cam, mouse locked). */
+  /** The active crosshair or editor cursor's current target. */
   aim(): AimTarget | null;
   /** Bots of the viewed dimension, nearest the camera first. */
   botsInView(): BotView[];
@@ -96,6 +98,7 @@ export const WorldViewer = forwardRef<WorldViewerHandle, WorldViewerProps>(funct
       follow: props.follow,
       layers: props.layers,
       cameraMode: props.cameraMode,
+      controls: props.controls,
       xray: props.xray,
       drawDistance: props.drawDistance,
       onSelectBot: (n) => cbs.current.onSelectBot?.(n),
@@ -124,6 +127,7 @@ export const WorldViewer = forwardRef<WorldViewerHandle, WorldViewerProps>(funct
   useEffect(() => engine.current?.setSource(props.source), [props.source]);
   useEffect(() => engine.current?.setDim(props.dim ?? 0), [props.dim]);
   useEffect(() => engine.current?.setFollow(props.follow ?? null), [props.follow]);
+  useEffect(() => engine.current?.setControls(props.controls), [props.controls]);
   const layersKey = JSON.stringify(props.layers ?? {});
   useEffect(() => engine.current?.setLayers(props.layers ?? {}), [layersKey]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
@@ -148,12 +152,7 @@ export const WorldViewer = forwardRef<WorldViewerHandle, WorldViewerProps>(funct
       stats: () => engine.current?.stats() ?? null,
       aim: () => engine.current?.aim() ?? null,
       botsInView: () => engine.current?.botsInView() ?? [],
-      lock: () => {
-        const s = engine.current?.surface;
-        if (!s) return;
-        s.focus();
-        void Promise.resolve(s.requestPointerLock?.()).catch(() => undefined);
-      },
+      lock: () => engine.current?.lock(),
       locked: () => engine.current?.locked() ?? false,
       say: (name, text, opts) => engine.current?.say(name, text, opts) ?? false,
       bubbles: () => engine.current?.bubbles() ?? [],
@@ -165,7 +164,7 @@ export const WorldViewer = forwardRef<WorldViewerHandle, WorldViewerProps>(funct
   return (
     <div className={props.className} style={{ position: 'relative', overflow: 'hidden', width: '100%', height: '100%', ...props.style }}>
       <div ref={host} style={{ position: 'absolute', inset: 0 }} />
-      <FlyHint mode={mode} locked={locked} hidden={props.hideHint} />
+      <FlyHint mode={mode} locked={locked} hidden={props.hideHint || props.controls === 'editor'} />
       <PerfOverlay engine={engine} />
       <WorldNotes notes={notes} layers={props.layers} />
     </div>

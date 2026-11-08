@@ -8,12 +8,13 @@
  * world differs.
  */
 import { Dices, Eye, Server } from 'lucide-react';
-import { useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Button, Input } from '@/components/ui/primitives';
 import { cn } from '@/lib/utils';
 import { levelOres, mineStats, oreColour, seenPer100 } from './mine/mineStats';
 import type { MineCells } from './mine/mineTemplates';
-import { ModulePalette, type ModulePaletteProps } from './mine/ModulePalette';
+import { ModulePalette, ModuleSettings, type ModulePaletteProps } from './mine/ModulePalette';
+import { MineComponents } from './mine/MineComponents';
 import type { MineTerrain } from './mine/mineTerrain';
 import { presetCells, presetsFor, type MinePreset } from './mine/presets';
 import type { V3 } from './canvas';
@@ -129,10 +130,19 @@ export function MinePanel(p: MinePanelProps) {
   const range = useMemo(() => terrain.surfaceRange(), [terrain]);
   const top = 127;
   const [seedText, setSeedText] = useState(p.seed);
+  const properties = useRef<HTMLDivElement>(null);
+  const inspectedId = p.placingModule ? null : p.selectedModule;
+  useEffect(() => {
+    // A different component brings its inspector into view, without moving the page or jumping during edits.
+    if (inspectedId && properties.current) properties.current.scrollTop = 0;
+  }, [inspectedId]);
   const readout = useMemo(() => p.level === null ? null : levelOres(terrain, p.level), [terrain, p.level]);
   const stats = useMemo(() => mineStats(terrain, p.dug()), [terrain, p.rev]); // eslint-disable-line react-hooks/exhaustive-deps
   const disabled = !p.canWrite || p.busy;
-  return <aside className="flex w-full shrink-0 flex-col overflow-y-auto border-l border-border bg-surface text-xs lg:w-72" aria-label="Mine designer" data-testid="mine-panel">
+  return <aside className="flex min-h-0 w-full shrink-0 flex-col overflow-hidden border-l border-border bg-surface text-xs lg:w-72" aria-label="Mine designer" data-testid="mine-panel">
+    <MineComponents modules={p.modules} selectedModule={p.selectedModule} onSelectModule={p.onSelectModule} onFrameModule={p.onFrameModule} />
+    <div ref={properties} className="min-h-0 flex-1 overflow-y-auto" data-testid="mine-properties">
+    {p.selectedModule && !p.placingModule ? <section className="border-b border-border px-3 pb-3"><ModuleSettings key={p.selectedModule} {...p} disabled={disabled} /></section> : null}
     <section className="border-b border-border p-3"><ModulePalette {...p} disabled={disabled} /></section>
     <Section title={`Ore levels · ${version}`}>
       <p className="mb-2 text-[10px] text-subtle">Choose an entrance height. The cutaway below controls only the view.</p>
@@ -163,6 +173,7 @@ export function MinePanel(p: MinePanelProps) {
         {p.serverSeed ? <button type="button" aria-label="Use the server's seed" disabled={disabled} className="rounded border border-border p-1.5" onClick={() => { setSeedText(p.serverSeed!); p.onSeed(p.serverSeed!); }}><Server className="size-3.5" /></button> : null}
       </form>
     </details></section>
+    </div>
   </aside>;
 }
 

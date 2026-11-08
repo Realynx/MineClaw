@@ -67,8 +67,8 @@ function mount() {
     const ndc = new Vector3(at[0] + 0.5, at[1], at[2] + 0.5).project(camera);
     return { clientX: rect.left + (ndc.x + 1) * rect.width / 2, clientY: rect.top + (1 - ndc.y) * rect.height / 2 };
   };
-  const pointer = (type: string, at: V3) => {
-    const event = new PointerEvent(type, { ...client(at), button: 0, bubbles: true, cancelable: true });
+  const pointer = (type: string, at: V3, init: PointerEventInit = {}) => {
+    const event = new PointerEvent(type, { ...client(at), button: 0, bubbles: true, cancelable: true, ...init });
     act(() => { surface.dispatchEvent(event); });
     return event;
   };
@@ -321,5 +321,70 @@ describe('mine module pointer authoring', () => {
     act(() => { h.result.current.arm(tunnel); });
     act(() => { window.dispatchEvent(new Event('dragend')); });
     expect(h.result.current.placing).toEqual(tunnel);
+  });
+
+  it('leaves Alt-left and middle-button camera gestures alone while placing or selecting components', () => {
+    const h = mount();
+    const item = h.place(tunnel, [30, 25, 30]);
+    act(() => { h.studio.setSelection(null); });
+    expect(h.pointer('pointerdown', [30, 26.5, 30], { altKey: true }).defaultPrevented).toBe(false);
+    expect(h.pointer('pointerdown', [30, 26.5, 30], { button: 1 }).defaultPrevented).toBe(false);
+    expect(h.result.current.selectedId).toBeNull();
+    act(() => { h.result.current.arm(tunnel); });
+    expect(h.pointer('pointerdown', [40, 25, 40], { altKey: true }).defaultPrevented).toBe(false);
+    expect(h.pointer('pointerdown', [40, 25, 40], { button: 1 }).defaultPrevented).toBe(false);
+    h.pointer('pointermove', [40, 25, 40], { altKey: true });
+    expect(h.result.current.hover).toBeNull();
+    expect(h.result.current.modules).toEqual([item]);
+    expect(h.result.current.placing).toEqual(tunnel);
+  });
+
+  it('moves a component to typed coordinates as an undoable edit and refuses invalid or read-only positions', () => {
+    const h = mount();
+    const item = h.place(tunnel, [20, 25, 20]);
+    const original = new Set(h.studio.canvas.dug);
+    act(() => { h.result.current.position(item.id, [35, 30, 40]); });
+    expect(h.result.current.modules[0]!.at).toEqual([35, 30, 40]);
+    expect(h.studio.selection?.min).toEqual([33, 30, 40]);
+    expect(h.result.current.selectedId).toBe(item.id);
+    act(() => { h.studio.undo(); });
+    expect(h.result.current.modules).toEqual([item]);
+    expect(h.studio.canvas.dug).toEqual(original);
+    act(() => { h.result.current.position(item.id, [0, 25, 20]); });
+    expect(h.result.current.modules).toEqual([item]);
+    expect(h.notice).toHaveBeenLastCalledWith(expect.stringContaining('whole layout must fit'));
+    h.rerender({ ...h.props, canEdit: false });
+    act(() => { h.result.current.position(item.id, [35, 30, 40]); });
+    expect(h.result.current.modules).toEqual([item]);
+    expect(h.studio.canvas.dug).toEqual(original);
+  });
+
+  it('frames a component without editing it, cancels pending placement, and offers F or numpad decimal while read-only', () => {
+    const h = mount();
+    const item = h.place(tunnel, [30, 25, 30]);
+    const original = new Set(h.studio.canvas.dug);
+    act(() => { h.result.current.arm(tunnel); });
+    act(() => { h.result.current.frame(item.id); });
+    expect(h.result.current.placing).toBeNull();
+    expect(h.result.current.selectedId).toBe(item.id);
+    expect(h.focus).toHaveBeenLastCalledWith(30, 25.5, 30, expect.anything());
+    expect(document.activeElement).toBe(h.surface);
+    h.focus.mockClear();
+    h.rerender({ ...h.props, canEdit: false });
+    for (const code of ['KeyF', 'NumpadDecimal']) {
+      const event = new KeyboardEvent('keydown', { code, key: code === 'KeyF' ? 'f' : '.', cancelable: true });
+      act(() => { window.dispatchEvent(event); });
+      expect(event.defaultPrevented).toBe(true);
+    }
+    expect(h.focus).toHaveBeenCalledTimes(2);
+    expect(h.result.current.modules).toEqual([item]);
+    expect(h.studio.canvas.dug).toEqual(original);
+    const input = document.createElement('input');
+    document.body.append(input); input.focus();
+    const typing = new KeyboardEvent('keydown', { code: 'KeyF', key: 'f', cancelable: true });
+    act(() => { window.dispatchEvent(typing); });
+    expect(typing.defaultPrevented).toBe(false);
+    expect(h.focus).toHaveBeenCalledTimes(2);
+    input.remove();
   });
 });

@@ -34,6 +34,8 @@ export interface EngineOptions extends RuntimeOptions {
   follow?: string | null;
   layers?: Partial<LayerToggles>;
   cameraMode?: CameraMode;
+  /** Editor: cursor-first orbit (MMB), pan (Shift+MMB), and wheel dolly. Never captures the mouse with pointer lock. */
+  controls?: 'default' | 'editor';
   xray?: XRayMode;
   /** Blocks (32..256): the most this view ever draws; the viewer settings' draw distance applies below it. Absent = the setting. */
   drawDistance?: number;
@@ -42,7 +44,7 @@ export interface EngineOptions extends RuntimeOptions {
   onStats?: (s: ViewerStats) => void;
   onNotes?: (notes: string[]) => void;
   onCameraModeChange?: (m: CameraMode) => void;
-  /** Free cam with the mouse locked: what the crosshair points at, whenever it changes (null = nothing or unlocked). */
+  /** What the locked freecam crosshair or editor cursor points at, whenever it changes (null = nothing or inactive). */
   onAim?: (t: AimTarget | null) => void;
   /** A left click with the mouse locked, on what the crosshair points at. Without it the click picks as before. */
   onAimClick?: (t: AimTarget | null, mods: { shift: boolean; ctrl: boolean; button?: number }) => void;
@@ -72,6 +74,7 @@ export class WorldViewerEngine implements RuntimeView {
   private drawCap: number | null;
   private keys = new Set<string>();
   private drag: { x: number; y: number; t: number; button: number; moved: boolean } | null = null;
+  private editorDrag: { x: number; y: number; pointerId: number } | null = null;
   private frames = 0;
   private fpsAt = 0;
   private fps = 0;
@@ -89,6 +92,8 @@ export class WorldViewerEngine implements RuntimeView {
   private aimed: AimTarget | null = null;
   private aimAtMs = 0;
   private aimBusy = false;
+  private aimRequest = 0;
+  private pointerAt: [number, number] | null = null;
   private marker: [number, number, number] | null = null;
   private highlighted: string[] = [];
   private levelCut: { y: number; r: number; dimBelow: number | null } | null = null;
@@ -105,6 +110,7 @@ export class WorldViewerEngine implements RuntimeView {
     this.xray = opts.xray ?? 'auto';
     this.drawCap = opts.drawDistance ?? null;
     if (opts.cameraMode) this.rig.mode = opts.cameraMode;
+    if (opts.controls === 'editor') this.rig.mode = 'follow';
     this.ownsRuntime = !opts.runtime;
     this.runtime = (opts.runtime ?? new WorldRuntime(opts.source, opts)).retain();
     if (this.runtime.attachPrimary(this, container)) this.surface = this.runtime.canvas;
@@ -156,6 +162,7 @@ export class WorldViewerEngine implements RuntimeView {
   }
 
   setCameraMode(m: CameraMode): void {
+    if (this.opts.controls === 'editor') m = 'follow';
     this.keys.clear();
     this.rig.setMode(m, this.camera, performance.now());
     if (m !== 'fly' && document.pointerLockElement === this.surface) document.exitPointerLock();
@@ -164,6 +171,26 @@ export class WorldViewerEngine implements RuntimeView {
 
   getCameraMode(): CameraMode {
     return this.rig.mode;
+  }
+
+  setControls(controls: EngineOptions['controls']): void {
+    if (this.opts.controls === controls) return;
+    this.opts.controls = controls;
+    this.keys.clear();
+    this.drag = null;
+    this.editorDrag = null;
+    if (controls === 'editor') {
+      if (document.pointerLockElement === this.surface) document.exitPointerLock();
+      this.rig.collideDist = Infinity;
+      this.setCameraMode('follow');
+    }
+  }
+
+  /** Request immersive mouse look only for the normal viewer controls. */
+  lock(): void {
+    if (this.opts.controls === 'editor') return;
+    this.surface.focus();
+    void Promise.resolve(this.surface.requestPointerLock?.()).catch(() => undefined);
   }
 
   setXRay(m: XRayMode): void {
@@ -249,7 +276,7 @@ export class WorldViewerEngine implements RuntimeView {
     this.highlighted = names;
   }
 
-  /** What the crosshair points at (free cam, mouse locked), as last computed. */
+  /** What the locked freecam crosshair or editor cursor points at, as last computed. */
   aim(): AimTarget | null {
     return this.aimed;
   }
@@ -268,10 +295,25 @@ export class WorldViewerEngine implements RuntimeView {
       .sort((a, b) => Math.hypot(a.x - p.x, a.y - p.y, a.z - p.z) - Math.hypot(b.x - p.x, b.y - p.y, b.z - p.z));
   }
 
-  /** Recomputes the crosshair target now (the centre ray of this view's camera); a level cut is looked through. */
+  /** Recomputes the target: the editor cursor, or the freecam's centre ray. A level cut is looked through. */
   async aimNow(): Promise<AimTarget | null> {
+    if (this.opts.controls === 'editor') return this.pointerAt ? this.aimAtPointer(...this.pointerAt) : null;
     const o = this.camera.position;
     const d = this.camera.getWorldDirection(new THREE.Vector3());
+    return this.aimAlong(o, d);
+  }
+
+  /** Pick the exact cursor ray, including application plan cells; usable from capture-phase editor handlers. */
+  async aimAtPointer(clientX: number, clientY: number): Promise<AimTarget | null> {
+    const rect = this.surface.getBoundingClientRect();
+    if (!rect.width || !rect.height) return null;
+    const ray = new THREE.Raycaster();
+    ray.setFromCamera(new THREE.Vector2((clientX - rect.left) / rect.width * 2 - 1, 1 - (clientY - rect.top) / rect.height * 2), this.camera);
+    return this.aimAlong(ray.ray.origin, ray.ray.direction);
+  }
+
+  private async aimAlong(o: THREE.Vector3, d: THREE.Vector3): Promise<AimTarget | null> {
+    const request = ++this.aimRequest;
     const ray: AimRay = { origin: [o.x, o.y, o.z], direction: [d.x, d.y, d.z], max: this.drawDistance + 32 };
     const bots = this.layers.bots ? this.runtime.store.bots().filter((b) => b.dim === this.dim) : [];
     const physical = await aimAt(
@@ -283,7 +325,7 @@ export class WorldViewerEngine implements RuntimeView {
       this.drawDistance + 32,
     );
     const t = this.opts.resolveAim ? this.opts.resolveAim(physical, ray) : physical;
-    this.setAim(t);
+    if (!this.disposed && request === this.aimRequest) this.setAim(t);
     return t;
   }
 
@@ -311,6 +353,10 @@ export class WorldViewerEngine implements RuntimeView {
   /** Centres the camera on a block position (stops following until `setFollow`). */
   focus(x: number, y: number, z: number, view?: { distance?: number; pitch?: number }): void {
     this.following = false;
+    if (this.opts.controls === 'editor') {
+      if (view?.pitch !== undefined) this.rig.orbitPitch = Math.max(-89.9, Math.min(89.9, view.pitch));
+      if (view?.distance !== undefined) this.rig.orbitDist = Math.max(1, Math.min(256, view.distance));
+    }
     this.rig.focus(x + 0.5, y + 0.5, z + 0.5, this.camera, performance.now(), view);
   }
 
@@ -420,7 +466,7 @@ export class WorldViewerEngine implements RuntimeView {
 
   /** The look-at point follows the bot's eyes (jumps there when first acquired, then glides); not while flying. */
   private followBot(bot: BotView | null, dt: number): void {
-    if (!bot || !this.following || this.rig.mode === 'fly') return;
+    if (!bot || !this.following || this.rig.mode === 'fly' || this.opts.controls === 'editor') return;
     const want = this.followAt.set(bot.x, bot.y + 1.2, bot.z);
     if (!this.acquired) {
       this.rig.target.copy(want);
@@ -447,9 +493,9 @@ export class WorldViewerEngine implements RuntimeView {
     rt.overlays.setVisible(this.layers);
   }
 
-  /** The crosshair (free cam, mouse locked): what the centre ray hits, ten times a second. */
+  /** The active crosshair/cursor target, ten times a second (also updates when only the camera moves). */
   private updateAim(now: number): void {
-    if (!(this.locked() && this.rig.mode === 'fly')) {
+    if (!(this.opts.controls === 'editor' ? this.pointerAt && !this.editorDrag : this.locked() && this.rig.mode === 'fly')) {
       if (this.aimed) this.setAim(null);
       return;
     }
@@ -610,7 +656,7 @@ export class WorldViewerEngine implements RuntimeView {
   /** Follow camera collision (vanilla third person): pull the camera in front of the first solid block between the bot
    * and where the camera wants to be, so it never sits inside rock in a tunnel; the x-ray handles walls seen from outside. */
   private async collide(): Promise<void> {
-    if (this.rig.mode !== 'follow' || !this.cameraCollision) {
+    if (this.rig.mode !== 'follow' || !this.cameraCollision || this.opts.controls === 'editor') {
       this.rig.collideDist = Infinity;
       return;
     }
@@ -656,11 +702,19 @@ export class WorldViewerEngine implements RuntimeView {
 
   private bindInput(): void {
     const c = this.surface;
+    const rememberPointer = (e: PointerEvent) => { this.pointerAt = [e.clientX, e.clientY]; };
+    this.listen(c, 'pointermove', rememberPointer, { capture: true });
+    this.listen(c, 'pointerdown', rememberPointer, { capture: true });
+    this.listen(c, 'pointerleave', () => {
+      this.pointerAt = null;
+      if (this.opts.controls === 'editor') { this.aimRequest++; this.setAim(null); }
+    });
+    this.bindEditorNavigation();
     this.listen(c, 'contextmenu', (e: MouseEvent) => e.preventDefault());
     this.listen(c, 'pointerdown', (e: PointerEvent) => {
       c.focus();
       // Free cam plays like the game: the first click locks and hides the cursor (Esc releases it); that click picks nothing.
-      if (this.rig.mode === 'fly' && e.button === 0 && document.pointerLockElement !== c) {
+      if (this.opts.controls !== 'editor' && this.rig.mode === 'fly' && e.button === 0 && document.pointerLockElement !== c) {
         this.drag = null;
         void c.requestPointerLock?.();
         return;
@@ -688,6 +742,7 @@ export class WorldViewerEngine implements RuntimeView {
       d.moved = true;
       d.x = e.clientX;
       d.y = e.clientY;
+      if (this.opts.controls === 'editor') return;
       if (
         (this.rig.mode === 'iso' || this.rig.mode === 'top') &&
         (d.button === 2 || e.shiftKey || this.rig.mode === 'top')
@@ -722,12 +777,13 @@ export class WorldViewerEngine implements RuntimeView {
       'wheel',
       (e: WheelEvent) => {
         e.preventDefault();
-        this.rig.wheel(e.deltaY);
+        if (this.opts.controls === 'editor') this.rig.dolly(e.deltaY);
+        else this.rig.wheel(e.deltaY);
       },
       { passive: false },
     );
     this.listen(window, 'keydown', (e: KeyboardEvent) => {
-      if (!this.active()) return;
+      if (!this.active() || this.opts.controls === 'editor') return;
       if (e.code === 'KeyQ' && this.rig.mode === 'iso') this.rig.rotateIso(-1);
       else if (e.code === 'KeyE' && this.rig.mode === 'iso') this.rig.rotateIso(1);
       this.keys.add(e.code);
@@ -736,6 +792,40 @@ export class WorldViewerEngine implements RuntimeView {
     this.listen(window, 'keyup', (e: KeyboardEvent) => this.keys.delete(e.code));
     this.listen(window, 'blur', () => this.keys.clear());
     this.listen(c, 'blur', () => this.keys.clear());
+  }
+
+  /** Own navigation gestures in capture phase so MMB/Alt+LMB never reach an editor's block tools or gizmos. */
+  private bindEditorNavigation(): void {
+    const c = this.surface;
+    const consume = (e: PointerEvent) => { e.preventDefault(); e.stopImmediatePropagation(); };
+    this.listen(c, 'pointerdown', (e: PointerEvent) => {
+      if (this.opts.controls !== 'editor' || !(e.button === 1 || (e.button === 0 && e.altKey))) return;
+      consume(e);
+      c.focus();
+      this.drag = null;
+      this.editorDrag = { x: e.clientX, y: e.clientY, pointerId: e.pointerId };
+      try { c.setPointerCapture?.(e.pointerId); } catch { /* The pointer may have already left. */ }
+    }, { capture: true });
+    this.listen(c, 'pointermove', (e: PointerEvent) => {
+      const d = this.editorDrag;
+      if (!d || d.pointerId !== e.pointerId) return;
+      consume(e);
+      const dx = e.clientX - d.x, dy = e.clientY - d.y;
+      d.x = e.clientX; d.y = e.clientY;
+      this.following = false;
+      if (e.shiftKey) this.rig.panOrbit(dx, dy, c.clientHeight, this.camera);
+      else this.rig.orbit(dx, dy);
+    }, { capture: true });
+    const end = (e: PointerEvent) => {
+      if (this.editorDrag?.pointerId !== e.pointerId) return;
+      consume(e);
+      this.editorDrag = null;
+      if (c.hasPointerCapture?.(e.pointerId)) c.releasePointerCapture(e.pointerId);
+    };
+    this.listen(c, 'pointerup', end, { capture: true });
+    this.listen(c, 'pointercancel', end, { capture: true });
+    this.listen(c, 'lostpointercapture', () => { this.editorDrag = null; });
+    this.listen(window, 'blur', () => { this.editorDrag = null; this.drag = null; });
   }
 
   private async pickAt(ndc: THREE.Vector2): Promise<void> {

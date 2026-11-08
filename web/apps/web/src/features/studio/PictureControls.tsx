@@ -96,7 +96,8 @@ export function PictureControls(p: {
 
 /** Direction shortcuts operate on the imperative viewer from a click, never during React rendering. */
 export function positionPictureCamera(e: WorldViewerEngine, bounds: PictureBounds, baseY: number, yaw: number): void {
-  e.rig.flyYaw = yaw;
+  if (e.rig.mode === 'follow') e.rig.orbitYaw = yaw;
+  else e.rig.flyYaw = yaw;
   const center = bounds.min.map((v, i) => (v + bounds.max[i]!) / 2) as V3;
   center[1] += baseY;
   e.focus(...center, { pitch: 25, distance: pictureDistance(bounds, e.camera.aspect, e.camera.fov) });
