@@ -251,6 +251,14 @@ set some of those rows to just predefined roles."
 
 ### Time of day
 
+**Loop time range:** under the time slider, enable the checkbox, choose Start and End, then Apply. The clock advances normally
+inside that interval and resets to Start when it reaches End. A range can cross midnight or dawn. If the current time is outside
+the selected interval, it returns to Start on the next server check (about one second). Uncheck and Apply to restore the full cycle.
+This is a world-wide setting saved in the bot database; it continues with the browser closed and after bot restarts. A frozen
+daylight cycle stays frozen. `POST /api/story/time-range` accepts `{range:{start,end}}` in ticks 0..23999 (different endpoints), or
+`{range:null}` to disable. `time_control.range` reports the saved interval when enabled. The existing story write role and op
+account requirements apply; disabling remains possible while the op account is offline.
+
 The minecraft server owns the clock, but an op account can set it. `time_control` (in `GET /api/story` and in every colony state)
 is `{available, by}`. It is available when an account this bot controls is op: main first, else the first op body. `by` names it.
 

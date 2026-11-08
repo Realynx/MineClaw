@@ -705,6 +705,7 @@ function storyResolvers(): Partial<Record<RouteId, Resolver>> {
     'story.directive': (c) => run(() => storySim.directiveDetail(id(c))),
     'story.beds': (c) => run(() => storySim.beds(id(c), b(c))),
     'story.time': (c) => run(() => storySim.time(b(c))),
+    'story.timeRange': (c) => run(() => storySim.timeRange(b(c))),
     'story.home': (c) => run(() => storySim.home(id(c), b(c))),
     'story.pause': (c) => run(() => storySim.pause(id(c), (c.body as { paused: boolean }).paused)),
     'story.priorities': (c) => run(() => storySim.priorities(id(c), b(c))),

@@ -131,6 +131,7 @@ function Controls({ c }: Props) {
         control={state.timeControl ?? c.colonies.data?.timeControl}
         canWrite={c.canWrite}
         onSet={c.setTime}
+        onSetRange={c.setTimeRange}
       />
     </ControlCluster>
   );

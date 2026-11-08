@@ -433,5 +433,6 @@ public sealed class SupervisorServer : IAsyncDisposable
         Gate.Dispose();
         (Admin as IDisposable)?.Dispose();
         Story?.Colonies.Dispose(); // the colony tick stops; each colony saves
+        Story?.StopTimeControl();
     }
 }

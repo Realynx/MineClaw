@@ -13,13 +13,55 @@ public sealed record OpAccount(string Name, bool IsMain, bool? Op);
 /// known not to be op, a warning is logged once (main should be op: it runs the whitelist).
 /// </summary>
 public sealed class StoryTimeControl(Func<IReadOnlyList<OpAccount>> accounts, Func<string, string, string, Task<string?>> send,
-    TimeProvider? time = null, ILogger? log = null)
+    TimeProvider? time = null, ILogger? log = null, StoryTimeRangeStore? store = null) : IDisposable
 {
     private readonly TimeProvider _time = time ?? TimeProvider.System;
     private readonly ILogger _log = log ?? NullLogger.Instance;
     private readonly object _lock = new();
     private DateTimeOffset _last = DateTimeOffset.MinValue;
     private bool _warned;
+    private readonly SemaphoreSlim _operation = new(1, 1);
+    private StoryTimeRange? _range = store?.Load();
+    private ITimer? _timer;
+
+    public StoryTimeRange? Range { get { lock (_lock) return _range; } }
+
+    public void Start(Func<long?> worldTime)
+    {
+        _timer = _time.CreateTimer(async _ =>
+        {
+            try { if (worldTime() is { } ticks) await TickAsync(ticks).ConfigureAwait(false); }
+            catch (Exception ex) { _log.LogWarning(ex, "story: time range tick failed"); }
+        }, null, MinGap, MinGap);
+    }
+
+    public void Dispose() => _timer?.Dispose();
+
+    public async Task<bool> SetRangeAsync(StoryTimeRange? range)
+    {
+        if (range is { Valid: false }) throw new ArgumentException("range endpoints must be different ticks in 0..23999");
+        await _operation.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            if (range != null && By() == null) return false;
+            store?.Save(range);
+            lock (_lock) _range = range;
+            return true;
+        }
+        finally { _operation.Release(); }
+    }
+
+    /// <summary>Runs without a browser. Outside the allowed arc, including its end, return to its start.</summary>
+    public async Task TickAsync(long ticks)
+    {
+        if (!await _operation.WaitAsync(0).ConfigureAwait(false)) return;
+        try
+        {
+            if (Range is { } range && !range.Contains(ticks))
+                await SetCoreAsync(range.Start, null, "story time range").ConfigureAwait(false);
+        }
+        finally { _operation.Release(); }
+    }
 
     /// <summary>At most one change per this gap (the slider sends while it is dragged).</summary>
     public static readonly TimeSpan MinGap = TimeSpan.FromSeconds(1);
@@ -53,6 +95,13 @@ public sealed class StoryTimeControl(Func<IReadOnlyList<OpAccount>> accounts, Fu
     /// <summary>Sets the time of day (0..23999) for <paramref name="player"/>: (outcome, the account, an error).</summary>
     public async Task<(Outcome Result, string? By, string? Error)> SetAsync(int ticks, string? player)
     {
+        await _operation.WaitAsync().ConfigureAwait(false);
+        try { return await SetCoreAsync(ticks, player, "story time slider").ConfigureAwait(false); }
+        finally { _operation.Release(); }
+    }
+
+    private async Task<(Outcome Result, string? By, string? Error)> SetCoreAsync(int ticks, string? player, string source)
+    {
         if (By() is not { } by) return (Outcome.NoOp, null, "no op account");
         lock (_lock)
         {
@@ -61,7 +110,7 @@ public sealed class StoryTimeControl(Func<IReadOnlyList<OpAccount>> accounts, Fu
             _last = now;
         }
         var line = $"/time set {ticks}";
-        var why = $"story time slider{(string.IsNullOrWhiteSpace(player) ? "" : " (" + player.Trim() + ")")}";
+        var why = $"{source}{(string.IsNullOrWhiteSpace(player) ? "" : " (" + player.Trim() + ")")}";
         string? err;
         try { err = await send(by, line, why).ConfigureAwait(false); }
         catch (Exception ex) { err = ex.Message; }

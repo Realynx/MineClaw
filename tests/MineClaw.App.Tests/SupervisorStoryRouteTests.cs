@@ -462,6 +462,26 @@ public sealed class SupervisorStoryRouteTests
     }
 
     [Fact]
+    public async Task Time_range_route_validates_persists_in_state_and_can_be_disabled_without_an_op()
+    {
+        bool op = true;
+        using var control = new StoryTimeControl(() => [new("main", true, op)], (_, _, _) => Task.FromResult<string?>(null));
+        var options = new SupervisorOptions { Token = Token, Viewer = { Enabled = true } };
+        var routes = new SupervisorStoryRoutes(options, new StoryColonies(new Host(new World())), timeControl: control);
+        foreach (var bad in new object[] { new { }, new { range = new { start = 3, end = 3 } }, new { range = new { start = -1, end = 6000 } }, new { range = new { start = 0, end = 24000 } } })
+            Assert.Equal(400, (await Call(routes, "POST", "/api/story/time-range", bad)).Status);
+        Assert.Equal(405, (await Call(routes, "GET", "/api/story/time-range")).Status);
+        var (status, _) = await Call(routes, "POST", "/api/story/time-range", new { range = new { start = 18000, end = 6000 } });
+        Assert.Equal(200, status);
+        var (_, state) = await Call(routes, "GET", "/api/story");
+        Assert.Equal(18000, state!["time_control"]!["range"]!["start"]!.GetValue<int>());
+        op = false;
+        Assert.Equal(409, (await Call(routes, "POST", "/api/story/time-range", new { range = new { start = 0, end = 12000 } })).Status);
+        Assert.Equal(200, (await Call(routes, "POST", "/api/story/time-range", new { range = (object?)null })).Status);
+        Assert.Null(control.Range);
+    }
+
+    [Fact]
     public async Task Time_is_set_from_an_op_account_main_first_one_change_a_second()
     {
         var accounts = new List<OpAccount> { new("maid_chan", true, null), new("maid_chan_101", false, true) };

@@ -59,6 +59,7 @@ const STORY_OPS: Partial<Record<RouteId, StoryOp>> = {
   'story.directive': (s, cid) => s.directiveDetail(cid),
   'story.beds': (s, cid, _query, body) => s.beds(cid, body),
   'story.time': (s, _cid, _query, body) => s.time(body),
+  'story.timeRange': (s, _cid, _query, body) => s.timeRange(body),
   'story.home': (s, cid, _query, body) => s.home(cid, body),
   'story.pause': (s, cid, _query, body) => s.pause(cid, (body as { paused: boolean }).paused),
   'story.priorities': (s, cid, _query, body) => s.priorities(cid, body),

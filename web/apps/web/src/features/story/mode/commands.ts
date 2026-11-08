@@ -3,7 +3,7 @@
  * set the time, pause, set the speed, pick a chest on the map. `useStory` adds them to the screen state: the `Story` object
  * every action, the key map and the HUD take.
  */
-import { tickClock, type StoryDirectiveSpec, type StorySpeed } from '@mineclaw/contracts';
+import { tickClock, type StoryDirectiveSpec, type StorySpeed, type StoryTimeRange } from '@mineclaw/contracts';
 import { useCallback } from 'react';
 import { api, ApiError, errorText } from '@/lib/api/client';
 import { newRequestId } from '@/lib/utils';
@@ -108,6 +108,28 @@ function useTogglePause({ state, canWrite, write, say }: StoryModeState) {
   }, [state, canWrite, write, say]);
 }
 
+function useSetTimeRange({ canWrite, say, id, qc }: StoryModeState) {
+  return useCallback(
+    async (range: StoryTimeRange | null) => {
+      if (!canWrite) return false;
+      try {
+        await api('story.timeRange', { body: { range } });
+        say(
+          range
+            ? `Time loops from ${tickClock(range.start)} to ${tickClock(range.end)}`
+            : 'Full day/night cycle restored',
+        );
+        if (id) await catchUp(qc, id);
+        return true;
+      } catch (e) {
+        say(timeError(e), 'warn');
+        return false;
+      }
+    },
+    [canWrite, say, id, qc],
+  );
+}
+
 /** Fast / Faster: a movement-speed boost for the colony's pawns (docs/web/story-mode.md "Speed"). */
 function useSetSpeed({ state, canWrite, write, say }: StoryModeState) {
   return useCallback(
@@ -143,6 +165,7 @@ export function useStory() {
     focusBody: useFocusBody(s),
     draft: useDraft(s),
     setTime: useSetTime(s),
+    setTimeRange: useSetTimeRange(s),
     togglePause: useTogglePause(s),
     setSpeed: useSetSpeed(s),
     pickChest: usePickChest(s),

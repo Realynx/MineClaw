@@ -11,6 +11,7 @@ import {
   type StoryAlert,
   type StoryPawn,
   type StoryTimeControl,
+  type StoryTimeRange,
   type StorySpeed,
 } from '@mineclaw/contracts';
 import {
@@ -53,6 +54,7 @@ import {
 } from './tools';
 import type { MapTool } from './StoryMap';
 import { AiMark, Avatar, ToolIcon } from './visuals';
+import { TimeRangeEditor } from './TimeRangeEditor';
 
 export const panel = 'rounded-lg border border-border bg-surface/95 text-fg shadow-pop';
 
@@ -163,7 +165,13 @@ type GestureProps = {
 };
 
 /** The pawn order a lifted portrait dropped at `x` makes: before the pawn portrait under the pointer, else last. */
-function droppedOrder(row: HTMLElement | null, p: Press, x: number, order: readonly string[], pawns: BarBody[]): string[] {
+function droppedOrder(
+  row: HTMLElement | null,
+  p: Press,
+  x: number,
+  order: readonly string[],
+  pawns: BarBody[],
+): string[] {
   const target = [...(row?.querySelectorAll<HTMLElement>('[data-portrait][data-kind="pawn"]') ?? [])].find((el) => {
     const r = el.getBoundingClientRect();
     return x < r.left + r.width / 2;
@@ -905,7 +913,10 @@ function XrayButton({ xray, onXray }: { xray: boolean; onXray: () => void }) {
       type="button"
       onClick={onXray}
       aria-pressed={xray}
-      className={cn('grid size-6 place-items-center rounded', xray ? 'bg-accent-soft text-accent' : 'hover:bg-surface-2')}
+      className={cn(
+        'grid size-6 place-items-center rounded',
+        xray ? 'bg-accent-soft text-accent' : 'hover:bg-surface-2',
+      )}
       title={xray ? 'Roofs x-rayed (X)' : 'Show everything above this level (X)'}
       aria-label="X-ray above the level"
     >
@@ -939,7 +950,11 @@ function ColonyClock({ clock }: { clock?: WorldClock | null }) {
       data-frozen={c.frozen ? 'true' : undefined}
       data-stale={c.stale ? 'true' : undefined}
     >
-      {c.night ? <Moon className="size-3.5" aria-label="night" /> : <Sun className="size-3.5 text-warn" aria-label="day" />}
+      {c.night ? (
+        <Moon className="size-3.5" aria-label="night" />
+      ) : (
+        <Sun className="size-3.5 text-warn" aria-label="day" />
+      )}
       <span data-testid="colony-time">{c.text}</span>
       {c.frozen ? <Snowflake className="size-3.5 text-accent" aria-label="time is frozen" /> : null}
     </span>
@@ -964,11 +979,13 @@ export function TimeSlider({
   control,
   canWrite,
   onSet,
+  onSetRange,
 }: {
   clock?: WorldClock | null;
   control: StoryTimeControl | null | undefined;
   canWrite: boolean;
   onSet: (tick: number) => Promise<unknown>;
+  onSetRange?: (range: StoryTimeRange | null) => Promise<boolean>;
 }) {
   const [held, setHeld] = useState<number | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1028,6 +1045,14 @@ export function TimeSlider({
         ))}
       </div>
       {!available ? <div className="text-[10.5px] text-warn">{hint}</div> : null}
+      {onSetRange ? (
+        <TimeRangeEditor
+          key={`${control?.range?.start}/${control?.range?.end}`}
+          range={control?.range}
+          disabled={!canWrite || (!available && !control?.range)}
+          onSave={onSetRange}
+        />
+      ) : null}
       {clock.frozen ? (
         <div className="text-[10.5px] text-muted" data-testid="time-frozen">
           Time is frozen: the server&apos;s daylight cycle is stopped

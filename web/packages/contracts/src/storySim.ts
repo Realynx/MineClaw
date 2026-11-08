@@ -773,11 +773,21 @@ export class StorySim {
   }
 
   private timeAt = -Infinity;
+  private allowedTimeRange: { start: number; end: number } | null = null;
+
+  timeRange(body: { range?: { start: number; end: number } | null }) {
+    const r = body.range;
+    if (r === undefined || (r !== null && (!isTick(r.start) || !isTick(r.end) || r.start === r.end)))
+      throw Object.assign(new Error('Choose different start and end ticks in 0..23999'), { status: 400 });
+    if (r && !this.timeControl().available) throw Object.assign(new Error('no op account'), { status: 409 });
+    this.allowedTimeRange = r;
+    return this.timeControl();
+  }
 
   /** Whether the time of day can be set, and as whom. */
   timeControl() {
     const by = this.opts.timeOp === undefined ? 'maid_chan' : this.opts.timeOp;
-    return { available: !!by, by: by ?? null };
+    return { available: !!by, by: by ?? null, ...(this.allowedTimeRange ? { range: this.allowedTimeRange } : {}) };
   }
 
   /** Sets every colony's time of day (as the bot does through its op account): at most once a second. */
@@ -2810,6 +2820,9 @@ export class StorySim {
   private stepColony(c: Colony, dtMs: number): void {
     const before = c.rev;
     c.tod = (c.tod + dtMs / 50) % 24000;
+    const range = this.allowedTimeRange;
+    if (range && this.timeControl().available && !(range.start < range.end
+      ? c.tod >= range.start && c.tod < range.end : c.tod >= range.start || c.tod < range.end)) c.tod = range.start;
     if (c.builds.size) this.plan(c); // stock and ghosts move: the builds' materials and auto bills follow
     for (const p of c.pawns.values()) if (!p.p.online) this.comeBack(c, p);
     if (!c.paused) for (const p of c.pawns.values()) if (p.p.online) this.stepPawn(c, p, dtMs);

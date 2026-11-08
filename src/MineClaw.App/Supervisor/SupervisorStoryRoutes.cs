@@ -29,6 +29,7 @@ public sealed partial class SupervisorStoryRoutes(SupervisorOptions o, StoryColo
     private readonly TimeProvider _time = time ?? TimeProvider.System;
 
     public StoryColonies Colonies => colonies;
+    public void StopTimeControl() => timeControl?.Dispose();
 
     public static bool IsStoryPath(string path)
     {
@@ -115,6 +116,8 @@ public sealed partial class SupervisorStoryRoutes(SupervisorOptions o, StoryColo
                 return GetOnly(get, () => Reply(200, Index()));
             case ["time"]:
                 return await PostOnlyAsync(get, () => SetTimeAsync(body)).ConfigureAwait(false);
+            case ["time-range"]:
+                return await PostOnlyAsync(get, () => SetTimeRangeAsync(body)).ConfigureAwait(false);
             case ["recipes"]:
                 return GetOnly(get, () => Recipes(r));
             case ["colonies"]:
@@ -217,7 +220,25 @@ public sealed partial class SupervisorStoryRoutes(SupervisorOptions o, StoryColo
     private JsonObject TimeControl()
     {
         var (available, by) = timeControl?.Status() ?? (false, null);
-        return new JsonObject { ["available"] = available, ["by"] = by };
+        var state = new JsonObject { ["available"] = available, ["by"] = by };
+        if (timeControl?.Range is { } range) state["range"] = new JsonObject { ["start"] = range.Start, ["end"] = range.End };
+        return state;
+    }
+
+    private async Task<SupervisorReply> SetTimeRangeAsync(JsonObject b)
+    {
+        if (!b.ContainsKey("range")) return Bad("range is required (null disables the loop)");
+        StoryTimeRange? range = null;
+        if (b["range"] != null)
+        {
+            if (b["range"] is not JsonObject r || r["start"] is not JsonValue sv || !sv.TryGetValue<int>(out var start)
+                || r["end"] is not JsonValue ev || !ev.TryGetValue<int>(out var end)) return Bad("range needs integer start and end ticks");
+            range = new(start, end);
+            if (!range.Valid) return Bad("range endpoints must be different ticks in 0..23999");
+        }
+        if (timeControl == null || !await timeControl.SetRangeAsync(range).ConfigureAwait(false))
+            return Reply(409, new JsonObject { ["error"] = "no op account" });
+        return Reply(200, TimeControl());
     }
 
     private readonly HashSet<string> _notOpAlerted = new(StringComparer.OrdinalIgnoreCase);

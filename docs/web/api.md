@@ -371,6 +371,7 @@ Notes on specific routes:
 | `story.list` | `GET /api/story` | viewer | – | `StoryListResponse` | `GET /v1/sup/story` | /api/story | – |
 | `story.recipes` | `GET /api/story/recipes` | viewer | query `StoryRecipesQuery` | `StoryRecipesResponse` | `GET /v1/sup/story/recipes` | /api/story/recipes | – |
 | `story.create` | `POST /api/story/colonies` | story | body `StoryCreateRequest` | `StoryCreateResponse` | `POST /v1/sup/story/colonies` | /api/story/colonies | story |
+| `story.timeRange` | `POST /api/story/time-range` | story | body `StoryTimeRangeRequest` | `StoryTimeControl` | `POST /v1/sup/story/time-range` | /api/story/time-range | story |
 | `story.time` | `POST /api/story/time` | story | body `StoryTimeRequest` | `StoryTimeResponse` | `POST /v1/sup/story/time` | /api/story/time | story |
 | `story.directives` | `POST /api/story/directives` | story | body `StoryDirectiveRequest` | `StoryDirectiveResponse` | `POST /v1/sup/story/directives` | /api/story/directives (bridge adds player from X-MCX-Player, allow_commands from X-MCX-Roles) | story |
 | `story.directives.list` | `GET /api/story/directives` | viewer | – | `StoryDirectiveList` | `GET /v1/sup/story/directives` | /api/story/directives | – |

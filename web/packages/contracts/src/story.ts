@@ -161,7 +161,11 @@ export const StoryColonySummary = z.object({
 export type StoryColonySummary = z.infer<typeof StoryColonySummary>;
 
 /** Whether the world's time of day can be set from Story Mode: it needs an op account (`by`) the bot runs it as. */
-export const StoryTimeControl = z.object({ available: z.boolean(), by: z.string().nullish() });
+export const StoryTimeRange = z.object({ start: z.number().int().min(0).max(23999), end: z.number().int().min(0).max(23999) })
+  .refine((r) => r.start !== r.end, 'Start and end must be different');
+export type StoryTimeRange = z.infer<typeof StoryTimeRange>;
+export const StoryTimeRangeRequest = z.object({ range: StoryTimeRange.nullable() }).strict();
+export const StoryTimeControl = z.object({ available: z.boolean(), by: z.string().nullish(), range: StoryTimeRange.nullish() });
 export type StoryTimeControl = z.infer<typeof StoryTimeControl>;
 
 /** POST /api/story/time: sets the world's time of day (ticks, 0 = 06:00). */

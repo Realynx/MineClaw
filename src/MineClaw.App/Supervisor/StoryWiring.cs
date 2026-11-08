@@ -62,7 +62,9 @@ internal static class StoryWiring
             World = () => host.World,
             SaveDesign = (name, ghosts, by) => bot.Blueprints?.Service is { } svc ? SaveDesign(svc.Store, name, ghosts, by, client.World.Dimension) : null,
         };
-        var timeControl = new StoryTimeControl(() => OpAccounts(o, bot, client), (account, line, why) => SendOpAsync(rt, bot, client, account, line, why), log: log);
+        var timeControl = new StoryTimeControl(() => OpAccounts(o, bot, client), (account, line, why) => SendOpAsync(rt, bot, client, account, line, why),
+            log: log, store: new StoryTimeRangeStore(rt.Memory.Db));
+        timeControl.Start(() => client.IsPlaying ? host.World?.TimeOfDay : null);
         return new SupervisorStoryRoutes(o, colonies, directives, bodies == null ? null : bodies.Rows, viewer, timeControl: timeControl);
     }
 

@@ -93,6 +93,7 @@ export interface RouteTypes {
   'story.list': { params: never; query: never; body: never; response: z.output<typeof C.StoryListResponse> };
   'story.recipes': { params: never; query: z.input<typeof C.StoryRecipesQuery>; body: never; response: z.output<typeof C.StoryRecipesResponse> };
   'story.create': { params: never; query: never; body: z.input<typeof C.StoryCreateRequest>; response: z.output<typeof C.StoryCreateResponse> };
+  'story.timeRange': { params: never; query: never; body: z.input<typeof C.StoryTimeRangeRequest>; response: z.output<typeof C.StoryTimeControl> };
   'story.time': { params: never; query: never; body: z.input<typeof C.StoryTimeRequest>; response: z.output<typeof C.StoryTimeResponse> };
   'story.directives': { params: never; query: never; body: z.input<typeof C.StoryDirectiveRequest>; response: z.output<typeof C.StoryDirectiveResponse> };
   'story.directives.list': { params: never; query: never; body: never; response: z.output<typeof C.StoryDirectiveList> };
