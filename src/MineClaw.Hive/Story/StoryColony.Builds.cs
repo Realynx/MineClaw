@@ -972,6 +972,13 @@ public sealed partial class StoryColony
     private void CellFailed(PawnState p, BuildState b, GhostState g, string id, string why, bool counted = false)
     {
         var key = "g:" + id;
+        // A missing prerequisite is not a failed build, even after many attempts or a whole-job failure.
+        if (!g.Remove && !StoryConstruction.IsLiquid(g) && NoFaceYet(why))
+        {
+            Reopen(b, g);
+            _skip[key] = Now + SoftRest;
+            return;
+        }
         if (!counted)
         {
             _log.LogInformation("story {Colony}: {Pawn} cell {At} failed: {Why}", Id, p.Name, g.At, why);
@@ -999,7 +1006,7 @@ public sealed partial class StoryColony
     /// <summary>A "not now" failure rests the cell a little instead of counting, up to <see cref="SoftLimit"/> in a row.</summary>
     private bool CellRested(string key, string why)
     {
-        if (!Transient(why) && !why.Contains("is occupied by", StringComparison.OrdinalIgnoreCase) && !NoFaceYet(why)) return false;
+        if (!Transient(why) && !why.Contains("is occupied by", StringComparison.OrdinalIgnoreCase)) return false;
         int soft = _softFails[key] = _softFails.GetValueOrDefault(key) + 1;
         if (soft < SoftLimit) { _skip[key] = Now + SoftRest; return true; }
         _softFails.Remove(key);

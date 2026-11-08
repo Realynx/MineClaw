@@ -75,6 +75,13 @@ public sealed partial class StoryColony
         var (id, meta) = w.Block(g.At.X, g.At.Y, g.At.Z);
         if (Matches(g, id, meta, Modern)) { Settled(b, g); return; }
         if (g.State == "done") { DoneDrifted(b, g, id, meta, seen, ref drift); return; }
+        // Recover saved dependency failures from older runtimes; the support-aware picker decides when they are ready.
+        if (g.State == "blocked" && g.Reason is { } reason && NoFaceYet(reason))
+        {
+            Reopen(b, g);
+            if (b.Status == "blocked") { b.Status = "queued"; b.Reason = null; b.Rev = Touch(); }
+            else if (b.Reason is { } held && NoFaceYet(held)) { b.Reason = null; b.Rev = Touch(); }
+        }
         if (g.State == "misrotated" && StoryBlocks.Replaceable.Contains(id)) Reopen(b, g); // its block is gone: placed anew
         MarkHolds(w, g, id, meta);
     }

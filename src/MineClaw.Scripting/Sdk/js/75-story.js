@@ -14,9 +14,10 @@
   // closer (or back to the stand) and try once more; each cell is reported; out of items, the rest go back to the queue. j.metas
   // (a design's turned blocks): each cell placed with its meta's facing, axis or half (place_turned); a wrong one is never "built".
   const TURN = /wrong rotation/i;
-  // A batch cell's report ("cell c done" | "cell c failed: why") -> 1 when it is done.
+  const NO_SUPPORT = /nothing solid on any side/i;
+  // A batch cell's report (done, waiting for support, or failed) -> 1 when it is done.
   const noteCell = (j, c, r) => {
-    report(j, 'progress', 'cell ' + c + (good(r) ? ' done' : ' failed: ' + why(r)));
+    report(j, 'progress', 'cell ' + c + (good(r) ? ' done' : (NO_SUPPORT.test(why(r)) ? ' waiting: ' : ' failed: ') + why(r)));
     return good(r) ? 1 : 0;
   };
   const isBuilt = (j, c) => j.want && H.block(c) == j.want;
@@ -92,6 +93,8 @@
       if (r === null) break;
       if (!j.cells && r !== BUILT) return r;
       n += j.cells ? noteCell(j, cells[i], r) : 1;
+      // Later cells can depend on this one for a clickable face. Return the untouched tail to the planner.
+      if (!good(r)) break;
     }
     return { ok: true, msg: 'batch: ' + n + '/' + cells.length + ' placed' };
   };

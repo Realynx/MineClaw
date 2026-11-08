@@ -7,6 +7,28 @@ namespace MineClaw.Scripting.Tests.Js;
 /// <summary>The <c>story</c> SDK primitive and the shipped <c>story_pawn</c> script against a fake director.</summary>
 public sealed class StorySdkTests
 {
+    [Theory]
+    [InlineData("nothing solid on any side to place against", "waiting")]
+    [InlineData("server undid placement", "failed")]
+    public async Task A_failed_support_stops_the_batch_before_its_dependents_are_attempted(string why, string status)
+    {
+        var port = new FakeDirector(J("j1", "place", j =>
+        {
+            j["at"] = "1,64,1"; j["block"] = "planks"; j["want"] = "planks";
+            j["cells"] = new JsonArray("1,64,1", "2,64,1", "3,64,1");
+        }), J("j2", "end"));
+        using var rig = Rig.Js();
+        rig.Host.Story = port;
+        rig.World.Inventory.SetSlot(0, 36, new MineClaw.Data.ItemStack(5, 4, 0));
+        rig.On["place"] = (_, _) => Task.FromResult(ActResult.Fail(why));
+        var result = await rig.Run(MineClaw.Hive.Story.StoryColonies.PawnCode(), "story_pawn");
+        Assert.True(result.Ok, result.Outcome);
+        Assert.Single(rig.Norm(), c => c.StartsWith("place "));
+        Assert.Equal([
+            $"maid_chan j1 progress cell 1,64,1 {status}: {why}",
+            "maid_chan j1 done batch: 0/3 placed", "maid_chan j2 done"], port.Reports);
+    }
+
     private sealed class FakeDirector(params JsonObject[] jobs) : IStoryPort
     {
         private readonly Queue<JsonObject> _jobs = new(jobs);
@@ -415,7 +437,12 @@ public sealed class StorySdkTests
                 j["clear"] = new JsonArray("1,64,1");
                 j["scaffold"] = new JsonObject { ["2,65,1"] = "2,64,1" };
             }),
-            J("j2", "end"));
+            J("retry", "place", j =>
+            {
+                j["at"] = "2,65,1"; j["block"] = "planks";
+                j["cells"] = new JsonArray("2,65,1");
+                j["scaffold"] = new JsonObject { ["2,65,1"] = "2,64,1" };
+            }), J("j2", "end"));
         using var rig = Rig.Js();
         rig.Host.Story = port;
         rig.World.Inventory.SetSlot(0, 36, new MineClaw.Data.ItemStack(5, 4, 0));
@@ -432,8 +459,9 @@ public sealed class StorySdkTests
         Assert.True(scaffold >= 0 && scaffold < cell && cell < back, string.Join("\n", calls));
         Assert.Equal([
             "maid_chan j1 progress cell 1,64,1 failed: can't clear the cell 1,64,1: won't dig stone at 1,64,1: a placed stone (someone's floor, wall or path)",
-            "maid_chan j1 progress cell 2,65,1 done",
-            "maid_chan j1 done batch: 1/2 placed",
+            "maid_chan j1 done batch: 0/2 placed",
+            "maid_chan retry progress cell 2,65,1 done",
+            "maid_chan retry done batch: 1/1 placed",
             "maid_chan j2 done"], port.Reports);
     }
 

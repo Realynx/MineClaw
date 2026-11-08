@@ -17,6 +17,84 @@ public sealed class StoryReconcileTests
 
     public static TheoryData<string> Versions => new() { "1.12.2", "b1.8.1" };
 
+    private sealed class BuildClock : TimeProvider
+    {
+        public DateTimeOffset Now = DateTimeOffset.UtcNow;
+        public override DateTimeOffset GetUtcNow() => Now;
+    }
+
+    [Theory]
+    [InlineData("1.12.2", false)]
+    [InlineData("1.12.2", true)]
+    [InlineData("b1.8.1", false)]
+    [InlineData("b1.8.1", true)]
+    public void Missing_support_never_exhausts_retries_and_unattempted_cells_return_to_the_queue(string v, bool wholeJob)
+    {
+        var clock = new BuildClock();
+        var (c, h, _) = StoryRig.Make(1, Data(v), clock);
+        foreach (var p in c.Pawns.Values) foreach (var t in WorkTypes.All) p.Priorities[t] = t == WorkTypes.Build ? 1 : 0;
+        h.Lives[c.P()] = FakeStoryHost.Bare(0, 64, 4, new Stack(5, 0, 64));
+        var b = Add(c, 5, 0, [4, 64, 12], [5, 64, 12]);
+        for (int i = 0; i < StoryColony.SoftLimit * 4; i++)
+        {
+            var j = Pick(c);
+            Assert.Equal("place", j["kind"]!.GetValue<string>());
+            Assert.Equal(2, Strs(j["cells"]).Count);
+            var at = j["at"]!.GetValue<string>();
+            if (wholeJob) c.Report(c.P(), Id(j), "failed", $"{at} has nothing solid on any side to place against", null);
+            else
+            {
+                c.Report(c.P(), Id(j), "progress", $"cell {at} waiting: {at} has nothing solid on any side to place against", null);
+                c.Report(c.P(), Id(j), "done", "batch: 0/2 placed", null);
+            }
+            Assert.All(b.Ghosts, g => { Assert.Equal("todo", g.State); Assert.Null(g.Reason); });
+            Assert.Empty(c.Leases());
+            clock.Now += TimeSpan.FromMinutes(1);
+        }
+        Assert.DoesNotContain(c.Alerts, a => a.Text.Contains("nothing solid"));
+    }
+
+    [Theory, MemberData(nameof(Versions))]
+    public void A_second_builder_waits_until_the_first_builders_support_is_in_the_world(string v)
+    {
+        var (c, h, w) = StoryRig.Make(2, Data(v));
+        foreach (var p in c.Pawns.Values)
+        {
+            foreach (var t in WorkTypes.All) p.Priorities[t] = t == WorkTypes.Build ? 1 : 0;
+            h.Lives[p.Name] = FakeStoryHost.Bare(0, 64, 4, new Stack(4, 0, 8), new Stack(5, 0, 8));
+        }
+        Add(c, 4, 0, [4, 64, 12]);
+        var upper = Add(c, 5, 0, [4, 65, 12]);
+        var footing = c.Next(0);
+        Assert.Equal(["4,64,12"], Strs(footing["cells"]));
+        var waiting = c.Next(1);
+        Assert.NotEqual("place", waiting["kind"]?.GetValue<string>());
+        Assert.Equal("todo", upper.Ghosts.Single().State);
+        c.Report(c.P(1), Id(waiting), "done", null, null);
+        w.Set(4, 64, 12, 4);
+        c.Report(c.P(0), Id(footing), "done", "batch: 1/1 placed", null);
+        Assert.Equal(["4,65,12"], Strs(c.Next(1)["cells"]));
+    }
+
+    [Theory, MemberData(nameof(Versions))]
+    public void Saved_missing_support_failures_reopen_and_wait_for_the_footing(string v)
+    {
+        var (c, _, w) = Rig(v, new Stack(5, 0, 8));
+        Add(c, 4, 0, [4, 64, 12]);
+        var upper = Add(c, 5, 0, [4, 65, 12]);
+        var cell = upper.Ghosts.Single();
+        cell.State = "blocked";
+        cell.Reason = "4,65,12 has nothing solid on any side to place against";
+        upper.Status = "blocked";
+        c.Reconcile(w);
+        Assert.Equal("todo", cell.State);
+        Assert.Null(cell.Reason);
+        Assert.NotEqual("blocked", upper.Status);
+        Assert.NotEqual("place", Pick(c)["kind"]?.GetValue<string>());
+        w.Set(4, 64, 12, 4);
+        Assert.Equal(["4,65,12"], Strs(Pick(c)["cells"]));
+    }
+
     private static IGameData Data(string v) => v == "b1.8.1" ? Beta181GameData.Instance : Release1122GameData.Instance;
 
     private static (StoryColony C, FakeStoryHost H, FakeStoryWorld W) Rig(string v, params Stack[] stock)

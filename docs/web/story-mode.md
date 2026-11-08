@@ -1376,6 +1376,9 @@ Now:
 
 - **A build job is a batch.** It holds up to 24 cells of one item (and facing) within 6 blocks of its first open cell, and comes
   with one `stand`.
+  - A failed placement stops the batch: later cells may need that block as their support. Untouched cells return to the queue
+    without failures, and the planner orders them again against the current world. A missing support face means waiting, never
+    a permanent blocked cell; saved missing-support failures reopen automatically during reconciliation.
   - The stand has feet and head open and solid ground under it, up to three blocks below the cell (a roof is laid from the
     ground). It is not the first cell and not on a batch cell.
   - The stand must have the first cell in reach, then as many as possible of the cells within 3 blocks of it. In reach means

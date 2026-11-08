@@ -763,6 +763,12 @@ public sealed partial class StoryColony
 
     private void Failed(PawnState p, ActiveJob j, string? note)
     {
+        // Older/single-cell callers can report the whole placement as failed when only its support is pending.
+        if (j.Source == "ghost" && j.Kind == "place" && NoFaceYet(note ?? ""))
+        {
+            BatchFailed(p, j, note!);
+            return;
+        }
         var why = Reason(note);
         // Someone else picked its drops up on the way: nothing failed (StoryColony.Hauling.cs), and the log says so, not "failed".
         bool gone = DropsGone(j, why);
