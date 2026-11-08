@@ -6,6 +6,18 @@ namespace MineClaw.Client.Tests;
 public sealed class NoRouteCacheTests
 {
     [Fact]
+    public void Construction_reserves_are_part_of_route_freedom_independent_of_dictionary_order()
+    {
+        var start = new BlockPos(0, 61, 0);
+        var goal = new GoalBlock(0, 64, 0);
+        var first = new GotoOptions { AllowPlace = true, ScaffoldReserve = new Dictionary<int, int> { [5] = 8, [3] = 4 } };
+        var reversed = first with { ScaffoldReserve = new Dictionary<int, int> { [3] = 4, [5] = 8 } };
+        var released = first with { ScaffoldReserve = null };
+        Assert.Equal(NoRouteCache.Key(start, goal, first), NoRouteCache.Key(start, goal, reversed));
+        Assert.NotEqual(NoRouteCache.Key(start, goal, first), NoRouteCache.Key(start, goal, released));
+    }
+
+    [Fact]
     public void The_same_failed_search_is_answered_from_the_cache_until_a_block_changes_near_it_or_it_expires()
     {
         var now = new DateTime(2026, 11, 4, 12, 0, 0, DateTimeKind.Utc);

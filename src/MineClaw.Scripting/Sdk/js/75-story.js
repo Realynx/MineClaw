@@ -113,8 +113,32 @@
     return placeCell(j, c, m, clear, access, act);
   };
   const clearOf = j => (Array.isArray(j.clear) ? j.clear : j.clear ? [j.at] : []);
+  const buildReady = (j, cell, meta, clear) => !clear.includes(cell) && !(j.scaffold && j.scaffold[cell])
+    && (isBuilt(j, cell, meta) || H.storyWithin(cell, H.item(j.block).id, meta));
+  // Finish the work this access already reaches before dismantling it for another approach. Only actual supported faces count:
+  // a later cell still waiting on an earlier placement (or an ordered clear/scaffold) keeps its original place in the run.
+  const readyOnAccess = (j, pending, clear, access) => {
+    if (!access.placed.length) return 0;
+    const at = pending.findIndex(p => buildReady(j, p.cell, p.meta, clear));
+    return at < 0 ? 0 : at;
+  };
+  const atStand = at => {
+    const [x, y, z] = String(at).split(',').map(Number), p = H.me('pos');
+    return Math.floor(p.x) === x && Math.floor(p.z) === z && Math.abs(p.y - y) <= 0.5;
+  };
+  // Construction must reach its actual working stand, not merely a column underneath it. A failed walk gets one place-only
+  // recovery with the remaining build material reserved; generic build mode would also permit destructive path digging.
+  const constructionKeep = j => j._keep || { [H.item(j.block).id]: (j.cells || [j.at]).length + Object.keys(j.scaffold || {}).length };
+  const buildApproach = (at, j, act) => {
+    let r = act(() => call('go', at, 0));
+    if (!good(r) && !(r && r.cancelled) && NO_WAY.test(why(r))) {
+      r = act(() => call('go', at, 0, { scaffold: true, keep: constructionKeep(j) }));
+    }
+    return good(r) && !atStand(at) ? { ok: false, msg: 'out of reach: did not arrive at construction stand ' + at } : r;
+  };
   const place = j => {
     const cells = j.cells || [j.at], clear = clearOf(j), metas = j.metas || [];
+    const pending = cells.map((cell, i) => ({ cell, meta: metas[i] }));
     const access = { placed: [], stand: null }, interrupted = { ok: false, cancelled: true, msg: 'build batch interrupted' };
     let n = 0, stopped = false;
     const act = fn => {
@@ -125,18 +149,23 @@
     };
     try {
       if (j.reach) { const r = act(() => ready(j)); if (!good(r)) return r; }
-      if (j.stand && eyes(j.stand) > 1.8) { const r = act(() => call('go', j.stand, 0)); if (r && r.cancelled) return r; }
-      for (let i = 0; i < cells.length; i++) {
-        const job = { ...j, _keep: { [H.item(j.block).id]: cells.length - i }, _targets: cells.slice(i) };
-        const r = placeOne(job, cells[i], metas[i], clear, access, act);
+      if (j.stand && (j.reach ? !atStand(j.stand) && !buildReady(j, cells[0], metas[0], clear) : eyes(j.stand) > 1.8)) {
+        const r = j.reach ? buildApproach(j.stand, j, act) : act(() => call('go', j.stand, 0));
+        if (r && r.cancelled || j.reach && !good(r) && !buildReady(j, cells[0], metas[0], clear)) return r;
+      }
+      while (pending.length) {
+        const i = readyOnAccess(j, pending, clear, access), { cell, meta } = pending[i];
+        const job = { ...j, _keep: { [H.item(j.block).id]: pending.length }, _targets: pending.map(p => p.cell) };
+        const r = placeOne(job, cell, meta, clear, access, act);
         if (r === null) break;
         if (r && r.cancelled) return r;
         if (!j.cells && r !== BUILT) return r;
         if (good(r)) n++;
-        if (j.cells && !report(j, 'progress', 'cell ' + cells[i] + (good(r) ? ' done'
+        if (j.cells && !report(j, 'progress', 'cell ' + cell + (good(r) ? ' done'
           : (NO_SUPPORT.test(why(r)) ? ' waiting: ' : ' failed: ') + why(r)))) return interrupted;
         // Later cells can depend on this one for a clickable face. Return the untouched tail to the planner.
         if (!good(r)) break;
+        pending.splice(i, 1);
       }
       return { ok: true, msg: 'batch: ' + n + '/' + cells.length + ' placed' };
     } finally {
@@ -286,11 +315,27 @@
     }
     return r;
   };
+  let lastFetchRecovery, fetchRecoverySources = new Set();
+  // Construction supplies can be across the same missing stair as the build. Recover each source once per job, using the
+  // chest interaction goal (no distance/stand-on-chest goal), placement-only access and the batch's permanent stock reserve.
+  const constructionFetch = (j, f, failed) => {
+    if (!j.reach || !j.block || !j.cells || failed && failed.cancelled || /busy/i.test(why(failed))
+      || !/no path|no route|unreachable|can't reach|couldn't get closer|partway|stuck/i.test(why(failed))) return failed;
+    const key = j.id == null ? j : String(j.id);
+    if (key !== lastFetchRecovery) { lastFetchRecovery = key; fetchRecoverySources = new Set(); }
+    if (fetchRecoverySources.has(f.from)) return failed;
+    fetchRecoverySources.add(f.from);
+    const act = fn => j.id == null ? fn() : during(j, fn);
+    const r = act(() => call('go', { to: f.from, scaffold: true, keep: constructionKeep(j) }));
+    return good(r) ? act(() => takeOne(f)) : r;
+  };
   // Every j.fetch item: -> {got: any came out} or {stop: the take that ends the job (a build batch goes on with what it carries)}.
   const fetchItems = j => {
     let got = false;
     for (const f of j.fetch || []) {
-      const r = takeOne(f);
+      let r = takeOne(f);
+      if (!good(r)) r = constructionFetch(j, f, r);
+      if (r && r.cancelled) return { stop: r };
       if (globalThis.ok(r)) got = true;
       else if (!j.cells || !(H.inv(j.block) > 0)) return { stop: r };
     }
@@ -532,7 +577,7 @@
     if (s.within) return fn();
     const short = pillarShort(s, j);
     if (short) return short;
-    const w = act(() => globalThis.go(s.stand, 0));
+    const w = j && j._place ? buildApproach(s.stand, j, act) : act(() => globalThis.go(s.stand, 0));
     if (!globalThis.ok(w)) return { ok: false, msg: 'out of reach: ' + w.msg };
     const placed = access ? access.placed : [];
     if (access) access.stand = s.stand;

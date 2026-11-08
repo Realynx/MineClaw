@@ -179,7 +179,7 @@ public sealed partial class MinecraftClient
     /// <param name="lockedDoors">Openables (state blocks) that ignored our clicks this goto: never planned through again.</param>
     private PathOptions BuildPathOptions(GotoOptions o, IReadOnlySet<BlockPos>? lockedDoors = null)
     {
-        int scaffold = ScaffoldItem() ?? -1;
+        int scaffold = ScaffoldItem(o.ScaffoldReserve) ?? -1;
         var slots = World.Inventory.PlayerSlots();
         var othersStandOn = Safety.OtherPlayersSupport(World); // hard safety: never dig out from under another player
         return PathOptions.Default with
@@ -200,7 +200,7 @@ public sealed partial class MinecraftClient
                 return ticks == int.MaxValue ? double.PositiveInfinity : ticks + 5;
             },
             AllowPlace = o.AllowPlace && scaffold > 0,
-            ScaffoldBudget = o.AllowPlace && scaffold > 0 ? Math.Min(o.ScaffoldBudget, ScaffoldCount()) : 0,
+            ScaffoldBudget = o.AllowPlace && scaffold > 0 ? Math.Min(o.ScaffoldBudget, ScaffoldCount(o.ScaffoldReserve)) : 0,
             Timeout = o.PlanTimeout,
             AllowPartial = o.AllowPartial,
             AllowOpenDoors = o.AllowOpenDoors,
@@ -393,7 +393,7 @@ public sealed partial class MinecraftClient
         if (Pathfinder.StartCellFor(World, at) is { } fromCell) run.AvoidMoves.Add((fromCell, stuckStep.Pos));
         if (run.Stuck.From is { } prev) run.AvoidMoves.Add((prev, stuckStep.Pos));
         var r = "stuck " + DescribeStuck(at, stuckStep);
-        if (run.StuckHere >= 2 && await UnstickAsync(stuckStep, run.Token).ConfigureAwait(false) is { } escaped)
+        if (run.StuckHere >= 2 && await UnstickAsync(stuckStep, run.O, run.Token).ConfigureAwait(false) is { } escaped)
             r += $" ({run.StuckHere}x here; {escaped})";
         return r;
     }
@@ -476,7 +476,7 @@ public sealed partial class MinecraftClient
         });
         try
         {
-            var r = await FollowCoreAsync(follower, ct, blockedJumps, lockedDoors).ConfigureAwait(false);
+            var r = await FollowCoreAsync(follower, o, ct, blockedJumps, lockedDoors).ConfigureAwait(false);
             if (r == "stuck" && stuck is not null && follower.CurrentStep is { } st)
             {
                 stuck.Step = st;
@@ -490,7 +490,7 @@ public sealed partial class MinecraftClient
         }
     }
 
-    private async Task<string?> FollowCoreAsync(PathFollower follower, CancellationToken ct,
+    private async Task<string?> FollowCoreAsync(PathFollower follower, GotoOptions o, CancellationToken ct,
         HashSet<(BlockPos From, BlockPos To)>? blockedJumps, HashSet<BlockPos>? lockedDoors)
     {
         int pillarRetries = 0;
@@ -508,7 +508,7 @@ public sealed partial class MinecraftClient
                     return last.Reason ?? "path failed";
                 case FollowerStatus.NeedsAction when last.Action is { } a:
                 {
-                    var r = await DoFollowerActionAsync(follower, a, last.Input.Sneak, ct).ConfigureAwait(false);
+                    var r = await DoFollowerActionAsync(follower, a, last.Input.Sneak, o.ScaffoldReserve, ct).ConfigureAwait(false);
                     // Pillar jump fell back before the block went out: jump again (the follower re-centers), not a failure.
                     if (r.Ok || IsPillarFallback(a, r) && ++pillarRetries <= 6) break;
                     return FollowerActionFailed(follower, a, r, lockedDoors);
@@ -547,14 +547,15 @@ public sealed partial class MinecraftClient
 
     /// <summary>The follower's step action (dig, activate, scaffold placement) under the step's sneak; a placed scaffold block is
     /// remembered for cleanup.</summary>
-    private async Task<ActionResult> DoFollowerActionAsync(PathFollower follower, FollowerAction a, bool sneak, CancellationToken ct)
+    private async Task<ActionResult> DoFollowerActionAsync(PathFollower follower, FollowerAction a, bool sneak,
+        IReadOnlyDictionary<int, int>? reserve, CancellationToken ct)
     {
         _idleSneak = sneak;
         var r = a.Kind switch
         {
             FollowerActionKind.Break => await DigCoreAsync(a.Pos, ct, allowPathing: false).ConfigureAwait(false),
             FollowerActionKind.Activate => await ActivateForPathAsync(a.Pos, follower.CurrentStep, ct).ConfigureAwait(false),
-            _ => await PlaceCoreAsync(a.Pos, ScaffoldItem() ?? -1, ct, allowPathing: false).ConfigureAwait(false),
+            _ => await PlaceCoreAsync(a.Pos, ScaffoldItem(reserve) ?? -1, ct, allowPathing: false).ConfigureAwait(false),
         };
         _idleSneak = false;
         if (r.Ok && a.Kind == FollowerActionKind.Place) RememberTemporaryBlock(a.Pos);
@@ -601,11 +602,11 @@ public sealed partial class MinecraftClient
     /// floor), a small hop toward the step when only the feet are blocked, else a sneak-walk off in a free direction (the edge
     /// guard still filters every tick). Returns what it did, or null when nothing moved.
     /// </summary>
-    private async Task<string?> UnstickAsync(PathStep step, CancellationToken ct)
+    private async Task<string?> UnstickAsync(PathStep step, GotoOptions options, CancellationToken ct)
     {
         var start = World.Player.Position;
         var hits = StuckProbe.Obstructions(World, start, step.Target);
-        if (await MineOwnObstructionAsync(hits, ct).ConfigureAwait(false) is { } mined) return mined;
+        if (await MineOwnObstructionAsync(hits, options.BreakOnly, ct).ConfigureAwait(false) is { } mined) return mined;
         var toward = PlayerPhysics.YawPitchTo(start, step.Target with { Y = start.Y }).Yaw;
         if (hits.Count > 0 && !hits.Any(h => h.Head)
             && await PushOffAsync(start, toward, jump: true, sneak: false, maxTicks: World.Player.Physics.InWater ? 40 : 14, ct).ConfigureAwait(false))
@@ -615,14 +616,15 @@ public sealed partial class MinecraftClient
 
     /// <summary>Mines the first block in the way that this body may take (self-placed; never next to lava, never a container,
     /// never protected, never another player's floor): what it did, or null.</summary>
-    private async Task<string?> MineOwnObstructionAsync(IReadOnlyList<StuckProbe.Obstruction> hits, CancellationToken ct)
+    private async Task<string?> MineOwnObstructionAsync(IReadOnlyList<StuckProbe.Obstruction> hits,
+        Func<int, BlockPos, bool>? breakOnly, CancellationToken ct)
     {
         var support = Safety.OtherPlayersSupport(World);
         foreach (var h in hits)
         {
             int id = World.GetBlock(h.Pos);
             if (!World.Placed.IsPlaced(h.Pos, World.Dimension, id) || World.Info(id).Interactable || NextToLava(h.Pos)
-                || EditBlocked(h.Pos) || support.Contains(h.Pos)) continue;
+                || EditBlocked(h.Pos) || support.Contains(h.Pos) || breakOnly?.Invoke(id, h.Pos) == false) continue;
             var dug = await DigCoreAsync(h.Pos, ct, allowPathing: false).ConfigureAwait(false);
             if (dug.Ok) return $"mined our {BlockName(id, 0)} at {Fmt(h.Pos)}";
         }
@@ -703,8 +705,8 @@ public sealed partial class MinecraftClient
     {
         if (RouteTarget(goal) is not { } t) return "";
         int dy = t.Y - (int)Math.Floor(start.Y + 1e-6);
-        int have = ScaffoldCount();
-        int logs = ReservedItems.Contains(MineClaw.Data.Blocks.Log) ? 0 : World.Inventory.CountItem(MineClaw.Data.Blocks.Log);
+        int have = ScaffoldCount(o.ScaffoldReserve);
+        int logs = ScaffoldAvailable(MineClaw.Data.Blocks.Log, o.ScaffoldReserve);
         if (dy < 2 && o.AllowPlace) return "";
         var probe = BuildPathOptions(o) with
         {
@@ -716,7 +718,7 @@ public sealed partial class MinecraftClient
         string up = dy >= 2 ? $"; it's {dy} blocks up" : "";
         if (!r.Success)
             return $"{up}; unreachable even by pillaring/bridging" + (_protectedRegion is not null ? " (no edits inside spawn protection)" : "");
-        return BuildingHint(up, Math.Max(1, r.ScaffoldUsed), have, logs, o.AllowPlace);
+        return BuildingHint(up, Math.Max(1, r.ScaffoldUsed), have, logs, o.AllowPlace, o.ScaffoldReserve);
     }
 
     /// <summary>The block a goal is about (for the climb hint), or null.</summary>
@@ -728,10 +730,10 @@ public sealed partial class MinecraftClient
 
     /// <summary>The hint for a route only building reaches: retry in build mode (with the blocks held, or with logs crafted into
     /// planks), or how many blocks are missing.</summary>
-    private string BuildingHint(string up, int need, int have, int logs, bool allowPlace)
+    private string BuildingHint(string up, int need, int have, int logs, bool allowPlace, IReadOnlyDictionary<int, int>? reserve)
     {
         if (allowPlace && have >= need) return up;
-        string using_ = have > 0 ? $" ({ScaffoldMix()})" : "";
+        string using_ = have > 0 ? $" ({ScaffoldMix(reserve)})" : "";
         if (have >= need)
             return $"{up}; reachable by building: need {need} blocks to pillar/bridge, have {have}{using_} - retry with build mode (allow_place)";
         if (have + logs * 3 >= need)
@@ -740,8 +742,9 @@ public sealed partial class MinecraftClient
     }
 
     /// <summary>"12 cobblestone, 4 planks": scaffold held, for hints.</summary>
-    private string ScaffoldMix() => string.Join(", ", ScaffoldSnapshot().Where(kv => kv.Value > 0 && !ReservedItems.Contains(kv.Key))
-        .Select(kv => $"{kv.Value} {BlockName(kv.Key, 0)}"));
+    private string ScaffoldMix(IReadOnlyDictionary<int, int>? reserve) => string.Join(", ", ScaffoldIds
+        .Select(id => (Id: id, Count: ScaffoldAvailable(id, reserve))).Where(s => s.Count > 0)
+        .Select(s => $"{s.Count} {BlockName(s.Id, 0)}"));
 
     /// <summary>
     /// Build-mode goto with no route on the blocks held: when the probe says the climb needs more than we carry and logs
@@ -750,18 +753,23 @@ public sealed partial class MinecraftClient
     private async Task<string?> CraftPlanksToBuildAsync(Goal goal, GotoOptions o, Vec3d start, CancellationToken ct)
     {
         if (ReservedItems.Contains(MineClaw.Data.Blocks.Log) || ReservedItems.Contains(MineClaw.Data.Blocks.Planks)) return null;
-        int logs = World.Inventory.CountItem(MineClaw.Data.Blocks.Log);
+        int logs = ScaffoldAvailable(MineClaw.Data.Blocks.Log, o.ScaffoldReserve);
         if (logs == 0) return null;
-        int have = ScaffoldCount();
+        int have = ScaffoldCount(o.ScaffoldReserve);
+        // Newly crafted planks first cover any construction reserve not yet carried; those are never scaffolding.
+        int missingPlanks = Math.Max(0, (o.ScaffoldReserve?.GetValueOrDefault(MineClaw.Data.Blocks.Planks) ?? 0)
+            - World.Inventory.CountItem(MineClaw.Data.Blocks.Planks));
+        int possible = have + logs * 3 - missingPlanks;
+        if (possible <= have) return null;
         var probe = BuildPathOptions(o) with
         {
-            AllowPlace = true, ScaffoldBudget = Math.Min(64, have + logs * 3), AllowPartial = false, Timeout = TimeSpan.FromMilliseconds(600),
+            AllowPlace = true, ScaffoldBudget = Math.Min(64, possible), AllowPartial = false, Timeout = TimeSpan.FromMilliseconds(600),
         };
         PathResult r;
         try { r = await PathfindGate.RunAsync(() => Pathfinder.FindPath(World, start, goal, probe, ct), ct).ConfigureAwait(false); }
         catch (OperationCanceledException) { return null; }
         if (!r.Success || r.ScaffoldUsed <= have) return null;
-        int useLogs = Math.Min(logs, (r.ScaffoldUsed - have + 2) / 3);
+        int useLogs = Math.Min(logs, (r.ScaffoldUsed - have + missingPlanks + 2) / 3);
         var c = await CraftCoreAsync(MineClaw.Data.Blocks.Planks, -1, useLogs * 4, ct).ConfigureAwait(false);
         Log($"goto: short on blocks to build with (need {r.ScaffoldUsed}, have {have}): crafting {useLogs * 4} planks from logs: {c.Message}");
         return c.Ok ? $"crafted {useLogs * 4} planks from {useLogs} log" : null;

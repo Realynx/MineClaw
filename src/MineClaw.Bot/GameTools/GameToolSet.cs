@@ -179,12 +179,14 @@ public static class GameToolSet
             (_, _) => Ok(c.DescribeOpenWindow(tools.CapFor("window"))));
 
         // ---- movement
-        tools.Register("goto", "Walk to x,y,z, a saved place or player (come here).",
-            ToolSchema.Create().Str("to", "x,y,z, name or player", required: false).Num("dist", required: false)
-                .Bool("build", "may dig/place on the way", required: false)
-                .Str("allow_parkour", "void = gap jumps over the void too; only when poofimafox/kiwi asked for this jump", required: false, enumValues: ["off", "ground", "void"])
-                .Str("into_void", "reason: deliberately step off the nearest edge into the void", required: false)
-                .Bool("keep_items_ok", required: false).Build(),
+        tools.Register("goto", "Go to coords/place/player.",
+            ToolSchema.Create().Str("to", required: false).Num("dist", required: false)
+                .Bool("build", "dig/place", required: false)
+                .Str("allow_parkour", "void: only if poofimafox/kiwi asks", required: false, enumValues: ["off", "ground", "void"])
+                .Str("into_void", "reason", required: false)
+                .Bool("keep_items_ok", required: false)
+                .Bool("scaffold", "place only", required: false)
+                .Raw("keep", """{"type":"object","description":"keep item:count"}""", required: false).Build(),
             (i, ct) => GotoToolAsync(c, places, i, ct), longRunning: true);
         tools.Register("follow", "Follow a player until stopped.",
             ToolSchema.Create().Str("player").Num("dist", required: false).Build(),
@@ -442,13 +444,39 @@ public static class GameToolSet
             return R(await c.StepIntoVoidAsync(why, i.Bool("keep_items_ok") == true, ct));
         var to = i.ReqStr("to");
         bool build = i.Bool("build") == true;
+        bool scaffold = i.Bool("scaffold") == true;
+        if (build && scaffold) return ToolResult.Error("use either build or scaffold, not both");
+        var (reserve, reserveError) = ScaffoldReserve(i);
+        if (reserveError != null) return ToolResult.Error(reserveError);
         var parkour = i.Str("allow_parkour") switch { "off" => ParkourMode.Off, "void" => ParkourMode.Void, _ => ParkourMode.Ground };
         if (build) await ClutchBlocks.EnsureAsync(c, ct); // bridging/pillaring = edge work: carry clutch blocks first
-        var opts = GotoOptions.Default with { AllowBreak = build, AllowPlace = build, Parkour = parkour };
+        var opts = GotoOptions.Default with
+        {
+            AllowBreak = build, AllowPlace = build || scaffold, Parkour = parkour, ScaffoldReserve = reserve,
+            // Natural-ground detours can otherwise opt into digging even with AllowBreak off.
+            BreakOnly = scaffold ? (_, _) => false : null,
+            AllowPartial = !scaffold,
+        };
         double? dist = i.Num("dist");
         if (await ThroughPortalAsync(c, places, to, dist, opts, ct) is { } travelled) return travelled;
         if (GotoGoal(c, places, to, dist) is not { } goal) return ToolResult.Error($"unknown place or player '{to}'");
         return R(await c.GotoAsync(goal, opts, ct));
+    }
+
+    private static (IReadOnlyDictionary<int, int>? Reserve, string? Error) ScaffoldReserve(JsonElement input)
+    {
+        if (!input.TryGetProperty("keep", out var keep)) return (null, null);
+        if (keep.ValueKind != JsonValueKind.Object) return (null, "keep must map item names or IDs to nonnegative quantities");
+        var reserve = new Dictionary<int, int>();
+        foreach (var entry in keep.EnumerateObject())
+        {
+            int id = int.TryParse(entry.Name, out var numeric) ? numeric : Items.ByNameWithDamage(entry.Name)?.Item.Id ?? -1;
+            if (id <= 0 || entry.Value.ValueKind != JsonValueKind.Number || !entry.Value.TryGetInt32(out var count) || count < 0)
+                return (null, $"invalid scaffold reserve '{entry.Name}': use an item name or ID and a nonnegative quantity");
+            // Aliases and variants share an item ID; reserve conservatively without double-counting the same request.
+            reserve[id] = Math.Max(reserve.GetValueOrDefault(id), count);
+        }
+        return (reserve, null);
     }
 
     /// <summary>A saved place in the other dimension (through a known linked portal, or an honest "no known portal"), or a

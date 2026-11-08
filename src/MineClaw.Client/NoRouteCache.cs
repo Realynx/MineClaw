@@ -25,7 +25,14 @@ public sealed class NoRouteCache
     public long Hits => Interlocked.Read(ref _hits);
 
     public static string Key(BlockPos start, Goal goal, GotoOptions o) =>
-        $"{start.X},{start.Y},{start.Z}|{goal}|{o.AllowBreak}|{o.AllowPlace}|{o.AllowOpenDoors}|{o.ScaffoldBudget}";
+        $"{start.X},{start.Y},{start.Z}|{goal}|{o.AllowBreak}|{o.AllowPlace}|{o.AllowOpenDoors}|{o.ScaffoldBudget}" + ReserveKey(o);
+
+    private static string ReserveKey(GotoOptions o)
+    {
+        if (o.ScaffoldReserve is not { Count: > 0 } keep) return "";
+        var held = string.Join(',', keep.Where(kv => kv.Value > 0).OrderBy(kv => kv.Key).Select(kv => $"{kv.Key}:{kv.Value}"));
+        return held.Length == 0 ? "" : "|keep:" + held;
+    }
 
     /// <summary>A cached "no route" for this search (its reason), or null.</summary>
     public string? Get(string key)

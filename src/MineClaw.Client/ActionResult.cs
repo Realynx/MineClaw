@@ -73,6 +73,9 @@ public sealed record GotoOptions
     /// <summary>Place scaffold blocks (cobblestone/dirt/planks from the inventory) to bridge or pillar.</summary>
     public bool AllowPlace { get; init; }
     public int ScaffoldBudget { get; init; } = 16;
+    /// <summary>Items to keep for the current construction job, by item id and quantity. Only inventory above these amounts
+    /// may become route scaffolding or be crafted into it. Null keeps the usual scaffold policy.</summary>
+    public IReadOnlyDictionary<int, int>? ScaffoldReserve { get; init; }
     public bool AllowSprint { get; init; }
     /// <summary>Max path search time per plan.</summary>
     public TimeSpan PlanTimeout { get; init; } = TimeSpan.FromSeconds(2);

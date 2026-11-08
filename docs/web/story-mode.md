@@ -1462,8 +1462,12 @@ retain their previous ownership. These explicit replacement clears may remove ol
 ordinary build repairs keep their existing protection rules. Footing, reach, unbreakable-block and harvest checks still apply.
 
 Ordinary wall and roof batches enable temporary access (`reach: true`). A builder uses stationary placement from its
-current footing, shares an access pillar across nearby cells in support order, and takes it down after the batch or when it
-must change approach. Climbing reserves the remaining building material. Every action checks that the job is still owned;
+current footing and finishes every currently supported, reachable cell before taking its shared pillar down for another
+approach. Each cell retains its requested orientation and cells still needing support wait. If walking to the working stand
+fails, construction gets one placement-only route attempt with the remaining building material reserved; it never digs a
+route through the building. An inaccessible supply chest gets the same bounded recovery toward a usable interaction spot.
+A preferred stand is unnecessary when the target can already be placed from the current spot.
+Climbing reserves the remaining building material. Every action checks that the job is still owned;
 cancellation or replacement stops further placements while still allowing the pawn to remove its own temporary access.
 
 Live 11-03 (`story-1`, 10 pawns): "Building floors and placing blocks seems to go very slowly." The pawns' shifts were

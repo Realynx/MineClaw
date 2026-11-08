@@ -799,15 +799,18 @@ public sealed partial class MinecraftClient
         [Blocks.Cobblestone, Blocks.Netherrack, Blocks.Stone, Blocks.Sandstone, Blocks.StoneBricks, Blocks.Planks, Blocks.Log];
 
     /// <summary>Scaffold block to use for bridging/pillaring: the first of <see cref="ScaffoldBlocks"/> held (never reserved items).</summary>
-    private int? ScaffoldItem()
+    private int? ScaffoldItem(IReadOnlyDictionary<int, int>? reserve = null)
     {
         foreach (int id in ScaffoldIds)
-            if (!ReservedItems.Contains(id) && World.Inventory.CountItem(id) > 0) return id;
+            if (ScaffoldAvailable(id, reserve) > 0) return id;
         return null;
     }
 
     /// <summary>All scaffold blocks held (the placer moves on to the next kind when one runs out).</summary>
-    private int ScaffoldCount() => ScaffoldIds.Where(id => !ReservedItems.Contains(id)).Sum(id => World.Inventory.CountItem(id));
+    private int ScaffoldCount(IReadOnlyDictionary<int, int>? reserve = null) => ScaffoldIds.Sum(id => ScaffoldAvailable(id, reserve));
+
+    private int ScaffoldAvailable(int id, IReadOnlyDictionary<int, int>? reserve) => ReservedItems.Contains(id) ? 0
+        : Math.Max(0, World.Inventory.CountItem(id) - Math.Max(0, reserve?.GetValueOrDefault(id) ?? 0));
 
     /// <summary><see cref="ScaffoldBlocks"/>, and dirt first in a normal world, where it is everywhere (Story Mode pawns climb out of
     /// pits and up to high blocks with the dirt they dig); planks and logs last.</summary>
