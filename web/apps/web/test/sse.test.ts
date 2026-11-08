@@ -100,6 +100,26 @@ describe('LiveStream', () => {
     expect(onResync).toHaveBeenCalledWith('server');
     live.stop();
   });
+
+  it('ignores queued events from a stopped or replaced connection', () => {
+    const onMessage = vi.fn();
+    const live = new LiveStream({ onMessage }, { factory, minBackoffMs: 100 });
+    live.start();
+    const old = sources[0]!;
+    old.open();
+    old.fail(true);
+    vi.advanceTimersByTime(200);
+    sources[1]!.open();
+    old.emit('feed', { lines: [feedLine(1)], last: 1 }, 'old');
+    expect(onMessage).not.toHaveBeenCalled();
+    sources[1]!.emit('feed', { lines: [feedLine(2)], last: 2 }, 'current');
+    expect(onMessage).toHaveBeenCalledOnce();
+    expect(live.lastEventId).toBe('current');
+    live.stop();
+    sources[1]!.emit('feed', { lines: [feedLine(3)], last: 3 }, 'closed');
+    expect(onMessage).toHaveBeenCalledOnce();
+    expect(live.lastEventId).toBe('current');
+  });
 });
 
 describe('applyLiveEvent', () => {

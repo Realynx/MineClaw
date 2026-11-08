@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { MOCK_DESIGNER_PALETTE, type DesignerSession } from '@mineclaw/contracts';
-import { keyOf, setPlotMode, type V3 } from '@/features/studio/canvas';
+import { DEPTH, keyOf, posOf, setPlotMode, type V3 } from '@/features/studio/canvas';
 import { Studio, type StudioApi } from '@/features/studio/studio';
 import { MineModuleController } from '@/features/studio/mine/MineModuleController';
 import { decodeModuleDrag, defaultModule, encodeModule, MINE_MODULES, moduleCells, modulePorts, snapModuleAt } from '@/features/studio/mine/modules';
@@ -47,7 +47,7 @@ describe('composable mine geometry', () => {
     expect(decodeModuleDrag(encodeModule(tunnel()))).toEqual(tunnel());
     expect(decodeModuleDrag('{broken')).toBeNull();
     expect(decodeModuleDrag('{"kind":"unknown"}')).toBeNull();
-    expect(decodeModuleDrag('{"kind":"tunnel","length":100000}')).toMatchObject({ length: 48 });
+    expect(decodeModuleDrag('{"kind":"tunnel","length":100000}')).toMatchObject({ length: 192 });
   });
 });
 
@@ -131,7 +131,71 @@ describe('mine module edits and ownership', () => {
     expect(s.canvas.dug.size).toBe(0); expect(s.history.canUndo).toBe(false);
     expect(c.add({ ...defaultModule('stairs'), depth: 22 }, at)).toBeNull();
     const a = c.add(tunnel(), at)!;
-    expect(c.move(a.id, [63, 20, 30])).toBe(false); expect(c.snapshot()[0]!.at).toEqual(at);
+    expect(c.move(a.id, [255, 20, 30])).toBe(false); expect(c.snapshot()[0]!.at).toEqual(at);
+  });
+  it('supports long components throughout the enlarged mine footprint', () => {
+    const { s, c } = make();
+    const a = c.add({ ...tunnel(), length: 192 }, [128, 20, 200]);
+    expect(a).not.toBeNull();
+    expect(s.canvas.holes()).toHaveLength(384);
+    expect(s.canvas.authoredState(keyOf(224, 20, 200))).toBe(0);
+    expect(c.move(a!.id, [200, 20, 200])).toBe(false);
+  });
+  it('combines overlapping rotated pieces without changing excavation or manual edits, and undoes atomically', () => {
+    const { s, c } = make();
+    const a = c.add(tunnel(), at)!, b = c.add({ ...tunnel(), rotation: 1, length: 11 }, at)!;
+    s.edit([[31, 20, 30, 50, 5]], 'place', 'manual torch');
+    const holes = s.canvas.holes(), blocks = s.canvas.cells();
+    const group = c.combine([a.id, b.id, a.id])!;
+    expect(group.spec.kind).toBe('custom');
+    expect(group.spec.parts).toHaveLength(2);
+    expect(group.spec.parts![1]!.spec).toMatchObject({ rotation: 1, length: 11 });
+    expect(c.snapshot()).toEqual([group]);
+    expect(s.canvas.holes()).toEqual(holes); expect(s.canvas.cells()).toEqual(blocks);
+    s.undo(); expect(c.snapshot()).toEqual([a, b]); expect(s.canvas.holes()).toEqual(holes);
+    s.redo(); expect(c.snapshot()).toEqual([group]);
+    const oldShape = moduleCells(group.spec, group.at).cells;
+    expect(c.update(group.id, { ...group.spec, rotation: 1 })).toBe(true);
+    const rotated = new Set(moduleCells(c.snapshot()[0]!.spec, at).cells.map((cell) => cell.slice(0, 3).join(',')));
+    for (const [x, y, z] of oldShape) expect(rotated.has([at[0] - (z - at[2]), y, at[2] + (x - at[0])].join(','))).toBe(true);
+    expect(s.canvas.get(31, 20, 30)).toEqual([50, 5]);
+    const copy = c.add(group.spec, [100, 20, 100])!;
+    expect(copy.spec).toEqual(group.spec); expect(copy.spec).not.toBe(group.spec);
+    expect(copy.spec.parts![0]!.spec).not.toBe(group.spec.parts![0]!.spec);
+  });
+  it('migrates original 64-column component metadata into the expanded canvas without moving edits', () => {
+    const data = new Map<string, string>(), storage = { getItem: (k: string) => data.get(k) ?? null, setItem: (k: string, v: string) => { data.set(k, v); } };
+    const first = make(storage), a = first.c.add(tunnel(), at)!;
+    first.s.edit([[31, 20, 30, 50, 5]], 'place', 'manual torch');
+    for (const [key, raw] of data) {
+      const saved = JSON.parse(raw) as { size?: number; baseDefault?: number; base: number[][]; overrides: number[][] };
+      delete saved.size;
+      delete saved.baseDefault;
+      saved.base = moduleCells(a.spec, a.at).cells.map(([x, y, z]) => [keyOf(x, y, z), -1]);
+      for (const values of [saved.base, saved.overrides]) for (const pair of values) {
+        const [x, y, z] = posOf(pair[0]!); pair[0] = x + 64 * (z + 64 * (y + DEPTH));
+      }
+      data.set(key, JSON.stringify(saved));
+    }
+    const restored = make(storage, { blocks: first.s.canvas.cells(), dug: first.s.canvas.holes() });
+    expect(restored.c.snapshot()[0]!.id).toBe(a.id);
+    restored.c.remove(a.id);
+    expect(restored.s.canvas.get(31, 20, 30)).toEqual([50, 5]);
+    expect(restored.s.canvas.authoredState(keyOf(...at))).toBe(-1);
+  });
+  it('stores large groups compactly and restores pre-existing excavation when removing the reopened group', () => {
+    const data = new Map<string, string>(), storage = { getItem: (k: string) => data.get(k) ?? null, setItem: (k: string, v: string) => { data.set(k, v); } };
+    const first = make(storage);
+    first.s.edit([[100, 20, 100, 0, 0]], 'dig', 'existing tunnel');
+    const a = first.c.add({ ...defaultModule('chamber'), length: 96, width: 80 }, [100, 20, 100])!;
+    const b = first.c.add({ ...tunnel(), length: 192 }, [100, 20, 150])!;
+    const group = first.c.combine([a.id, b.id])!;
+    expect(group).not.toBeNull();
+    expect([...data.values()].every((v) => v.length < 2000)).toBe(true);
+    const restored = make(storage, { blocks: first.s.canvas.cells(), dug: first.s.canvas.holes() });
+    expect(restored.c.snapshot()).toEqual([group]);
+    restored.c.remove(group.id);
+    expect(restored.s.canvas.holes()).toEqual([[100, 20, 100]]);
   });
   it('round-trips only metadata consistent with the loaded canvas; stale metadata never restores deleted cells', () => {
     const data = new Map<string, string>(), storage = { getItem: (k: string) => data.get(k) ?? null, setItem: (k: string, v: string) => { data.set(k, v); } };

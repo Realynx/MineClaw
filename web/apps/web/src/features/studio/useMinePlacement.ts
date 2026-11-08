@@ -2,18 +2,21 @@
 
 import type { WorldViewerHandle } from '@mineclaw/world-viewer';
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type DragEvent, type RefObject } from 'react';
-import { keyOf, maskSelection, type Selection, type V3 } from './canvas';
+import { inside, keyOf, maskSelection, plotMode, type Selection, type V3 } from './canvas';
 import type { Overlay3D } from './overlay3d';
 import type { Studio } from './studio';
 import type * as ViewerMod from './studio-viewer';
 import { MineModuleController } from './mine/MineModuleController';
-import { decodeModuleDrag, MINE_MODULE_MIME, moduleCells, snapModuleAt, type MineModuleInstance, type MineModuleSpec } from './mine/modules';
-import { minePlanePoint, mineRayBox } from './mine/placementRay';
+import { decodeModuleDrag, MINE_MODULE_MIME, moduleCells, moduleName, snapModuleAt, type MineModuleInstance, type MineModuleSpec } from './mine/modules';
+import { mineRayBox } from './mine/placementRay';
+import { minePlacementPoint, modulePlacementHeight, surfaceModuleAt, type PlacementHeight, type PlacementHeightMode } from './mine/placementHeight';
+import { modulePlacementPreview } from './mine/placementPreview';
 import { pictureDistance } from './PictureControls';
 import { mineCameraGesture } from './studioPointer';
 
 const NONE: readonly MineModuleInstance[] = [];
 const noSubscription = () => () => undefined;
+type ComponentClip = { spec: MineModuleSpec; level: number };
 
 /** Pointer placement and selection; the controller owns cells, overlapping modules and undo history. */
 export function useMinePlacement(p: {
@@ -24,6 +27,7 @@ export function useMinePlacement(p: {
   ready: boolean;
   canEdit: boolean;
   selecting: boolean;
+  activateSelection?: () => void;
   notice: (text: string | null) => void;
 }) {
   const { studio, mod, viewer, overlay, ready } = p;
@@ -33,15 +37,18 @@ export function useMinePlacement(p: {
   const modules = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [placing, setPlacing] = useState<MineModuleSpec | null>(null);
-  const [movingId, setMovingId] = useState<string | null>(null);
-  const [placementY, setPlacementY] = useState(11);
+  const [heightMode, setHeightMode] = useState<PlacementHeightMode>('auto');
+  const [fixedY, setFixedY] = useState(11);
+  const [placementHeight, setPlacementHeight] = useState<PlacementHeight | null>(null);
+  const [connection, setConnection] = useState<MineModuleInstance | null>(null);
+  const [clipboard, setClipboard] = useState<ComponentClip | null>(null);
   const [hover, setHover] = useState<V3 | null>(null);
   const ownedSelection = useRef<Selection | null>(null);
   const lastPreview = useRef('');
   const nativeDrag = useRef(false);
   const selected = modules.find((m) => m.id === selectedId) ?? null;
-  const live = useRef({ ...p, modules, placing, movingId, placementY, selectedId });
-  useEffect(() => { live.current = { ...p, modules, placing, movingId, placementY, selectedId }; });
+  const live = useRef({ ...p, modules, placing, heightMode, fixedY, placementHeight, connection, clipboard, selectedId });
+  useEffect(() => { live.current = { ...p, modules, placing, heightMode, fixedY, placementHeight, connection, clipboard, selectedId }; });
   useEffect(() => () => controller?.dispose(), [controller]);
 
   const select = useCallback((id: string | null) => {
@@ -60,7 +67,7 @@ export function useMinePlacement(p: {
   }, [modules, selectedId, select, studio]);
 
   const cancel = useCallback(() => {
-    setPlacing(null); setMovingId(null); setHover(null);
+    setPlacing(null); setPlacementHeight(null); setConnection(null); setHover(null);
     lastPreview.current = '';
     nativeDrag.current = false;
     overlay.setMinePlacement(null);
@@ -83,18 +90,74 @@ export function useMinePlacement(p: {
     else live.current.notice(controller.lastError);
   }, [controller, select]);
 
+  const move = useCallback((id: string) => {
+    const item = controller?.snapshot().find((m) => m.id === id);
+    if (!item || !live.current.canEdit) return;
+    live.current.activateSelection?.();
+    cancel(); select(id);
+    viewer.current?.engine()?.surface.focus();
+    live.current.notice(`Moving ${item.spec.label || moduleName(item.spec.kind)}: drag an axis, use arrow keys / PgUp / PgDn, or edit Position X, Y, Z.`);
+  }, [cancel, controller, select, viewer]);
+
   const arm = useCallback((spec: MineModuleSpec, id: string | null = null, options?: { drag?: boolean }) => {
     if (!live.current.canEdit) return;
+    // Existing pieces always use translation controls; they never enter the creation/placement path.
+    if (id) { move(id); return; }
     if (document.pointerLockElement) document.exitPointerLock();
-    const existing = controller?.snapshot().find((m) => m.id === id);
-    const level = existing?.at[1] ?? live.current.placementY;
-    if (existing) setPlacementY(level);
-    setPlacing(spec); setMovingId(id); setHover(null);
+    const selected = controller?.snapshot().find((m) => m.id === live.current.selectedId) ?? null;
+    const height = modulePlacementHeight(spec, live.current.heightMode, live.current.fixedY, selected);
+    setPlacing(spec); setPlacementHeight(height); setConnection(selected); setHover(null);
     nativeDrag.current = options?.drag ?? false;
     lastPreview.current = '';
-    if (!options?.drag) viewer.current?.engine()?.focus(existing?.at[0] ?? 31, level, existing?.at[2] ?? 31, { distance: 40, pitch: 55 });
-    live.current.notice('Point at the mine to preview. Click to place; Escape cancels.');
-  }, [controller, viewer]);
+    overlay.setMinePlacement(null);
+    live.current.notice(height.surface ? 'Point at the terrain surface to start this access route. Click to place; Escape cancels.' : `Point at the mine to preview at Y${height.level}. Click to place; Escape cancels.`);
+  }, [controller, move, overlay]);
+
+  const clearPreview = useCallback(() => {
+    lastPreview.current = ''; setHover(null); overlay.setMinePlacement(null);
+  }, [overlay]);
+  const setPlacementY = useCallback((y: number) => {
+    if (!Number.isFinite(y)) return;
+    const level = Math.max(plotMode().minY + 1, Math.min(plotMode().maxY - 2, Math.round(y)));
+    setFixedY(level); setHeightMode('fixed');
+    if (live.current.placing) setPlacementHeight({ mode: 'fixed', surface: false, level });
+    clearPreview();
+  }, [clearPreview]);
+
+  const copy = useCallback((id = live.current.selectedId) => {
+    const item = controller?.snapshot().find((m) => m.id === id);
+    if (!item) return null;
+    const clip = { spec: structuredClone(item.spec), level: item.at[1] };
+    setClipboard(clip);
+    live.current.notice(`Copied ${item.spec.label || moduleName(item.spec.kind)} with its dimensions, rotation and entrance Y${clip.level}. Paste to place another.`);
+    return clip;
+  }, [controller]);
+  const pasteClip = useCallback((clip: ComponentClip | null) => {
+    if (!clip || !live.current.canEdit) return;
+    live.current.activateSelection?.();
+    if (document.pointerLockElement) document.exitPointerLock();
+    setPlacing(structuredClone(clip.spec)); setPlacementHeight({ mode: 'fixed', surface: false, level: clip.level }); setConnection(null);
+    nativeDrag.current = false;
+    clearPreview();
+    live.current.notice(`Place a copy at Y${clip.level}. Its settings are preserved; click to place or Escape to cancel.`);
+  }, [clearPreview]);
+  const paste = useCallback(() => { pasteClip(live.current.clipboard); }, [pasteClip]);
+  const duplicate = useCallback((id = live.current.selectedId) => {
+    if (live.current.canEdit) pasteClip(copy(id));
+  }, [copy, pasteClip]);
+  const combine = useCallback((ids: string[]) => {
+    if (!controller || !live.current.canEdit) return;
+    const item = controller.combine(ids);
+    if (!item) { live.current.notice(controller.lastError ?? 'Choose at least two components to combine.'); return; }
+    live.current.activateSelection?.();
+    cancel(); select(item.id);
+    live.current.notice(`Combined ${ids.length} pieces into one component. Move, rotate, copy or rename it in the inspector.`);
+  }, [cancel, controller, select]);
+  const setPlacementMode = useCallback((mode: PlacementHeightMode) => {
+    setHeightMode(mode);
+    if (live.current.placing) setPlacementHeight(modulePlacementHeight(live.current.placing, mode, live.current.fixedY, live.current.connection));
+    clearPreview();
+  }, [clearPreview]);
 
   const rayAt = useCallback((x: number, y: number) => {
     const engine = viewer.current?.engine();
@@ -108,33 +171,37 @@ export function useMinePlacement(p: {
 
   const preview = useCallback((x: number, y: number, spec = live.current.placing) => {
     const ray = rayAt(x, y);
-    const at = ray && minePlanePoint(ray.ray, live.current.placementY);
+    const height = spec && (live.current.placementHeight ?? modulePlacementHeight(spec, live.current.heightMode, live.current.fixedY, live.current.modules.find((m) => m.id === live.current.selectedId)));
+    const at = ray && spec && height && studio.terrain && minePlacementPoint(ray.ray, studio.terrain, spec, height);
     if (!at || !spec) { overlay.setMinePlacement(null); lastPreview.current = ''; setHover(null); return null; }
-    const position = snapModuleAt(spec, at, live.current.modules, live.current.movingId ?? undefined);
-    const cells = moduleCells(spec, position).cells;
-    if (!cells.length || cells.some((c) => c[0] < 0 || c[0] > 63 || c[2] < 0 || c[2] > 63 || c[1] < 1 || c[1] > 127)) {
+    let position = snapModuleAt(spec, at, live.current.modules);
+    // Surface snapping must not lift an entrance off its terrain or bury it in a neighbouring hill.
+    if (height?.surface && studio.terrain && surfaceModuleAt(spec, position, studio.terrain)[1] !== position[1]) position = at;
+    const prepared = modulePlacementPreview(spec);
+    const min = prepared.bounds?.min.map((v, i) => v + position[i]!) as V3 | undefined;
+    const max = prepared.bounds?.max.map((v, i) => v + position[i]!) as V3 | undefined;
+    if (!min || !max || min[1] <= plotMode().minY || !inside(...min) || !inside(...max)) {
       overlay.setMinePlacement(null); lastPreview.current = ''; setHover(null); return null;
     }
     setHover((old) => old?.every((v, i) => v === position[i]) ? old : position);
     const previewKey = JSON.stringify([spec, position]);
     if (lastPreview.current !== previewKey) {
+      if (!lastPreview.current && prepared.simplified) live.current.notice('Large component: showing its bounds while positioning. The full excavation is kept when placed.');
       lastPreview.current = previewKey;
-      overlay.setMinePlacement(cells.map((c) => [c[0], c[1], c[2]] as V3));
+      overlay.setMinePlacementGeometry(prepared.positions, position);
     }
     return position;
-  }, [overlay, rayAt]);
+  }, [overlay, rayAt, studio]);
 
   const commit = useCallback((x: number, y: number, spec = live.current.placing) => {
     if (!controller || !spec || !live.current.canEdit) return;
     const at = preview(x, y, spec);
-    if (!at) { live.current.notice('This piece does not fit here. Point inside the plot at the chosen Y level.'); return; }
-    const id = live.current.movingId;
-    // Moving with edited dimensions should be one undoable replacement, handled by the controller.
-    const item = id ? (controller.replace(id, spec, at) ? controller.snapshot().find((m) => m.id === id) : null) : controller.add(spec, at);
+    if (!at) { live.current.notice('This piece does not fit here. Point inside the plot at its placement height.'); return; }
+    const item = controller.add(spec, at);
     if (!item) { live.current.notice(controller.lastError ?? 'The piece could not be placed here.'); return; }
     cancel(); select(item.id);
     viewer.current?.engine()?.surface.focus();
-    live.current.notice(`${moduleCells(item.spec, item.at).label} placed at ${item.at.join(', ')}. Drag an axis to move it.`);
+    live.current.notice(`${item.spec.label || moduleName(item.spec.kind)} placed at ${item.at.join(', ')}. Drag an axis to move it.`);
   }, [cancel, controller, preview, select, viewer]);
 
   useEffect(() => {
@@ -165,7 +232,16 @@ export function useMinePlacement(p: {
       if (event.key === 'Escape' && live.current.placing) {
         event.preventDefault(); event.stopImmediatePropagation(); cancel(); return;
       }
-      if (document.activeElement !== surface || !live.current.selectedId) return;
+      if (document.activeElement !== surface) return;
+      if ((event.ctrlKey || event.metaKey) && !event.altKey) {
+        const name = event.key.toLowerCase();
+        if ((name === 'v' && live.current.clipboard) || ((name === 'c' || name === 'd') && live.current.selectedId)) {
+          event.preventDefault(); event.stopImmediatePropagation();
+          if (name === 'c') copy(); else if (name === 'v') paste(); else duplicate();
+          return;
+        }
+      }
+      if (!live.current.selectedId) return;
       if (!event.ctrlKey && !event.metaKey && (event.code === 'KeyF' || event.code === 'NumpadDecimal')) {
         event.preventDefault(); event.stopImmediatePropagation(); frame(); return;
       }
@@ -193,7 +269,7 @@ export function useMinePlacement(p: {
       window.removeEventListener('keydown', key, true);
       window.removeEventListener('dragend', dragEnd);
     };
-  }, [cancel, commit, controller, frame, overlay, preview, rayAt, ready, select, viewer]);
+  }, [cancel, commit, controller, copy, duplicate, frame, overlay, paste, preview, rayAt, ready, select, viewer]);
 
   const moveSelected = useCallback((delta: V3, group?: string) => {
     const item = controller?.snapshot().find((m) => m.id === selectedId);
@@ -218,11 +294,14 @@ export function useMinePlacement(p: {
   };
 
   return {
-    modules, selectedId: selected?.id ?? null, placing, placementY, hover, setPlacementY, select, arm, cancel, moveSelected, frame, position,
+    modules, selectedId: selected?.id ?? null, placing, placementY: placementHeight?.level ?? fixedY,
+    placementMode: placementHeight?.mode ?? heightMode, placementSurface: placementHeight?.surface ?? heightMode === 'surface', setPlacementMode,
+    hover, setPlacementY, select, arm, cancel, moveSelected, frame, position,
+    clipboard, copy, paste, duplicate, combine,
     updatePlacing: (spec: MineModuleSpec) => { if (live.current.canEdit) { setPlacing(spec); lastPreview.current = ''; } },
     rememberDesign: (id: number, revision: number) => controller?.rememberDesign(id, revision),
     dragOver, drop,
-    move: (id: string) => { const item = controller?.snapshot().find((m) => m.id === id); if (item) arm(item.spec, id); },
+    move,
     update: (id: string, spec: MineModuleSpec) => {
       if (!live.current.canEdit) return;
       if (controller?.update(id, spec)) select(id); else live.current.notice(controller?.lastError ?? 'Cannot update this piece.');

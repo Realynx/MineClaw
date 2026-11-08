@@ -68,7 +68,10 @@ export function useEntities() {
     queryFn: async ({ signal }) => {
       const fetched = await api('world.entities', { query: { since: 0 }, signal });
       const prev = qc.getQueryData<WorldEntities>(liveKeys.entities);
-      return prev && (prev.rev ?? 0) > (fetched.rev ?? 0) ? prev : mergeEntities(undefined, { ...fetched, full: true });
+      // Bot poses advance independently of the entity revision. A slow resync must not rewind a newer stream pose just
+      // because no mob changed revision while the REST request was in flight.
+      const newer = prev && ((prev.rev ?? 0) > (fetched.rev ?? 0) || (prev.rev === fetched.rev && prev.at > fetched.at));
+      return newer ? prev : mergeEntities(undefined, { ...fetched, full: true });
     },
     ...live,
   });

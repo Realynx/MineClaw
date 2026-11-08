@@ -17,7 +17,7 @@ import { ModulePalette, ModuleSettings, type ModulePaletteProps } from './mine/M
 import { MineComponents } from './mine/MineComponents';
 import type { MineTerrain } from './mine/mineTerrain';
 import { presetCells, presetsFor, type MinePreset } from './mine/presets';
-import type { V3 } from './canvas';
+import { plotMode, type V3 } from './canvas';
 
 export interface MinePanelProps extends ModulePaletteProps {
   terrain: MineTerrain;
@@ -127,7 +127,7 @@ function OreRuler({
 
 export function MinePanel(p: MinePanelProps) {
   const { terrain, version } = p;
-  const range = useMemo(() => terrain.surfaceRange(), [terrain]);
+  const range = useMemo(() => terrain.surfaceRange(plotMode().size), [terrain]);
   const top = 127;
   const [seedText, setSeedText] = useState(p.seed);
   const properties = useRef<HTMLDivElement>(null);
@@ -140,12 +140,13 @@ export function MinePanel(p: MinePanelProps) {
   const stats = useMemo(() => mineStats(terrain, p.dug()), [terrain, p.rev]); // eslint-disable-line react-hooks/exhaustive-deps
   const disabled = !p.canWrite || p.busy;
   return <aside className="flex min-h-0 w-full shrink-0 flex-col overflow-hidden border-l border-border bg-surface text-xs lg:w-72" aria-label="Mine designer" data-testid="mine-panel">
-    <MineComponents modules={p.modules} selectedModule={p.selectedModule} onSelectModule={p.onSelectModule} onFrameModule={p.onFrameModule} />
+    <MineComponents modules={p.modules} selectedModule={p.selectedModule} onSelectModule={p.onSelectModule} onFrameModule={p.onFrameModule}
+      onCopyModule={p.onCopyModule} onDuplicateModule={p.onDuplicateModule} onPasteModule={p.onPasteModule} canPasteModule={p.canPasteModule} onCombineModules={p.onCombineModules} disabled={disabled} />
     <div ref={properties} className="min-h-0 flex-1 overflow-y-auto" data-testid="mine-properties">
     {p.selectedModule && !p.placingModule ? <section className="border-b border-border px-3 pb-3"><ModuleSettings key={p.selectedModule} {...p} disabled={disabled} /></section> : null}
     <section className="border-b border-border p-3"><ModulePalette {...p} disabled={disabled} /></section>
     <Section title={`Ore levels · ${version}`}>
-      <p className="mb-2 text-[10px] text-subtle">Choose an entrance height. The cutaway below controls only the view.</p>
+      <p className="mb-2 text-[10px] text-subtle">Choose a fixed mining height. The cutaway below controls only the view.</p>
       <div className="mb-2 grid grid-cols-3 gap-1">
         {terrain.table.ores.filter((o) => o.veins > 0).map((o) => <button key={o.id} type="button" title={`${o.name}: preferred feet Y ${o.best}`} disabled={disabled}
           onClick={() => p.onPlacementY?.(o.best)} className={cn('rounded border px-1.5 py-1 text-left', (p.placementY ?? 11) === o.best ? 'border-accent bg-accent/10' : 'border-border hover:bg-surface-2')}>
@@ -236,7 +237,7 @@ function OreHeights(p: {
             </span>
           </li>
         ))}
-        <li className="text-[10px] text-subtle">band density here · generated ores in this layer of the plot</li>
+        <li className="text-[10px] text-subtle">Band density · counts from a 64×64 terrain sample at this height</li>
       </ul>
     ) : null}
     </>

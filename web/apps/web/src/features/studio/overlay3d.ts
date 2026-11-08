@@ -52,8 +52,12 @@ function mineLines(name: string, color: number, order: number): THREE.LineSegmen
 /** Reuse GPU capacity across edits; when it grows, dispose the old geometry and its buffer together. */
 function setMineLines(lines: THREE.LineSegments, cells: Iterable<readonly [number, number, number]> | null): void {
   const positions = cells ? volumeOutline(cells) : new Float32Array();
+  setMinePositions(lines, positions);
+}
+
+function setMinePositions(lines: THREE.LineSegments, positions: Float32Array): void {
   lines.visible = positions.length > 0;
-  lines.position.y = base();
+  lines.position.set(0, base(), 0);
   if (positions.length === 0) {
     lines.geometry.setDrawRange(0, 0);
     return;
@@ -85,6 +89,7 @@ export class Overlay3D {
   private readonly planned = mineLines('mine-planned', MINE_PREVIEW_COLORS.planned, 12);
   private readonly veins = mineLines('mine-veins', MINE_PREVIEW_COLORS.veins, 13);
   private readonly placement = mineLines('mine-placement', MINE_PREVIEW_COLORS.placement, 14);
+  private placementPositions: Float32Array | null = null;
   private flashUntil = 0;
   private flashStart = 0;
   readonly gizmo = new THREE.Group();
@@ -282,7 +287,19 @@ export class Overlay3D {
 
   /** A violet module footprint at its proposed placement, distinct from committed cyan digs and amber veins. */
   setMinePlacement(cells: Iterable<readonly [number, number, number]> | null): void {
+    this.placementPositions = null;
     setMineLines(this.placement, cells);
+  }
+
+  /** A prepared local outline uploads once; moving it updates only the object's translation. */
+  setMinePlacementGeometry(positions: Float32Array | null, at: V3 = [0, 0, 0]): void {
+    if (!positions) { this.placement.visible = false; return; }
+    if (positions !== this.placementPositions) {
+      setMinePositions(this.placement, positions);
+      this.placementPositions = positions;
+    }
+    this.placement.position.set(at[0], at[1] + base(), at[2]);
+    this.placement.visible = positions.length > 0;
   }
 
   /** X-ray cubes shown now. */

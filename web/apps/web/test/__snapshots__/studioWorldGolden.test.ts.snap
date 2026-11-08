@@ -2,8 +2,8 @@
 
 exports[`the studio world encoding (golden, pinned before encode was split) > encodes a mine plot over its terrain the same 1`] = `
 [
-  "11038:3061497157",
-  "11713:452648120",
+  "13287:578496730",
+  "14097:2435107241",
 ]
 `;
 

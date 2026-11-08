@@ -3,7 +3,11 @@ import type { V3 } from '../canvas';
 import { rotateMeta } from '../facing';
 import { room, spiral, strip, type MineCells } from './mineTemplates';
 
-export type MineModuleKind = 'tunnel' | 'branches' | 'chamber' | 'stairs' | 'spiral' | 'junction';
+export type MineModuleKind = 'tunnel' | 'branches' | 'chamber' | 'stairs' | 'spiral' | 'junction' | 'custom';
+export const MINE_MODULE_MAX_LENGTH = 192;
+export const MINE_MODULE_MAX_BRANCH = 96;
+export const MINE_MODULE_MAX_ROOM = 96;
+export const MINE_MODULE_MAX_CELLS = 400_000;
 export interface MineModuleSpec {
   kind: MineModuleKind;
   rotation: number;
@@ -14,6 +18,8 @@ export interface MineModuleSpec {
   spacing: number;
   depth: number;
   size: number;
+  label?: string;
+  parts?: Array<{ spec: MineModuleSpec; at: V3 }>;
 }
 export interface MineModuleInstance { id: string; spec: MineModuleSpec; at: V3 }
 export interface MineModulePort { at: V3; out: V3 }
@@ -26,7 +32,7 @@ export const MINE_MODULES: readonly { kind: MineModuleKind; name: string; detail
   { kind: 'spiral', name: 'Spiral shaft', detail: 'Compact access', hint: 'A descending walkway around a solid core saves horizontal space.' },
   { kind: 'junction', name: 'Crossroads', detail: 'Four connections', hint: 'A compact junction joins tunnels into a larger network.' },
 ];
-export const moduleName = (kind: MineModuleKind): string => MINE_MODULES.find((m) => m.kind === kind)?.name ?? 'Mine layout';
+export const moduleName = (kind: MineModuleKind): string => kind === 'custom' ? 'Custom component' : MINE_MODULES.find((m) => m.kind === kind)?.name ?? 'Mine layout';
 export function defaultModule(kind: MineModuleKind): MineModuleSpec {
   return { kind, rotation: 0, length: kind === 'chamber' || kind === 'junction' ? 7 : 16,
     width: kind === 'chamber' ? 7 : 1, height: kind === 'chamber' ? 3 : 2,
@@ -34,19 +40,37 @@ export function defaultModule(kind: MineModuleKind): MineModuleSpec {
 }
 const integer = (n: unknown, lo: number, hi: number, fallback: number) =>
   typeof n === 'number' && Number.isFinite(n) ? Math.max(lo, Math.min(hi, Math.round(n))) : fallback;
-export function normalizeModule(value: unknown): MineModuleSpec | null {
+export function normalizeModule(value: unknown, depth = 0, budget = { parts: 0, cells: 0 }): MineModuleSpec | null {
   if (!value || typeof value !== 'object') return null;
   const v = value as Partial<MineModuleSpec>;
+  if (depth > 8 || ++budget.parts > 256) return null;
+  if (v.kind === 'custom') {
+    if (!Array.isArray(v.parts) || !v.parts.length || v.parts.length > 100) return null;
+    const parts: NonNullable<MineModuleSpec['parts']> = [];
+    for (const part of v.parts) {
+      if (!part || !Array.isArray(part.at) || part.at.length !== 3 || !part.at.every((n) => Number.isInteger(n) && Math.abs(n) <= 512)) return null;
+      const spec = normalizeModule(part.spec, depth + 1, budget);
+      if (!spec) return null;
+      parts.push({ spec, at: [...part.at] as V3 });
+    }
+    return { ...defaultModule('custom'), rotation: integer(v.rotation, 0, 3, 0), label: typeof v.label === 'string' ? v.label.trim().slice(0, 48) || 'Custom component' : 'Custom component', parts };
+  }
   if (!MINE_MODULES.some((m) => m.kind === v.kind)) return null;
   const d = defaultModule(v.kind!);
-  return { kind: d.kind, rotation: integer(v.rotation, 0, 3, 0), length: integer(v.length, 3, 48, d.length),
-    width: integer(v.width, 1, d.kind === 'chamber' ? 24 : 2, d.width), height: integer(v.height, 2, 6, d.height),
-    branchLength: integer(v.branchLength, 2, 24, d.branchLength), spacing: integer(v.spacing, 1, 8, d.spacing),
-    depth: integer(v.depth, 1, 96, d.depth), size: integer(v.size, 3, 6, d.size) };
+  const spec = { kind: d.kind, rotation: integer(v.rotation, 0, 3, 0), length: integer(v.length, 3, MINE_MODULE_MAX_LENGTH, d.length),
+    width: integer(v.width, 1, d.kind === 'chamber' ? MINE_MODULE_MAX_ROOM : 2, d.width), height: integer(v.height, 2, 6, d.height),
+    branchLength: integer(v.branchLength, 2, MINE_MODULE_MAX_BRANCH, d.branchLength), spacing: integer(v.spacing, 1, 8, d.spacing),
+    depth: integer(v.depth, 1, 126, d.depth), size: integer(v.size, 3, 6, d.size) };
+  const volume = spec.kind === 'branches' ? (spec.length + 2 * Math.ceil(spec.length / (spec.spacing + 1)) * spec.branchLength) * spec.width * spec.height
+    : spec.kind === 'spiral' ? (spec.depth + 1) * spec.size * 3
+    : spec.kind === 'stairs' ? (spec.depth + 1) * spec.width * 3
+    : spec.length * spec.width * spec.height * (spec.kind === 'junction' ? 2 : 1);
+  budget.cells += volume;
+  return budget.cells <= MINE_MODULE_MAX_CELLS ? spec : null;
 }
 export const encodeModule = (spec: MineModuleSpec): string => JSON.stringify(spec);
 export function decodeModule(raw: string): MineModuleSpec | null {
-  if (raw.length > 2048) return null;
+  if (raw.length > 100_000) return null;
   try { return normalizeModule(JSON.parse(raw)); } catch { return null; }
 }
 export const decodeModuleDrag = decodeModule;
@@ -58,6 +82,10 @@ const plus = (a: V3, b: V3): V3 => [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
 
 /** Local geometry uses +X for the main passage. Existing generators remain golden-compatible. */
 function local(spec: MineModuleSpec): MineCells {
+  if (spec.kind === 'custom') {
+    const shapes = (spec.parts ?? []).map((part) => moduleCells(part.spec, part.at));
+    return { cells: shapes.flatMap((shape) => shape.cells), path: shapes.flatMap((shape) => shape.path), entry: shapes[0]?.entry ?? [0, 0, 0], label: spec.label ?? 'Custom component' };
+  }
   const half = Math.floor((spec.length - 1) / 2);
   if (spec.kind === 'tunnel' || spec.kind === 'branches')
     return strip({ x: -half, y: 0, z: -Math.floor((spec.width - 1) / 2), length: spec.length,
@@ -87,7 +115,8 @@ function local(spec: MineModuleSpec): MineCells {
   return { ...a, cells: [...a.cells, ...b.cells] };
 }
 export function moduleCells(input: MineModuleSpec, at: V3): MineCells {
-  const spec = normalizeModule(input)!;
+  const spec = normalizeModule(input);
+  if (!spec) return { cells: [], path: [], entry: at, label: 'Invalid component' };
   const shape = local(spec);
   const point = (p: V3) => plus(rotate(p, spec.rotation), at);
   const unique = new Map<string, MineCells['cells'][number]>();
@@ -95,14 +124,38 @@ export function moduleCells(input: MineModuleSpec, at: V3): MineCells {
     const p = point([x, y, z]);
     unique.set(p.join(','), [...p, id, rotateMeta(id, meta, spec.rotation, '1.12.2')]);
   }
-  return { cells: [...unique.values()], entry: point(shape.entry), path: shape.path.map(point), label: moduleName(spec.kind) };
+  return { cells: [...unique.values()], entry: point(shape.entry), path: shape.path.map(point), label: spec.label ?? moduleName(spec.kind) };
+}
+
+const portCache = new WeakMap<MineModuleSpec, readonly MineModulePort[]>();
+
+/** Specs are immutable authoring snapshots. Cache local ports so pointer snapping never rebuilds group occupancy. */
+export function moduleLocalPorts(input: MineModuleSpec): readonly MineModulePort[] {
+  let ports = portCache.get(input);
+  if (!ports) { ports = buildModulePorts(input, [0, 0, 0]); portCache.set(input, ports); }
+  return ports;
 }
 
 export function modulePorts(input: MineModuleSpec, at: V3): MineModulePort[] {
-  const s = normalizeModule(input)!, shape = local(s);
+  return moduleLocalPorts(input).map((p) => ({ at: plus(p.at, at), out: p.out }));
+}
+
+function buildModulePorts(input: MineModuleSpec, at: V3): MineModulePort[] {
+  const s = normalizeModule(input);
+  if (!s) return [];
+  if (s.kind === 'custom') {
+    const occupied = new Set(moduleCells(s, at).cells.map((cell) => cell.slice(0, 3).join(',')));
+    const ports = (s.parts ?? []).flatMap((part) => modulePorts(part.spec, part.at))
+      .map((p) => ({ at: plus(rotate(p.at, s.rotation), at), out: rotate(p.out, s.rotation) }));
+    return ports.filter((p) => !occupied.has(plus(p.at, p.out).join(',')));
+  }
   const port = (p: V3, out: V3) => ({ at: plus(rotate(p, s.rotation), at), out: rotate(out, s.rotation) });
-  if (s.kind === 'stairs') return [port(shape.path[0]!, [-1, 0, 0]), port(shape.path.at(-1)!, [1, 0, 0])];
+  if (s.kind === 'stairs') {
+    const half = Math.floor(s.depth / 2);
+    return [port([-half, 0, 0], [-1, 0, 0]), port([s.depth - half, -s.depth, 0], [1, 0, 0])];
+  }
   if (s.kind === 'spiral') {
+    const shape = local(s);
     const edge = (p: V3): V3 => {
       const offset = Math.floor((s.size - 1) / 2);
       if (p[2] === -offset) return [0, 0, -1];

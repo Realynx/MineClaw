@@ -54,6 +54,8 @@ describe('a mine canvas', () => {
     expect(inside(0, 127, 0)).toBe(true);
     expect(inside(0, 128, 0)).toBe(false);
     expect(inside(0, -1, 0)).toBe(false);
+    expect(inside(255, 127, 255)).toBe(true);
+    expect(inside(256, 20, 0)).toBe(false);
     expect(posKey(5, 120, 5)).toBe(true);
     const c = new Canvas();
     const top = terrain.surface(10, 10);
@@ -101,6 +103,8 @@ describe('a mine canvas', () => {
     const b = new Studio(session({ kind: 'build', seed: null, plot: { size: 64, height: 48, depth: 16 } }), api);
     expect(b.mine).toBe(false);
     expect(plotMode().kind).toBe('build');
+    expect(plotMode().size).toBe(64);
+    expect(inside(64, 0, 0)).toBe(false);
     expect(underRange()).toEqual({ min: -16, max: 0 });
     b.dispose();
   });

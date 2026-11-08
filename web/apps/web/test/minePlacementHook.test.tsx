@@ -5,8 +5,8 @@ import { act, cleanup, renderHook } from '@testing-library/react';
 import type { DragEvent } from 'react';
 import { PerspectiveCamera, Raycaster, Vector2, Vector3 } from 'three';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { keyOf, setPlotMode, type V3 } from '@/features/studio/canvas';
-import { defaultModule, encodeModule, MINE_MODULE_MIME, type MineModuleSpec } from '@/features/studio/mine/modules';
+import { keyOf, plotMode, setPlotMode, type V3 } from '@/features/studio/canvas';
+import { defaultModule, encodeModule, MINE_MODULE_MIME, moduleCells, modulePorts, type MineModuleSpec } from '@/features/studio/mine/modules';
 import type { Overlay3D } from '@/features/studio/overlay3d';
 import { Studio, type StudioApi } from '@/features/studio/studio';
 import type * as ViewerMod from '@/features/studio/studio-viewer';
@@ -54,12 +54,14 @@ function mount() {
   const focus = vi.fn();
   const viewer = { current: { engine: () => ({ surface, camera, focus }) } as unknown as WorldViewerHandle };
   const setMinePlacement = vi.fn();
+  const setMinePlacementGeometry = vi.fn();
   const pickHandle = vi.fn(() => null);
   const notice = vi.fn();
+  const activateSelection = vi.fn();
   const props = {
     studio, viewer, mod: { Raycaster, Vector2 } as typeof ViewerMod,
-    overlay: { setMinePlacement, pickHandle } as unknown as Overlay3D,
-    ready: true, canEdit: true, selecting: true, notice,
+    overlay: { setMinePlacement, setMinePlacementGeometry, pickHandle } as unknown as Overlay3D,
+    ready: true, canEdit: true, selecting: true, notice, activateSelection,
   };
   const hook = renderHook((p: typeof props) => useMinePlacement(p), { initialProps: props });
   const client = (at: V3) => {
@@ -82,7 +84,7 @@ function mount() {
     ...client(at), preventDefault: vi.fn(), stopPropagation: vi.fn(),
     dataTransfer: { types: [MINE_MODULE_MIME], dropEffect: 'none', getData: vi.fn(() => raw) },
   });
-  return { ...hook, props, studio, surface, focus, setMinePlacement, pickHandle, notice, pointer, place, drag };
+  return { ...hook, props, studio, surface, camera, focus, setMinePlacement, setMinePlacementGeometry, pickHandle, notice, activateSelection, pointer, place, drag };
 }
 
 describe('mine module pointer authoring', () => {
@@ -91,14 +93,14 @@ describe('mine module pointer authoring', () => {
     const ordinaryTool = vi.fn();
     h.surface.addEventListener('pointerdown', ordinaryTool);
     act(() => { h.result.current.arm(tunnel); });
-    expect(h.focus).toHaveBeenCalledWith(31, 11, 31, { distance: 40, pitch: 55 });
+    expect(h.focus).not.toHaveBeenCalled();
     h.pointer('pointermove', [24, 11, 28]);
     expect(h.result.current.hover).toEqual([24, 11, 28]);
-    expect(h.setMinePlacement).toHaveBeenLastCalledWith(expect.arrayContaining([[22, 11, 28], [26, 12, 28]]));
+    expect(h.setMinePlacementGeometry).toHaveBeenLastCalledWith(expect.any(Float32Array), [24, 11, 28]);
     expect(h.studio.canvas.dug.size).toBe(0);
-    const previewCalls = h.setMinePlacement.mock.calls.length;
+    const previewCalls = h.setMinePlacementGeometry.mock.calls.length;
     h.pointer('pointermove', [24, 11, 28]);
-    expect(h.setMinePlacement).toHaveBeenCalledTimes(previewCalls);
+    expect(h.setMinePlacementGeometry).toHaveBeenCalledTimes(previewCalls);
 
     expect(h.pointer('pointerdown', [24, 11, 28]).defaultPrevented).toBe(true);
     expect(ordinaryTool).not.toHaveBeenCalled();
@@ -177,16 +179,25 @@ describe('mine module pointer authoring', () => {
     expect(h.studio.selection?.mask?.size).toBe(10);
   });
 
-  it('moves a piece with edited dimensions as one replacement rather than adding a duplicate', () => {
+  it('Move cancels an armed different component and translates the selected original without creating a copy', () => {
     const h = mount();
     const item = h.place(tunnel, [20, 30, 20]);
     const original = new Set(h.studio.canvas.dug);
+    act(() => { h.result.current.arm(defaultModule('chamber')); });
+    h.pointer('pointermove', [40, 30, 40]);
     act(() => { h.result.current.move(item.id); });
-    act(() => { h.result.current.updatePlacing({ ...tunnel, length: 9 }); });
+    expect(h.result.current.placing).toBeNull();
+    expect(h.result.current.hover).toBeNull();
+    expect(h.result.current.selectedId).toBe(item.id);
+    expect(h.setMinePlacement).toHaveBeenLastCalledWith(null);
+    expect(h.activateSelection).toHaveBeenCalled();
+    expect(h.focus).not.toHaveBeenCalled();
     h.pointer('pointerdown', [40, 30, 40]);
+    expect(h.result.current.modules).toEqual([item]);
+    act(() => { h.result.current.moveSelected([4, 0, 0]); });
     expect(h.result.current.modules).toHaveLength(1);
-    expect(h.result.current.modules[0]).toMatchObject({ id: item.id, at: [40, 30, 40], spec: { length: 9 } });
-    expect(h.studio.canvas.dug.size).toBe(18);
+    expect(h.result.current.modules[0]).toMatchObject({ id: item.id, at: [24, 30, 20], spec: tunnel });
+    expect(h.studio.canvas.dug.size).toBe(10);
     expect(h.studio.canvas.authoredState(keyOf(20, 30, 20))).toBe(-1);
     expect(document.activeElement).toBe(h.surface);
 
@@ -240,11 +251,12 @@ describe('mine module pointer authoring', () => {
     expect(h.notice).toHaveBeenLastCalledWith(expect.stringContaining('does not fit'));
 
     act(() => { h.result.current.arm({ ...defaultModule('stairs'), depth: 12 }); });
+    act(() => { h.result.current.setPlacementY(11); });
     h.pointer('pointerdown', [30, 11, 30]);
     expect(h.result.current.modules).toHaveLength(0);
     const item = h.place(tunnel, [30, 11, 30]);
     const before = new Set(h.studio.canvas.dug);
-    act(() => { expect(h.result.current.moveSelected([80, 0, 0])).toBe(true); });
+    act(() => { expect(h.result.current.moveSelected([plotMode().size, 0, 0])).toBe(true); });
     expect(h.result.current.modules[0]).toEqual(item);
     expect(h.studio.canvas.dug).toEqual(before);
     expect(h.notice).toHaveBeenLastCalledWith(expect.stringContaining('whole layout must fit'));
@@ -273,14 +285,13 @@ describe('mine module pointer authoring', () => {
     expect(h.studio.canvas.dug).toEqual(before);
   });
 
-  it('clears a preview on pointer leave and cancels an armed move with Escape without changing the plan', () => {
+  it('clears a preview on pointer leave and cancels an armed creation with Escape without changing the plan', () => {
     const h = mount();
     const item = h.place(tunnel, [20, 21, 20]);
     const before = new Set(h.studio.canvas.dug);
-    act(() => { h.result.current.setPlacementY(40); });
-    act(() => { h.result.current.move(item.id); });
+    act(() => { h.result.current.arm(tunnel); });
     expect(h.result.current.placementY).toBe(21);
-    expect(h.focus).toHaveBeenLastCalledWith(20, 21, 20, { distance: 40, pitch: 55 });
+    expect(h.focus).not.toHaveBeenCalled();
     h.pointer('pointermove', [40, 21, 40]);
     expect(h.result.current.hover).toEqual([40, 21, 40]);
     h.pointer('pointerleave', [40, 21, 40]);
@@ -386,5 +397,132 @@ describe('mine module pointer authoring', () => {
     expect(typing.defaultPrevented).toBe(false);
     expect(h.focus).toHaveBeenCalledTimes(2);
     input.remove();
+  });
+
+  it('places automatic access on the rotated surface entrance without moving the camera, then continues at its lower exit', () => {
+    const h = mount();
+    h.camera.position.set(30.5, 110, 30.5);
+    h.camera.up.set(0, 0, -1);
+    h.camera.lookAt(30.5, 50, 30.5);
+    h.camera.updateMatrixWorld();
+    const spec = { ...defaultModule('spiral'), rotation: 1, depth: 12 };
+    act(() => { h.result.current.arm(spec); });
+    expect(h.result.current.placementSurface).toBe(true);
+    expect(h.focus).not.toHaveBeenCalled();
+    const surfaceY = h.studio.terrain!.surface(30, 30) + 1;
+    h.pointer('pointermove', [30, surfaceY, 30]);
+    const at = h.result.current.hover!;
+    const entry = moduleCells(spec, at).entry;
+    expect(entry[1]).toBe(h.studio.terrain!.surface(entry[0], entry[2]) + 1);
+    expect(at[1]).toBeGreaterThan(50);
+    h.pointer('pointerdown', [30, surfaceY, 30]);
+    expect(h.result.current.modules[0]!.at).toEqual(at);
+    act(() => { h.result.current.arm(tunnel); });
+    expect(h.result.current.placementSurface).toBe(false);
+    expect(h.result.current.placementY).toBe(Math.min(...modulePorts(spec, at).map((port) => port.at[1])));
+    expect(h.focus).not.toHaveBeenCalled();
+  });
+
+  it('keeps explicit mining heights across new access pieces and lets Surface override connection context', () => {
+    const h = mount();
+    const item = h.place(tunnel, [30, 27, 30]);
+    act(() => { h.result.current.arm(defaultModule('stairs')); });
+    expect(h.result.current.placementMode).toBe('fixed');
+    expect(h.result.current.placementY).toBe(27);
+    expect(h.result.current.placementSurface).toBe(false);
+    act(() => { h.result.current.setPlacementMode('surface'); });
+    expect(h.result.current.placementSurface).toBe(true);
+    act(() => { h.result.current.cancel(); h.result.current.select(item.id); });
+    act(() => { h.result.current.arm(defaultModule('spiral'), null, { drag: true }); });
+    expect(h.result.current.placementSurface).toBe(true);
+    act(() => { h.result.current.setPlacementY(16); });
+    expect(h.result.current.placementMode).toBe('fixed');
+    expect(h.result.current.placementY).toBe(16);
+    act(() => { h.result.current.cancel(); });
+    act(() => { h.result.current.arm(defaultModule('spiral')); });
+    expect(h.result.current.placementY).toBe(16);
+    expect(h.result.current.placementSurface).toBe(false);
+    expect(h.focus).not.toHaveBeenCalled();
+  });
+
+  it('copies and pastes component configuration and original height with a new identity and normal undo', () => {
+    const h = mount();
+    const spec = { ...defaultModule('branches'), rotation: 3, length: 13, width: 2, height: 3, branchLength: 9, spacing: 7 };
+    const original = h.place(spec, [30, 30, 30]);
+    const key = (key: string) => {
+      const event = new KeyboardEvent('keydown', { key, ctrlKey: true, cancelable: true });
+      act(() => { window.dispatchEvent(event); });
+      return event;
+    };
+    expect(key('c').defaultPrevented).toBe(true);
+    expect(h.result.current.clipboard).toEqual({ spec, level: 30 });
+    act(() => { h.result.current.update(original.id, { ...spec, length: 19 }); h.result.current.select(null); });
+    expect(key('v').defaultPrevented).toBe(true);
+    expect(h.activateSelection).toHaveBeenCalled();
+    expect(h.result.current.placing).toEqual(spec);
+    expect(h.result.current.placementY).toBe(30);
+    h.pointer('pointerdown', [45, 30, 50]);
+    expect(h.result.current.modules).toHaveLength(2);
+    expect(h.result.current.modules[1]!.id).not.toBe(original.id);
+    expect(h.result.current.modules[1]!.spec).toEqual(spec);
+    expect(h.result.current.modules[0]!.spec.length).toBe(19);
+    act(() => { h.studio.undo(); });
+    expect(h.result.current.modules).toHaveLength(1);
+    expect(h.result.current.modules[0]!.id).toBe(original.id);
+    expect(h.focus).not.toHaveBeenCalled();
+  });
+
+  it('duplicates composite components as editable groups and leaves typing and read-only paste alone', () => {
+    const h = mount();
+    const first = h.place(tunnel, [30, 25, 30]);
+    const second = h.place(defaultModule('spiral'), [40, 30, 30]);
+    const before = new Set(h.studio.canvas.dug);
+    act(() => { h.result.current.combine([first.id, second.id]); });
+    expect(h.result.current.modules).toHaveLength(1);
+    const combined = h.result.current.modules[0]!;
+    expect(combined.spec.kind).toBe('custom');
+    expect(h.studio.canvas.dug).toEqual(before);
+    const duplicateKey = new KeyboardEvent('keydown', { key: 'd', metaKey: true, cancelable: true });
+    act(() => { window.dispatchEvent(duplicateKey); });
+    expect(duplicateKey.defaultPrevented).toBe(true);
+    expect(h.result.current.placing).toEqual(combined.spec);
+    expect(h.result.current.placing).not.toBe(combined.spec);
+    expect(h.result.current.clipboard!.spec.parts).not.toBe(combined.spec.parts);
+    expect(h.result.current.placementY).toBe(combined.at[1]);
+    h.pointer('pointerdown', [50, combined.at[1], 50]);
+    expect(h.result.current.modules).toHaveLength(2);
+    expect(h.result.current.modules[1]!.spec).toEqual(combined.spec);
+    expect(h.result.current.modules[1]!.id).not.toBe(combined.id);
+    const rotate = new KeyboardEvent('keydown', { key: ']', cancelable: true });
+    act(() => { window.dispatchEvent(rotate); });
+    expect(h.result.current.modules[1]!.spec.rotation).toBe(1);
+    expect(h.result.current.modules[1]!.spec.parts).toEqual(combined.spec.parts);
+    expect(h.result.current.modules[0]!.spec.rotation).toBe(0);
+    expect(h.result.current.modules[1]!.spec.kind).toBe('custom');
+    const input = document.createElement('input'); document.body.append(input); input.focus();
+    const typing = new KeyboardEvent('keydown', { key: 'v', ctrlKey: true, cancelable: true });
+    act(() => { window.dispatchEvent(typing); });
+    expect(typing.defaultPrevented).toBe(false);
+    expect(h.result.current.placing).toBeNull();
+    input.remove(); h.surface.focus();
+    h.rerender({ ...h.props, canEdit: false });
+    act(() => { h.result.current.paste(); h.result.current.duplicate(); h.result.current.combine(h.result.current.modules.map((m) => m.id)); });
+    expect(h.result.current.placing).toBeNull();
+    expect(h.result.current.modules).toHaveLength(2);
+  });
+
+  it('authors and selects components beyond the old 64-block boundary', () => {
+    const h = mount();
+    expect(plotMode().size).toBe(256);
+    h.camera.position.set(200.5, 110, 200.5);
+    h.camera.up.set(0, 0, -1);
+    h.camera.lookAt(200.5, 20, 200.5);
+    h.camera.updateMatrixWorld();
+    const item = h.place(tunnel, [200, 20, 200]);
+    expect(item.at).toEqual([200, 20, 200]);
+    expect(h.studio.canvas.dug.has(keyOf(202, 21, 200))).toBe(true);
+    act(() => { h.result.current.select(null); });
+    h.pointer('pointerdown', [200, 21.5, 200]);
+    expect(h.result.current.selectedId).toBe(item.id);
   });
 });

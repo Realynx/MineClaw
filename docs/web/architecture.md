@@ -369,6 +369,13 @@ it touches the world, and a save is an ordinary design, so the bot can build it 
   will differ), and the templates: spiral shaft, strip mine, room, "at ore band" levels and the version-preferred presets
   (`mine-presets.json`; applying one tags the design `preferred_for`). Saves keep kind, seed, entry and the absolute y.
   Story Mode places a mine at its saved y as `mine` build items.
+- **Mine components.** Mines have a 256×256×128 workspace; builds retain their original limits. The Components outliner
+  selects pieces independently of terrain, with frame (F), translation gizmos and numeric positions. Automatic placement
+  starts access shafts/stairs at the surface, or continues at a selected component's lower exit; Surface and Fixed Y are
+  explicit overrides. Choosing a piece never reframes the camera. Move cancels pending creation. Combine groups chosen
+  pieces into a named custom component; Ctrl/Cmd+C, V and D copy, paste and duplicate all nested settings and offsets.
+  Group edits share canvas undo/redo and preserve overlapping excavation and manual edits. Component metadata is stored
+  locally per owner/session and saved revision; older 64-column metadata is migrated without changing its coordinates.
 - **Leaving unsaved work.** The studio tracks every cell changed since the last save (or since it opened: an untouched new
   design is clean; an undo back to the saved state is clean). While dirty, `lib/navGuard` (generic, installed by the shell)
   asks "Leave without saving?" (Save and leave / Leave / Stay) on in-app links (a capture-phase click listener ahead of

@@ -119,7 +119,9 @@ export class LiveStream {
       }
     };
     for (const name of SSE_EVENT_NAMES) {
-      es.addEventListener(name, (ev) => this.receive(name, ev));
+      es.addEventListener(name, (ev) => {
+        if (this.es === es && !this.stopped) this.receive(name, ev);
+      });
     }
   }
 

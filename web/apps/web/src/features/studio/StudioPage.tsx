@@ -266,12 +266,12 @@ function StudioBody({
   const studio = useMemo(() => new Studio(session, realApi), [session]);
   /** A mine session: generated terrain at absolute y (its ground always editable, the side panel, the X-ray). */
   const mine = studio.terrain !== null;
-  const surface = useMemo(() => studio.terrain?.surfaceRange() ?? null, [studio]);
+  const surface = useMemo(() => studio.terrain?.surfaceRange(plotMode().size) ?? null, [studio]);
   const world = useMemo(
     () => new mod.StudioWorld(version, studio.canvas, undefined, studio.terrain),
     [mod, version, studio],
   );
-  const overlay = useMemo(() => new mod.Overlay3D(64, surface ? surface.max + 1 : undefined), [mod, surface]);
+  const overlay = useMemo(() => new mod.Overlay3D(plotMode().size, surface ? surface.max + 1 : undefined), [mod, surface]);
   const snap: StudioSnapshot = useSyncExternalStore(studio.subscribe, studio.snapshot, studio.snapshot);
   const viewer = useRef<WorldViewerHandle>(null);
   const chat = useRef<ChatPanelHandle>(null);
@@ -317,7 +317,7 @@ function StudioBody({
   const [notice, setNotice] = useState<string | null>(null);
   const [canvasTick, setCanvasTick] = useState(0);
   const minePlacement = useMinePlacement({ studio, mod, viewer, overlay, ready, canEdit: canWrite && !snap.busy && !saving,
-    selecting: tool === 'select', notice: setNotice });
+    selecting: tool === 'select', activateSelection: () => chooseTool('select'), notice: setNotice });
   const { moveSelected: moveMineSelection, rememberDesign } = minePlacement;
   /** Underground's first level: a mine's highest ground, a build's grass layer. */
   const underFirst = useRef(firstUnderLevel(surface));
@@ -507,7 +507,11 @@ function StudioBody({
         // Start over the plot's south-east corner, looking down at its centre.
         if (mine) e.rig.orbitYaw = 135;
         else e.rig.flyYaw = 135;
-        e.focus(31, surface ? surface.max : 63, 31, { distance: surface ? 44 : 34, pitch: 38 });
+        const center = Math.floor((plotMode().size - 1) / 2);
+        const bounds = mine ? studio.canvas.bounds() : null;
+        const x = mine ? studio.anchor?.[0] ?? (bounds ? Math.floor((bounds.min[0] + bounds.max[0]) / 2) : center) : center;
+        const z = mine ? studio.anchor?.[2] ?? (bounds ? Math.floor((bounds.min[2] + bounds.max[2]) / 2) : center) : center;
+        e.focus(x, studio.terrain ? studio.terrain.surface(x, z) + 1 : 63, z, { distance: mine ? 64 : 34, pitch: 38 });
         setReady(true);
       }
       if (e && mine) overlay.updateGizmoScale(e.camera, e.surface.clientHeight);
@@ -519,7 +523,7 @@ function StudioBody({
       cancelAnimationFrame(raf);
       overlay.dispose();
     };
-  }, [overlay, surface, mine]);
+  }, [overlay, mine, studio]);
 
   useEffect(() => overlay.setSelection(snap.selection), [overlay, snap.selection]);
   // Only authored excavations and veins exposed by those routes; seed caves never create outlines.
@@ -960,7 +964,7 @@ function StudioBody({
           />
           <StageHints locked={locked} ready={ready} mine={mine} />
           {minePlacement.placing ? <div className="absolute top-3 left-14 rounded border border-purple-400/50 bg-black/80 px-3 py-2 text-xs text-white">
-            {minePlacement.hover ? `Place at ${minePlacement.hover.join(', ')}` : `Point inside the plot at Y ${minePlacement.placementY}`}
+            {minePlacement.hover ? `Place at ${minePlacement.hover.join(', ')}` : minePlacement.placementSurface ? 'Point at the terrain surface' : `Point inside the plot at Y ${minePlacement.placementY}`}
             <button type="button" onClick={minePlacement.cancel} className="ml-3 underline">Cancel</button>
           </div> : null}
           {hud ? (
@@ -1047,6 +1051,10 @@ function StudioBody({
             selectedModule={minePlacement.selectedId}
             placingModule={minePlacement.placing}
             placementY={minePlacement.placementY}
+            placementMode={minePlacement.placementMode}
+            onPlacementMode={minePlacement.setPlacementMode}
+            placementSurface={minePlacement.placementSurface}
+            placementHoverY={minePlacement.hover?.[1]}
             onPlacementY={minePlacement.setPlacementY}
             onPickModule={(spec, options) => { chooseTool('select'); minePlacement.arm(spec, null, options); }}
             onUpdatePlacement={minePlacement.updatePlacing}
@@ -1054,8 +1062,13 @@ function StudioBody({
             onFrameModule={minePlacement.frame}
             onPositionModule={minePlacement.position}
             onUpdateModule={minePlacement.update}
-            onMoveModule={minePlacement.move}
+            onMoveModule={(id) => { chooseTool('select'); minePlacement.move(id); }}
             onRemoveModule={minePlacement.remove}
+            canPasteModule={!!minePlacement.clipboard}
+            onCopyModule={minePlacement.copy}
+            onDuplicateModule={minePlacement.duplicate}
+            onPasteModule={minePlacement.paste}
+            onCombineModules={minePlacement.combine}
           />
         ) : null}
         <ChatPanel

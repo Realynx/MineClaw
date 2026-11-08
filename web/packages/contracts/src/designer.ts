@@ -25,7 +25,7 @@ export type DesignerCell = z.infer<typeof DesignerCell>;
 
 export const DESIGNER_PLOT = { size: 64, height: 48, depth: 16 } as const;
 /** A mine session's plot: absolute world y 0..127 (depth 0: the canvas y is the world's). */
-export const DESIGNER_MINE_PLOT = { size: 64, height: 128, depth: 0 } as const;
+export const DESIGNER_MINE_PLOT = { size: 256, height: 128, depth: 0 } as const;
 
 /** A session's (and a design's) kind: a build stands on the grass; a mine is dug into generated terrain at absolute y. */
 export const DesignerKind = z.enum(['build', 'mine']);

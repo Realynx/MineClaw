@@ -13,7 +13,7 @@ import { facingOf, firstHalfOf, partnerOf, twoCell } from './facing';
 export type Cell = DesignerCell;
 export type V3 = [number, number, number];
 
-export const SIZE = DESIGNER_PLOT.size;
+export let SIZE: number = DESIGNER_PLOT.size;
 export const HEIGHT = DESIGNER_PLOT.height;
 /** Layers of ground under the grass (y -DEPTH..-1). */
 export const DEPTH = DESIGNER_PLOT.depth;
@@ -33,6 +33,7 @@ export interface PlotTerrain {
  */
 export interface PlotMode {
   kind: 'build' | 'mine';
+  size: number;
   minY: number;
   maxY: number;
   /** World y of canvas y 0. */
@@ -40,7 +41,7 @@ export interface PlotMode {
   terrain: PlotTerrain | null;
 }
 
-const BUILD_MODE: PlotMode = { kind: 'build', minY: -DEPTH, maxY: HEIGHT - 1, baseY: 64, terrain: null };
+const BUILD_MODE: PlotMode = { kind: 'build', size: DESIGNER_PLOT.size, minY: -DEPTH, maxY: HEIGHT - 1, baseY: 64, terrain: null };
 let plot: PlotMode = BUILD_MODE;
 
 /** Sets the plot's mode: a build (the default) or a mine over a terrain. */
@@ -49,12 +50,14 @@ export function setPlotMode(m: { kind: 'build' } | { kind: 'mine'; terrain: Plot
     m.kind === 'mine'
       ? {
           kind: 'mine',
+          size: DESIGNER_MINE_PLOT.size,
           minY: 0 - DESIGNER_MINE_PLOT.depth,
           maxY: DESIGNER_MINE_PLOT.height - 1,
           baseY: 0,
           terrain: m.terrain,
         }
       : BUILD_MODE;
+  SIZE = plot.size;
 }
 
 /** The plot's mode now. */

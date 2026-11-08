@@ -58,8 +58,8 @@ exports[`mine templates (golden, pinned before the step reader and templates wer
     "106:1683860717 entry 3,20,-2 path 12:2815554685 | strip mine at y20 along z: 2×3 × 12, 4 branch rows 2 apart (4 long, left)",
   ],
   [
-    "4351:1367387124 entry 0,11,0 path 64:2513485253 | strip mine at y11 along z: 1×3 × 64, 32 branch rows 1 apart (64 long, right)",
-    "4351:1367387124 entry 0,11,0 path 64:2513485253 | strip mine at y11 along z: 1×3 × 64, 32 branch rows 1 apart (64 long, right)",
+    "7256:3927639501 entry 0,11,0 path 99:2437268485 | strip mine at y11 along z: 1×3 × 99, 49 branch rows 1 apart (70 long, right)",
+    "7256:3927639501 entry 0,11,0 path 99:2437268485 | strip mine at y11 along z: 1×3 × 99, 49 branch rows 1 apart (70 long, right)",
   ],
   [
     "12:4084072508 entry 0,11,0 path 5:291000600 | strip mine at y11 along x: 1×2 × 5, 2 branch rows 1 apart (12 long, none)",

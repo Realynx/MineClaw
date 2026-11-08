@@ -806,9 +806,9 @@ and tools in src/MineClaw.Bot/Blueprints/Designer*.cs). Never the live world. Be
 A session is a `build` (the grassland plot above) or a `mine` (`kind`). A mine is the inverse of a build: the cells to dig out
 of the ground, so a large underground strip mine can be drawn once and placed in the world for the pawns to mine.
 
-- **The canvas.** The same 64×64 plot, but the ground is generated terrain and y is **absolute world y 0..127** (`plot` =
-  `{size: 64, height: 128, depth: 0}`). A cell is undisturbed ground where the terrain is solid; air there digs it (never
-  bedrock: refused), `-1` fills it back, air over the terrain's air changes nothing; blocks go anywhere (torches, ladders,
+- **The canvas.** A 256×256 mine plot, with generated terrain and **absolute world y 0..127** (`plot` =
+  `{size: 256, height: 128, depth: 0}`). A cell is undisturbed ground where the terrain is solid; air records excavation (never
+  bedrock: refused), `-1` fills it back, and planned air through seed caves remains authored excavation; blocks go anywhere (torches, ladders,
   rails, chests: placed once their cell is dug). A loaded mine keeps its dug cells as saved whatever the terrain under them.
   `anchor` is the mine's entry (the top of its shaft). The browser holds the same terrain (`mineTerrain.ts`), so both canvases
   apply the same rule.
@@ -845,7 +845,7 @@ of the ground, so a large underground strip mine can be drawn once and placed in
 - **Saved as DSL.** `kind mine`, `anchor absolute X,Y,Z` (layer 0 at world y Y; X,Z where its min corner sat on the plot),
   `entry x,y,z` (local), `seed S`, `preferred_for V`, the blocks as layers and the cells to dig as `clear` boxes (merged
   greedily: a 64×64×100 mine is a few hundred short lines), drawn then parsed back and compared cell by cell. Only a mine may be
-  taller than 32 (up to 128) or place nothing at all; it never digs below y 1. Every builder places it at its absolute y
+  wider than 64 (up to 256), taller than 32 (up to 128), or place nothing at all; it never digs below y 1. Every builder places it at its absolute y
   (`Blueprint.OriginOn`: the entry's column on the site's), and the history's revisions, diff and revert keep it a mine.
 - **The AI designer.** On a mine canvas only: a compact system section (absolute y, the surface range here, the version's ore
   heights in one line, the preset ids, the walkable-mine rules, the layout study's rules) and five more tools: `spiral_shaft

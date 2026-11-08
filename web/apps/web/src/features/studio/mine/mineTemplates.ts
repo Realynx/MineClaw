@@ -206,11 +206,11 @@ interface StripFrame {
 function stripFrame(s: StripSpec): StripFrame {
   return {
     s,
-    len: clamp(s.length ?? STRIP_DEFAULTS.length, 1, 64),
+    len: clamp(s.length ?? STRIP_DEFAULTS.length, 1, 192),
     w: clamp(s.width ?? STRIP_DEFAULTS.width, 1, 2),
     h: clamp(s.height ?? STRIP_DEFAULTS.height, 2, 3),
     sp: clamp(s.spacing ?? STRIP_DEFAULTS.spacing, 1, 8),
-    bl: clamp(s.branchLength ?? STRIP_DEFAULTS.branchLength, 0, 64),
+    bl: clamp(s.branchLength ?? STRIP_DEFAULTS.branchLength, 0, 96),
     alongX: (s.axis ?? 'x') !== 'z',
     cells: [],
   };

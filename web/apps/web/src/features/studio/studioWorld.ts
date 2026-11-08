@@ -12,7 +12,7 @@
 import type { BlockDeltas, EntityDelta, Overlays, WorldIndex, WorldSource } from '@mineclaw/world-viewer';
 import { cellIndex } from '@mineclaw/world-viewer';
 import { encodeColumn, encodeMcwc, lightSections, type EncodeEntry } from '@mineclaw/world-viewer/testing';
-import { EARTH, posOf, type Canvas, type Cell } from './canvas';
+import { EARTH, posOf, plotMode, type Canvas, type Cell } from './canvas';
 import type { Version } from './facing';
 import type { MineTerrain } from './mine/mineTerrain';
 
@@ -20,8 +20,7 @@ import type { MineTerrain } from './mine/mineTerrain';
 export const BASE_Y = 64;
 /** Columns of grassland around the plot (the plot is columns 0..3). */
 const RING = 2;
-const C0 = -RING,
-  C1 = 3 + RING;
+const C0 = -RING;
 
 const GRASS = 2,
   DIRT = 3,
@@ -42,6 +41,7 @@ const CLEAR = new Set([
 
 export class StudioWorld {
   readonly height: number;
+  private readonly lastColumn: number;
   private rev = 1;
   private listeners = new Set<(d: BlockDeltas) => void>();
   readonly source: WorldSource;
@@ -57,13 +57,15 @@ export class StudioWorld {
   ) {
     this.height = version === '1.12.2' ? 256 : 128;
     this.base = terrain ? 0 : BASE_Y;
+    this.lastColumn = Math.ceil(plotMode().size / 16) - 1;
+    const last = this.lastColumn + RING;
     const hashOf = (cx: number, cz: number) => BigInt(((cx + 16) * 64 + (cz + 16)) * 7919 + 1);
     this.source = {
       index: (dim: number): Promise<WorldIndex> => {
         const columns: WorldIndex['columns'] = [];
         if (dim === 0)
-          for (let cx = C0; cx <= C1; cx++)
-            for (let cz = C0; cz <= C1; cz++)
+          for (let cx = C0; cx <= last; cx++)
+            for (let cz = C0; cz <= last; cz++)
               columns.push({ cx, cz, hash: hashOf(cx, cz).toString(), seen: this.now(), by: 'studio', live: true });
         return Promise.resolve({
           dim,
@@ -77,7 +79,7 @@ export class StudioWorld {
       },
       chunks: (dim: number, cols: Array<[number, number]>): Promise<ArrayBuffer> => {
         const entries: EncodeEntry[] = cols.map(([cx, cz]) => {
-          if (dim !== 0 || cx < C0 || cx > C1 || cz < C0 || cz > C1)
+          if (dim !== 0 || cx < C0 || cx > last || cz < C0 || cz > last)
             return {
               cx,
               cz,
@@ -151,7 +153,7 @@ export class StudioWorld {
       meta = new Uint8Array(n);
     if (this.terrain) this.fillTerrain(ids, meta, this.terrain, cx, cz);
     else fillGrassland(ids);
-    if (cx >= 0 && cx <= 3 && cz >= 0 && cz <= 3) this.overlayCanvas(ids, meta, cx, cz);
+    if (cx >= 0 && cx <= this.lastColumn && cz >= 0 && cz <= this.lastColumn) this.overlayCanvas(ids, meta, cx, cz);
     const tops = skyTops(ids, this.height);
     const light = lightSections(
       this.height,

@@ -1,11 +1,16 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { setPlotMode } from '@/features/studio/canvas';
+import { MineTerrain } from '@/features/studio/mine/mineTerrain';
 import { minePlanePoint, mineRayBox } from '@/features/studio/mine/placementRay';
+
+beforeEach(() => setPlotMode({ kind: 'mine', terrain: MineTerrain.for('12345', '1.12.2') }));
+afterEach(() => setPlotMode({ kind: 'build' }));
 
 describe('mine placement rays', () => {
   it('projects through the ground to the chosen Y without clamping off-plot drops', () => {
     const ray = { origin: { x: 20.5, y: 80, z: 30.2 }, direction: { x: 0.1, y: -1, z: 0 } };
     expect(minePlanePoint(ray, 11)).toEqual([27, 11, 30]);
-    expect(minePlanePoint({ ...ray, direction: { x: 1, y: -1, z: 0 } }, 11)).toBeNull();
+    expect(minePlanePoint({ ...ray, direction: { x: 10, y: -1, z: 0 } }, 11)).toBeNull();
     expect(minePlanePoint(ray, 0)).toBeNull();
     expect(minePlanePoint(ray, NaN)).toBeNull();
   });
