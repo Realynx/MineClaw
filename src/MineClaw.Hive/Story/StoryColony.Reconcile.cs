@@ -48,16 +48,25 @@ public sealed partial class StoryColony
         BuildConflictsPass();
         PreservePass(w); // preserved zones: their changed cells become their repair builds' ghosts (StoryColony.PreserveRepair.cs)
         var seen = new HashSet<string>(StringComparer.Ordinal);
+        var temps = TempCellSet();
         foreach (var b in Builds.ToList())
-            if (b.Status != "paused") ReconcileBuild(w, b, seen);
+            if (b.Status != "paused") ReconcileBuild(w, b, seen, temps);
         _driftSeen = seen;
     }
 
-    private void ReconcileBuild(IStoryWorld w, BuildState b, HashSet<string> seen)
+    private void ReconcileBuild(IStoryWorld w, BuildState b, HashSet<string> seen, HashSet<P3> temps)
     {
         var drift = new Drift();
         foreach (var g in b.Ghosts)
-            if (Reconcilable(g) && !BuildConflicted(g) && w.Loaded(g.At.X, g.At.Z) && !QuarryHeld(b, g)) ReconcileCell(w, b, g, seen, ref drift);
+        {
+            if (BuildConflicted(g) || !w.Loaded(g.At.X, g.At.Z) || QuarryHeld(b, g)) continue;
+            if (ReplacementBuild(b) && temps.Contains(g.At)) continue;
+            if (ReplacementAir(b, g) && g.State != "leased")
+            {
+                ReconcileAir(w, b, g, seen, ref drift);
+            }
+            else if (Reconcilable(g)) ReconcileCell(w, b, g, seen, ref drift);
+        }
         ConflictStatus(b); // a quarry digs what is left (StoryColony.QuarryConflicts.cs)
         if (drift.Total > 0) Reopened(b, drift);
         else if (b.Status is not ("done" or "paused") && AllBuilt(b)) { b.Status = "done"; b.Reason = null; b.Rev = Touch(); }
@@ -69,6 +78,28 @@ public sealed partial class StoryColony
     /// <summary>A placed block of the design (not a dig, a pour, a second half, one at work now or one pawns can't place).</summary>
     private static bool Reconcilable(GhostState g) =>
         g.Job && !g.Remove && !StoryConstruction.IsLiquid(g) && g.State is not ("leased" or "unsupported");
+
+    /// <summary>A canceled builder's last atomic placement can arrive after replacement was queued. Empty-room ownership catches
+    /// that late block, but never competes with a pawn's registered temporary access or a newer construction directive.</summary>
+    private void ReconcileAir(IStoryWorld w, BuildState b, GhostState g, HashSet<string> seen, ref Drift drift)
+    {
+        var (id, meta) = w.Block(g.At.X, g.At.Y, g.At.Z);
+        if (id == 0) { Settled(b, g); return; }
+        if (g.State == "done")
+        {
+            var key = $"{b.Id}|{g.At}";
+            if (!_driftSeen.Contains(key)) { seen.Add(key); return; }
+            Reopen(b, g);
+            drift.Other++;
+        }
+        if (g.Id != id || g.Meta != meta) { g.Id = id; g.Meta = meta; g.Rev = Touch(); }
+        if (StoryBlocks.Undiggable.Contains(id))
+        {
+            string why = "cannot clear " + BlockLabel(w, id);
+            if (g.State != "blocked" || g.Reason != why) { g.State = "blocked"; g.Reason = why; g.Rev = Touch(); }
+        }
+        else if (g.State == "blocked" && g.Reason?.StartsWith("cannot clear ", StringComparison.Ordinal) == true) Reopen(b, g);
+    }
 
     private void ReconcileCell(IStoryWorld w, BuildState b, GhostState g, HashSet<string> seen, ref Drift drift)
     {

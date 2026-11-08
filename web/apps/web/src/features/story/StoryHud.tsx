@@ -19,6 +19,7 @@ import {
   ArrowDown,
   ArrowUp,
   Box,
+  Camera,
   Eye,
   EyeOff,
   Info,
@@ -789,6 +790,7 @@ export function ControlCluster({
   onSpeed,
   view,
   onView,
+  onFly,
   level,
   ground,
   height,
@@ -808,8 +810,9 @@ export function ControlCluster({
   speed?: StorySpeed;
   speedEffective?: StorySpeed | null;
   onSpeed?: (s: StorySpeed) => void;
-  view: 'top' | 'angled';
+  view: 'top' | 'angled' | 'fly';
   onView: () => void;
+  onFly?: () => void;
   level: number;
   ground: number;
   height: number;
@@ -832,6 +835,19 @@ export function ControlCluster({
       </div>
       <div className="flex items-center gap-1.5">
         <ViewButton view={view} onView={onView} />
+        {onFly ? (
+          <button
+            type="button"
+            onClick={onFly}
+            aria-pressed={view === 'fly'}
+            aria-label={view === 'fly' ? 'Return to the top-down map' : 'Switch to free camera'}
+            title="Free camera ↔ top-down map (Shift+V; V returns to map)"
+            className="inline-flex h-6 items-center gap-1 rounded bg-surface-2 px-1.5 font-medium hover:bg-surface-3"
+          >
+            <Camera className="size-3.5" />
+            {view === 'fly' ? 'Map' : 'Free cam'}
+          </button>
+        ) : null}
         <div className="flex items-center rounded bg-surface-2" data-testid="level-widget">
           <button
             type="button"
@@ -891,7 +907,7 @@ function PauseButton({ paused, canWrite, onPause }: { paused: boolean; canWrite:
   );
 }
 
-function ViewButton({ view, onView }: { view: 'top' | 'angled'; onView: () => void }) {
+function ViewButton({ view, onView }: { view: 'top' | 'angled' | 'fly'; onView: () => void }) {
   const top = view === 'top';
   return (
     <button
@@ -902,7 +918,7 @@ function ViewButton({ view, onView }: { view: 'top' | 'angled'; onView: () => vo
       aria-label={top ? 'Switch to the angled view' : 'Switch to the top-down view'}
     >
       {top ? <Box className="size-3.5" /> : <Layers className="size-3.5" />}
-      {top ? 'Top-down' : 'Angled'}
+      {top ? 'Top-down' : view === 'fly' ? 'Free cam' : 'Angled'}
     </button>
   );
 }
@@ -1157,7 +1173,7 @@ const HEADINGS: { [K in OptionsTool['kind']]: (t: Extract<OptionsTool, { kind: K
   }),
   design: (t) => ({
     name: `Design: ${t.name}`,
-    hint: `${t.blocks.length} blocks: click to queue it here (Q/E turns, PgUp/PgDn changes the level)`,
+    hint: `${t.blocks.length} blocks: click to queue it here (Q/E turns, PgUp/PgDn changes the level). Replaces blocks and empty space inside the design bounds.`,
     icon: 'block',
   }),
 };
@@ -1432,6 +1448,7 @@ export function HelpOverlay({ onClose }: { onClose: () => void }) {
       'Mine / deconstruct depth: surface, level, down to level, flatten here, layers (+ / − layers)',
     ],
     [<Kbd key="13">V</Kbd>, 'Top-down ↔ angled view'],
+    [<Kbd key="free">Shift+V</Kbd>, 'Free camera ↔ top-down map; V also returns to map'],
     [<Kbd key="13f">Shift+F</Kbd>, 'Full screen: the map and every panel (Esc leaves)'],
     [<Kbd key="14">T / Enter</Kbd>, 'Chat to the selected AI bodies'],
     [<Kbd key="15">Esc</Kbd>, 'Cancel a drag · close a menu · drop the tool · clear the selection'],

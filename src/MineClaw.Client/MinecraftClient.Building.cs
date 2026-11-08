@@ -191,10 +191,11 @@ public sealed partial class MinecraftClient
     /// world"): the colony owner ordered that cell built, so soft protection on natural ground there (stone, dirt, grass, sand, gravel:
     /// live 11-05 the "a placed stone (someone's floor)" guess refused 581 such clears in an hour) yields to the dig. Containers and
     /// other blocks that open, never-break marks, other blocks a player placed and every safety rule still hold; the strict-harvest
-    /// rule too (a pawn clears stone with a pickaxe).
+    /// rule too (a pawn clears stone with a pickaxe). An explicit palette replacement additionally releases block protection
+    /// at this exact target, including old containers; all footing, liquid, reach and harvest checks still run.
     /// </summary>
-    public Task<ActionResult> DigForBuildAsync(BlockPos pos, CancellationToken ct = default) =>
-        RunActionAsync("dig", ct, c => DigCoreAsync(pos, c, floorGuard: true, requested: true, ordered: true));
+    public Task<ActionResult> DigForBuildAsync(BlockPos pos, CancellationToken ct = default, bool replacement = false) =>
+        RunActionAsync("dig", ct, c => DigCoreAsync(pos, c, ignoreProtection: replacement, floorGuard: true, requested: true, ordered: true));
 
     /// <summary>Digs only from the current position. Quarry jobs enable the normal walkway floor guard; construction's own
     /// access blocks keep the existing default, while all protection, footing, liquid and harvest checks always apply.</summary>

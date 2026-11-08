@@ -430,6 +430,11 @@ export function countLabel(tool: DesignateTool, n: number): string {
 
 export const ZONE_TOOLS: ReadonlyArray<{ id: StoryZoneKind; label: string; hint: string; color: string }> = [
   { id: 'home', label: 'Home area', hint: 'Where pawns rest and keep things tidy', color: '#4f9cf0' },
+  { id: 'guard',
+    label: 'Guard',
+    hint: 'Available pawns with Guard enabled attack visible mobs here, including animals; players are excluded',
+    color: '#f0ad4f',
+  },
   { id: 'farm', label: 'Growing zone', hint: 'Pawns plant, tend and harvest here', color: '#7cc35b' },
   { id: 'chop', label: 'Woodlot', hint: 'Trees here are cut and replanted', color: '#b98a4e' },
   { id: 'mine', label: 'Quarry', hint: 'Pawns dig everything down to bedrock (a spiral stair), or only the ores', color: '#9aa3ad' },
@@ -664,7 +669,8 @@ function listBlocks(json: unknown[]): DesignBlock[] {
 }
 
 /** A JSON list's entries or an object's values (where a design's blocks may be nested). */
-const childrenOf = (json: object): unknown[] => (Array.isArray(json) ? json : Object.values(json as Record<string, unknown>));
+const childrenOf = (json: object): unknown[] =>
+  Array.isArray(json) ? json : Object.values(json as Record<string, unknown>);
 
 /** The blocks moved so the lowest corner is (0, 0, 0), air left out. */
 function fromCorner(out: DesignBlock[]): DesignBlock[] {
@@ -797,13 +803,29 @@ function splitDesign(placed: readonly DesignBlock[]): { dig: V3[]; by: Map<strin
 }
 
 /**
- * The build request for a placed design: one `block` item per material, explicit blocks (at most 64 × 4096). A design that digs
- * (id 0 cells: its basement) queues a `remove` item first and ties its items into one `group`, so its blocks wait for the dig.
+ * One group per palette placement, with its full bounds as replacement volume. The server clears unlisted interior cells
+ * and retires old overlapping ownership before building. Explicit basement digs still precede the material items.
  */
 export function designItems(placed: readonly DesignBlock[], name?: string, group?: string): StoryBuildItem[] {
+  if (!placed.length) return [];
+  const bounds: [number, number, number, number, number, number] = [
+    Infinity,
+    Infinity,
+    Infinity,
+    -Infinity,
+    -Infinity,
+    -Infinity,
+  ];
+  for (const b of placed)
+    for (let axis = 0; axis < 3; axis++) {
+      bounds[axis] = Math.min(bounds[axis]!, b[axis]!);
+      bounds[axis + 3] = Math.max(bounds[axis + 3]!, b[axis]!);
+    }
+  const volume = (bounds[3] - bounds[0] + 1) * (bounds[4] - bounds[1] + 1) * (bounds[5] - bounds[2] + 1);
+  if (volume > 262144) throw new Error('This design covers more than 262144 cells. Place a smaller design.');
   const { dig, by } = splitDesign(placed);
   const items: StoryBuildItem[] = [];
-  const tag = dig.length ? { group: designTag('d', undefined, group).group } : {};
+  const tag = { group: designTag('d', undefined, group).group };
   const named = name ? { name: name.slice(0, 40) } : {};
   // Top-down is the colony's own order for a dig; the list order is the queue order (the dig first).
   for (let i = 0; i < dig.length; i += 4096) items.push({ kind: 'remove', blocks: dig.slice(i, i + 4096), ...named, ...tag });
@@ -812,7 +834,9 @@ export function designItems(placed: readonly DesignBlock[], name?: string, group
     for (let i = 0; i < cells.length; i += 4096)
       items.push({ kind: 'block', blocks: cells.slice(i, i + 4096), material: [id, meta], ...named, ...tag });
   }
-  return items.slice(0, 64);
+  if (items.length > 64) throw new Error('This design needs more than 64 build items. Reduce its materials or size.');
+  items[0]!.replaceArea = bounds;
+  return items;
 }
 
 // ------------------------------------------------------------------ the right-click menu
@@ -943,6 +967,7 @@ export type KeyAction =
   | 'escape'
   | 'chat'
   | 'view'
+  | 'fly'
   | 'xray'
   | 'levelUp'
   | 'levelDown'
@@ -1049,6 +1074,7 @@ function heightAction(e: KeyInput): KeyAction | null {
 
 /** The keys a tool in hand doesn't claim: fixed actions, Shift combos, a structure's height, the tools and the tabs. */
 function commonAction(e: KeyInput, buildTool: boolean): KeyAction | null {
+  if (e.code === 'KeyV' && e.shiftKey) return 'fly';
   const fixed = FIXED_KEYS[e.code];
   if (fixed) return fixed;
   if (e.shiftKey && SHIFT_KEYS[e.code]) return SHIFT_KEYS[e.code]!;
@@ -1147,7 +1173,9 @@ export function failedByBuild(cells: readonly FailedCell[]): Map<string, { id: s
 }
 
 export function isStalled(d: { status?: string | null; retryAt?: unknown; fails?: number | null }): boolean {
-  return (d.status !== null && d.status !== undefined && d.status !== 'open') || (d.retryAt !== null && d.retryAt !== undefined) || (d.fails ?? 0) > 0;
+  return (
+    (d.status !== null && d.status !== undefined && d.status !== 'open') || (d.retryAt !== null && d.retryAt !== undefined) || (d.fails ?? 0) > 0
+  );
 }
 
 /** A designation's block cell (its target, else its first block), or null for entity designations without one. */
@@ -1167,10 +1195,10 @@ export function designationCell(d: {
 }
 
 /** The stalled designations whose cell lies in the dragged XZ rectangle [x1, z1, x2, z2] (any height). */
-export function stalledIn<T extends Parameters<typeof isStalled>[0] & Parameters<typeof designationCell>[0] & { id: string | number }>(
+export function stalledIn<T extends Parameters<typeof isStalled>[0] & Parameters<typeof designationCell>[0] & { id: string | number },
+>(
   all: readonly T[],
-  rect: readonly [number, number, number, number] | null,
-): Array<T['id']> {
+  rect: readonly [number, number, number, number] | null): Array<T['id']> {
   return all
     .filter((d) => {
       if (!isStalled(d)) return false;
@@ -1178,8 +1206,9 @@ export function stalledIn<T extends Parameters<typeof isStalled>[0] & Parameters
       const c = designationCell(d);
       if (!c) return false;
       const [x1, z1, x2, z2] = rect;
-      return c[0] >= Math.min(x1, x2) && c[0] <= Math.max(x1, x2) && c[2] >= Math.min(z1, z2) && c[2] <= Math.max(z1, z2);
+      return (
+        c[0] >= Math.min(x1, x2) && c[0] <= Math.max(x1, x2) && c[2] >= Math.min(z1, z2) && c[2] <= Math.max(z1, z2)
+      );
     })
     .map((d) => d.id);
 }
-

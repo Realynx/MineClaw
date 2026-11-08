@@ -62,7 +62,7 @@ export function ZoneToolbar({
       {zt ? <ZoneToolExtra zt={zt} erase={erase} onTool={onTool} plants={plants} zones={zones} /> : null}
       <p className="w-full text-[11px] leading-snug text-muted">
         Drag to paint. Cells touching a zone of the same type join it; work zones replace each other; Home area, Keep
-        out, Drop spot and Preserve are overlay layers. Shift-drag from inside a zone extends that zone.
+        out, Guard, Drop spot and Preserve are overlay layers. Shift-drag from inside a zone extends that zone.
       </p>
     </>
   );

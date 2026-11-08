@@ -18,6 +18,25 @@ public sealed partial class MinecraftClient
     public Task<ActionResult> PlaceTurnedAsync(BlockPos pos, int itemId, int? damage, int meta, CancellationToken ct = default) =>
         RunActionAsync("place", ct, c => PlaceTurnedCoreAsync(pos, itemId, damage, meta, c));
 
+    /// <summary>A construction access session keeps its footing: place only against a visible face from here, including the
+    /// requested orientation, without walking away or trying another stand after a rejected rotation.</summary>
+    public Task<ActionResult> PlaceHereAsync(BlockPos pos, int itemId, int? damage = null, int? meta = null, CancellationToken ct = default) =>
+        RunActionAsync("place", ct, async c =>
+        {
+            int block = BlockOrientation.BlockOf(itemId);
+            if (meta is not { } turn || !BlockOrientation.Turns(block, turn, Modern))
+                return await PlaceCoreAsync(pos, itemId, c, allowPathing: false, damage: damage).ConfigureAwait(false);
+            if (PlaceCellRefusal(pos, itemId, damage) is { } refused) return ActionResult.Fail(refused);
+            if (TurnPlaceRefusal(pos, itemId, damage) is { } unavailable) return ActionResult.Fail(unavailable);
+            if (PickTurn(pos, block, turn, Modern, World.Player.Position, visibleOnly: true) is not { } pick)
+                return ActionResult.Fail($"can't place {ItemName(itemId)} at {Fmt(pos)}: no visible support face for the requested rotation from here");
+            var placed = await PlaceAgainstCoreAsync(pos, pick.Face, itemId, damage, pick.Yaw, allowHidden: false, c, cursor: pick.Cursor).ConfigureAwait(false);
+            if (!placed.Ok) return placed;
+            bool correct = await WaitUntilAsync(() => World.GetBlock(pos) == block && BlockOrientation.Same(block, turn, World.GetMeta(pos), Modern),
+                TimeSpan.FromMilliseconds(400), c).ConfigureAwait(false);
+            return correct ? placed : ActionResult.Fail($"placed with wrong rotation at {Fmt(pos)}: wants {BlockOrientation.Describe(block, turn, Modern)}");
+        });
+
     private bool Modern => Options.Profile.Data.VersionId != "b1.8.1";
 
     private async Task<ActionResult> PlaceTurnedCoreAsync(BlockPos pos, int itemId, int? damage, int meta, CancellationToken ct)
@@ -113,7 +132,7 @@ public sealed partial class MinecraftClient
 
     /// <summary>The click from feet at <paramref name="feet"/> that gives the meta, on a face in reach (a face in view first, then the
     /// nearest); null = none from here.</summary>
-    private Turn? PickTurn(BlockPos pos, int block, int meta, bool modern, Vec3d feet)
+    private Turn? PickTurn(BlockPos pos, int block, int meta, bool modern, Vec3d feet, bool visibleOnly = false)
     {
         var eye = new Vec3d(feet.X, feet.Y + PlayerPhysics.EyeHeight, feet.Z);
         if (AABB.ForPlayer(feet).Intersects(AABB.Block(pos.X, pos.Y, pos.Z))) return null;
@@ -126,7 +145,9 @@ public sealed partial class MinecraftClient
             double d = eye.DistanceTo(point);
             // The client's own reach to the face; the server's: feet within 8 of the clicked block's centre.
             if (d > Options.Reach || feet.DistanceTo(against.Center) >= 8) continue;
-            double score = d + (FaceAim.Find(World, eye, against, t.Face, Options.Reach) is null ? 10 : 0);
+            bool visible = FaceAim.Find(World, eye, against, t.Face, Options.Reach) is not null;
+            if (visibleOnly && !visible) continue;
+            double score = d + (visible ? 0 : 10);
             if (score < bestScore) { bestScore = score; best = t; }
         }
         return best;

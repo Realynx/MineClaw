@@ -5,7 +5,7 @@ builds add [{"kind":"stairs","area":[0,64,20,3,65,20],"material":"cobblestone"}]
 builds add [{"kind":"furnace","area":[-3,64,5,-3,64,5],"facing":"s"},{"kind":"chest","area":[-5,64,5,-5,64,5]}] => OK {"ids":["b4","b5"]}
 builds add [{"kind":"block","area":[20,64,0,24,64,0],"material":"cobblestone"}] => OK {"ids":["b6"]}
 builds add [{"kind":"block","area":[-10,64,25,-4,64,25],"material":"cobblestone_stairs","facing":"e"}] => OK {"ids":["b7"]}
-r0 maid_chan_101 job => {"id":"story-1.j1","type":"build","kind":"place","label":"building wall (48 blocks, cobblestone): 6 blocks","at":"10,64,10","block":"cobblestone","want":"cobblestone","cells":["10,64,10","10,64,11","10,64,12","10,64,13","11,64,10","12,64,10"],"stand":"9,64,10","fetch":[{"from":"0,64,9","item":"cobblestone","n":6}]}
+r0 maid_chan_101 job => {"id":"story-1.j1","type":"build","kind":"place","label":"building wall (48 blocks, cobblestone): 6 blocks","at":"10,64,10","block":"cobblestone","reach":true,"want":"cobblestone","cells":["10,64,10","10,64,11","10,64,12","10,64,13","11,64,10","12,64,10"],"stand":"9,64,10","fetch":[{"from":"0,64,9","item":"cobblestone","n":6}],"pillar":{"from":"0,64,9","item":"cobblestone","n":16}}
   progress fetched => True
   progress cell 10,64,10 done => True
   progress cell 10,64,11 done => True
@@ -14,7 +14,7 @@ r0 maid_chan_101 job => {"id":"story-1.j1","type":"build","kind":"place","label"
   progress cell 11,64,10 failed: wrong rotation => True
   report done batch: placed => True
   builds b1:active::d,d,t,t,t,t,t,t!,t,d,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t | b2:queued::t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t | b3:queued::t | b4:queued::t | b5:queued::t | b6:queued::t,t,t,t,t | b7:queued::t,t,t,t,t,t,t
-r0 maid_chan_102 job => {"id":"story-1.j2","type":"build","kind":"place","label":"building wall (48 blocks, cobblestone): 6 blocks","at":"13,64,10","block":"cobblestone","want":"cobblestone","cells":["13,64,10","14,64,10","15,64,10","16,64,10","16,64,11","16,64,12"],"stand":"14,64,9","fetch":[{"from":"4,64,9","item":"cobblestone","n":6}]}
+r0 maid_chan_102 job => {"id":"story-1.j2","type":"build","kind":"place","label":"building wall (48 blocks, cobblestone): 6 blocks","at":"13,64,10","block":"cobblestone","reach":true,"want":"cobblestone","cells":["13,64,10","14,64,10","15,64,10","16,64,10","16,64,11","16,64,12"],"stand":"14,64,9","fetch":[{"from":"4,64,9","item":"cobblestone","n":6}],"pillar":{"from":"4,64,9","item":"cobblestone","n":16}}
   progress fetched => True
   progress cell 13,64,10 done => True
   progress cell 14,64,10 done => True
@@ -23,7 +23,7 @@ r0 maid_chan_102 job => {"id":"story-1.j2","type":"build","kind":"place","label"
   progress cell 16,64,12 failed: no support face => True
   report done  => True
   builds b1:active::d,d,t,t,t,t,t,t!,t,d,t,d,t,t,t,t,t,t!,t,t!,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t | b2:queued::t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t | b3:queued::t | b4:queued::t | b5:queued::t | b6:queued::t,t,t,t,t | b7:queued::t,t,t,t,t,t,t
-r0 maid_chan_103 job => {"id":"story-1.j3","type":"build","kind":"place","label":"building wall (48 blocks, cobblestone): 6 blocks","at":"10,64,14","block":"cobblestone","want":"cobblestone","cells":["10,64,14","10,64,15","10,64,16","11,64,16","12,64,16","13,64,16"],"stand":"10,64,17","fetch":[{"from":"4,64,9","item":"cobblestone","n":6}]}
+r0 maid_chan_103 job => {"id":"story-1.j3","type":"build","kind":"place","label":"building wall (48 blocks, cobblestone): 6 blocks","at":"10,64,14","block":"cobblestone","reach":true,"want":"cobblestone","cells":["10,64,14","10,64,15","10,64,16","11,64,16","12,64,16","13,64,16"],"stand":"10,64,17","fetch":[{"from":"4,64,9","item":"cobblestone","n":6}],"pillar":{"from":"4,64,9","item":"cobblestone","n":16}}
   progress fetched => True
   progress cell 10,64,14 done => True
   progress cell 10,64,15 failed: can't place at 10,64,15: I couldn't get closer => True
@@ -32,26 +32,26 @@ r0 maid_chan_103 job => {"id":"story-1.j3","type":"build","kind":"place","label"
   progress cell 13,64,16 done => True
   report failed fetch failed: chest is busy => True
   builds b1:active::d,d,t,t,t,t,t!,t!,t,d,t!,d,d,t,t,t,t,t!,t,t!,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t | b2:queued::t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t | b3:queued::t | b4:queued::t | b5:queued::t | b6:queued::t,t,t,t,t | b7:queued::t,t,t,t,t,t,t
-r1 maid_chan_101 job => {"id":"story-1.j4","type":"build","kind":"place","label":"building wall (48 blocks, cobblestone): 2 blocks","at":"11,64,16","block":"cobblestone","want":"cobblestone","cells":["11,64,16","14,64,16"],"stand":"11,64,17","fetch":[{"from":"0,64,9","item":"cobblestone","n":2}]}
+r1 maid_chan_101 job => {"id":"story-1.j4","type":"build","kind":"place","label":"building wall (48 blocks, cobblestone): 2 blocks","at":"11,64,16","block":"cobblestone","reach":true,"want":"cobblestone","cells":["11,64,16","14,64,16"],"stand":"11,64,17","fetch":[{"from":"0,64,9","item":"cobblestone","n":2}],"pillar":{"from":"0,64,9","item":"cobblestone","n":16}}
   progress fetched => True
   progress cell 11,64,16 done => True
   progress cell 14,64,16 done => True
   report done  => True
   builds b1:active::d,d,t,t,t,t,t!,t!,d,d,t!,d,d,t,t,t,t,t!,t,t!,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t | b2:queued::t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t | b3:queued::t | b4:queued::t | b5:queued::t | b6:queued::t,t,t,t,t | b7:queued::t,t,t,t,t,t,t
-r1 maid_chan_102 job => {"id":"story-1.j5","type":"build","kind":"place","label":"building wall (48 blocks, cobblestone): 3 blocks","at":"16,64,11","block":"cobblestone","want":"cobblestone","cells":["16,64,11","16,64,13","16,64,14"],"stand":"17,64,11","fetch":[{"from":"4,64,9","item":"cobblestone","n":3}]}
+r1 maid_chan_102 job => {"id":"story-1.j5","type":"build","kind":"place","label":"building wall (48 blocks, cobblestone): 3 blocks","at":"16,64,11","block":"cobblestone","reach":true,"want":"cobblestone","cells":["16,64,11","16,64,13","16,64,14"],"stand":"17,64,11","fetch":[{"from":"4,64,9","item":"cobblestone","n":3}],"pillar":{"from":"4,64,9","item":"cobblestone","n":16}}
   progress fetched => True
   progress cell 16,64,11 done => True
   progress cell 16,64,13 failed: can't place at 16,64,13: I couldn't get closer => True
   progress cell 16,64,14 failed: wrong rotation => True
   report failed fetch failed: chest is busy => True
   builds b1:active::d,d,t,t,t,t,t!,t!,d,d,t!,d,d,t,t,t,t,t!,t,t!,t,t!,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t | b2:queued::t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t | b3:queued::t | b4:queued::t | b5:queued::t | b6:queued::t,t,t,t,t | b7:queued::t,t,t,t,t,t,t
-r1 maid_chan_103 job => {"id":"story-1.j6","type":"build","kind":"place","label":"building wall (48 blocks, cobblestone): 3 blocks","at":"16,64,15","block":"cobblestone","want":"cobblestone","cells":["16,64,15","16,64,16","15,64,16"],"stand":"17,64,13","fetch":[{"from":"4,64,9","item":"cobblestone","n":3}]}
+r1 maid_chan_103 job => {"id":"story-1.j6","type":"build","kind":"place","label":"building wall (48 blocks, cobblestone): 3 blocks","at":"16,64,15","block":"cobblestone","reach":true,"want":"cobblestone","cells":["16,64,15","16,64,16","15,64,16"],"stand":"17,64,13","fetch":[{"from":"4,64,9","item":"cobblestone","n":3}],"pillar":{"from":"4,64,9","item":"cobblestone","n":15}}
   progress fetched => True
   progress cell 16,64,15 failed: can't place at 16,64,15: I couldn't get closer => True
   progress cell 16,64,16 failed: wrong rotation => True
   report failed script error => True
   builds b1:active::d,d,t,t,t,t,t!,t!,d,d,t!,d,d,t,t,t,t!,t!,t,t!,t,t!,t,t!,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t | b2:queued::t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t | b3:queued::t | b4:queued::t | b5:queued::t | b6:queued::t,t,t,t,t | b7:queued::t,t,t,t,t,t,t
-r2 maid_chan_101 job => {"id":"story-1.j7","type":"build","kind":"place","label":"building wall (48 blocks, cobblestone)","at":"15,64,16","block":"cobblestone","want":"cobblestone","cells":["15,64,16"],"stand":"12,64,17","fetch":[{"from":"0,64,9","item":"cobblestone","n":1}]}
+r2 maid_chan_101 job => {"id":"story-1.j7","type":"build","kind":"place","label":"building wall (48 blocks, cobblestone)","at":"15,64,16","block":"cobblestone","reach":true,"want":"cobblestone","cells":["15,64,16"],"stand":"12,64,17","fetch":[{"from":"0,64,9","item":"cobblestone","n":1}],"pillar":{"from":"0,64,9","item":"cobblestone","n":16}}
   progress fetched => True
   progress cell nope => True
   progress cell 1,2 => True
@@ -60,7 +60,7 @@ r2 maid_chan_101 job => {"id":"story-1.j7","type":"build","kind":"place","label"
   progress cell 15,64,16 done => True
   report failed fetch failed: chest is busy => True
   builds b1:active::d,d,t,t,t,t,t!,t!,d,d,t!,d,d,t,t,t,t!,t!,t,t!,t,t!,t,t!,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t | b2:queued::t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t | b3:queued::t | b4:queued::t | b5:queued::t | b6:queued::t,t,t,t,t | b7:queued::t,t,t,t,t,t,t
-r2 maid_chan_102 job => {"id":"story-1.j8","type":"build","kind":"place","label":"building floor (20 blocks, planks): 7 blocks","at":"-4,63,-5","block":"planks","want":"planks","cells":["-4,63,-5","-5,63,-5","-6,63,-5","-7,63,-5","-7,63,-6","-6,63,-6","-5,63,-6"],"clear":["-4,63,-5","-5,63,-5","-6,63,-5","-7,63,-5","-7,63,-6","-6,63,-6","-5,63,-6"],"stand":"-5,64,-4","fetch":[{"from":"4,64,9","item":"planks","n":7}]}
+r2 maid_chan_102 job => {"id":"story-1.j8","type":"build","kind":"place","label":"building floor (20 blocks, planks): 7 blocks","at":"-4,63,-5","block":"planks","reach":true,"want":"planks","cells":["-4,63,-5","-5,63,-5","-6,63,-5","-7,63,-5","-7,63,-6","-6,63,-6","-5,63,-6"],"clear":["-4,63,-5","-5,63,-5","-6,63,-5","-7,63,-5","-7,63,-6","-6,63,-6","-5,63,-6"],"stand":"-5,64,-4","fetch":[{"from":"4,64,9","item":"planks","n":7}],"pillar":{"from":"4,64,9","item":"cobblestone","n":12}}
   progress fetched => True
   progress cell -4,63,-5 failed: can't place at -4,63,-5: I couldn't get closer => True
   progress cell -5,63,-5 failed: wrong rotation => True
@@ -70,7 +70,7 @@ r2 maid_chan_102 job => {"id":"story-1.j8","type":"build","kind":"place","label"
   progress cell -5,63,-6 done => True
   report failed script error => True
   builds b1:active::d,d,t,t,t,t,t!,t!,d,d,t!,d,d,t,t,t,t!,t!,t,t!,t,t!,t,t!,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t | b2:active::t,t,t,t,t,t,d,t!,t,t,t,t!,t,t,t,t!,t,t,t,t | b3:queued::t | b4:queued::t | b5:queued::t | b6:queued::t,t,t,t,t | b7:queued::t,t,t,t,t,t,t
-r2 maid_chan_103 job => {"id":"story-1.j9","type":"build","kind":"place","label":"building floor (20 blocks, planks): 7 blocks","at":"-4,63,-6","block":"planks","want":"planks","cells":["-4,63,-6","-5,63,-7","-6,63,-7","-7,63,-7","-8,63,-7","-8,63,-8","-7,63,-8"],"clear":["-4,63,-6","-5,63,-7","-6,63,-7","-7,63,-7","-8,63,-7","-8,63,-8","-7,63,-8"],"stand":"-7,64,-6","fetch":[{"from":"4,64,9","item":"planks","n":3},{"from":"0,64,9","item":"planks","n":4}]}
+r2 maid_chan_103 job => {"id":"story-1.j9","type":"build","kind":"place","label":"building floor (20 blocks, planks): 7 blocks","at":"-4,63,-6","block":"planks","reach":true,"want":"planks","cells":["-4,63,-6","-5,63,-7","-6,63,-7","-7,63,-7","-8,63,-7","-8,63,-8","-7,63,-8"],"clear":["-4,63,-6","-5,63,-7","-6,63,-7","-7,63,-7","-8,63,-7","-8,63,-8","-7,63,-8"],"stand":"-7,64,-6","fetch":[{"from":"4,64,9","item":"planks","n":3},{"from":"0,64,9","item":"planks","n":4}],"pillar":{"from":"4,64,9","item":"cobblestone","n":12}}
   progress fetched => True
   progress cell -4,63,-6 failed: wrong rotation => True
   progress cell -6,63,-7 failed: no support face => True
@@ -80,39 +80,39 @@ r2 maid_chan_103 job => {"id":"story-1.j9","type":"build","kind":"place","label"
   progress cell -7,63,-8 failed: can't place at -7,63,-8: I couldn't get closer => True
   report done batch: placed => True
   builds b1:active::d,d,t,t,t,t,t!,t!,d,d,t!,d,d,t,t,t,t!,t!,t,t!,t,t!,t,t!,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t | b2:active::t,t,t,t,t,d,d,t!,t,t!,t,t!,t,t,t,t!,t,t,t!,t | b3:queued::t | b4:queued::t | b5:queued::t | b6:queued::t,t,t,t,t | b7:queued::t,t,t,t,t,t,t
-r3 maid_chan_101 job => {"id":"story-1.j10","type":"build","kind":"place","label":"building wall (48 blocks, cobblestone): 4 blocks","at":"10,64,12","block":"cobblestone","want":"cobblestone","cells":["10,64,12","10,64,13","10,64,14","10,64,15"],"clear":["10,64,12","10,64,14"],"stand":"8,64,12","fetch":[{"from":"0,64,9","item":"cobblestone","n":4}],"tool":"stone_pickaxe","tool_ench":"none"}
+r3 maid_chan_101 job => {"id":"story-1.j10","type":"build","kind":"place","label":"building wall (48 blocks, cobblestone): 4 blocks","at":"10,64,12","block":"cobblestone","reach":true,"want":"cobblestone","cells":["10,64,12","10,64,13","10,64,14","10,64,15"],"clear":["10,64,12","10,64,14"],"stand":"8,64,12","fetch":[{"from":"0,64,9","item":"cobblestone","n":4}],"tool":"stone_pickaxe","tool_ench":"none","pillar":{"from":"0,64,9","item":"cobblestone","n":16}}
   progress fetched => True
   progress cell 10,64,12 failed: can't place at 10,64,12: I couldn't get closer => True
   progress cell 10,64,13 failed: wrong rotation => True
   progress cell 10,64,15 failed: no support face => True
   report failed script error => True
   builds b1:active::d,d,t,t!,t!,t!,t!,t!,d,d,t!,d,d,t,t,t,d!,t!,t,t!,t,t!,t,t!,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t | b2:active::t,t,t,t,t,d,d,t!,t,t!,t,t!,t,t,t,t!,t,t,t!,t | b3:queued::t | b4:queued::t | b5:queued::t | b6:queued::t,t,t,t,t | b7:queued::t,t,t,t,t,t,t
-r3 maid_chan_102 job => {"id":"story-1.j11","type":"build","kind":"place","label":"building wall (48 blocks, cobblestone): 4 blocks","at":"14,64,10","block":"cobblestone","want":"cobblestone","cells":["14,64,10","15,64,10","16,64,11","16,64,13"],"clear":["14,64,10","16,64,11"],"stand":"17,64,10","fetch":[{"from":"4,64,9","item":"cobblestone","n":4}],"tool":"stone_pickaxe","tool_ench":"none"}
+r3 maid_chan_102 job => {"id":"story-1.j11","type":"build","kind":"place","label":"building wall (48 blocks, cobblestone): 4 blocks","at":"14,64,10","block":"cobblestone","reach":true,"want":"cobblestone","cells":["14,64,10","15,64,10","16,64,11","16,64,13"],"clear":["14,64,10","16,64,11"],"stand":"17,64,10","fetch":[{"from":"4,64,9","item":"cobblestone","n":4}],"tool":"stone_pickaxe","tool_ench":"none","pillar":{"from":"4,64,9","item":"cobblestone","n":12}}
   progress fetched => True
   progress cell 14,64,10 failed: wrong rotation => True
   progress cell 16,64,11 failed: no support face => True
   progress cell 16,64,13 done => True
   report done batch: placed => True
   builds b1:active::d,d,t,t!,t!,t!,t!,t!,d,d,t!,d,d,t!,t,t,d!,t!,t!,t!,d,t!,t,t!,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t | b2:active::t,t,t,t,t,d,d,t!,t,t!,t,t!,t,t,t,t!,t,t,t!,t | b3:queued::t | b4:queued::t | b5:queued::t | b6:queued::t,t,t,t,t | b7:queued::t,t,t,t,t,t,t
-r3 maid_chan_103 job => {"id":"story-1.j12","type":"build","kind":"place","label":"building wall (48 blocks, cobblestone)","at":"15,64,10","block":"cobblestone","want":"cobblestone","cells":["15,64,10"],"stand":"12,64,8","fetch":[{"from":"4,64,9","item":"cobblestone","n":1}]}
+r3 maid_chan_103 job => {"id":"story-1.j12","type":"build","kind":"place","label":"building wall (48 blocks, cobblestone)","at":"15,64,10","block":"cobblestone","reach":true,"want":"cobblestone","cells":["15,64,10"],"stand":"12,64,8","fetch":[{"from":"4,64,9","item":"cobblestone","n":1}],"pillar":{"from":"4,64,9","item":"cobblestone","n":8}}
   progress fetched => True
   report done  => True
   builds b1:active::d,d,t,t!,t!,t!,t!,t!,d,d,t!,d,d,t!,t,d,d!,t!,t!,t!,d,t!,t,t!,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t | b2:active::t,t,t,t,t,d,d,t!,t,t!,t,t!,t,t,t,t!,t,t,t!,t | b3:queued::t | b4:queued::t | b5:queued::t | b6:queued::t,t,t,t,t | b7:queued::t,t,t,t,t,t,t
-r4 maid_chan_101 job => {"id":"story-1.j13","type":"build","kind":"place","label":"building wall (48 blocks, cobblestone): 2 blocks","at":"10,64,11","block":"cobblestone","want":"cobblestone","cells":["10,64,11","13,64,10"],"stand":"10,64,8","fetch":[{"from":"0,64,9","item":"cobblestone","n":2}]}
+r4 maid_chan_101 job => {"id":"story-1.j13","type":"build","kind":"place","label":"building wall (48 blocks, cobblestone): 2 blocks","at":"10,64,11","block":"cobblestone","reach":true,"want":"cobblestone","cells":["10,64,11","13,64,10"],"stand":"10,64,8","fetch":[{"from":"0,64,9","item":"cobblestone","n":2}],"pillar":{"from":"0,64,9","item":"cobblestone","n":16}}
   progress fetched => True
   progress cell 10,64,11 failed: wrong rotation => True
   report done batch: placed => True
   builds b1:active::d,t!,t,t!,t!,t!,t!,t!,d,d,t!,d,d,t!,t,d,d!,t!,t!,t!,d,d!,t,t!,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t | b2:active::t,t,t,t,t,d,d,t!,t,t!,t,t!,t,t,t,t!,t,t,t!,t | b3:queued::t | b4:queued::t | b5:queued::t | b6:queued::t,t,t,t,t | b7:queued::t,t,t,t,t,t,t
-r4 maid_chan_102 job => {"id":"story-1.j14","type":"build","kind":"place","label":"building wall (48 blocks, cobblestone)","at":"10,64,14","block":"cobblestone","want":"cobblestone","cells":["10,64,14"],"clear":["10,64,14"],"stand":"8,64,11","fetch":[{"from":"4,64,9","item":"cobblestone","n":1}],"tool":"stone_pickaxe","tool_ench":"none"}
+r4 maid_chan_102 job => {"id":"story-1.j14","type":"build","kind":"place","label":"building wall (48 blocks, cobblestone)","at":"10,64,14","block":"cobblestone","reach":true,"want":"cobblestone","cells":["10,64,14"],"clear":["10,64,14"],"stand":"8,64,11","fetch":[{"from":"4,64,9","item":"cobblestone","n":1}],"tool":"stone_pickaxe","tool_ench":"none","pillar":{"from":"4,64,9","item":"cobblestone","n":7}}
   progress fetched => True
   report done  => True
   builds b1:active::d,t!,t,t!,d!,t!,t!,t!,d,d,t!,d,d,t!,t,d,d!,t!,t!,t!,d,d!,t,t!,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t | b2:active::t,t,t,t,t,d,d,t!,t,t!,t,t!,t,t,t,t!,t,t,t!,t | b3:queued::t | b4:queued::t | b5:queued::t | b6:queued::t,t,t,t,t | b7:queued::t,t,t,t,t,t,t
-r4 maid_chan_103 job => {"id":"story-1.j15","type":"build","kind":"place","label":"building wall (48 blocks, cobblestone)","at":"14,64,16","block":"cobblestone","want":"cobblestone","cells":["14,64,16"],"clear":["14,64,16"],"stand":"11,64,17","fetch":[{"from":"4,64,9","item":"cobblestone","n":1}],"tool":"stone_pickaxe","tool_ench":"none"}
+r4 maid_chan_103 job => {"id":"story-1.j15","type":"build","kind":"place","label":"building wall (48 blocks, cobblestone)","at":"14,64,16","block":"cobblestone","reach":true,"want":"cobblestone","cells":["14,64,16"],"clear":["14,64,16"],"stand":"11,64,17","fetch":[{"from":"4,64,9","item":"cobblestone","n":1}],"tool":"stone_pickaxe","tool_ench":"none","pillar":{"from":"4,64,9","item":"cobblestone","n":6}}
   progress fetched => True
   progress cell 14,64,16 failed: no support face => True
   report failed fetch failed: chest is busy => True
   builds b1:active::d,t!,t,t!,d!,t!,t!,t!,d,d,t!,d,d,t!,t!,d,d!,t!,t!,t!,d,d!,t,t!,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t | b2:active::t,t,t,t,t,d,d,t!,t,t!,t,t!,t,t,t,t!,t,t,t!,t | b3:queued::t | b4:queued::t | b5:queued::t | b6:queued::t,t,t,t,t | b7:queued::t,t,t,t,t,t,t
-r5 maid_chan_101 job => {"id":"story-1.j16","type":"build","kind":"place","label":"building floor (20 blocks, planks): 6 blocks","at":"-6,63,-5","block":"planks","want":"planks","cells":["-6,63,-5","-6,63,-6","-5,63,-7","-5,63,-8","-6,63,-8","-8,63,-7"],"clear":["-6,63,-5","-6,63,-6","-5,63,-7","-5,63,-8","-6,63,-8","-8,63,-7"],"stand":"-7,64,-7","fetch":[{"from":"0,64,9","item":"planks","n":6}]}
+r5 maid_chan_101 job => {"id":"story-1.j16","type":"build","kind":"place","label":"building floor (20 blocks, planks): 6 blocks","at":"-6,63,-5","block":"planks","reach":true,"want":"planks","cells":["-6,63,-5","-6,63,-6","-5,63,-7","-5,63,-8","-6,63,-8","-8,63,-7"],"clear":["-6,63,-5","-6,63,-6","-5,63,-7","-5,63,-8","-6,63,-8","-8,63,-7"],"stand":"-7,64,-7","fetch":[{"from":"0,64,9","item":"planks","n":6}],"pillar":{"from":"0,64,9","item":"cobblestone","n":16}}
   progress fetched => True
   progress cell -6,63,-6 failed: no support face => True
   progress cell -5,63,-7 done => True
@@ -121,13 +121,13 @@ r5 maid_chan_101 job => {"id":"story-1.j16","type":"build","kind":"place","label
   progress cell -8,63,-7 failed: can't place at -8,63,-7: I couldn't get closer => True
   report done  => True
   builds b1:active::d,t!,t,t!,d!,t!,t!,t!,d,d,t!,d,d,t!,t!,d,d!,t!,t!,t!,d,d!,t,t!,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t | b2:active::t,t,t,t,t,d,d,t!,t,t!,t!,t!,t,d,t,t!,t,t,t!,t | b3:queued::t | b4:queued::t | b5:queued::t | b6:queued::t,t,t,t,t | b7:queued::t,t,t,t,t,t,t
-r5 maid_chan_102 job => {"id":"story-1.j17","type":"build","kind":"place","label":"building floor (20 blocks, planks): 2 blocks","at":"-5,63,-6","block":"planks","want":"planks","cells":["-5,63,-6","-8,63,-8"],"clear":["-5,63,-6","-8,63,-8"],"stand":"-7,64,-6","fetch":[{"from":"0,64,9","item":"planks","n":2}],"tool":"stone_pickaxe","tool_ench":"none"}
+r5 maid_chan_102 job => {"id":"story-1.j17","type":"build","kind":"place","label":"building floor (20 blocks, planks): 2 blocks","at":"-5,63,-6","block":"planks","reach":true,"want":"planks","cells":["-5,63,-6","-8,63,-8"],"clear":["-5,63,-6","-8,63,-8"],"stand":"-7,64,-6","fetch":[{"from":"0,64,9","item":"planks","n":2}],"tool":"stone_pickaxe","tool_ench":"none","pillar":{"from":"4,64,9","item":"cobblestone","n":5}}
   progress fetched => True
   progress cell -5,63,-6 failed: no support face => True
   progress cell -8,63,-8 done => True
   report failed fetch failed: chest is busy => True
   builds b1:active::d,t!,t,t!,d!,t!,t!,t!,d,d,t!,d,d,t!,t!,d,d!,t!,t!,t!,d,d!,t,t!,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t | b2:active::d,t,t,t,t,d,d,t!,t,t!,t!,t!,t,d,t!,t!,t,t,t!,t | b3:queued::t | b4:queued::t | b5:queued::t | b6:queued::t,t,t,t,t | b7:queued::t,t,t,t,t,t,t
-r5 maid_chan_103 job => {"id":"story-1.j18","type":"build","kind":"place","label":"building floor (20 blocks, planks): 5 blocks","at":"-4,63,-7","block":"planks","want":"planks","cells":["-4,63,-7","-4,63,-8","-6,63,-5","-8,63,-5","-8,63,-6"],"clear":["-4,63,-7","-4,63,-8","-6,63,-5","-8,63,-5","-8,63,-6"],"stand":"-5,64,-7","fetch":[{"from":"0,64,9","item":"planks","n":5}]}
+r5 maid_chan_103 job => {"id":"story-1.j18","type":"build","kind":"place","label":"building floor (20 blocks, planks): 5 blocks","at":"-4,63,-7","block":"planks","reach":true,"want":"planks","cells":["-4,63,-7","-4,63,-8","-6,63,-5","-8,63,-5","-8,63,-6"],"clear":["-4,63,-7","-4,63,-8","-6,63,-5","-8,63,-5","-8,63,-6"],"stand":"-5,64,-7","fetch":[{"from":"0,64,9","item":"planks","n":5}],"pillar":{"from":"4,64,9","item":"cobblestone","n":5}}
   progress fetched => True
   progress cell -4,63,-7 done => True
   progress cell -4,63,-8 done => True
@@ -136,44 +136,44 @@ r5 maid_chan_103 job => {"id":"story-1.j18","type":"build","kind":"place","label
   progress cell -8,63,-6 failed: wrong rotation => True
   report failed script error => True
   builds b1:active::d,t!,t,t!,d!,t!,t!,t!,d,d,t!,d,d,t!,t!,d,d!,t!,t!,t!,d,d!,t,t!,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t | b2:active::d,t,t!,t,t,d,d,t!,t,t!,t!,t!,t,d,t!,t!,t,d,t!,t | b3:queued::t | b4:queued::t | b5:queued::t | b6:queued::t,t,t,t,t | b7:queued::t,t,t,t,t,t,t
-r6 maid_chan_101 job => {"id":"story-1.j19","type":"build","kind":"place","label":"building wall (48 blocks, cobblestone)","at":"11,64,10","block":"cobblestone","want":"cobblestone","cells":["11,64,10"],"clear":["11,64,10"],"stand":"8,64,8","fetch":[{"from":"0,64,9","item":"cobblestone","n":1}],"tool":"stone_pickaxe","tool_ench":"none"}
+r6 maid_chan_101 job => {"id":"story-1.j19","type":"build","kind":"place","label":"building wall (48 blocks, cobblestone)","at":"11,64,10","block":"cobblestone","reach":true,"want":"cobblestone","cells":["11,64,10"],"clear":["11,64,10"],"stand":"8,64,8","fetch":[{"from":"0,64,9","item":"cobblestone","n":1}],"tool":"stone_pickaxe","tool_ench":"none","pillar":{"from":"0,64,9","item":"cobblestone","n":16}}
   progress fetched => True
   progress cell 11,64,10 failed: no support face => True
   report failed fetch failed: chest is busy => True
   builds b1:active::d,t!,t,t!,d!,t!,t!,t!,d,d,t!,d,d,t!,d!,d,d!,t!,t!,t!,d,d!,t,t!,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t | b2:active::d,t,t!,t,t,d,d,t!,t,t!,t!,t!,t,d,t!,t!,t,d,t!,t | b3:queued::t | b4:queued::t | b5:queued::t | b6:queued::t,t,t,t,t | b7:queued::t,t,t,t,t,t,t
-r6 maid_chan_102 job => {"id":"story-1.j20","type":"build","kind":"place","label":"building wall (48 blocks, cobblestone): 2 blocks","at":"16,64,10","block":"cobblestone","want":"cobblestone","cells":["16,64,10","16,64,12"],"clear":["16,64,10"],"stand":"14,64,9","fetch":[{"from":"4,64,9","item":"cobblestone","n":2}],"tool":"stone_pickaxe","tool_ench":"none"}
+r6 maid_chan_102 job => {"id":"story-1.j20","type":"build","kind":"place","label":"building wall (48 blocks, cobblestone): 2 blocks","at":"16,64,10","block":"cobblestone","reach":true,"want":"cobblestone","cells":["16,64,10","16,64,12"],"clear":["16,64,10"],"stand":"14,64,9","fetch":[{"from":"4,64,9","item":"cobblestone","n":2}],"tool":"stone_pickaxe","tool_ench":"none","pillar":{"from":"4,64,9","item":"cobblestone","n":5}}
   progress fetched => True
   progress cell 16,64,10 done => True
   progress cell 16,64,12 done => True
   report failed script error => True
   builds b1:active::d,t!,t,t!,d!,t!,t!,t!,d,d,t!,d,d,t!,d!,d,d!,d!,t!,d!,d,d!,t,t!,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t | b2:active::d,t,t!,t,t,d,d,t!,t,t!,t!,t!,t,d,t!,t!,t,d,t!,t | b3:queued::t | b4:queued::t | b5:queued::t | b6:queued::t,t,t,t,t | b7:queued::t,t,t,t,t,t,t
-r6 maid_chan_103 job => {"id":"story-1.j21","type":"build","kind":"place","label":"building wall (48 blocks, cobblestone): 2 blocks","at":"10,64,16","block":"cobblestone","want":"cobblestone","cells":["10,64,16","12,64,16"],"clear":["10,64,16"],"stand":"9,64,14","fetch":[{"from":"4,64,9","item":"cobblestone","n":2}],"tool":"stone_pickaxe","tool_ench":"none"}
+r6 maid_chan_103 job => {"id":"story-1.j21","type":"build","kind":"place","label":"building wall (48 blocks, cobblestone): 2 blocks","at":"10,64,16","block":"cobblestone","reach":true,"want":"cobblestone","cells":["10,64,16","12,64,16"],"clear":["10,64,16"],"stand":"9,64,14","fetch":[{"from":"4,64,9","item":"cobblestone","n":2}],"tool":"stone_pickaxe","tool_ench":"none","pillar":{"from":"4,64,9","item":"cobblestone","n":3}}
   progress fetched => True
   progress cell 10,64,16 done => True
   progress cell 12,64,16 done => True
   report done batch: placed => True
   builds b1:active::d,t!,t,t!,d!,t!,t!,t!,d,d,t!,d,d,t!,d!,d,d!,d!,t!,d!,d,d!,t,t!,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t | b2:active::d,t,t!,t,t,d,d,t!,t,t!,t!,t!,t,d,t!,t!,t,d,t!,t | b3:queued::t | b4:queued::t | b5:queued::t | b6:queued::t,t,t,t,t | b7:queued::t,t,t,t,t,t,t
-r7 maid_chan_101 job => {"id":"story-1.j22","type":"build","kind":"place","label":"building wall (48 blocks, cobblestone)","at":"15,64,10","block":"cobblestone","want":"cobblestone","cells":["15,64,10"],"stand":"12,64,8","fetch":[{"from":"0,64,9","item":"cobblestone","n":1}]}
+r7 maid_chan_101 job => {"id":"story-1.j22","type":"build","kind":"place","label":"building wall (48 blocks, cobblestone)","at":"15,64,10","block":"cobblestone","reach":true,"want":"cobblestone","cells":["15,64,10"],"stand":"12,64,8","fetch":[{"from":"0,64,9","item":"cobblestone","n":1}],"pillar":{"from":"0,64,9","item":"cobblestone","n":16}}
   progress fetched => True
   progress cell 15,64,10 done => True
   report failed script error => True
   builds b1:active::d,t!,t,t!,d!,t!,t!,d!,t,d,d!,d,d,t!,d!,d,d!,d!,t!,d!,d,d!,t,t!,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t | b2:active::d,t,t!,t,t,d,d,t!,t,t!,t!,t!,t,d,t!,t!,t,d,t!,t | b3:queued::t | b4:queued::t | b5:queued::t | b6:queued::t,t,t,t,t | b7:queued::t,t,t,t,t,t,t
-r7 maid_chan_102 job => {"id":"story-1.j23","type":"build","kind":"place","label":"building wall (48 blocks, cobblestone)","at":"11,64,16","block":"cobblestone","want":"cobblestone","cells":["11,64,16"],"stand":"9,64,13","fetch":[{"from":"4,64,9","item":"cobblestone","n":1}]}
+r7 maid_chan_102 job => {"id":"story-1.j23","type":"build","kind":"place","label":"building wall (48 blocks, cobblestone)","at":"11,64,16","block":"cobblestone","reach":true,"want":"cobblestone","cells":["11,64,16"],"stand":"9,64,13","fetch":[{"from":"4,64,9","item":"cobblestone","n":1}],"pillar":{"from":"4,64,9","item":"cobblestone","n":1}}
   progress fetched => True
   progress cell 11,64,16 done => True
   report done batch: placed => True
   builds b1:active::d,t!,t,t!,d!,t!,t!,d!,d,d,d!,d,d,t!,d!,d,d!,d!,t!,d!,d,d!,t,t!,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t | b2:active::d,t,t!,t,t,d,d,t!,t,t!,t!,t!,t,d,t!,t!,t,d,t!,t | b3:queued::t | b4:queued::t | b5:queued::t | b6:queued::t,t,t,t,t | b7:queued::t,t,t,t,t,t,t
-r7 maid_chan_103 job => {"id":"story-1.j24","type":"build","kind":"place","label":"building wall (48 blocks, cobblestone)","at":"16,64,15","block":"cobblestone","want":"cobblestone","cells":["16,64,15"],"stand":"17,64,12","fetch":[{"from":"0,64,9","item":"cobblestone","n":1}]}
+r7 maid_chan_103 job => {"id":"story-1.j24","type":"build","kind":"place","label":"building wall (48 blocks, cobblestone)","at":"16,64,15","block":"cobblestone","reach":true,"want":"cobblestone","cells":["16,64,15"],"stand":"17,64,12","fetch":[{"from":"0,64,9","item":"cobblestone","n":1}],"pillar":{"from":"0,64,9","item":"cobblestone","n":16}}
   progress fetched => True
   progress cell 16,64,15 done => True
   report done  => True
   builds b1:active::d,t!,t,t!,d!,t!,t!,d!,d,d,d!,d,d,t!,d!,d,d!,d!,t!,d!,d,d!,t,t!,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t | b2:active::d,t,t!,t,t,d,d,t!,t,t!,t!,t!,t,d,t!,t!,t,d,t!,t | b3:queued::t | b4:queued::t | b5:queued::t | b6:queued::t,t,t,t,t | b7:queued::t,t,t,t,t,t,t
-r8 maid_chan_101 job => {"id":"story-1.j25","type":"build","kind":"place","label":"building wall (48 blocks, cobblestone)","at":"16,64,16","block":"cobblestone","want":"cobblestone","cells":["16,64,16"],"clear":["16,64,16"],"stand":"13,64,17","fetch":[{"from":"0,64,9","item":"cobblestone","n":1}],"tool":"stone_pickaxe","tool_ench":"none"}
+r8 maid_chan_101 job => {"id":"story-1.j25","type":"build","kind":"place","label":"building wall (48 blocks, cobblestone)","at":"16,64,16","block":"cobblestone","reach":true,"want":"cobblestone","cells":["16,64,16"],"clear":["16,64,16"],"stand":"13,64,17","fetch":[{"from":"0,64,9","item":"cobblestone","n":1}],"tool":"stone_pickaxe","tool_ench":"none","pillar":{"from":"0,64,9","item":"cobblestone","n":16}}
   progress fetched => True
   progress cell 16,64,16 done => True
   report done batch: placed => True
   builds b1:active::d,t!,t,t!,d!,t!,t!,d!,d,d,d!,d,d,t!,d!,d,d!,d!,t!,d!,d,d!,t,t!,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t | b2:active::d,t,t!,t,t,d,d,t!,t,t!,t!,t!,t,d,t!,t!,t,d,t!,t | b3:queued::t | b4:queued::t | b5:queued::t | b6:queued::t,t,t,t,t | b7:queued::t,t,t,t,t,t,t
-r8 maid_chan_102 job => {"id":"story-1.j26","type":"build","kind":"place","label":"building floor (20 blocks, planks): 5 blocks","at":"-4,63,-5","block":"planks","want":"planks","cells":["-4,63,-5","-6,63,-7","-5,63,-8","-4,63,-8","-8,63,-7"],"clear":["-4,63,-5","-6,63,-7","-5,63,-8","-4,63,-8","-8,63,-7"],"stand":"-5,64,-7","fetch":[{"from":"0,64,9","item":"planks","n":5}]}
+r8 maid_chan_102 job => {"id":"story-1.j26","type":"build","kind":"place","label":"building floor (20 blocks, planks): 5 blocks","at":"-4,63,-5","block":"planks","reach":true,"want":"planks","cells":["-4,63,-5","-6,63,-7","-5,63,-8","-4,63,-8","-8,63,-7"],"clear":["-4,63,-5","-6,63,-7","-5,63,-8","-4,63,-8","-8,63,-7"],"stand":"-5,64,-7","fetch":[{"from":"0,64,9","item":"planks","n":5}],"pillar":{"from":"0,64,9","item":"cobblestone","n":16}}
   progress fetched => True
   progress cell -4,63,-5 done => True
   progress cell -6,63,-7 failed: can't place at -6,63,-7: I couldn't get closer => True
@@ -181,54 +181,54 @@ r8 maid_chan_102 job => {"id":"story-1.j26","type":"build","kind":"place","label
   progress cell -8,63,-7 failed: no support face => True
   report done  => True
   builds b1:active::d,t!,t,t!,d!,t!,t!,d!,d,d,d!,d,d,t!,d!,d,d!,d!,t!,d!,d,d!,t,t!,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t | b2:active::d,t!,t!,t,t,d,d,t!,t,t!,t!,t!,t!,d,t!,t!,t,d,t!,t | b3:queued::t | b4:queued::t | b5:queued::t | b6:queued::t,t,t,t,t | b7:queued::t,t,t,t,t,t,t
-r8 maid_chan_103 job => {"id":"story-1.j27","type":"build","kind":"place","label":"building floor (20 blocks, planks): 2 blocks","at":"-4,63,-6","block":"planks","want":"planks","cells":["-4,63,-6","-5,63,-5"],"clear":["-4,63,-6","-5,63,-5"],"stand":"-2,64,-5","fetch":[{"from":"0,64,9","item":"planks","n":2}]}
+r8 maid_chan_103 job => {"id":"story-1.j27","type":"build","kind":"place","label":"building floor (20 blocks, planks): 2 blocks","at":"-4,63,-6","block":"planks","reach":true,"want":"planks","cells":["-4,63,-6","-5,63,-5"],"clear":["-4,63,-6","-5,63,-5"],"stand":"-2,64,-5","fetch":[{"from":"0,64,9","item":"planks","n":2}],"pillar":{"from":"0,64,9","item":"cobblestone","n":16}}
   progress fetched => True
   progress cell -4,63,-6 failed: can't place at -4,63,-6: I couldn't get closer => True
   progress cell -5,63,-5 failed: wrong rotation => True
   report failed fetch failed: chest is busy => True
   builds b1:active::d,t!,t,t!,d!,t!,t!,d!,d,d,d!,d,d,t!,d!,d,d!,d!,t!,d!,d,d!,t,t!,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t | b2:active::d,t!,t!,t,t,d,d,t!,t,t!,t!,t!,t!,d,t!,t!,t,d,t!,t | b3:queued::t | b4:queued::t | b5:queued::t | b6:queued::t,t,t,t,t | b7:queued::t,t,t,t,t,t,t
-r9 maid_chan_101 job => {"id":"story-1.j28","type":"build","kind":"place","label":"building wall (48 blocks, cobblestone): 2 blocks","at":"10,64,11","block":"cobblestone","want":"cobblestone","cells":["10,64,11","10,64,13"],"clear":["10,64,11","10,64,13"],"stand":"8,64,10","fetch":[{"from":"0,64,9","item":"cobblestone","n":2}],"tool":"stone_pickaxe","tool_ench":"none"}
+r9 maid_chan_101 job => {"id":"story-1.j28","type":"build","kind":"place","label":"building wall (48 blocks, cobblestone): 2 blocks","at":"10,64,11","block":"cobblestone","reach":true,"want":"cobblestone","cells":["10,64,11","10,64,13"],"clear":["10,64,11","10,64,13"],"stand":"8,64,10","fetch":[{"from":"0,64,9","item":"cobblestone","n":2}],"tool":"stone_pickaxe","tool_ench":"none","pillar":{"from":"0,64,9","item":"cobblestone","n":16}}
   progress fetched => True
   progress cell 10,64,11 done => True
   progress cell 10,64,13 failed: can't place at 10,64,13: I couldn't get closer => True
   report done  => True
   builds b1:active::d,t!,t,t!,d!,t!,t!,d!,d,d,d!,d,d,t!,d!,d,d!,d!,t!,d!,d,d!,t,d!,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t | b2:active::d,t!,t!,t,t,d,d,t!,t,t!,t!,t!,t!,d,t!,t!,t,d,t!,t | b3:queued::t | b4:queued::t | b5:queued::t | b6:queued::t,t,t,t,t | b7:queued::t,t,t,t,t,t,t
-r9 maid_chan_102 job => {"id":"story-1.j29","type":"build","kind":"place","label":"building wall (48 blocks, cobblestone): 2 blocks","at":"10,64,12","block":"cobblestone","want":"cobblestone","cells":["10,64,12","10,64,15"],"clear":["10,64,12"],"stand":"8,64,12","fetch":[{"from":"0,64,9","item":"cobblestone","n":2}],"tool":"stone_pickaxe","tool_ench":"none"}
+r9 maid_chan_102 job => {"id":"story-1.j29","type":"build","kind":"place","label":"building wall (48 blocks, cobblestone): 2 blocks","at":"10,64,12","block":"cobblestone","reach":true,"want":"cobblestone","cells":["10,64,12","10,64,15"],"clear":["10,64,12"],"stand":"8,64,12","fetch":[{"from":"0,64,9","item":"cobblestone","n":2}],"tool":"stone_pickaxe","tool_ench":"none","pillar":{"from":"0,64,9","item":"cobblestone","n":16}}
   progress fetched => True
   progress cell 10,64,12 failed: can't place at 10,64,12: I couldn't get closer => True
   progress cell 10,64,15 failed: wrong rotation => True
   report failed fetch failed: chest is busy => True
   builds b1:active::d,t!,t,t!,d!,t!,t!,d!,d,d,d!,d,d,t!,d!,d,d!,d!,t!,d!,d,d!,t,d!,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t | b2:active::d,t!,t!,t,t,d,d,t!,t,t!,t!,t!,t!,d,t!,t!,t,d,t!,t | b3:queued::t | b4:queued::t | b5:queued::t | b6:queued::t,t,t,t,t | b7:queued::t,t,t,t,t,t,t
-r9 maid_chan_103 job => {"id":"story-1.j30","type":"build","kind":"place","label":"building wall (48 blocks, cobblestone)","at":"14,64,10","block":"cobblestone","want":"cobblestone","cells":["14,64,10"],"clear":["14,64,10"],"stand":"11,64,8","fetch":[{"from":"0,64,9","item":"cobblestone","n":1}],"tool":"stone_pickaxe","tool_ench":"none"}
+r9 maid_chan_103 job => {"id":"story-1.j30","type":"build","kind":"place","label":"building wall (48 blocks, cobblestone)","at":"14,64,10","block":"cobblestone","reach":true,"want":"cobblestone","cells":["14,64,10"],"clear":["14,64,10"],"stand":"11,64,8","fetch":[{"from":"0,64,9","item":"cobblestone","n":1}],"tool":"stone_pickaxe","tool_ench":"none","pillar":{"from":"0,64,9","item":"cobblestone","n":16}}
   progress fetched => True
   progress cell 14,64,10 failed: wrong rotation => True
   report failed script error => True
   builds b1:active::d,t!,t,t!,d!,t!,t!,d!,d,d,d!,d,d,t!,d!,d,d!,d!,t!,d!,d,d!,t,d!,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t | b2:active::d,t!,t!,t,t,d,d,t!,t,t!,t!,t!,t!,d,t!,t!,t,d,t!,t | b3:queued::t | b4:queued::t | b5:queued::t | b6:queued::t,t,t,t,t | b7:queued::t,t,t,t,t,t,t
-r10 maid_chan_101 job => {"id":"story-1.j31","type":"build","kind":"place","label":"building wall (48 blocks, cobblestone)","at":"10,64,14","block":"cobblestone","want":"cobblestone","cells":["10,64,14"],"clear":["10,64,14"],"stand":"8,64,11","fetch":[{"from":"0,64,9","item":"cobblestone","n":1}],"tool":"stone_pickaxe","tool_ench":"none"}
+r10 maid_chan_101 job => {"id":"story-1.j31","type":"build","kind":"place","label":"building wall (48 blocks, cobblestone)","at":"10,64,14","block":"cobblestone","reach":true,"want":"cobblestone","cells":["10,64,14"],"clear":["10,64,14"],"stand":"8,64,11","fetch":[{"from":"0,64,9","item":"cobblestone","n":1}],"tool":"stone_pickaxe","tool_ench":"none","pillar":{"from":"0,64,9","item":"cobblestone","n":16}}
   progress fetched => True
   progress cell 10,64,14 failed: can't place at 10,64,14: I couldn't get closer => True
   report failed fetch failed: chest is busy => True
   builds b1:active::d,t!,t,t!,t,d!,t!,d!,d,d,d!,d,d,t!,d!,d,d!,d!,t!,t,d,d!,t,d!,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t | b2:active::t,t!,t!,t,t,d,d,t!,t,t!,t!,t!,t!,d,t!,t!,t,d,t!,t | b3:queued::t | b4:queued::t | b5:queued::t | b6:queued::t,t,t,t,t | b7:queued::t,t,t,t,t,t,t
-r10 maid_chan_102 job => {"id":"story-1.j32","type":"build","kind":"place","label":"building wall (48 blocks, cobblestone)","at":"10,64,16","block":"cobblestone","want":"cobblestone","cells":["10,64,16"],"clear":["10,64,16"],"stand":"8,64,13","fetch":[{"from":"0,64,9","item":"cobblestone","n":1}],"tool":"stone_pickaxe","tool_ench":"none"}
+r10 maid_chan_102 job => {"id":"story-1.j32","type":"build","kind":"place","label":"building wall (48 blocks, cobblestone)","at":"10,64,16","block":"cobblestone","reach":true,"want":"cobblestone","cells":["10,64,16"],"clear":["10,64,16"],"stand":"8,64,13","fetch":[{"from":"0,64,9","item":"cobblestone","n":1}],"tool":"stone_pickaxe","tool_ench":"none","pillar":{"from":"0,64,9","item":"cobblestone","n":16}}
   progress fetched => True
   progress cell 10,64,16 failed: wrong rotation => True
   report failed script error => True
   builds b1:active::d,t!,t,t!,t,d!,t!,d!,d,d,d!,d,d,t!,d!,d,d!,d!,t!,t,d,d!,t,d!,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t | b2:active::t,t!,t!,t,t,d,d,t!,t,t!,t!,t!,t!,d,t!,t!,t,d,t!,t | b3:queued::t | b4:queued::t | b5:queued::t | b6:queued::t,t,t,t,t | b7:queued::t,t,t,t,t,t,t
-r10 maid_chan_103 job => {"id":"story-1.j33","type":"build","kind":"place","label":"building wall (48 blocks, cobblestone): 2 blocks","at":"16,64,11","block":"cobblestone","want":"cobblestone","cells":["16,64,11","16,64,12"],"clear":["16,64,11"],"stand":"14,64,9","fetch":[{"from":"0,64,9","item":"cobblestone","n":2}],"tool":"stone_pickaxe","tool_ench":"none"}
+r10 maid_chan_103 job => {"id":"story-1.j33","type":"build","kind":"place","label":"building wall (48 blocks, cobblestone): 2 blocks","at":"16,64,11","block":"cobblestone","reach":true,"want":"cobblestone","cells":["16,64,11","16,64,12"],"clear":["16,64,11"],"stand":"14,64,9","fetch":[{"from":"0,64,9","item":"cobblestone","n":2}],"tool":"stone_pickaxe","tool_ench":"none","pillar":{"from":"0,64,9","item":"cobblestone","n":16}}
   progress fetched => True
   progress cell 16,64,12 failed: no support face => True
   report done batch: placed => True
   builds b1:active::d,t!,t,t!,t,d!,t!,d!,d,d,d!,d,d,t!,d!,d,d!,d!,t!,t!,d,d!,t,d!,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t | b2:active::t,t!,t!,t,t,d,d,t!,t,t!,t!,t!,t!,d,t!,t!,t,d,t!,t | b3:queued::t | b4:queued::t | b5:queued::t | b6:queued::t,t,t,t,t | b7:queued::t,t,t,t,t,t,t
-r11 maid_chan_101 job => {"id":"story-1.j34","type":"build","kind":"place","label":"building wall (48 blocks, cobblestone)","at":"16,64,11","block":"cobblestone","want":"cobblestone","cells":["16,64,11"],"clear":["16,64,11"],"stand":"13,64,9","fetch":[{"from":"0,64,9","item":"cobblestone","n":1}],"tool":"stone_pickaxe","tool_ench":"none"}
+r11 maid_chan_101 job => {"id":"story-1.j34","type":"build","kind":"place","label":"building wall (48 blocks, cobblestone)","at":"16,64,11","block":"cobblestone","reach":true,"want":"cobblestone","cells":["16,64,11"],"clear":["16,64,11"],"stand":"13,64,9","fetch":[{"from":"0,64,9","item":"cobblestone","n":1}],"tool":"stone_pickaxe","tool_ench":"none","pillar":{"from":"0,64,9","item":"cobblestone","n":16}}
   progress fetched => True
   progress cell 16,64,11 failed: wrong rotation => True
   report failed script error => True
   builds b1:active::d,t!,t,t!,t,d!,t!,d!,d,d,d!,d,d,t!,d!,d,d!,d!,t!,t!,d,d!,t,d!,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t | b2:active::t,t!,t!,t,t,d,d,t!,t,t!,t!,t!,t!,d,t!,t!,t,d,t!,t | b3:queued::t | b4:queued::t | b5:queued::t | b6:queued::t,t,t,t,t | b7:queued::t,t,t,t,t,t,t
-r11 maid_chan_102 job => {"id":"story-1.j35","type":"build","kind":"place","label":"building wall (48 blocks, cobblestone)","at":"16,64,15","block":"cobblestone","want":"cobblestone","cells":["16,64,15"],"clear":["16,64,15"],"stand":"17,64,12","fetch":[{"from":"0,64,9","item":"cobblestone","n":1}],"tool":"stone_pickaxe","tool_ench":"none"}
+r11 maid_chan_102 job => {"id":"story-1.j35","type":"build","kind":"place","label":"building wall (48 blocks, cobblestone)","at":"16,64,15","block":"cobblestone","reach":true,"want":"cobblestone","cells":["16,64,15"],"clear":["16,64,15"],"stand":"17,64,12","fetch":[{"from":"0,64,9","item":"cobblestone","n":1}],"tool":"stone_pickaxe","tool_ench":"none","pillar":{"from":"0,64,9","item":"cobblestone","n":16}}
   progress fetched => True
   report done batch: placed => True
   builds b1:active::d,t!,t,t!,t,d!,t!,d!,d,d,d!,d,d,t!,d!,d,d!,d!,t!,t!,d,d!,d,d!,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t | b2:active::t,t!,t!,t,t,d,d,t!,t,t!,t!,t!,t!,d,t!,t!,t,d,t!,t | b3:queued::t | b4:queued::t | b5:queued::t | b6:queued::t,t,t,t,t | b7:queued::t,t,t,t,t,t,t
-r11 maid_chan_103 job => {"id":"story-1.j36","type":"build","kind":"place","label":"building floor (20 blocks, planks): 4 blocks","at":"-4,63,-5","block":"planks","want":"planks","cells":["-4,63,-5","-5,63,-6","-6,63,-5","-6,63,-8"],"clear":["-4,63,-5","-5,63,-6","-6,63,-5","-6,63,-8"],"stand":"-4,64,-7","fetch":[{"from":"0,64,9","item":"planks","n":4}],"tool":"stone_pickaxe","tool_ench":"none"}
+r11 maid_chan_103 job => {"id":"story-1.j36","type":"build","kind":"place","label":"building floor (20 blocks, planks): 4 blocks","at":"-4,63,-5","block":"planks","reach":true,"want":"planks","cells":["-4,63,-5","-5,63,-6","-6,63,-5","-6,63,-8"],"clear":["-4,63,-5","-5,63,-6","-6,63,-5","-6,63,-8"],"stand":"-4,64,-7","fetch":[{"from":"0,64,9","item":"planks","n":4}],"tool":"stone_pickaxe","tool_ench":"none","pillar":{"from":"0,64,9","item":"cobblestone","n":16}}
   progress fetched => True
   progress cell -4,63,-5 failed: no support face => True
   progress cell -5,63,-6 done => True
@@ -236,35 +236,35 @@ r11 maid_chan_103 job => {"id":"story-1.j36","type":"build","kind":"place","labe
   progress cell -6,63,-8 done => True
   report done  => True
   builds b1:active::d,t!,t,t!,t,d!,t!,d!,d,d,d!,d,d,t!,d!,d,d!,d!,t!,t!,d,d!,d,d!,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t | b2:active::t,t!,t!,t,t,d,d,t!,t,t!,t!,t!,t!,d,d!,t!,t,d,t!,t! | b3:queued::t | b4:queued::t | b5:queued::t | b6:queued::t,t,t,t,t | b7:queued::t,t,t,t,t,t,t
-r12 maid_chan_101 job => {"id":"story-1.j37","type":"build","kind":"place","label":"building wall (48 blocks, cobblestone): 2 blocks","at":"10,64,11","block":"cobblestone","want":"cobblestone","cells":["10,64,11","10,64,12"],"clear":["10,64,11","10,64,12"],"stand":"7,64,10","fetch":[{"from":"0,64,9","item":"cobblestone","n":2}],"tool":"stone_pickaxe","tool_ench":"none"}
+r12 maid_chan_101 job => {"id":"story-1.j37","type":"build","kind":"place","label":"building wall (48 blocks, cobblestone): 2 blocks","at":"10,64,11","block":"cobblestone","reach":true,"want":"cobblestone","cells":["10,64,11","10,64,12"],"clear":["10,64,11","10,64,12"],"stand":"7,64,10","fetch":[{"from":"0,64,9","item":"cobblestone","n":2}],"tool":"stone_pickaxe","tool_ench":"none","pillar":{"from":"0,64,9","item":"cobblestone","n":16}}
   progress fetched => True
   progress cell 10,64,12 failed: no support face => True
   report done batch: placed => True
   builds b1:active::d,t!,t!,t!,d,d!,t!,d!,d,d,d!,d,d,t!,d!,d,d!,d!,t!,t!,d,d!,d,d!,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t | b2:active::t,t!,t!,t,t,d,d,t!,t,t!,t!,t!,t!,d,d!,t!,t,d,t!,t! | b3:queued::t | b4:queued::t | b5:queued::t | b6:queued::t,t,t,t,t | b7:queued::t,t,t,t,t,t,t
-r12 maid_chan_102 job => {"id":"story-1.j38","type":"build","kind":"place","label":"building wall (48 blocks, cobblestone)","at":"10,64,11","block":"cobblestone","want":"cobblestone","cells":["10,64,11"],"clear":["10,64,11"],"stand":"8,64,8","fetch":[{"from":"0,64,9","item":"cobblestone","n":1}],"tool":"stone_pickaxe","tool_ench":"none"}
+r12 maid_chan_102 job => {"id":"story-1.j38","type":"build","kind":"place","label":"building wall (48 blocks, cobblestone)","at":"10,64,11","block":"cobblestone","reach":true,"want":"cobblestone","cells":["10,64,11"],"clear":["10,64,11"],"stand":"8,64,8","fetch":[{"from":"0,64,9","item":"cobblestone","n":1}],"tool":"stone_pickaxe","tool_ench":"none","pillar":{"from":"0,64,9","item":"cobblestone","n":16}}
   progress fetched => True
   progress cell 10,64,11 failed: no support face => True
   report done  => True
   builds b1:active::d,t!,t!,t!,d,d!,t!,d!,d,d,d!,d,d,t!,d!,d,d!,d!,t!,t!,d,d!,d,d!,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t | b2:active::t,t!,t!,t,t,d,d,t!,t,t!,t!,t!,t!,d,d!,t!,t,d,t!,t! | b3:queued::t | b4:queued::t | b5:queued::t | b6:queued::t,t,t,t,t | b7:queued::t,t,t,t,t,t,t
-r12 maid_chan_103 job => {"id":"story-1.j39","type":"build","kind":"place","label":"building wall (48 blocks, cobblestone)","at":"10,64,13","block":"cobblestone","want":"cobblestone","cells":["10,64,13"],"clear":["10,64,13"],"stand":"8,64,10","fetch":[{"from":"0,64,9","item":"cobblestone","n":1}],"tool":"stone_pickaxe","tool_ench":"none"}
+r12 maid_chan_103 job => {"id":"story-1.j39","type":"build","kind":"place","label":"building wall (48 blocks, cobblestone)","at":"10,64,13","block":"cobblestone","reach":true,"want":"cobblestone","cells":["10,64,13"],"clear":["10,64,13"],"stand":"8,64,10","fetch":[{"from":"0,64,9","item":"cobblestone","n":1}],"tool":"stone_pickaxe","tool_ench":"none","pillar":{"from":"0,64,9","item":"cobblestone","n":16}}
   progress fetched => True
   progress cell 10,64,13 done => True
   report failed fetch failed: chest is busy => True
   builds b1:active::d,t!,t!,d!,d,d!,t!,d!,d,d,d!,d,d,t!,d!,d,d!,d!,t!,t!,d,d!,d,d!,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t | b2:active::t,t!,t!,t,t,d,d,t!,t,t!,t!,t!,t!,d,d!,t!,t,d,t!,t! | b3:queued::t | b4:queued::t | b5:queued::t | b6:queued::t,t,t,t,t | b7:queued::t,t,t,t,t,t,t
-r13 maid_chan_101 job => {"id":"story-1.j40","type":"build","kind":"place","label":"building floor (20 blocks, planks): 3 blocks","at":"-4,63,-6","block":"planks","want":"planks","cells":["-4,63,-6","-5,63,-8","-8,63,-6"],"clear":["-4,63,-6","-5,63,-8","-8,63,-6"],"stand":"-3,64,-6","fetch":[{"from":"0,64,9","item":"planks","n":3}]}
+r13 maid_chan_101 job => {"id":"story-1.j40","type":"build","kind":"place","label":"building floor (20 blocks, planks): 3 blocks","at":"-4,63,-6","block":"planks","reach":true,"want":"planks","cells":["-4,63,-6","-5,63,-8","-8,63,-6"],"clear":["-4,63,-6","-5,63,-8","-8,63,-6"],"stand":"-3,64,-6","fetch":[{"from":"0,64,9","item":"planks","n":3}],"pillar":{"from":"0,64,9","item":"cobblestone","n":16}}
   progress fetched => True
   progress cell -4,63,-6 failed: no support face => True
   progress cell -5,63,-8 done => True
   progress cell -8,63,-6 done => True
   report done  => True
   builds b1:active::d,t!,d!,d!,d,d!,t!,d!,d,d,d!,d,d,t!,d!,d,d!,d!,t!,d!,d,d!,d,d!,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t | b2:active::t,t!,t!,t,t,d,d,t!,t,t!,t!,t!,d!,d,d!,t!,t,d,t!,t! | b3:queued::t | b4:queued::t | b5:queued::t | b6:queued::t,t,t,t,t | b7:queued::t,t,t,t,t,t,t
-r13 maid_chan_102 job => {"id":"story-1.j41","type":"build","kind":"place","label":"building floor (20 blocks, planks): 2 blocks","at":"-6,63,-5","block":"planks","want":"planks","cells":["-6,63,-5","-6,63,-8"],"clear":["-6,63,-5","-6,63,-8"],"stand":"-5,64,-6","fetch":[{"from":"0,64,9","item":"planks","n":2}],"tool":"stone_pickaxe","tool_ench":"none"}
+r13 maid_chan_102 job => {"id":"story-1.j41","type":"build","kind":"place","label":"building floor (20 blocks, planks): 2 blocks","at":"-6,63,-5","block":"planks","reach":true,"want":"planks","cells":["-6,63,-5","-6,63,-8"],"clear":["-6,63,-5","-6,63,-8"],"stand":"-5,64,-6","fetch":[{"from":"0,64,9","item":"planks","n":2}],"tool":"stone_pickaxe","tool_ench":"none","pillar":{"from":"0,64,9","item":"cobblestone","n":16}}
   progress fetched => True
   progress cell -6,63,-5 done => True
   progress cell -6,63,-8 done => True
   report failed fetch failed: chest is busy => True
   builds b1:active::d,t!,d!,d!,d,d!,t!,d!,d,d,d!,d,d,t!,d!,d,d!,d!,t!,d!,d,d!,d,d!,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t | b2:active::t,t!,t!,t,t,d,d,t!,t,t!,t!,d!,d!,d,d!,t!,t,d,t!,t! | b3:queued::t | b4:queued::t | b5:queued::t | b6:queued::t,t,t,t,t | b7:queued::t,t,t,t,t,t,t
-r13 maid_chan_103 job => {"id":"story-1.j42","type":"build","kind":"place","label":"building floor (20 blocks, planks): 5 blocks","at":"-4,63,-8","block":"planks","want":"planks","cells":["-4,63,-8","-6,63,-7","-6,63,-6","-7,63,-5","-8,63,-5"],"clear":["-4,63,-8","-6,63,-7","-6,63,-6","-7,63,-5","-8,63,-5"],"stand":"-5,64,-6","fetch":[{"from":"0,64,9","item":"planks","n":5}]}
+r13 maid_chan_103 job => {"id":"story-1.j42","type":"build","kind":"place","label":"building floor (20 blocks, planks): 5 blocks","at":"-4,63,-8","block":"planks","reach":true,"want":"planks","cells":["-4,63,-8","-6,63,-7","-6,63,-6","-7,63,-5","-8,63,-5"],"clear":["-4,63,-8","-6,63,-7","-6,63,-6","-7,63,-5","-8,63,-5"],"stand":"-5,64,-6","fetch":[{"from":"0,64,9","item":"planks","n":5}],"pillar":{"from":"0,64,9","item":"cobblestone","n":16}}
   progress fetched => True
   progress cell -4,63,-8 done => True
   progress cell -6,63,-7 done => True
@@ -272,113 +272,113 @@ r13 maid_chan_103 job => {"id":"story-1.j42","type":"build","kind":"place","labe
   progress cell -7,63,-5 failed: wrong rotation => True
   report failed script error => True
   builds b1:active::d,t!,d!,d!,d,d!,t!,d!,d,d,d!,d,d,t!,d!,d,d!,d!,t!,d!,d,d!,d,d!,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t | b2:active::t,t!,t!,t!,t,d,d,t!,t,t!,t!,d!,d!,d,d!,t!,t,d,t!,t! | b3:queued::t | b4:queued::t | b5:queued::t | b6:queued::t,t,t,t,t | b7:queued::t,t,t,t,t,t,t
-r14 maid_chan_101 job => {"id":"story-1.j43","type":"build","kind":"place","label":"building floor (20 blocks, planks): 2 blocks","at":"-8,63,-5","block":"planks","want":"planks","cells":["-8,63,-5","-8,63,-7"],"clear":["-8,63,-5","-8,63,-7"],"stand":"-6,64,-5","fetch":[{"from":"0,64,9","item":"planks","n":2}]}
+r14 maid_chan_101 job => {"id":"story-1.j43","type":"build","kind":"place","label":"building floor (20 blocks, planks): 2 blocks","at":"-8,63,-5","block":"planks","reach":true,"want":"planks","cells":["-8,63,-5","-8,63,-7"],"clear":["-8,63,-5","-8,63,-7"],"stand":"-6,64,-5","fetch":[{"from":"0,64,9","item":"planks","n":2}],"pillar":{"from":"0,64,9","item":"cobblestone","n":16}}
   progress fetched => True
   progress cell -8,63,-5 done => True
   progress cell -8,63,-7 done => True
   report failed fetch failed: chest is busy => True
   builds b1:active::d,t!,d!,d!,d,d!,t!,d!,d,d,d!,d,d,t!,d!,d,d!,d!,t!,d!,d,d!,d,d!,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t | b2:active::t,t!,t!,d!,t,d,d,t!,t,t!,t!,d!,d!,d,d!,t!,t,d,t!,t! | b3:queued::t | b4:queued::t | b5:queued::t | b6:queued::t,t,t,t,t | b7:queued::t,t,t,t,t,t,t
-r14 maid_chan_102 job => {"id":"story-1.j44","type":"build","kind":"place","label":"building floor (20 blocks, planks): 2 blocks","at":"-7,63,-8","block":"planks","want":"planks","cells":["-7,63,-8","-8,63,-8"],"clear":["-7,63,-8","-8,63,-8"],"stand":"-7,64,-6","fetch":[{"from":"0,64,9","item":"planks","n":2}],"tool":"stone_pickaxe","tool_ench":"none"}
+r14 maid_chan_102 job => {"id":"story-1.j44","type":"build","kind":"place","label":"building floor (20 blocks, planks): 2 blocks","at":"-7,63,-8","block":"planks","reach":true,"want":"planks","cells":["-7,63,-8","-8,63,-8"],"clear":["-7,63,-8","-8,63,-8"],"stand":"-7,64,-6","fetch":[{"from":"0,64,9","item":"planks","n":2}],"tool":"stone_pickaxe","tool_ench":"none","pillar":{"from":"0,64,9","item":"cobblestone","n":16}}
   progress fetched => True
   progress cell -7,63,-8 done => True
   progress cell -8,63,-8 done => True
   report failed script error => True
   builds b1:active::d,t!,d!,d!,d,d!,t!,d!,d,d,d!,d,d,t!,d!,d,d!,d!,t!,d!,d,d!,d,d!,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t | b2:active::t,t!,t!,d!,t,d,d,t!,t,t!,t!,d!,d!,d,d!,t!,t,d,t!,t! | b3:queued::t | b4:queued::t | b5:queued::t | b6:queued::t,t,t,t,t | b7:queued::t,t,t,t,t,t,t
-r14 maid_chan_103 job => {"id":"story-1.j45","type":"build","kind":"place","label":"building stairs (1 block, cobblestone)","at":"0,64,20","block":"stone_stairs","want":"stone_stairs","cells":["0,64,20"],"facing":"e","metas":[0],"stand":"2,64,17","fetch":[{"from":"0,64,9","item":"stone_stairs","n":1}]}
+r14 maid_chan_103 job => {"id":"story-1.j45","type":"build","kind":"place","label":"building stairs (1 block, cobblestone)","at":"0,64,20","block":"stone_stairs","reach":true,"want":"stone_stairs","cells":["0,64,20"],"facing":"e","metas":[0],"stand":"2,64,17","fetch":[{"from":"0,64,9","item":"stone_stairs","n":1}],"pillar":{"from":"0,64,9","item":"cobblestone","n":16}}
   progress fetched => True
   progress cell 0,64,20 done => True
   report done batch: placed => True
   builds b1:active::d,t!,d!,d!,d,d!,t!,d!,d,d,d!,d,d,t!,d!,d,d!,d!,t!,d!,d,d!,d,d!,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t | b2:active::t,t!,t!,d!,t,d,d,t!,t,t!,t!,d!,d!,d,d!,t!,t,d,t!,t! | b3:active::t | b4:queued::t | b5:queued::t | b6:queued::t,t,t,t,t | b7:queued::t,t,t,t,t,t,t
-r15 maid_chan_101 job => {"id":"story-1.j46","type":"build","kind":"place","label":"building wall (48 blocks, cobblestone): 2 blocks","at":"14,64,10","block":"cobblestone","want":"cobblestone","cells":["14,64,10","16,64,11"],"clear":["14,64,10","16,64,11"],"stand":"13,64,9","fetch":[{"from":"0,64,9","item":"cobblestone","n":2}],"tool":"stone_pickaxe","tool_ench":"none"}
+r15 maid_chan_101 job => {"id":"story-1.j46","type":"build","kind":"place","label":"building wall (48 blocks, cobblestone): 2 blocks","at":"14,64,10","block":"cobblestone","reach":true,"want":"cobblestone","cells":["14,64,10","16,64,11"],"clear":["14,64,10","16,64,11"],"stand":"13,64,9","fetch":[{"from":"0,64,9","item":"cobblestone","n":2}],"tool":"stone_pickaxe","tool_ench":"none","pillar":{"from":"0,64,9","item":"cobblestone","n":16}}
   progress fetched => True
   progress cell 14,64,10 done => True
   progress cell 16,64,11 done => True
   report failed script error => True
   builds b1:active::d,t!,d!,d!,d,d!,t!,d!,d,d,d!,d,d,t!,d!,d,d!,d!,t!,d!,d,d!,d,d!,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t | b2:active::t,t!,t!,d!,t,d,d,t!,t,t!,t!,d!,d!,d,d!,t!,t,d,t!,t! | b3:active::t | b4:queued::t | b5:queued::t | b6:queued::t,t,t,t,t | b7:queued::t,t,t,t,t,t,t
-r15 maid_chan_102 job => {"id":"story-1.j47","type":"build","kind":"place","label":"building wall (48 blocks, cobblestone)","at":"10,64,16","block":"cobblestone","want":"cobblestone","cells":["10,64,16"],"clear":["10,64,16"],"stand":"8,64,13","fetch":[{"from":"0,64,9","item":"cobblestone","n":1}],"tool":"stone_pickaxe","tool_ench":"none"}
+r15 maid_chan_102 job => {"id":"story-1.j47","type":"build","kind":"place","label":"building wall (48 blocks, cobblestone)","at":"10,64,16","block":"cobblestone","reach":true,"want":"cobblestone","cells":["10,64,16"],"clear":["10,64,16"],"stand":"8,64,13","fetch":[{"from":"0,64,9","item":"cobblestone","n":1}],"tool":"stone_pickaxe","tool_ench":"none","pillar":{"from":"0,64,9","item":"cobblestone","n":16}}
   progress fetched => True
   progress cell 10,64,16 done => True
   report done batch: placed => True
   builds b1:active::d,t!,d!,d!,d,d!,t!,d!,d,d,d!,d,d,t!,d!,d,d!,d!,t!,d!,d,d!,d,d!,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t | b2:active::t,t!,t!,d!,t,d,d,t!,t,t!,t!,d!,d!,d,d!,t!,t,d,t!,t! | b3:active::t | b4:queued::t | b5:queued::t | b6:queued::t,t,t,t,t | b7:queued::t,t,t,t,t,t,t
-r15 maid_chan_103 job => {"id":"story-1.j48","type":"build","kind":"place","label":"building floor (20 blocks, planks): 3 blocks","at":"-4,63,-5","block":"planks","want":"planks","cells":["-4,63,-5","-6,63,-7","-8,63,-8"],"clear":["-4,63,-5","-6,63,-7","-8,63,-8"],"stand":"-3,64,-7","fetch":[{"from":"0,64,9","item":"planks","n":3}],"tool":"stone_pickaxe","tool_ench":"none"}
+r15 maid_chan_103 job => {"id":"story-1.j48","type":"build","kind":"place","label":"building floor (20 blocks, planks): 3 blocks","at":"-4,63,-5","block":"planks","reach":true,"want":"planks","cells":["-4,63,-5","-6,63,-7","-8,63,-8"],"clear":["-4,63,-5","-6,63,-7","-8,63,-8"],"stand":"-3,64,-7","fetch":[{"from":"0,64,9","item":"planks","n":3}],"tool":"stone_pickaxe","tool_ench":"none","pillar":{"from":"0,64,9","item":"cobblestone","n":16}}
   progress fetched => True
   progress cell -4,63,-5 failed: can't place at -4,63,-5: I couldn't get closer => True
   progress cell -6,63,-7 failed: wrong rotation => True
   report done  => True
   builds b1:active::d,t!,d!,d!,d,d!,t!,d!,d,d,d!,d,d,t!,d!,d,d!,d!,t!,d!,d,d!,d,d!,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t | b2:active::t,t!,t!,d!,t,d,d,t!,t,t!,t!,d!,d!,d,d!,t!,t,d,t!,t! | b3:active::t | b4:queued::t | b5:queued::t | b6:queued::t,t,t,t,t | b7:queued::t,t,t,t,t,t,t
-r16 maid_chan_101 job => {"id":"story-1.j49","type":"build","kind":"place","label":"building floor (20 blocks, planks): 3 blocks","at":"-5,63,-5","block":"planks","want":"planks","cells":["-5,63,-5","-6,63,-8","-8,63,-7"],"clear":["-5,63,-5","-6,63,-8","-8,63,-7"],"stand":"-6,64,-5","fetch":[{"from":"0,64,9","item":"planks","n":3}],"tool":"stone_pickaxe","tool_ench":"none"}
+r16 maid_chan_101 job => {"id":"story-1.j49","type":"build","kind":"place","label":"building floor (20 blocks, planks): 3 blocks","at":"-5,63,-5","block":"planks","reach":true,"want":"planks","cells":["-5,63,-5","-6,63,-8","-8,63,-7"],"clear":["-5,63,-5","-6,63,-8","-8,63,-7"],"stand":"-6,64,-5","fetch":[{"from":"0,64,9","item":"planks","n":3}],"tool":"stone_pickaxe","tool_ench":"none","pillar":{"from":"0,64,9","item":"cobblestone","n":16}}
   progress fetched => True
   progress cell -5,63,-5 done => True
   progress cell -6,63,-8 failed: can't place at -6,63,-8: I couldn't get closer => True
   progress cell -8,63,-7 failed: wrong rotation => True
   report done batch: placed => True
   builds b1:active::d,t!,d!,d!,d,d!,d!,d!,d,d,d!,d,d,t!,d!,d,d!,d!,t!,d!,d,d!,d,d!,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t | b2:active::t,t!,t!,d!,t,d,d,t!,t,t!,t!,d!,d!,d,d!,t!,t,d,t!,t! | b3:active::t | b4:queued::t | b5:queued::t | b6:queued::t,t,t,t,t | b7:queued::t,t,t,t,t,t,t
-r16 maid_chan_102 job => {"id":"story-1.j50","type":"build","kind":"place","label":"building floor (20 blocks, planks)","at":"-6,63,-6","block":"planks","want":"planks","cells":["-6,63,-6"],"clear":["-6,63,-6"],"stand":"-4,64,-4","fetch":[{"from":"0,64,9","item":"planks","n":1}]}
+r16 maid_chan_102 job => {"id":"story-1.j50","type":"build","kind":"place","label":"building floor (20 blocks, planks)","at":"-6,63,-6","block":"planks","reach":true,"want":"planks","cells":["-6,63,-6"],"clear":["-6,63,-6"],"stand":"-4,64,-4","fetch":[{"from":"0,64,9","item":"planks","n":1}],"pillar":{"from":"0,64,9","item":"cobblestone","n":16}}
   progress fetched => True
   progress cell -6,63,-6 failed: can't place at -6,63,-6: I couldn't get closer => True
   report done  => True
   builds b1:active::d,t!,d!,d!,d,d!,d!,d!,d,d,d!,d,d,t!,d!,d,d!,d!,t!,d!,d,d!,d,d!,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t | b2:active::t,t!,t!,d!,t,d,d,t!,t,t!,t!,d!,d!,d,d!,t!,t,d,t!,t! | b3:active::t | b4:queued::t | b5:queued::t | b6:queued::t,t,t,t,t | b7:queued::t,t,t,t,t,t,t
-r16 maid_chan_103 job => {"id":"story-1.j51","type":"build","kind":"place","label":"building floor (20 blocks, planks)","at":"-8,63,-6","block":"planks","want":"planks","cells":["-8,63,-6"],"clear":["-8,63,-6"],"stand":"-6,64,-4","fetch":[{"from":"0,64,9","item":"planks","n":1}]}
+r16 maid_chan_103 job => {"id":"story-1.j51","type":"build","kind":"place","label":"building floor (20 blocks, planks)","at":"-8,63,-6","block":"planks","reach":true,"want":"planks","cells":["-8,63,-6"],"clear":["-8,63,-6"],"stand":"-6,64,-4","fetch":[{"from":"0,64,9","item":"planks","n":1}],"pillar":{"from":"0,64,9","item":"cobblestone","n":16}}
   progress fetched => True
   progress cell -8,63,-6 failed: wrong rotation => True
   report failed fetch failed: chest is busy => True
   builds b1:active::d,t!,d!,d!,d,d!,d!,d!,d,d,d!,d,d,t!,d!,d,d!,d!,t!,d!,d,d!,d,d!,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t | b2:active::t,t!,t!,d!,t,d,d,t!,t,t!,t!,d!,d!,d,d!,t!,t,d,t!,t! | b3:active::t | b4:queued::t | b5:queued::t | b6:queued::t,t,t,t,t | b7:queued::t,t,t,t,t,t,t
-r17 maid_chan_101 job => {"id":"story-1.j52","type":"build","kind":"place","label":"building floor (20 blocks, planks)","at":"-8,63,-8","block":"planks","want":"planks","cells":["-8,63,-8"],"clear":["-8,63,-8"],"stand":"-8,64,-5","fetch":[{"from":"0,64,9","item":"planks","n":1}],"tool":"stone_pickaxe","tool_ench":"none"}
+r17 maid_chan_101 job => {"id":"story-1.j52","type":"build","kind":"place","label":"building floor (20 blocks, planks)","at":"-8,63,-8","block":"planks","reach":true,"want":"planks","cells":["-8,63,-8"],"clear":["-8,63,-8"],"stand":"-8,64,-5","fetch":[{"from":"0,64,9","item":"planks","n":1}],"tool":"stone_pickaxe","tool_ench":"none","pillar":{"from":"0,64,9","item":"cobblestone","n":16}}
   progress fetched => True
   progress cell -8,63,-8 failed: can't place at -8,63,-8: I couldn't get closer => True
   report done  => True
   builds b1:active::d,t!,d!,d!,d,d!,d!,d!,d,d,d!,d,d,t!,d!,d,d!,d!,t!,d!,d,d!,d,d!,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t | b2:active::t,t!,t!,d!,t,d,d,t!,t,t!,t!,d!,d!,d,d!,t!,t,d,t!,t! | b3:active::t | b4:queued::t | b5:queued::t | b6:queued::t,t,t,t,t | b7:queued::t,t,t,t,t,t,t
-r17 maid_chan_102 job => {"id":"story-1.j53","type":"build","kind":"place","label":"building stairs (1 block, cobblestone)","at":"0,64,20","block":"stone_stairs","want":"stone_stairs","cells":["0,64,20"],"clear":["0,64,20"],"facing":"e","metas":[0],"stand":"2,64,17","fetch":[{"from":"0,64,9","item":"stone_stairs","n":1}],"tool":"stone_pickaxe","tool_ench":"none"}
+r17 maid_chan_102 job => {"id":"story-1.j53","type":"build","kind":"place","label":"building stairs (1 block, cobblestone)","at":"0,64,20","block":"stone_stairs","reach":true,"want":"stone_stairs","cells":["0,64,20"],"clear":["0,64,20"],"facing":"e","metas":[0],"stand":"2,64,17","fetch":[{"from":"0,64,9","item":"stone_stairs","n":1}],"tool":"stone_pickaxe","tool_ench":"none","pillar":{"from":"0,64,9","item":"cobblestone","n":16}}
   progress fetched => True
   progress cell 0,64,20 failed: wrong rotation => True
   report failed fetch failed: chest is busy => True
   builds b1:active::d,t!,d!,d!,d,d!,d!,d!,d,d,d!,d,d,t!,d!,d,d!,d!,t!,d!,d,d!,d,d!,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t | b2:active::t,t!,t!,d!,t,d,d,t!,t,t!,t!,d!,d!,d,d!,t!,t,d,t!,t! | b3:done::m! | b4:queued::t | b5:queued::t | b6:queued::t,t,t,t,t | b7:queued::t,t,t,t,t,t,t
-r17 maid_chan_103 job => {"id":"story-1.j54","type":"build","kind":"place","label":"building chest (1 block, chest)","at":"-5,64,5","block":"chest","want":"chest","cells":["-5,64,5"],"stand":"-2,64,3","fetch":[{"from":"0,64,9","item":"chest","n":1}]}
+r17 maid_chan_103 job => {"id":"story-1.j54","type":"build","kind":"place","label":"building chest (1 block, chest)","at":"-5,64,5","block":"chest","reach":true,"want":"chest","cells":["-5,64,5"],"stand":"-2,64,3","fetch":[{"from":"0,64,9","item":"chest","n":1}],"pillar":{"from":"0,64,9","item":"cobblestone","n":16}}
   progress fetched => True
   report failed script error => True
   builds b1:active::d,t!,d!,d!,d,d!,d!,d!,d,d,d!,d,d,t!,d!,d,d!,d!,t!,d!,d,d!,d,d!,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t | b2:active::t,t!,t!,d!,t,d,d,t!,t,t!,t!,d!,d!,d,d!,t!,t,d,t!,t! | b3:done::m! | b4:done::m! | b5:active::t! | b6:queued::t,t,t,t,t | b7:queued::t,t,t,t,t,t,t
-r18 maid_chan_101 job => {"id":"story-1.j55","type":"build","kind":"place","label":"building wall (48 blocks, cobblestone)","at":"16,64,11","block":"cobblestone","want":"cobblestone","cells":["16,64,11"],"clear":["16,64,11"],"stand":"13,64,9","fetch":[{"from":"0,64,9","item":"cobblestone","n":1}],"tool":"stone_pickaxe","tool_ench":"none"}
+r18 maid_chan_101 job => {"id":"story-1.j55","type":"build","kind":"place","label":"building wall (48 blocks, cobblestone)","at":"16,64,11","block":"cobblestone","reach":true,"want":"cobblestone","cells":["16,64,11"],"clear":["16,64,11"],"stand":"13,64,9","fetch":[{"from":"0,64,9","item":"cobblestone","n":1}],"tool":"stone_pickaxe","tool_ench":"none","pillar":{"from":"0,64,9","item":"cobblestone","n":16}}
   progress fetched => True
   progress cell 16,64,11 failed: wrong rotation => True
   report failed fetch failed: chest is busy => True
   builds b1:active:can't place at 16,64,11: wrong rotation:d,t!,d!,d!,d,d!,d!,d!,d,d,d!,d,d,t!,d!,d,d!,d!,b!,d!,d,d!,d,d!,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t | b2:active::t,t!,t!,d!,t,d,d,t!,t,t!,t!,d!,d!,d,d!,t!,t,d,t!,t! | b3:done::m! | b4:done::m! | b5:active::t! | b6:queued::t,t,t,t,t | b7:queued::t,t,t,t,t,t,t
-r18 maid_chan_102 job => {"id":"story-1.j56","type":"build","kind":"place","label":"building floor (20 blocks, planks): 3 blocks","at":"-4,63,-5","block":"planks","want":"planks","cells":["-4,63,-5","-5,63,-5","-8,63,-8"],"clear":["-4,63,-5","-5,63,-5","-8,63,-8"],"stand":"-3,64,-3","fetch":[{"from":"0,64,9","item":"planks","n":3}],"tool":"stone_pickaxe","tool_ench":"none"}
+r18 maid_chan_102 job => {"id":"story-1.j56","type":"build","kind":"place","label":"building floor (20 blocks, planks): 3 blocks","at":"-4,63,-5","block":"planks","reach":true,"want":"planks","cells":["-4,63,-5","-5,63,-5","-8,63,-8"],"clear":["-4,63,-5","-5,63,-5","-8,63,-8"],"stand":"-3,64,-3","fetch":[{"from":"0,64,9","item":"planks","n":3}],"tool":"stone_pickaxe","tool_ench":"none","pillar":{"from":"0,64,9","item":"cobblestone","n":16}}
   progress fetched => True
   progress cell -5,63,-5 failed: no support face => True
   progress cell -8,63,-8 done => True
   report failed script error => True
   builds b1:active:can't place at 16,64,11: wrong rotation:d,t!,d!,d!,d,d!,d!,d!,d,d,d!,d,d,t!,d!,d,d!,d!,b!,d!,d,d!,d,d!,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t | b2:active:can't place at -5,63,-5: no support face:d,t!,t!,d!,t,d,d,t!,t,t!,t!,d!,d!,d,d!,b!,t,d,t!,t! | b3:done::m! | b4:done::m! | b5:active::t! | b6:queued::t,t,t,t,t | b7:queued::t,t,t,t,t,t,t
-r18 maid_chan_103 job => {"id":"story-1.j57","type":"build","kind":"place","label":"building floor (20 blocks, planks): 2 blocks","at":"-4,63,-8","block":"planks","want":"planks","cells":["-4,63,-8","-6,63,-6"],"clear":["-4,63,-8","-6,63,-6"],"stand":"-3,64,-6","fetch":[{"from":"0,64,9","item":"planks","n":2}]}
+r18 maid_chan_103 job => {"id":"story-1.j57","type":"build","kind":"place","label":"building floor (20 blocks, planks): 2 blocks","at":"-4,63,-8","block":"planks","reach":true,"want":"planks","cells":["-4,63,-8","-6,63,-6"],"clear":["-4,63,-8","-6,63,-6"],"stand":"-3,64,-6","fetch":[{"from":"0,64,9","item":"planks","n":2}],"pillar":{"from":"0,64,9","item":"cobblestone","n":16}}
   progress fetched => True
   progress cell -4,63,-8 failed: no support face => True
   progress cell -6,63,-6 done => True
   report done batch: placed => True
   builds b1:active:can't place at 16,64,11: wrong rotation:d,t!,d!,d!,d,d!,d!,d!,d,d,d!,d,d,t!,d!,d,d!,d!,b!,d!,d,d!,d,d!,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t | b2:active:can't place at -5,63,-5: no support face:d,t!,t!,d!,t,d,d,t!,t,t!,d!,d!,d!,d,d!,b!,t!,d,t!,t! | b3:done::m! | b4:done::m! | b5:active::t! | b6:queued::t,t,t,t,t | b7:queued::t,t,t,t,t,t,t
-r19 maid_chan_101 job => {"id":"story-1.j58","type":"build","kind":"place","label":"building floor (20 blocks, planks): 3 blocks","at":"-8,63,-6","block":"planks","want":"planks","cells":["-8,63,-6","-7,63,-8","-6,63,-8"],"clear":["-8,63,-6","-7,63,-8","-6,63,-8"],"stand":"-5,64,-6","fetch":[{"from":"0,64,9","item":"planks","n":3}],"tool":"stone_pickaxe","tool_ench":"none"}
+r19 maid_chan_101 job => {"id":"story-1.j58","type":"build","kind":"place","label":"building floor (20 blocks, planks): 3 blocks","at":"-8,63,-6","block":"planks","reach":true,"want":"planks","cells":["-8,63,-6","-7,63,-8","-6,63,-8"],"clear":["-8,63,-6","-7,63,-8","-6,63,-8"],"stand":"-5,64,-6","fetch":[{"from":"0,64,9","item":"planks","n":3}],"tool":"stone_pickaxe","tool_ench":"none","pillar":{"from":"0,64,9","item":"cobblestone","n":16}}
   progress fetched => True
   progress cell -7,63,-8 failed: no support face => True
   progress cell -6,63,-8 done => True
   report failed script error => True
   builds b1:active:can't place at 16,64,11: wrong rotation:d,t!,d!,d!,d,d!,d!,d!,d,d,d!,d,d,t!,d!,d,d!,d!,d!,d!,d,d!,d,d!,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t | b2:active:can't place at -8,63,-6: script error:d,t!,b!,d!,t!,d,d,t!,d,t!,d!,d!,d!,d,d!,b!,t!,d,t!,t! | b3:done::m! | b4:done::m! | b5:active::t! | b6:queued::t,t,t,t,t | b7:queued::t,t,t,t,t,t,t
-r19 maid_chan_102 job => {"id":"story-1.j59","type":"build","kind":"place","label":"building block (7 blocks, stone_stairs): 3 blocks","at":"-4,64,25","block":"stone_stairs","want":"stone_stairs","cells":["-4,64,25","-5,64,25","-6,64,25"],"facing":"e","metas":[0,0,0],"stand":"-5,64,22","fetch":[{"from":"0,64,9","item":"stone_stairs","n":3}]}
+r19 maid_chan_102 job => {"id":"story-1.j59","type":"build","kind":"place","label":"building block (7 blocks, stone_stairs): 3 blocks","at":"-4,64,25","block":"stone_stairs","reach":true,"want":"stone_stairs","cells":["-4,64,25","-5,64,25","-6,64,25"],"facing":"e","metas":[0,0,0],"stand":"-5,64,22","fetch":[{"from":"0,64,9","item":"stone_stairs","n":3}],"pillar":{"from":"0,64,9","item":"cobblestone","n":16}}
   progress fetched => True
   progress cell -4,64,25 failed: no support face => True
   progress cell -5,64,25 done => True
   progress cell -6,64,25 done => True
   report done batch: placed => True
   builds b1:active:can't place at 16,64,11: wrong rotation:d,t!,d!,d!,d,d!,d!,d!,d,d,d!,d,d,t!,d!,d,d!,d!,d!,d!,d,d!,d,d!,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t | b2:active:can't place at -8,63,-6: script error:d,t!,b!,d!,t!,d,d,t!,d,t!,d!,d!,d!,d,d!,b!,t!,d,t!,t! | b3:done::m! | b4:done::m! | b5:active::t! | b6:waiting:waiting: the cobblestone in storage is reserved for an earlier build:t,t,t,t,t | b7:active::t,t,t,t,d,d,t!
-r19 maid_chan_103 job => {"id":"story-1.j60","type":"build","kind":"place","label":"building block (7 blocks, stone_stairs): 2 blocks","at":"-7,64,25","block":"stone_stairs","want":"stone_stairs","cells":["-7,64,25","-8,64,25"],"facing":"e","metas":[0,0],"stand":"-8,64,22","fetch":[{"from":"0,64,9","item":"stone_stairs","n":2}]}
+r19 maid_chan_103 job => {"id":"story-1.j60","type":"build","kind":"place","label":"building block (7 blocks, stone_stairs): 2 blocks","at":"-7,64,25","block":"stone_stairs","reach":true,"want":"stone_stairs","cells":["-7,64,25","-8,64,25"],"facing":"e","metas":[0,0],"stand":"-8,64,22","fetch":[{"from":"0,64,9","item":"stone_stairs","n":2}],"pillar":{"from":"0,64,9","item":"cobblestone","n":16}}
   progress fetched => True
   progress cell -7,64,25 done => True
   progress cell -8,64,25 done => True
   report done  => True
   builds b1:active:can't place at 16,64,11: wrong rotation:d,t!,d!,d!,d,d!,d!,d!,d,d,d!,d,d,t!,d!,d,d!,d!,d!,d!,d,d!,d,d!,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t | b2:active:can't place at -8,63,-6: script error:d,t!,b!,d!,t!,d,d,t!,d,t!,d!,d!,d!,d,d!,b!,t!,d,t!,t! | b3:done::m! | b4:done::m! | b5:active::t! | b6:waiting:waiting: the cobblestone in storage is reserved for an earlier build:t,t,t,t,t | b7:active::t,t,d,d,d,d,t!
-r20 maid_chan_101 job => {"id":"story-1.j61","type":"build","kind":"place","label":"building block (7 blocks, stone_stairs)","at":"-9,64,25","block":"stone_stairs","want":"stone_stairs","cells":["-9,64,25"],"facing":"e","metas":[0],"stand":"-7,64,22","fetch":[{"from":"0,64,9","item":"stone_stairs","n":1}]}
+r20 maid_chan_101 job => {"id":"story-1.j61","type":"build","kind":"place","label":"building block (7 blocks, stone_stairs)","at":"-9,64,25","block":"stone_stairs","reach":true,"want":"stone_stairs","cells":["-9,64,25"],"facing":"e","metas":[0],"stand":"-7,64,22","fetch":[{"from":"0,64,9","item":"stone_stairs","n":1}],"pillar":{"from":"0,64,9","item":"cobblestone","n":16}}
   progress fetched => True
   progress cell -9,64,25 failed: no support face => True
   report done batch: placed => True
   builds b1:active:can't place at 16,64,11: wrong rotation:d,t!,d!,d!,d,d!,d!,d!,d,d,d!,d,d,t!,d!,d,d!,d!,d!,d!,d,d!,d,d!,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t | b2:active:can't place at -8,63,-6: script error:d,t!,b!,d!,t!,d,d,t!,d,t!,d!,d!,d!,d,d!,b!,t!,d,t!,t! | b3:done::m! | b4:done::m! | b5:active::t! | b6:waiting:waiting: the cobblestone in storage is reserved for an earlier build:t,t,t,t,t | b7:active::t,t!,d,d,d,d,t!
-r20 maid_chan_102 job => {"id":"story-1.j62","type":"build","kind":"place","label":"building block (7 blocks, stone_stairs)","at":"-10,64,25","block":"stone_stairs","want":"stone_stairs","cells":["-10,64,25"],"facing":"e","metas":[0],"stand":"-8,64,22","fetch":[{"from":"0,64,9","item":"stone_stairs","n":1}]}
+r20 maid_chan_102 job => {"id":"story-1.j62","type":"build","kind":"place","label":"building block (7 blocks, stone_stairs)","at":"-10,64,25","block":"stone_stairs","reach":true,"want":"stone_stairs","cells":["-10,64,25"],"facing":"e","metas":[0],"stand":"-8,64,22","fetch":[{"from":"0,64,9","item":"stone_stairs","n":1}],"pillar":{"from":"0,64,9","item":"cobblestone","n":16}}
   progress fetched => True
   progress cell -10,64,25 done => True
   report done  => True
@@ -386,23 +386,23 @@ r20 maid_chan_102 job => {"id":"story-1.j62","type":"build","kind":"place","labe
 r20 maid_chan_103 job => {"id":"story-1.j63","type":"craft","kind":"craft","label":"Make Wooden Planks (from any logs) for build b2","item":"planks","n":4,"fetch":[{"from":"4,64,9","item":"log","n":1}],"stash":[{"to":"4,64,9","items":["planks"]}]}
   report failed fetch failed: chest is busy => True
   builds b1:active:can't place at 16,64,11: wrong rotation:d,t!,d!,d!,d,d!,d!,d!,d,d,d!,d,d,t!,d!,d,d!,d!,d!,d!,d,d!,d,d!,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t | b2:active:can't place at -8,63,-6: script error:d,t!,b!,d!,t!,d,d,t!,d,t!,d!,d!,d!,d,d!,b!,t!,d,t!,t! | b3:done::m! | b4:done::m! | b5:active::t! | b6:waiting:waiting: the cobblestone in storage is reserved for an earlier build:t,t,t,t,t | b7:active::d,t!,d,d,d,d,t!
-r21 maid_chan_101 job => {"id":"story-1.j64","type":"build","kind":"place","label":"building wall (48 blocks, cobblestone)","at":"10,64,11","block":"cobblestone","want":"cobblestone","cells":["10,64,11"],"clear":["10,64,11"],"stand":"7,64,9","fetch":[{"from":"0,64,9","item":"cobblestone","n":1}],"tool":"stone_pickaxe","tool_ench":"none"}
+r21 maid_chan_101 job => {"id":"story-1.j64","type":"build","kind":"place","label":"building wall (48 blocks, cobblestone)","at":"10,64,11","block":"cobblestone","reach":true,"want":"cobblestone","cells":["10,64,11"],"clear":["10,64,11"],"stand":"7,64,9","fetch":[{"from":"0,64,9","item":"cobblestone","n":1}],"tool":"stone_pickaxe","tool_ench":"none","pillar":{"from":"0,64,9","item":"cobblestone","n":16}}
   progress fetched => True
   progress cell 10,64,11 done => True
   report done  => True
   builds b1:active:can't place at 16,64,11: wrong rotation:d,d!,d!,d!,d,d!,d!,d!,d,d,d!,d,d,t!,d!,d,d!,d!,d!,d!,d,d!,d,d!,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t | b2:active:can't place at -8,63,-6: script error:d,t!,b!,d!,t!,d,d,t!,d,t!,d!,d!,d!,d,d!,b!,t!,d,t!,t! | b3:done::m! | b4:done::m! | b5:active::t! | b6:waiting:waiting: the cobblestone in storage is reserved for an earlier build:t,t,t,t,t | b7:active::d,t!,d,d,d,d,t!
-r21 maid_chan_102 job => {"id":"story-1.j65","type":"build","kind":"place","label":"building floor (20 blocks, planks): 2 blocks","at":"-4,63,-6","block":"planks","want":"planks","cells":["-4,63,-6","-7,63,-5"],"clear":["-4,63,-6","-7,63,-5"],"stand":"-5,64,-4","fetch":[{"from":"0,64,9","item":"planks","n":2}]}
+r21 maid_chan_102 job => {"id":"story-1.j65","type":"build","kind":"place","label":"building floor (20 blocks, planks): 2 blocks","at":"-4,63,-6","block":"planks","reach":true,"want":"planks","cells":["-4,63,-6","-7,63,-5"],"clear":["-4,63,-6","-7,63,-5"],"stand":"-5,64,-4","fetch":[{"from":"0,64,9","item":"planks","n":2}],"pillar":{"from":"0,64,9","item":"cobblestone","n":16}}
   progress fetched => True
   progress cell -4,63,-6 done => True
   progress cell -7,63,-5 done => True
   report failed fetch failed: chest is busy => True
   builds b1:active:can't place at 16,64,11: wrong rotation:d,d!,d!,d!,d,d!,d!,d!,d,d,d!,d,d,t!,d!,d,d!,d!,d!,d!,d,d!,d,d!,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t | b2:active:can't place at -8,63,-6: script error:d,t!,b!,d!,t!,d,d,t!,d,t!,d!,d!,d!,d,d!,b!,t!,d,t!,t! | b3:done::m! | b4:done::m! | b5:active::t! | b6:waiting:waiting: the cobblestone in storage is reserved for an earlier build:t,t,t,t,t | b7:active::d,t!,d,d,d,d,t!
-r21 maid_chan_103 job => {"id":"story-1.j66","type":"build","kind":"place","label":"building chest (1 block, chest)","at":"-5,64,5","block":"chest","want":"chest","cells":["-5,64,5"],"stand":"-2,64,3","fetch":[{"from":"0,64,9","item":"chest","n":1}]}
+r21 maid_chan_103 job => {"id":"story-1.j66","type":"build","kind":"place","label":"building chest (1 block, chest)","at":"-5,64,5","block":"chest","reach":true,"want":"chest","cells":["-5,64,5"],"stand":"-2,64,3","fetch":[{"from":"0,64,9","item":"chest","n":1}],"pillar":{"from":"0,64,9","item":"cobblestone","n":16}}
   progress fetched => True
   progress cell -5,64,5 done => True
   report failed script error => True
   builds b1:active:can't place at 16,64,11: wrong rotation:d,d!,d!,d!,d,d!,d!,d!,d,d,d!,d,d,t!,d!,d,d!,d!,d!,d!,d,d!,d,d!,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t | b2:active:can't place at -8,63,-6: script error:d,t!,b!,d!,t!,d,d,t!,d,t!,d!,d!,d!,d,d!,b!,t!,d,t!,t! | b3:done::m! | b4:done::m! | b5:active::t! | b6:waiting:waiting: the cobblestone in storage is reserved for an earlier build:t,t,t,t,t | b7:active::d,t!,d,d,d,d,t!
-r22 maid_chan_101 job => {"id":"story-1.j67","type":"build","kind":"place","label":"building floor (20 blocks, planks)","at":"-6,63,-6","block":"planks","want":"planks","cells":["-6,63,-6"],"clear":["-6,63,-6"],"stand":"-4,64,-4","fetch":[{"from":"0,64,9","item":"planks","n":1}],"tool":"stone_pickaxe","tool_ench":"none"}
+r22 maid_chan_101 job => {"id":"story-1.j67","type":"build","kind":"place","label":"building floor (20 blocks, planks)","at":"-6,63,-6","block":"planks","reach":true,"want":"planks","cells":["-6,63,-6"],"clear":["-6,63,-6"],"stand":"-4,64,-4","fetch":[{"from":"0,64,9","item":"planks","n":1}],"tool":"stone_pickaxe","tool_ench":"none","pillar":{"from":"0,64,9","item":"cobblestone","n":16}}
   progress fetched => True
   progress cell -6,63,-6 done => True
   report failed fetch failed: chest is busy => True
@@ -422,22 +422,22 @@ r23 maid_chan_102 job => {"id":"story-1.j71","type":"idle","kind":"idle","label"
 r23 maid_chan_103 job => {"id":"story-1.j72","type":"idle","kind":"idle","label":"Recreation: sitting by the chests","at":"0,64,11","s":16,"dist":0,"wander":true,"act":"sit","look":["0.5,64.5,9.5"]}
   report done  => True
   builds b1:active:can't place at 16,64,11: wrong rotation:d,d!,d!,d!,d,d!,d!,d!,d,d,d!,d,d,t!,d!,d,d!,d!,d!,d!,d,d!,d,d!,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t | b2:active:can't place at -8,63,-6: script error:d,t!,b!,d!,t!,d,d,t!,d,t!,t,d!,d!,d,d!,b!,t!,d,t!,t! | b3:done::m! | b4:done::m! | b5:active::t! | b6:waiting:waiting: the cobblestone in storage is reserved for an earlier build:t,t,t,t,t | b7:active::d,t!,d,d,d,d,t!
-r24 maid_chan_101 job => {"id":"story-1.j73","type":"build","kind":"place","label":"building wall (48 blocks, cobblestone)","at":"14,64,10","block":"cobblestone","want":"cobblestone","cells":["14,64,10"],"clear":["14,64,10"],"stand":"11,64,8","fetch":[{"from":"0,64,9","item":"cobblestone","n":1}],"tool":"stone_pickaxe","tool_ench":"none"}
+r24 maid_chan_101 job => {"id":"story-1.j73","type":"build","kind":"place","label":"building wall (48 blocks, cobblestone)","at":"14,64,10","block":"cobblestone","reach":true,"want":"cobblestone","cells":["14,64,10"],"clear":["14,64,10"],"stand":"11,64,8","fetch":[{"from":"0,64,9","item":"cobblestone","n":1}],"tool":"stone_pickaxe","tool_ench":"none","pillar":{"from":"0,64,9","item":"cobblestone","n":16}}
   progress fetched => True
   progress cell 14,64,10 failed: can't place at 14,64,10: I couldn't get closer => True
   report done batch: placed => True
   builds b1:active:can't place at 16,64,11: wrong rotation:d,d!,d!,d!,d,d!,d!,d!,d,d,d!,d,d,t!,d!,d,d!,d!,d!,d!,d,d!,d,d!,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t | b2:active:can't place at -8,63,-6: script error:d,t!,b!,d!,t!,d,d,t!,d,t!,t,d!,d!,d,d!,b!,t!,d,t!,t! | b3:done::m! | b4:done::m! | b5:active::t! | b6:waiting:waiting: the cobblestone in storage is reserved for an earlier build:t,t,t,t,t | b7:active::d,t!,d,d,d,d,t!
-r24 maid_chan_102 job => {"id":"story-1.j74","type":"build","kind":"place","label":"building floor (20 blocks, planks)","at":"-4,63,-5","block":"planks","want":"planks","cells":["-4,63,-5"],"clear":["-4,63,-5"],"stand":"-2,64,-3","fetch":[{"from":"4,64,9","item":"planks","n":1}],"tool":"stone_pickaxe","tool_ench":"none"}
+r24 maid_chan_102 job => {"id":"story-1.j74","type":"build","kind":"place","label":"building floor (20 blocks, planks)","at":"-4,63,-5","block":"planks","reach":true,"want":"planks","cells":["-4,63,-5"],"clear":["-4,63,-5"],"stand":"-2,64,-3","fetch":[{"from":"4,64,9","item":"planks","n":1}],"tool":"stone_pickaxe","tool_ench":"none","pillar":{"from":"0,64,9","item":"cobblestone","n":16}}
   progress fetched => True
   progress cell -4,63,-5 failed: wrong rotation => True
   report done  => True
   builds b1:active:can't place at 16,64,11: wrong rotation:d,d!,d!,d!,d,d!,d!,d!,d,d,d!,d,d,t!,d!,d,d!,d!,d!,d!,d,d!,d,d!,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t | b2:active:can't place at -4,63,-5: wrong rotation:d,t!,b!,d!,t!,d,d,t!,d,t!,t,d!,d!,d,d!,b!,t!,d,t!,b! | b3:done::m! | b4:done::m! | b5:active::t! | b6:waiting:waiting: the cobblestone in storage is reserved for an earlier build:t,t,t,t,t | b7:active::d,t!,d,d,d,d,t!
-r24 maid_chan_103 job => {"id":"story-1.j75","type":"build","kind":"place","label":"building floor (20 blocks, planks): 2 blocks","at":"-4,63,-6","block":"planks","want":"planks","cells":["-4,63,-6","-6,63,-7"],"clear":["-4,63,-6","-6,63,-7"],"stand":"-3,64,-7","fetch":[{"from":"4,64,9","item":"planks","n":2}]}
+r24 maid_chan_103 job => {"id":"story-1.j75","type":"build","kind":"place","label":"building floor (20 blocks, planks): 2 blocks","at":"-4,63,-6","block":"planks","reach":true,"want":"planks","cells":["-4,63,-6","-6,63,-7"],"clear":["-4,63,-6","-6,63,-7"],"stand":"-3,64,-7","fetch":[{"from":"4,64,9","item":"planks","n":2}],"pillar":{"from":"0,64,9","item":"cobblestone","n":16}}
   progress fetched => True
   progress cell -6,63,-7 failed: no support face => True
   report failed fetch failed: chest is busy => True
   builds b1:active:can't place at 16,64,11: wrong rotation:d,d!,d!,d!,d,d!,d!,d!,d,d,d!,d,d,t!,d!,d,d!,d!,d!,d!,d,d!,d,d!,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t | b2:active:can't place at -6,63,-7: no support face:d,t!,b!,d!,t!,d,d,t!,d,b!,t,d!,d!,d,d!,b!,t!,d,t!,b! | b3:done::m! | b4:done::m! | b5:active::t! | b6:waiting:waiting: the cobblestone in storage is reserved for an earlier build:t,t,t,t,t | b7:active::d,t!,d,d,d,d,t!
-r25 maid_chan_101 job => {"id":"story-1.j76","type":"build","kind":"place","label":"building wall (48 blocks, cobblestone): 6 blocks","at":"10,65,10","block":"cobblestone","want":"cobblestone","cells":["10,65,10","10,65,11","10,65,12","10,65,13","11,65,10","12,65,10"],"stand":"9,64,10","fetch":[{"from":"0,64,9","item":"cobblestone","n":6}]}
+r25 maid_chan_101 job => {"id":"story-1.j76","type":"build","kind":"place","label":"building wall (48 blocks, cobblestone): 6 blocks","at":"10,65,10","block":"cobblestone","reach":true,"want":"cobblestone","cells":["10,65,10","10,65,11","10,65,12","10,65,13","11,65,10","12,65,10"],"stand":"9,64,10","fetch":[{"from":"0,64,9","item":"cobblestone","n":6}],"pillar":{"from":"0,64,9","item":"cobblestone","n":16}}
   progress fetched => True
   progress cell 10,65,10 failed: wrong rotation => True
   progress cell 10,65,12 failed: no support face => True
@@ -446,12 +446,12 @@ r25 maid_chan_101 job => {"id":"story-1.j76","type":"build","kind":"place","labe
   progress cell 12,65,10 done => True
   report done  => True
   builds b1:active:can't place at 16,64,11: wrong rotation:d,d!,d!,d!,d,d!,d!,d!,d,d,d!,d,d,d!,d!,d,d!,d!,d!,d!,d,d!,d,d!,t!,t,t!,d,t,t,t,d,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t,t | b2:active:can't place at -6,63,-7: no support face:d,t!,b!,d!,t!,d,d,t!,d,b!,t,d!,d!,d,d!,b!,t!,d,t!,b! | b3:done::m! | b4:done::m! | b5:active::t! | b6:waiting:waiting: the cobblestone in storage is reserved for an earlier build:t,t,t,t,t | b7:active::d,t!,t,d,t,d,t!
-r25 maid_chan_102 job => {"id":"story-1.j77","type":"build","kind":"place","label":"building wall (48 blocks, cobblestone): 2 blocks","at":"10,65,11","block":"cobblestone","want":"cobblestone","cells":["10,65,11","13,65,10"],"stand":"10,64,8","fetch":[{"from":"0,64,9","item":"cobblestone","n":2}]}
+r25 maid_chan_102 job => {"id":"story-1.j77","type":"build","kind":"place","label":"building wall (48 blocks, cobblestone): 2 blocks","at":"10,65,11","block":"cobblestone","reach":true,"want":"cobblestone","cells":["10,65,11","13,65,10"],"stand":"10,64,8","fetch":[{"from":"0,64,9","item":"cobblestone","n":2}],"pillar":{"from":"0,64,9","item":"cobblestone","n":16}}
   progress fetched => True
   progress cell 13,65,10 failed: no support face => True
   report failed fetch failed: chest is busy => True
   builds b1:active:can't place at 16,64,11: wrong rotation:d,d!,d!,d!,d,d!,d!,d!,d,d,d!,d,d,d!,d!,d,d!,d!,d!,d!,d,d!,d,d!,t!,t,t!,d,t,t,t,d,t,t,t,t!,t,t,t,t,t,t,t,t,t,t,t,t | b2:active:can't place at -6,63,-7: no support face:d,t!,b!,d!,t!,d,d,t!,d,b!,t,d!,d!,d,d!,b!,t!,d,t!,b! | b3:done::m! | b4:done::m! | b5:active::t! | b6:waiting:waiting: the cobblestone in storage is reserved for an earlier build:t,t,t,t,t | b7:active::d,t!,t,d,t,d,t!
-r25 maid_chan_103 job => {"id":"story-1.j78","type":"build","kind":"place","label":"building wall (48 blocks, cobblestone): 6 blocks","at":"14,65,10","block":"cobblestone","want":"cobblestone","cells":["14,65,10","15,65,10","16,65,10","16,65,11","16,65,12","16,65,13"],"stand":"17,64,10","fetch":[{"from":"0,64,9","item":"cobblestone","n":6}]}
+r25 maid_chan_103 job => {"id":"story-1.j78","type":"build","kind":"place","label":"building wall (48 blocks, cobblestone): 6 blocks","at":"14,65,10","block":"cobblestone","reach":true,"want":"cobblestone","cells":["14,65,10","15,65,10","16,65,10","16,65,11","16,65,12","16,65,13"],"stand":"17,64,10","fetch":[{"from":"0,64,9","item":"cobblestone","n":6}],"pillar":{"from":"0,64,9","item":"cobblestone","n":16}}
   progress fetched => True
   progress cell 14,65,10 failed: no support face => True
   progress cell 15,65,10 done => True
@@ -461,7 +461,7 @@ r25 maid_chan_103 job => {"id":"story-1.j78","type":"build","kind":"place","labe
   progress cell 16,65,13 failed: wrong rotation => True
   report failed script error => True
   builds b1:active:can't place at 16,64,11: wrong rotation:d,d!,d!,d!,d,d!,d!,d!,d,d,d!,d,d,d!,d!,d,d!,d!,d!,d!,d,d!,d,d!,t!,t,t!,d,t,t,t,d,t,t,t,t!,t,t!,t,d,t,d,t,t,t!,t,t,t | b2:active:can't place at -6,63,-7: no support face:d,t!,b!,d!,t!,d,d,t!,d,b!,t,d!,d!,d,d!,b!,t!,d,t!,b! | b3:done::m! | b4:done::m! | b5:active::t! | b6:waiting:waiting: the cobblestone in storage is reserved for an earlier build:t,t,t,t,t | b7:active::d,t!,t,d,t,d,t!
-r26 maid_chan_101 job => {"id":"story-1.j79","type":"build","kind":"place","label":"building wall (48 blocks, cobblestone): 6 blocks","at":"10,65,14","block":"cobblestone","want":"cobblestone","cells":["10,65,14","10,65,15","10,65,16","11,65,16","12,65,16","13,65,16"],"stand":"10,64,17","fetch":[{"from":"0,64,9","item":"cobblestone","n":6}]}
+r26 maid_chan_101 job => {"id":"story-1.j79","type":"build","kind":"place","label":"building wall (48 blocks, cobblestone): 6 blocks","at":"10,65,14","block":"cobblestone","reach":true,"want":"cobblestone","cells":["10,65,14","10,65,15","10,65,16","11,65,16","12,65,16","13,65,16"],"stand":"10,64,17","fetch":[{"from":"0,64,9","item":"cobblestone","n":6}],"pillar":{"from":"0,64,9","item":"cobblestone","n":10}}
   progress fetched => True
   progress cell 10,65,15 failed: no support face => True
   progress cell 10,65,16 done => True
@@ -470,7 +470,7 @@ r26 maid_chan_101 job => {"id":"story-1.j79","type":"build","kind":"place","labe
   progress cell 13,65,16 failed: can't place at 13,65,16: I couldn't get closer => True
   report failed fetch failed: chest is busy => True
   builds b1:active:can't place at 16,64,11: wrong rotation:d,d!,d!,d!,d,d!,d!,d!,d,d,d!,d,d,d!,d!,d,d!,d!,d!,d!,d,d!,d,d!,t!,t,t!,d,t,t!,d,d,d,t,t,t!,t,t!,t,d,t,d,t,t,t!,t,t,t | b2:active:can't place at -6,63,-7: no support face:d,t!,b!,d!,t!,d,d,t!,d,b!,t,d!,d!,d,d!,b!,t!,d,t!,b! | b3:done::m! | b4:done::m! | b5:active::t! | b6:waiting:waiting: the cobblestone in storage is reserved for an earlier build:t,t,t,t,t | b7:active::d,t!,t,d,t,d,t!
-r26 maid_chan_102 job => {"id":"story-1.j80","type":"build","kind":"place","label":"building wall (48 blocks, cobblestone): 4 blocks","at":"16,65,14","block":"cobblestone","want":"cobblestone","cells":["16,65,14","16,65,15","16,65,16","15,65,16"],"stand":"17,64,14","fetch":[{"from":"0,64,9","item":"cobblestone","n":4}]}
+r26 maid_chan_102 job => {"id":"story-1.j80","type":"build","kind":"place","label":"building wall (48 blocks, cobblestone): 4 blocks","at":"16,65,14","block":"cobblestone","reach":true,"want":"cobblestone","cells":["16,65,14","16,65,15","16,65,16","15,65,16"],"stand":"17,64,14","fetch":[{"from":"0,64,9","item":"cobblestone","n":4}],"pillar":{"from":"0,64,9","item":"cobblestone","n":4}}
   progress fetched => True
   progress cell 16,65,14 failed: no support face => True
   progress cell 16,65,15 done => True
@@ -478,44 +478,44 @@ r26 maid_chan_102 job => {"id":"story-1.j80","type":"build","kind":"place","labe
   progress cell 15,65,16 done => True
   report failed script error => True
   builds b1:active:can't place at 16,64,11: wrong rotation:d,d!,d!,d!,d,d!,d!,d!,d,d,d!,d,d,d!,d!,d,d!,d!,d!,d!,d,d!,d,d!,t!,t,t!,d,t,t!,d,d,d,t,t,t!,t,t!,t,d,t,d,t,t,t!,t!,d,d | b2:active:can't place at -6,63,-7: no support face:d,t!,b!,d!,t!,d,d,t!,d,b!,t,d!,d!,d,d!,b!,t!,d,t!,b! | b3:done::m! | b4:done::m! | b5:active::t! | b6:waiting:waiting: the cobblestone in storage is reserved for an earlier build:t,t,t,t,t | b7:active::d,t!,t,d,t,d,t!
-r26 maid_chan_103 job => {"id":"story-1.j81","type":"build","kind":"place","label":"building floor (20 blocks, planks)","at":"-4,63,-8","block":"planks","want":"planks","cells":["-4,63,-8"],"clear":["-4,63,-8"],"stand":"-2,64,-6","fetch":[{"from":"4,64,9","item":"planks","n":1}]}
+r26 maid_chan_103 job => {"id":"story-1.j81","type":"build","kind":"place","label":"building floor (20 blocks, planks)","at":"-4,63,-8","block":"planks","reach":true,"want":"planks","cells":["-4,63,-8"],"clear":["-4,63,-8"],"stand":"-2,64,-6","fetch":[{"from":"4,64,9","item":"planks","n":1}]}
   progress fetched => True
   progress cell -4,63,-8 done => True
   report done batch: placed => True
   builds b1:blocked:need 16 cobblestone:d,d!,d!,d!,d,d!,d!,d!,d,d,d!,d,d,d!,d!,d,d!,d!,d!,d!,d,d!,d,d!,t!,t,t!,d,t,t!,d,d,d,t,t,t!,t,t!,t,d,t,d,t,t,t!,t!,d,d | b2:active:can't place at -6,63,-7: no support face:d,t!,b!,d!,t!,d,d,t!,d,b!,t,d!,d!,d,d!,b!,d!,d,t!,b! | b3:done::m! | b4:done::m! | b5:active::t! | b6:waiting:waiting: the cobblestone in storage is reserved for an earlier build:t,t,t,t,t | b7:active::d,t!,t,d,t,d,t!
-r27 maid_chan_101 job => {"id":"story-1.j82","type":"build","kind":"place","label":"building floor (20 blocks, planks)","at":"-4,63,-6","block":"planks","want":"planks","cells":["-4,63,-6"],"clear":["-4,63,-6"],"stand":"-2,64,-4","fetch":[{"from":"0,64,9","item":"planks","n":1}]}
+r27 maid_chan_101 job => {"id":"story-1.j82","type":"build","kind":"place","label":"building floor (20 blocks, planks)","at":"-4,63,-6","block":"planks","reach":true,"want":"planks","cells":["-4,63,-6"],"clear":["-4,63,-6"],"stand":"-2,64,-4","fetch":[{"from":"0,64,9","item":"planks","n":1}]}
   progress fetched => True
   progress cell -4,63,-6 failed: no support face => True
   report failed script error => True
   builds b1:blocked:need 16 cobblestone:d,d!,d!,d!,d,d!,d!,d!,d,d,d!,d,d,d!,d!,d,d!,d!,d!,d!,d,d!,d,d!,t!,t,t!,d,t,t!,d,d,d,t,t,t!,d,t!,t,d,t,d,t,t,t!,t!,d,d | b2:active:can't place at -4,63,-6: no support face:d,t!,b!,d!,t!,d,d,t!,d,b!,t,d!,d!,d,d!,b!,d!,d,b!,b! | b3:done::m! | b4:done::m! | b5:active::t! | b6:waiting:waiting: the cobblestone in storage is reserved for an earlier build:t,t,t,t,t | b7:active::d,t!,t,d,t,d,t!
-r27 maid_chan_102 job => {"id":"story-1.j83","type":"build","kind":"place","label":"building floor (20 blocks, planks): 2 blocks","at":"-6,63,-6","block":"planks","want":"planks","cells":["-6,63,-6","-7,63,-5"],"clear":["-6,63,-6","-7,63,-5"],"stand":"-5,64,-7","fetch":[{"from":"4,64,9","item":"planks","n":2}],"tool":"stone_pickaxe","tool_ench":"none"}
+r27 maid_chan_102 job => {"id":"story-1.j83","type":"build","kind":"place","label":"building floor (20 blocks, planks): 2 blocks","at":"-6,63,-6","block":"planks","reach":true,"want":"planks","cells":["-6,63,-6","-7,63,-5"],"clear":["-6,63,-6","-7,63,-5"],"stand":"-5,64,-7","fetch":[{"from":"4,64,9","item":"planks","n":2}],"tool":"stone_pickaxe","tool_ench":"none"}
   progress fetched => True
   progress cell -6,63,-6 done => True
   progress cell -7,63,-5 done => True
   report done batch: placed => True
   builds b1:blocked:need 15 cobblestone:d,d!,d!,d!,d,d!,d!,d!,d,d,d!,d,d,d!,d!,d,d!,d!,d!,d!,d,d!,d,d!,t!,t,t!,d,t,t!,d,d,d,t,t,t!,d,t!,t,d,t,d,t,t,t!,t!,d,d | b2:active:can't place at -4,63,-6: no support face:d,t!,b!,d!,t!,d,d,t!,d,b!,d,d!,d!,d,d!,b!,d!,d,b!,b! | b3:done::m! | b4:done::m! | b5:active::t! | b6:waiting:waiting: the cobblestone in storage is reserved for an earlier build:t,t,t,t,t | b7:active::d,t!,t,d,t,d,t!
-r27 maid_chan_103 job => {"id":"story-1.j84","type":"build","kind":"place","label":"building floor (20 blocks, planks)","at":"-7,63,-8","block":"planks","want":"planks","cells":["-7,63,-8"],"clear":["-7,63,-8"],"stand":"-5,64,-6","fetch":[{"from":"4,64,9","item":"planks","n":1}],"tool":"stone_pickaxe","tool_ench":"none"}
+r27 maid_chan_103 job => {"id":"story-1.j84","type":"build","kind":"place","label":"building floor (20 blocks, planks)","at":"-7,63,-8","block":"planks","reach":true,"want":"planks","cells":["-7,63,-8"],"clear":["-7,63,-8"],"stand":"-5,64,-6","fetch":[{"from":"4,64,9","item":"planks","n":1}],"tool":"stone_pickaxe","tool_ench":"none"}
   progress fetched => True
   progress cell -7,63,-8 done => True
   report done  => True
   builds b1:blocked:need 15 cobblestone:d,d!,d!,d!,d,d!,d!,d!,d,d,d!,d,d,d!,d!,d,d!,d!,d!,d!,d,d!,d,d!,t!,t,t!,d,t,t!,d,d,d,t,t,t!,d,t!,t,d,t,d,t,t,t!,t!,d,d | b2:active:can't place at -4,63,-6: no support face:d,t!,b!,d!,t!,d,d,t!,d,b!,d,d!,d!,d,d!,b!,d!,d,b!,b! | b3:done::m! | b4:done::m! | b5:active::t! | b6:waiting:waiting: the cobblestone in storage is reserved for an earlier build:t,t,t,t,t | b7:active::d,t!,t,d,t,d,t!
-r28 maid_chan_101 job => {"id":"story-1.j85","type":"build","kind":"place","label":"building floor (20 blocks, planks)","at":"-8,63,-7","block":"planks","want":"planks","cells":["-8,63,-7"],"clear":["-8,63,-7"],"stand":"-6,64,-5","fetch":[{"from":"0,64,9","item":"planks","n":1}],"tool":"stone_pickaxe","tool_ench":"none"}
+r28 maid_chan_101 job => {"id":"story-1.j85","type":"build","kind":"place","label":"building floor (20 blocks, planks)","at":"-8,63,-7","block":"planks","reach":true,"want":"planks","cells":["-8,63,-7"],"clear":["-8,63,-7"],"stand":"-6,64,-5","fetch":[{"from":"0,64,9","item":"planks","n":1}],"tool":"stone_pickaxe","tool_ench":"none"}
   progress fetched => True
   progress cell -8,63,-7 done => True
   report done batch: placed => True
   builds b1:blocked:need 14 cobblestone:d,d!,d!,d!,d,d!,d!,d!,d,d,d!,d,d,d!,d!,d,d!,d!,d!,d!,d,d!,d,d!,t!,t,t!,d,t,t!,d,d,d,t,t,d!,d,t!,t,d,t,d,t,t,t!,t!,d,d | b2:active:can't place at -4,63,-6: no support face:d,d!,b!,d!,t!,d,d,t!,d,b!,d,d!,d!,d,d!,b!,d!,d,b!,b! | b3:done::m! | b4:done::m! | b5:active::t! | b6:waiting:waiting: the cobblestone in storage is reserved for an earlier build:t,t,t,t,t | b7:active::d,t!,t,d,t,d,t!
-r28 maid_chan_102 job => {"id":"story-1.j86","type":"build","kind":"place","label":"building block (7 blocks, stone_stairs): 2 blocks","at":"-4,64,25","block":"stone_stairs","want":"stone_stairs","cells":["-4,64,25","-8,64,25"],"facing":"e","metas":[0,0],"stand":"-2,64,22","fetch":[{"from":"0,64,9","item":"stone_stairs","n":2}]}
+r28 maid_chan_102 job => {"id":"story-1.j86","type":"build","kind":"place","label":"building block (7 blocks, stone_stairs): 2 blocks","at":"-4,64,25","block":"stone_stairs","reach":true,"want":"stone_stairs","cells":["-4,64,25","-8,64,25"],"facing":"e","metas":[0,0],"stand":"-2,64,22","fetch":[{"from":"0,64,9","item":"stone_stairs","n":2}]}
   progress fetched => True
   progress cell -4,64,25 done => True
   progress cell -8,64,25 done => True
   report done  => True
   builds b1:blocked:need 14 cobblestone:d,d!,d!,d!,d,d!,d!,d!,d,d,d!,d,d,d!,d!,d,d!,d!,d!,d!,d,d!,d,d!,t!,t,t!,d,t,t!,d,d,d,t,t,d!,d,t!,t,d,t,d,t,t,t!,t!,d,d | b2:active:can't place at -4,63,-6: no support face:d,d!,b!,d!,t!,d,d,t!,d,b!,d,d!,d!,d,d!,b!,d!,d,b!,b! | b3:done::m! | b4:done::m! | b5:active::t! | b6:blocked:need 5 cobblestone:t,t,t,t,t | b7:active::d,t!,t,d,t,d,d!
-r28 maid_chan_103 job => {"id":"story-1.j87","type":"build","kind":"place","label":"building block (7 blocks, stone_stairs)","at":"-6,64,25","block":"stone_stairs","want":"stone_stairs","cells":["-6,64,25"],"clear":["-6,64,25"],"facing":"e","metas":[0],"stand":"-4,64,22","fetch":[{"from":"0,64,9","item":"stone_stairs","n":1}],"tool":"stone_pickaxe","tool_ench":"none"}
+r28 maid_chan_103 job => {"id":"story-1.j87","type":"build","kind":"place","label":"building block (7 blocks, stone_stairs)","at":"-6,64,25","block":"stone_stairs","reach":true,"want":"stone_stairs","cells":["-6,64,25"],"clear":["-6,64,25"],"facing":"e","metas":[0],"stand":"-4,64,22","fetch":[{"from":"0,64,9","item":"stone_stairs","n":1}],"tool":"stone_pickaxe","tool_ench":"none"}
   progress fetched => True
   progress cell -6,64,25 done => True
   report failed fetch failed: chest is busy => True
   builds b1:blocked:need 14 cobblestone:d,d!,d!,d!,d,d!,d!,d!,d,d,d!,d,d,d!,d!,d,d!,d!,d!,d!,d,d!,d,d!,t!,t,t!,d,t,t!,d,d,d,t,t,d!,d,t!,t,d,t,d,t,t,t!,t!,d,d | b2:active:can't place at -4,63,-6: no support face:d,d!,b!,d!,t!,d,d,t!,d,b!,d,d!,d!,d,d!,b!,d!,d,b!,b! | b3:done::m! | b4:done::m! | b5:active::t! | b6:blocked:need 5 cobblestone:t,t,t,t,t | b7:active::d,t!,t,d,t,d,d!
-r29 maid_chan_101 job => {"id":"story-1.j88","type":"build","kind":"place","label":"building block (7 blocks, stone_stairs)","at":"-9,64,25","block":"stone_stairs","want":"stone_stairs","cells":["-9,64,25"],"clear":["-9,64,25"],"facing":"e","metas":[0],"stand":"-7,64,22","fetch":[{"from":"0,64,9","item":"stone_stairs","n":1}],"tool":"stone_pickaxe","tool_ench":"none"}
+r29 maid_chan_101 job => {"id":"story-1.j88","type":"build","kind":"place","label":"building block (7 blocks, stone_stairs)","at":"-9,64,25","block":"stone_stairs","reach":true,"want":"stone_stairs","cells":["-9,64,25"],"clear":["-9,64,25"],"facing":"e","metas":[0],"stand":"-7,64,22","fetch":[{"from":"0,64,9","item":"stone_stairs","n":1}],"tool":"stone_pickaxe","tool_ench":"none"}
   progress fetched => True
   progress cell -9,64,25 done => True
   report done  => True
@@ -526,22 +526,22 @@ r29 maid_chan_102 job => {"id":"story-1.j89","type":"craft","kind":"place","labe
 r29 maid_chan_103 job => {"id":"story-1.j90","type":"craft","kind":"craft","label":"Make Wooden Planks (from any logs) for build b2","item":"planks","n":8,"fetch":[{"from":"4,64,9","item":"log","n":2}],"stash":[{"to":"4,64,9","items":["planks"]}]}
   report failed script error => True
   builds b1:blocked:need 14 cobblestone:d,d!,d!,d!,d,d!,d!,d!,d,d,d!,d,d,d!,d!,d,d!,d!,d!,d!,d,d!,d,d!,t!,t,t!,d,t,t!,d,d,d,t,t,d!,d,t!,t,d,t,d,t,t,t!,t!,d,d | b2:active:can't place at -4,63,-6: no support face:d,d!,b!,d!,t!,d,d,t!,d,b!,d,d!,d!,d,d!,b!,d!,d,b!,b! | b3:done::m! | b4:done::m! | b5:active::t! | b6:blocked:need 5 cobblestone:t,t,t,t,t | b7:active::d,t!,t,d,t,d,d!
-r30 maid_chan_101 job => {"id":"story-1.j91","type":"build","kind":"place","label":"building floor (20 blocks, planks)","at":"-7,63,-5","block":"planks","want":"planks","cells":["-7,63,-5"],"clear":["-7,63,-5"],"stand":"-5,64,-3","fetch":[{"from":"4,64,9","item":"planks","n":1}],"tool":"stone_pickaxe","tool_ench":"none"}
+r30 maid_chan_101 job => {"id":"story-1.j91","type":"build","kind":"place","label":"building floor (20 blocks, planks)","at":"-7,63,-5","block":"planks","reach":true,"want":"planks","cells":["-7,63,-5"],"clear":["-7,63,-5"],"stand":"-5,64,-3","fetch":[{"from":"4,64,9","item":"planks","n":1}],"tool":"stone_pickaxe","tool_ench":"none"}
   progress fetched => True
   progress cell -7,63,-5 done => True
   report failed fetch failed: chest is busy => True
   builds b1:blocked:need 14 cobblestone:d,d!,d!,d!,d,d!,d!,d!,d,d,d!,d,d,d!,d!,d,d!,d!,d!,d!,d,d!,d,d!,t!,t,t!,d,t,t!,d,d,d,t,t,d!,d,t!,t,d,t,d,t,t,t!,t!,d,d | b2:active:can't place at -4,63,-6: no support face:d,d!,b!,d!,t!,d,d,t!,d,b!,d,d!,d!,d,d!,b!,d!,d,b!,b! | b3:done::m! | b4:done::m! | b5:active::t! | b6:blocked:need 5 cobblestone:t,t,t,t,t | b7:active::d,t!,t,d,t,d,d!
-r30 maid_chan_102 job => {"id":"story-1.j92","type":"build","kind":"place","label":"building block (7 blocks, stone_stairs)","at":"-6,64,25","block":"stone_stairs","want":"stone_stairs","cells":["-6,64,25"],"clear":["-6,64,25"],"facing":"e","metas":[0],"stand":"-4,64,22","fetch":[{"from":"0,64,9","item":"stone_stairs","n":1}],"tool":"stone_pickaxe","tool_ench":"none"}
+r30 maid_chan_102 job => {"id":"story-1.j92","type":"build","kind":"place","label":"building block (7 blocks, stone_stairs)","at":"-6,64,25","block":"stone_stairs","reach":true,"want":"stone_stairs","cells":["-6,64,25"],"clear":["-6,64,25"],"facing":"e","metas":[0],"stand":"-4,64,22","fetch":[{"from":"0,64,9","item":"stone_stairs","n":1}],"tool":"stone_pickaxe","tool_ench":"none"}
   progress fetched => True
   progress cell -6,64,25 failed: can't place at -6,64,25: I couldn't get closer => True
   report failed script error => True
   builds b1:blocked:need 14 cobblestone:d,d!,d!,d!,d,d!,d!,d!,d,d,d!,d,d,d!,d!,d,d!,d!,d!,d!,d,d!,d,d!,t!,t,t!,d,t,t!,d,d,d,t,t,d!,d,t!,t,d,t,d,t,t,t!,t!,d,d | b2:waiting:waiting for 7 wooden planks (being crafted):d,d!,b!,d!,t!,d,d,t!,d,b!,d,d!,d!,d,d!,b!,d!,d,b!,b! | b3:done::m! | b4:done::m! | b5:waiting:waiting for 1 chest (being crafted):t! | b6:blocked:need 5 cobblestone:t,t,t,t,t | b7:active::d,t!,t,d,t,d,d!
-r30 maid_chan_103 job => {"id":"story-1.j93","type":"build","kind":"place","label":"building block (7 blocks, stone_stairs)","at":"-8,64,25","block":"stone_stairs","want":"stone_stairs","cells":["-8,64,25"],"clear":["-8,64,25"],"facing":"e","metas":[0],"stand":"-6,64,22","fetch":[{"from":"0,64,9","item":"stone_stairs","n":1}],"tool":"stone_pickaxe","tool_ench":"none"}
+r30 maid_chan_103 job => {"id":"story-1.j93","type":"build","kind":"place","label":"building block (7 blocks, stone_stairs)","at":"-8,64,25","block":"stone_stairs","reach":true,"want":"stone_stairs","cells":["-8,64,25"],"clear":["-8,64,25"],"facing":"e","metas":[0],"stand":"-6,64,22","fetch":[{"from":"0,64,9","item":"stone_stairs","n":1}],"tool":"stone_pickaxe","tool_ench":"none"}
   progress fetched => True
   progress cell -8,64,25 failed: wrong rotation => True
   report done batch: placed => True
   builds b1:blocked:need 14 cobblestone:d,d!,d!,d!,d,d!,d!,d!,d,d,d!,d,d,d!,d!,d,d!,d!,d!,d!,d,d!,d,d!,t!,t,t!,d,t,t!,d,d,d,t,t,d!,d,t!,t,d,t,d,t,t,t!,t!,d,d | b2:waiting:waiting for 7 wooden planks (being crafted):d,d!,b!,d!,t!,d,d,t!,d,b!,d,d!,d!,d,d!,b!,d!,d,b!,b! | b3:done::m! | b4:done::m! | b5:waiting:waiting for 1 chest (being crafted):t! | b6:blocked:need 5 cobblestone:t,t,t,t,t | b7:active::d,t!,m!,d,t,d,d!
-r31 maid_chan_101 job => {"id":"story-1.j94","type":"build","kind":"place","label":"building block (7 blocks, stone_stairs)","at":"-9,64,25","block":"stone_stairs","want":"stone_stairs","cells":["-9,64,25"],"clear":["-9,64,25"],"facing":"e","metas":[0],"stand":"-7,64,22","fetch":[{"from":"0,64,9","item":"stone_stairs","n":1}],"tool":"stone_pickaxe","tool_ench":"none"}
+r31 maid_chan_101 job => {"id":"story-1.j94","type":"build","kind":"place","label":"building block (7 blocks, stone_stairs)","at":"-9,64,25","block":"stone_stairs","reach":true,"want":"stone_stairs","cells":["-9,64,25"],"clear":["-9,64,25"],"facing":"e","metas":[0],"stand":"-7,64,22","fetch":[{"from":"0,64,9","item":"stone_stairs","n":1}],"tool":"stone_pickaxe","tool_ench":"none"}
   progress fetched => True
   progress cell -9,64,25 failed: can't place at -9,64,25: I couldn't get closer => True
   report failed script error => True
@@ -549,11 +549,11 @@ r31 maid_chan_101 job => {"id":"story-1.j94","type":"build","kind":"place","labe
 r31 maid_chan_102 job => {"id":"story-1.j95","type":"craft","kind":"craft","label":"Make Wooden Planks (from any logs) for build b5","item":"planks","n":8,"fetch":[{"from":"4,64,9","item":"log","n":2}],"stash":[{"to":"4,64,9","items":["planks"]}]}
   report done batch: placed => True
   builds b1:blocked:need 18 cobblestone:d,d!,d!,d!,d,d!,d!,d!,d,d,d!,d,d,d!,d!,d,d!,d!,d!,d!,d,d!,d,d!,t!,t,t!,d,t,t!,d,t,t,t,t,d!,d,t!,t,d,t,t,t,t,t!,t!,d,t | b2:waiting:waiting for 8 wooden planks (being crafted):d,d!,b!,d!,t!,d,d,t!,d,b!,d,d!,d!,d,d!,b!,t,d,b!,b! | b3:done::m! | b4:done::m! | b5:waiting:waiting for 1 chest (being crafted):t! | b6:blocked:need 5 cobblestone:t,t,t,t,t | b7:active::d,t!,m!,d,t,d,d!
-r31 maid_chan_103 job => {"id":"story-1.j96","type":"build","kind":"place","label":"building floor (20 blocks, planks)","at":"-4,63,-8","block":"planks","want":"planks","cells":["-4,63,-8"],"clear":["-4,63,-8"],"stand":"-2,64,-6","fetch":[{"from":"4,64,9","item":"planks","n":1}],"tool":"stone_pickaxe","tool_ench":"none"}
+r31 maid_chan_103 job => {"id":"story-1.j96","type":"build","kind":"place","label":"building floor (20 blocks, planks)","at":"-4,63,-8","block":"planks","reach":true,"want":"planks","cells":["-4,63,-8"],"clear":["-4,63,-8"],"stand":"-2,64,-6","fetch":[{"from":"4,64,9","item":"planks","n":1}],"tool":"stone_pickaxe","tool_ench":"none"}
   progress fetched => True
   report done  => True
   builds b1:blocked:need 18 cobblestone:d,d!,d!,d!,d,d!,d!,d!,d,d,d!,d,d,d!,d!,d,d!,d!,d!,d!,d,d!,d,d!,t!,t,t!,d,t,t!,d,t,t,t,t,d!,d,t!,t,d,t,t,t,t,t!,t!,d,t | b2:active::d,d!,b!,d!,t!,d,d,t!,d,b!,d,d!,d!,d,d!,b!,d,d,b!,b! | b3:done::m! | b4:done::m! | b5:waiting:waiting for 1 chest (being crafted):t! | b6:blocked:need 5 cobblestone:t,t,t,t,t | b7:active::d,t!,m!,d,t,d,d!
-r32 maid_chan_101 job => {"id":"story-1.j97","type":"build","kind":"place","label":"building floor (20 blocks, planks)","at":"-7,63,-8","block":"planks","want":"planks","cells":["-7,63,-8"],"clear":["-7,63,-8"],"stand":"-5,64,-6","fetch":[{"from":"4,64,9","item":"planks","n":1}],"tool":"stone_pickaxe","tool_ench":"none"}
+r32 maid_chan_101 job => {"id":"story-1.j97","type":"build","kind":"place","label":"building floor (20 blocks, planks)","at":"-7,63,-8","block":"planks","reach":true,"want":"planks","cells":["-7,63,-8"],"clear":["-7,63,-8"],"stand":"-5,64,-6","fetch":[{"from":"4,64,9","item":"planks","n":1}],"tool":"stone_pickaxe","tool_ench":"none"}
   progress fetched => True
   progress cell -7,63,-8 failed: wrong rotation => True
   report done batch: placed => True
@@ -564,7 +564,7 @@ r32 maid_chan_102 job => {"id":"story-1.j98","type":"craft","kind":"craft","labe
 r32 maid_chan_103 job => {"id":"story-1.j99","type":"craft","kind":"craft","label":"Make Wooden Planks (from any logs) for build b5","item":"planks","n":8,"fetch":[{"from":"4,64,9","item":"log","n":2}],"stash":[{"to":"4,64,9","items":["planks"]}]}
   report failed fetch failed: chest is busy => True
   builds b1:blocked:need 18 cobblestone:d,d!,d!,d!,d,d!,d!,d!,d,d,d!,d,d,d!,d!,d,d!,d!,d!,d!,d,d!,d,d!,t!,t,t!,d,t,t!,d,t,t,t,t,d!,d,t!,t,d,t,t,t,t,t!,t!,d,t | b2:active::d,d!,b!,d!,t!,d,d,t!,d,b!,d,d!,d!,d,d!,b!,d,d,b!,b! | b3:done::m! | b4:done::m! | b5:waiting:waiting for 1 chest (being crafted):t! | b6:blocked:need 5 cobblestone:t,t,t,t,t | b7:active::d,t!,m!,d,t,d,d!
-r33 maid_chan_101 job => {"id":"story-1.j100","type":"build","kind":"place","label":"building floor (20 blocks, planks)","at":"-7,63,-5","block":"planks","want":"planks","cells":["-7,63,-5"],"clear":["-7,63,-5"],"stand":"-5,64,-3","fetch":[{"from":"4,64,9","item":"planks","n":1}],"tool":"stone_pickaxe","tool_ench":"none"}
+r33 maid_chan_101 job => {"id":"story-1.j100","type":"build","kind":"place","label":"building floor (20 blocks, planks)","at":"-7,63,-5","block":"planks","reach":true,"want":"planks","cells":["-7,63,-5"],"clear":["-7,63,-5"],"stand":"-5,64,-3","fetch":[{"from":"4,64,9","item":"planks","n":1}],"tool":"stone_pickaxe","tool_ench":"none"}
   progress fetched => True
   report done  => True
   builds b1:blocked:need 18 cobblestone:d,d!,d!,d!,d,d!,d!,d!,d,d,d!,d,d,d!,d!,d,d!,d!,d!,d!,d,d!,d,d!,t!,t,t!,d,t,t!,d,t,t,t,t,d!,d,t!,t,d,t,t,t,t,t!,t!,d,t | b2:active::d,d!,b!,d!,t!,d,d,d!,d,b!,d,d!,d!,d,d!,b!,d,d,b!,b! | b3:done::m! | b4:done::m! | b5:waiting:waiting for 1 chest (being crafted):t! | b6:blocked:need 5 cobblestone:t,t,t,t,t | b7:active::d,t!,m!,d,t,d,d!
@@ -574,12 +574,12 @@ r33 maid_chan_102 job => {"id":"story-1.j101","type":"idle","kind":"idle","label
 r33 maid_chan_103 job => {"id":"story-1.j102","type":"idle","kind":"idle","label":"Idle (wandering)","at":"-2,64,8","s":11,"dist":0,"wander":true,"act":"wander","look":["2.5,65.6,5.5"]}
   report failed script error => True
   builds b1:blocked:need 18 cobblestone:d,d!,d!,d!,d,d!,d!,d!,d,d,d!,d,d,d!,d!,d,d!,d!,d!,d!,d,d!,d,d!,t!,t,t!,d,t,t!,d,t,t,t,t,d!,d,t!,t,d,t,t,t,t,t!,t!,d,t | b2:active::d,d!,b!,d!,t!,d,d,d!,d,b!,d,d!,d!,d,d!,b!,d,d,b!,b! | b3:done::m! | b4:done::m! | b5:waiting:waiting for 1 chest (being crafted):t! | b6:blocked:need 5 cobblestone:t,t,t,t,t | b7:active::d,t!,m!,d,t,d,d!
-r34 maid_chan_101 job => {"id":"story-1.j103","type":"build","kind":"place","label":"building floor (20 blocks, planks)","at":"-8,63,-7","block":"planks","want":"planks","cells":["-8,63,-7"],"clear":["-8,63,-7"],"stand":"-6,64,-5","fetch":[{"from":"4,64,9","item":"planks","n":1}],"tool":"stone_pickaxe","tool_ench":"none"}
+r34 maid_chan_101 job => {"id":"story-1.j103","type":"build","kind":"place","label":"building floor (20 blocks, planks)","at":"-8,63,-7","block":"planks","reach":true,"want":"planks","cells":["-8,63,-7"],"clear":["-8,63,-7"],"stand":"-6,64,-5","fetch":[{"from":"4,64,9","item":"planks","n":1}],"tool":"stone_pickaxe","tool_ench":"none"}
   progress fetched => True
   progress cell -8,63,-7 failed: no support face => True
   report failed fetch failed: chest is busy => True
   builds b1:blocked:need 18 cobblestone:d,d!,d!,d!,d,d!,d!,d!,d,d,d!,d,d,d!,d!,d,d!,d!,d!,d!,d,d!,d,d!,t!,t,t!,d,t,t!,d,t,t,t,t,d!,d,t!,t,d,t,t,t,t,t!,t!,d,t | b2:active::d,t!,b!,d!,t!,d,d,d!,d,b!,d,d!,d!,d,d!,b!,d,d,b!,b! | b3:done::m! | b4:done::m! | b5:waiting:waiting for 1 chest (being crafted):t! | b6:blocked:need 5 cobblestone:t,t,t,t,t | b7:active::d,t!,m!,d,t,d,t
-r34 maid_chan_102 job => {"id":"story-1.j104","type":"build","kind":"place","label":"building block (7 blocks, stone_stairs)","at":"-4,64,25","block":"stone_stairs","want":"stone_stairs","cells":["-4,64,25"],"facing":"e","metas":[0],"stand":"-2,64,22","fetch":[{"from":"0,64,9","item":"stone_stairs","n":1}]}
+r34 maid_chan_102 job => {"id":"story-1.j104","type":"build","kind":"place","label":"building block (7 blocks, stone_stairs)","at":"-4,64,25","block":"stone_stairs","reach":true,"want":"stone_stairs","cells":["-4,64,25"],"facing":"e","metas":[0],"stand":"-2,64,22","fetch":[{"from":"0,64,9","item":"stone_stairs","n":1}]}
   progress fetched => True
   progress cell -4,64,25 done => True
   report failed script error => True
@@ -596,22 +596,22 @@ r35 maid_chan_102 job => {"id":"story-1.j107","type":"idle","kind":"idle","label
 r35 maid_chan_103 job => {"id":"story-1.j108","type":"idle","kind":"idle","label":"Idle (wandering)","at":"-2,64,4","s":12,"dist":0,"wander":true,"act":"wander","look":["4.5,65.6,-0.5"]}
   report done  => True
   builds b1:blocked:need 18 cobblestone:d,d!,d!,d!,d,d!,d!,d!,d,d,d!,d,d,d!,d!,d,d!,d!,d!,d!,d,d!,d,d!,t!,t,t!,d,t,t!,d,t,t,t,t,d!,d,t!,t,d,t,t,t,t,t!,t!,d,t | b2:active::d,t!,b!,d!,t!,d,d,d!,d,b!,d,d!,d!,d,d!,b!,d,d,b!,b! | b3:done::m! | b4:done::m! | b5:waiting:waiting for 1 chest (being crafted):t! | b6:blocked:need 5 cobblestone:t,t,t,t,t | b7:active::d,t!,m!,d,t,d,d
-r36 maid_chan_101 job => {"id":"story-1.j109","type":"build","kind":"place","label":"building floor (20 blocks, planks)","at":"-8,63,-7","block":"planks","want":"planks","cells":["-8,63,-7"],"clear":["-8,63,-7"],"stand":"-6,64,-5","fetch":[{"from":"4,64,9","item":"planks","n":1}],"tool":"stone_pickaxe","tool_ench":"none"}
+r36 maid_chan_101 job => {"id":"story-1.j109","type":"build","kind":"place","label":"building floor (20 blocks, planks)","at":"-8,63,-7","block":"planks","reach":true,"want":"planks","cells":["-8,63,-7"],"clear":["-8,63,-7"],"stand":"-6,64,-5","fetch":[{"from":"4,64,9","item":"planks","n":1}],"tool":"stone_pickaxe","tool_ench":"none"}
   progress fetched => True
   progress cell -8,63,-7 done => True
   report done batch: placed => True
   builds b1:blocked:need 18 cobblestone:d,d!,d!,d!,d,d!,d!,d!,d,d,d!,d,d,d!,d!,d,d!,d!,d!,d!,d,d!,d,d!,t!,t,t!,d,t,t!,d,t,t,t,t,d!,d,t!,t,d,t,t,t,t,t!,t!,d,t | b2:active::d,t!,b!,d!,t!,d,d,d!,d,b!,d,d!,d!,d,d!,b!,d,d,b!,b! | b3:done::m! | b4:done::m! | b5:waiting:waiting for 1 chest (being crafted):t! | b6:blocked:need 5 cobblestone:t,t,t,t,t | b7:active::d,t!,m!,d,t,d,d
-r36 maid_chan_102 job => {"id":"story-1.j110","type":"build","kind":"place","label":"building block (7 blocks, stone_stairs)","at":"-6,64,25","block":"stone_stairs","want":"stone_stairs","cells":["-6,64,25"],"clear":["-6,64,25"],"facing":"e","metas":[0],"stand":"-4,64,22","fetch":[{"from":"0,64,9","item":"stone_stairs","n":1}],"tool":"stone_pickaxe","tool_ench":"none"}
+r36 maid_chan_102 job => {"id":"story-1.j110","type":"build","kind":"place","label":"building block (7 blocks, stone_stairs)","at":"-6,64,25","block":"stone_stairs","reach":true,"want":"stone_stairs","cells":["-6,64,25"],"clear":["-6,64,25"],"facing":"e","metas":[0],"stand":"-4,64,22","fetch":[{"from":"0,64,9","item":"stone_stairs","n":1}],"tool":"stone_pickaxe","tool_ench":"none"}
   progress fetched => True
   progress cell -6,64,25 done => True
   report done  => True
   builds b1:blocked:need 18 cobblestone:d,d!,d!,d!,d,d!,d!,d!,d,d,d!,d,d,d!,d!,d,d!,d!,d!,d!,d,d!,d,d!,t!,t,t!,d,t,t!,d,t,t,t,t,d!,d,t!,t,d,t,t,t,t,t!,t!,d,t | b2:active::d,t!,b!,d!,t!,d,d,d!,d,b!,d,d!,d!,d,d!,b!,d,d,b!,b! | b3:done::m! | b4:done::m! | b5:waiting:waiting for 1 chest (being crafted):t! | b6:blocked:need 5 cobblestone:t,t,t,t,t | b7:active::d,t!,m!,d,t,d,d
-r36 maid_chan_103 job => {"id":"story-1.j111","type":"build","kind":"place","label":"building block (7 blocks, stone_stairs)","at":"-9,64,25","block":"stone_stairs","want":"stone_stairs","cells":["-9,64,25"],"clear":["-9,64,25"],"facing":"e","metas":[0],"stand":"-7,64,22","fetch":[{"from":"0,64,9","item":"stone_stairs","n":1}],"tool":"stone_pickaxe","tool_ench":"none"}
+r36 maid_chan_103 job => {"id":"story-1.j111","type":"build","kind":"place","label":"building block (7 blocks, stone_stairs)","at":"-9,64,25","block":"stone_stairs","reach":true,"want":"stone_stairs","cells":["-9,64,25"],"clear":["-9,64,25"],"facing":"e","metas":[0],"stand":"-7,64,22","fetch":[{"from":"0,64,9","item":"stone_stairs","n":1}],"tool":"stone_pickaxe","tool_ench":"none"}
   progress fetched => True
   progress cell -9,64,25 failed: can't place at -9,64,25: I couldn't get closer => True
   report failed fetch failed: chest is busy => True
   builds b1:blocked:need 18 cobblestone:d,d!,d!,d!,d,d!,d!,d!,d,d,d!,d,d,d!,d!,d,d!,d!,d!,d!,d,d!,d,d!,t!,t,t!,d,t,t!,d,t,t,t,t,d!,d,t!,t,d,t,t,t,t,t!,t!,d,t | b2:active::d,t!,b!,d!,t!,d,d,d!,d,b!,d,d!,d!,d,d!,b!,d,d,b!,b! | b3:done::m! | b4:done::m! | b5:waiting:waiting for 1 chest (being crafted):t! | b6:blocked:need 5 cobblestone:t,t,t,t,t | b7:active::d,t!,m!,d,t,d,d
-r37 maid_chan_101 job => {"id":"story-1.j112","type":"build","kind":"place","label":"building floor (20 blocks, planks): 2 blocks","at":"-7,63,-5","block":"planks","want":"planks","cells":["-7,63,-5","-4,63,-8"],"clear":["-7,63,-5","-4,63,-8"],"stand":"-5,64,-6","fetch":[{"from":"4,64,9","item":"planks","n":2}],"tool":"stone_pickaxe","tool_ench":"none"}
+r37 maid_chan_101 job => {"id":"story-1.j112","type":"build","kind":"place","label":"building floor (20 blocks, planks): 2 blocks","at":"-7,63,-5","block":"planks","reach":true,"want":"planks","cells":["-7,63,-5","-4,63,-8"],"clear":["-7,63,-5","-4,63,-8"],"stand":"-5,64,-6","fetch":[{"from":"4,64,9","item":"planks","n":2}],"tool":"stone_pickaxe","tool_ench":"none"}
   progress fetched => True
   progress cell -7,63,-5 done => True
   progress cell -4,63,-8 failed: can't place at -4,63,-8: I couldn't get closer => True
@@ -632,17 +632,17 @@ r38 maid_chan_102 job => {"id":"story-1.j116","type":"idle","kind":"idle","label
 r38 maid_chan_103 job => {"id":"story-1.j117","type":"idle","kind":"idle","label":"Idle (wandering)","at":"3,64,-4","s":9,"dist":0,"wander":true,"act":"wander","look":["1.5,65.6,-9.5"]}
   report done batch: placed => True
   builds b1:blocked:need 18 cobblestone:d,d!,d!,d!,d,d!,d!,d!,d,d,d!,d,d,d!,d!,d,d!,d!,d!,d!,d,d!,d,d!,t!,t,t!,d,t,t!,d,t,t,t,t,d!,d,t!,t,d,t,t,t,t,t!,t!,d,t | b2:active::d,t!,b!,d!,t!,d,d,t,d,b!,d,d!,d!,d,d!,b!,t,d,b!,b! | b3:done::m! | b4:done::m! | b5:blocked:need 1 chest:t! | b6:blocked:need 5 cobblestone:t,t,t,t,t | b7:active::d,t!,m!,d,t,d,d
-r39 maid_chan_101 job => {"id":"story-1.j118","type":"build","kind":"place","label":"building floor (20 blocks, planks)","at":"-7,63,-5","block":"planks","want":"planks","cells":["-7,63,-5"],"clear":["-7,63,-5"],"stand":"-5,64,-3","fetch":[{"from":"4,64,9","item":"planks","n":1}],"tool":"stone_pickaxe","tool_ench":"none"}
+r39 maid_chan_101 job => {"id":"story-1.j118","type":"build","kind":"place","label":"building floor (20 blocks, planks)","at":"-7,63,-5","block":"planks","reach":true,"want":"planks","cells":["-7,63,-5"],"clear":["-7,63,-5"],"stand":"-5,64,-3","fetch":[{"from":"4,64,9","item":"planks","n":1}],"tool":"stone_pickaxe","tool_ench":"none"}
   progress fetched => True
   progress cell -7,63,-5 failed: wrong rotation => True
   report failed script error => True
   builds b1:blocked:need 18 cobblestone:d,d!,d!,d!,d,d!,d!,d!,d,d,d!,d,d,d!,d!,d,d!,d!,d!,d!,d,d!,d,d!,t!,t,t!,d,t,t!,d,t,t,t,t,d!,d,t!,t,d,t,t,t,t,t!,t!,d,t | b2:active::d,t!,b!,d!,t!,d,d,t!,d,b!,d,d!,d!,d,d!,b!,t,d,b!,b! | b3:done::m! | b4:done::m! | b5:blocked:need 1 chest:t! | b6:blocked:need 5 cobblestone:t,t,t,t,t | b7:active::d,t!,m!,d,t,d,d
-r39 maid_chan_102 job => {"id":"story-1.j119","type":"build","kind":"place","label":"building floor (20 blocks, planks): 2 blocks","at":"-4,63,-8","block":"planks","want":"planks","cells":["-4,63,-8","-7,63,-8"],"clear":["-4,63,-8","-7,63,-8"],"stand":"-5,64,-6","fetch":[{"from":"4,64,9","item":"planks","n":2}],"tool":"stone_pickaxe","tool_ench":"none"}
+r39 maid_chan_102 job => {"id":"story-1.j119","type":"build","kind":"place","label":"building floor (20 blocks, planks): 2 blocks","at":"-4,63,-8","block":"planks","reach":true,"want":"planks","cells":["-4,63,-8","-7,63,-8"],"clear":["-4,63,-8","-7,63,-8"],"stand":"-5,64,-6","fetch":[{"from":"4,64,9","item":"planks","n":2}],"tool":"stone_pickaxe","tool_ench":"none"}
   progress fetched => True
   progress cell -7,63,-8 failed: no support face => True
   report done batch: placed => True
   builds b1:blocked:need 18 cobblestone:d,d!,d!,d!,d,d!,d!,d!,d,d,d!,d,d,d!,d!,d,d!,d!,d!,d!,d,d!,d,d!,t!,t,t!,d,t,t!,d,t,t,t,t,d!,d,t!,t,d,t,t,t,t,t!,t!,d,t | b2:active:can't place at -7,63,-8: no support face:d,t!,b!,d!,b!,d,d,t!,d,b!,d,d!,d!,d,d!,b!,t,d,b!,b! | b3:done::m! | b4:done::m! | b5:blocked:need 1 chest:t! | b6:blocked:need 5 cobblestone:t,t,t,t,t | b7:active::d,t!,m!,d,t,d,d
-r39 maid_chan_103 job => {"id":"story-1.j120","type":"build","kind":"place","label":"building floor (20 blocks, planks)","at":"-4,63,-8","block":"planks","want":"planks","cells":["-4,63,-8"],"clear":["-4,63,-8"],"stand":"-2,64,-6","fetch":[{"from":"4,64,9","item":"planks","n":1}],"tool":"stone_pickaxe","tool_ench":"none"}
+r39 maid_chan_103 job => {"id":"story-1.j120","type":"build","kind":"place","label":"building floor (20 blocks, planks)","at":"-4,63,-8","block":"planks","reach":true,"want":"planks","cells":["-4,63,-8"],"clear":["-4,63,-8"],"stand":"-2,64,-6","fetch":[{"from":"4,64,9","item":"planks","n":1}],"tool":"stone_pickaxe","tool_ench":"none"}
   progress fetched => True
   progress cell -4,63,-8 failed: no support face => True
   report done  => True

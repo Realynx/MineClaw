@@ -36,7 +36,7 @@ internal sealed partial class JsRuntime
             bool climb = Jint.Runtime.TypeConverter.ToBoolean(JsConvert.Arg(a, 1)); // no way home from here: climb toward it whatever the shape
             return V(Story.PitScan.Scan(s.Host.World, s.Host.Data, s.Host.World.Player.Position, toward, climb));
         });
-        // story.dig's eyes (Story/ReachScan.cs): a block above reach, the column to nerd-pole from and what to pole with.
+        // Dig/build access: a target above reach, the column to pillar from and what to use. Optional item/meta checks placement faces.
         H(h, "storyReach", a =>
         {
             s.SafePoint();
@@ -44,14 +44,21 @@ internal sealed partial class JsRuntime
             if (!s.Host.World.IsLoaded(at.X, at.Z)) return V(new JsonObject { ["unloaded"] = true, ["why"] = "target is not loaded" });
             var targets = (JsConvert.ToNode(JsConvert.Arg(a, 1), 2) as JsonArray)?.Select(ScriptSession.PosOf)
                 .OfType<World.BlockPos>().Append(at).Distinct().Take(24).ToArray();
-            return V(Story.ReachScan.Scan(s.Host.World, s.Host.Data, s.Host.World.Player.Position, at, walkable: true, targets));
+            Func<World.Vec3d, World.BlockPos, bool>? placement = Num(a, 2) is { } item
+                ? (feet, cell) => Story.ReachScan.PlacementWithin(s.Host.World, s.Host.Data, feet, cell, (int)item,
+                    Num(a, 3) is { } meta ? (int)meta : null) : null;
+            return V(Story.ReachScan.Scan(s.Host.World, s.Host.Data, s.Host.World.Player.Position, at, walkable: true, targets, placement));
         });
-        // Cheap visibility check for a reserved dig batch: do not search a path for each cell while standing on a pillar.
+        // Cheap visibility check for a reserved work batch: do not search a path for each cell while standing on a pillar.
         H(h, "storyWithin", a =>
         {
             s.SafePoint();
             var at = (Str(a, 0) is { } t ? ScriptSession.PosOf(JsonValue.Create(t)) : null) ?? throw ScriptSession.Bug("storyWithin(at) needs a position");
-            return Story.ReachScan.Within(s.Host.World, s.Host.World.Player.Position, at) ? JsBoolean.True : JsBoolean.False;
+            bool within = Num(a, 1) is { } item
+                ? Story.ReachScan.PlacementWithin(s.Host.World, s.Host.Data, s.Host.World.Player.Position, at, (int)item,
+                    Num(a, 2) is { } meta ? (int)meta : null)
+                : Story.ReachScan.Within(s.Host.World, s.Host.World.Player.Position, at);
+            return within ? JsBoolean.True : JsBoolean.False;
         });
         // story.pour's eyes: the liquid at a cell -> "water" | "lava" (a source: what a poured bucket leaves), "flowing_water" |
         // "flowing_lava" (a flow level, or falling), "" (no liquid). Zero tokens, no action.

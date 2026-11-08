@@ -169,7 +169,7 @@ function strokePreserved(ctx: CanvasRenderingContext2D, z: StoryZone, y: number,
 /** A zone's outline: solid for the overlay layers (home thicker), dashed for work zones. */
 function strokeZone(ctx: CanvasRenderingContext2D, z: StoryZone, y: number, proj: Proj, col: string): void {
   const home = z.kind === 'home';
-  const overlay = home || z.kind === 'forbidden' || z.kind === 'preserve';
+  const overlay = home || z.kind === 'guard' || z.kind === 'forbidden' || z.kind === 'preserve';
   ctx.strokeStyle = overlay ? col : `${col}cc`;
   ctx.lineWidth = home ? 2 : 1.5;
   if (!overlay) ctx.setLineDash([6, 4]);
@@ -201,6 +201,7 @@ export function zoneLabel(
   if (z.kind === 'home') return z.name || z.label || `House ${houseNo}`;
   if (z.kind === 'farm' && (z.plant || z.bills)) return farmLabel(z, plants);
   if (z.kind === 'preserve') return preserveLabel(z);
+  if (z.kind === 'guard') return z.name || z.label || 'Guard';
   return z.name || null;
 }
 
@@ -217,7 +218,7 @@ function farmLabel(z: StoryZone, plants: ReadonlyArray<{ id: string; label: stri
   return z.name ? `${z.name} · ${what}` : what;
 }
 
-const LAYERS: Record<string, number> = { home: 2, forbidden: 3, preserve: 4 };
+const LAYERS: Record<string, number> = { home: 2, guard: 3, forbidden: 4, preserve: 5 };
 const layer = (kind: string) => LAYERS[kind] ?? 1;
 
 /**

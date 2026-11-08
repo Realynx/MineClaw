@@ -240,7 +240,8 @@ describe('designs', () => {
         firstPlace: it.place?.[0],
       }));
     const many: DesignBlock[] = [];
-    for (let i = 0; i < 70; i++) many.push([i, 64, 0, 1 + i, i % 3]); // 70 materials: 70 items, capped at 64
+    for (let i = 0; i < 70; i++) many.push([i, 64, 0, 1 + i, i % 3]); // replacement must never silently truncate a design
+    expect(() => designItems(many)).toThrow('more than 64 build items');
     expect({
       mineBig: shape(mineItems(placed, longName, 'g'.repeat(50))),
       mineSmall: mineItems(small),
@@ -250,7 +251,6 @@ describe('designs', () => {
       designNamed: designItems(small, longName, 'grp'),
       designBlocksOnly: designItems(blocksOnly, 'Hut'),
       designBig: shape(designItems(placed, 'Big')),
-      designCap: designItems(many).map((it) => it.material),
     }).toMatchSnapshot();
   });
 });

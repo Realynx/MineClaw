@@ -7,19 +7,24 @@ public sealed partial class StoryColony
     private static bool BuildConflicted(GhostState g) =>
         g.State == "blocked" && g.Reason?.StartsWith(BuildConflictWords, StringComparison.Ordinal) == true;
 
+    private static bool OwnsBuildCell(BuildState b, GhostState g) => !g.Remove || ReplacementAir(b, g);
+
+    private static bool SameBuildIntent(GhostState a, GhostState b) =>
+        a.Remove || b.Remove ? a.Remove == b.Remove : a.Id == b.Id && a.Meta == b.Meta;
+
     /// <summary>A newer placement design owns an overlapping cell, even when paused or finished.
     /// Queue priority never changes that ownership. Removing the newer design releases the older one.</summary>
     private void BuildConflictsPass()
     {
         var owners = new Dictionary<P3, (BuildState Build, GhostState Ghost)>();
         foreach (var b in Builds.Where(b => b.Kind != "preserve").OrderBy(b => b.Created))
-            foreach (var g in b.Ghosts.Where(g => !g.Remove)) owners[g.At] = (b, g);
+            foreach (var g in b.Ghosts.Where(g => OwnsBuildCell(b, g))) owners[g.At] = (b, g);
         var held = new List<(BuildState Build, GhostState Ghost, string Why)>();
         foreach (var b in Builds.Where(b => b.Kind != "preserve"))
-            foreach (var g in b.Ghosts.Where(g => !g.Remove))
+            foreach (var g in b.Ghosts.Where(g => OwnsBuildCell(b, g)))
             {
                 var owner = owners[g.At];
-                if (owner.Build != b && (g.Id != owner.Ghost.Id || g.Meta != owner.Ghost.Meta))
+                if (owner.Build != b && !SameBuildIntent(g, owner.Ghost))
                     held.Add((b, g, BuildConflictWords + owner.Build.Id + ": newer design owns this cell"));
                 else if (BuildConflicted(g))
                 {

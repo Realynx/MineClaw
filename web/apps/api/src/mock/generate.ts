@@ -4,6 +4,7 @@
  * min/max, arrays get two items. Output is the PUBLIC (camelCase) shape; the mock bridge converts it with `toSnake`.
  */
 import type { z } from 'zod';
+import { StoryTimeRange } from '@mineclaw/contracts';
 
 interface Def {
   type: string;
@@ -228,6 +229,8 @@ const GENERATORS: Record<string, (g: Gen) => unknown> = {
 };
 
 export function generate(schema: z.ZodType, key = '', depth = 0, i = 0): unknown {
+  // Cross-field refinements cannot be inferred from each field's individual checks.
+  if (schema === StoryTimeRange) return { start: 0, end: 12000 };
   const s = schema as unknown as Schema;
   const def = inner(s);
   if (depth > 24) return undefined;

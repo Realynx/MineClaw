@@ -30,16 +30,17 @@ public static class ReachScan
 
     /// <param name="walkable">Check access from the pawn before choosing a stand; false is a geometry-only scan.</param>
     public static JsonObject Scan(WorldState w, IGameData data, Vec3d pos, BlockPos target, bool walkable = false,
-        IReadOnlyList<BlockPos>? targets = null)
+        IReadOnlyList<BlockPos>? targets = null, Func<Vec3d, BlockPos, bool>? canReach = null)
     {
         var g = new ScanGround(w, data);
-        var o = new JsonObject { ["within"] = Within(w, pos, target) };
+        canReach ??= (feet, at) => Within(w, feet, at);
+        var o = new JsonObject { ["within"] = canReach(pos, target) };
         var (block, blocks) = g.Stock(PillarIds);
         o["block"] = block;
         o["blocks"] = blocks;
         if (o["within"]!.GetValue<bool>()) return o;
         var cluster = targets == null ? [target] : targets.Prepend(target).Distinct().Take(24).ToArray();
-        if (Best(g, target, cluster, walkable ? pos : null, out var why) is not { } pick)
+        if (Best(g, target, cluster, walkable ? pos : null, canReach, out var why) is not { } pick)
         {
             o["why"] = why;
             return o;
@@ -63,8 +64,24 @@ public static class ReachScan
         return distance <= Reach && (Raycast.Cast(w, eye, center - eye, distance) is not { } hit || hit.Pos == target);
     }
 
+    /// <summary>Construction needs a visible support face and, for a turned block, a click that gives its requested orientation.</summary>
+    public static bool PlacementWithin(WorldState w, IGameData data, Vec3d feet, BlockPos target, int item, int? meta)
+    {
+        if (!w.IsLoaded(target.X, target.Z) || !Aiming.IsReplaceable(w, w.GetBlock(target))
+            || AABB.ForPlayer(feet).Intersects(AABB.Block(target.X, target.Y, target.Z))) return false;
+        var eye = feet + new Vec3d(0, PlayerPhysics.EyeHeight, 0);
+        int block = BlockOrientation.BlockOf(item);
+        bool modern = data.VersionId != "b1.8.1";
+        if (meta is not { } turn || !BlockOrientation.Turns(block, turn, modern))
+            return Aiming.FindPlaceAim(w, eye, target, Reach, AABB.ForPlayer(feet)) is not null;
+        return BlockOrientation.Solve(block, turn, target, feet, modern,
+                face => PlaceRules.IsSupport(w, target - face.Normal()), sneaking: true)
+            .Any(t => Client.FaceAim.Find(w, eye, target - t.Face.Normal(), t.Face, Reach) is not null);
+    }
+
     /// <summary>A visible existing stand, else the cheapest reachable column below or beside the target.</summary>
-    private static Column? Best(ScanGround g, BlockPos target, IReadOnlyList<BlockPos> targets, Vec3d? from, out string why)
+    private static Column? Best(ScanGround g, BlockPos target, IReadOnlyList<BlockPos> targets, Vec3d? from,
+        Func<Vec3d, BlockPos, bool> canReach, out string why)
     {
         var columns = new List<Column>();
         why = "no ground to stand on below or beside it within " + MaxPillar + " blocks";
@@ -79,12 +96,12 @@ public static class ReachScan
                     for (int y = Math.Min(g.Height - 2, target.Y + 3); y >= Math.Max(1, target.Y - 5); y--)
                         if (!targets.Contains(new BlockPos(x, y - 1, z)) && g.Stand(x, y, z)
                             && (r != 0 || !ScanGround.Falling.Contains(g.World.GetBlock(target.X, target.Y + 1, target.Z)))
-                            && Within(g.World, new Vec3d(x + 0.5, y, z + 0.5), target))
+                            && canReach(new Vec3d(x + 0.5, y, z + 0.5), target))
                             columns.Add(new Column(new BlockPos(x, y, z), 0, 0.1 * r,
-                                Coverage(g, new BlockPos(x, y, z), 0, targets)));
-                    if (r <= 2 && TryColumn(g, target, r, x, z, ref why) is { } col
+                                Coverage(new BlockPos(x, y, z), 0, targets, canReach)));
+                    if (r <= 2 && TryColumn(g, target, r, x, z, canReach, ref why) is { } col
                         && !targets.Contains(new BlockPos(col.Stand.X, col.Stand.Y - 1, col.Stand.Z)))
-                        columns.Add(ClusterColumn(g, col, target, targets));
+                        columns.Add(ClusterColumn(g, col, target, targets, canReach));
                 }
         if (columns.Count == 0) return null;
         columns = columns.GroupBy(c => c.Stand).Select(group => Ranked(group).First()).ToList();
@@ -121,27 +138,28 @@ public static class ReachScan
     private static IOrderedEnumerable<Column> Ranked(IEnumerable<Column> columns, Func<Column, double>? walkCost = null) =>
         columns.OrderBy(c => c.Steps != 0).ThenByDescending(c => c.Coverage).ThenBy(c => c.Score + (walkCost?.Invoke(c) ?? 0));
 
-    private static int Coverage(ScanGround g, BlockPos stand, int steps, IReadOnlyList<BlockPos> targets) =>
-        targets.Count(at => Within(g.World, new Vec3d(stand.X + 0.5, stand.Y + steps, stand.Z + 0.5), at));
+    private static int Coverage(BlockPos stand, int steps, IReadOnlyList<BlockPos> targets, Func<Vec3d, BlockPos, bool> canReach) =>
+        targets.Count(at => canReach(new Vec3d(stand.X + 0.5, stand.Y + steps, stand.Z + 0.5), at));
 
     /// <summary>Up to two extra blocks can put an adjacent cluster in reach of the same tower. Existing stands stay walk-only.</summary>
-    private static Column ClusterColumn(ScanGround g, Column column, BlockPos target, IReadOnlyList<BlockPos> targets)
+    private static Column ClusterColumn(ScanGround g, Column column, BlockPos target, IReadOnlyList<BlockPos> targets,
+        Func<Vec3d, BlockPos, bool> canReach)
     {
-        var best = column with { Coverage = Coverage(g, column.Stand, column.Steps, targets) };
+        var best = column with { Coverage = Coverage(column.Stand, column.Steps, targets, canReach) };
         if (targets.Count < 2 || column.Steps == 0) return best;
         for (int extra = 1; extra <= 2 && column.Steps + extra <= MaxPillar; extra++)
         {
             int steps = column.Steps + extra;
             if (!ClearShaft(g, column.Stand.X, column.Stand.Z, column.Stand.Y, column.Stand.Y + steps)) break;
-            if (!Within(g.World, new Vec3d(column.Stand.X + 0.5, column.Stand.Y + steps, column.Stand.Z + 0.5), target)) continue;
-            int coverage = Coverage(g, column.Stand, steps, targets);
+            if (!canReach(new Vec3d(column.Stand.X + 0.5, column.Stand.Y + steps, column.Stand.Z + 0.5), target)) continue;
+            int coverage = Coverage(column.Stand, steps, targets, canReach);
             if (coverage > best.Coverage) best = column with { Steps = steps, Score = column.Score + extra, Coverage = coverage };
         }
         return best;
     }
 
     /// <summary>The column at cx,cz: its ground, how many blocks up until the target is in reach, and a free shaft to get there.</summary>
-    private static Column? TryColumn(ScanGround g, BlockPos target, int r, int cx, int cz, ref string why)
+    private static Column? TryColumn(ScanGround g, BlockPos target, int r, int cx, int cz, Func<Vec3d, BlockPos, bool> canReach, ref string why)
     {
         if (!g.World.IsLoaded(cx, cz)) return null;
         if (r == 0 && ScanGround.Falling.Contains(g.World.GetBlock(target.X, target.Y + 1, target.Z))) { why = "sand or gravel over it would fall on me"; return null; }
@@ -149,7 +167,7 @@ public static class ReachScan
         if (gy < 0) return null;
         int feet = gy;
         while (feet - gy <= MaxPillar && feet <= target.Y + 1
-            && !Within(g.World, new Vec3d(cx + 0.5, feet, cz + 0.5), target)) feet++;
+            && !canReach(new Vec3d(cx + 0.5, feet, cz + 0.5), target)) feet++;
         if (feet - gy > MaxPillar) { why = "more than " + MaxPillar + " blocks up"; return null; }
         if (feet > target.Y + 1) { why = "no visible face from the column"; return null; }
         if (feet + 1 >= g.Height - 1) { why = "above the build height"; return null; }

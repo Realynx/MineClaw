@@ -44,6 +44,7 @@ function storyWrites(): Partial<Record<RouteId, Ctx>> {
     'story.pause': w({ paused: false }),
     'story.home': w({ home: { x: 4, y: 64, z: -3 } }),
     'story.time': { params: {}, query: {}, body: { time: 6000 } },
+    'story.timeRange': { params: {}, query: {}, body: { range: null } },
     'story.beds': w({ op: 'assign', bed: bedPos(), pawn: 'maid_s1_dara' }),
     'story.priorities': w({ pawns, work: { chop: 1 } }),
     'story.roles': w({ op: 'update', role: { id: 'farmer', priorities: { farm: 2 } } }),
@@ -85,7 +86,7 @@ describe('mock fixtures satisfy the contracts', () => {
     const ctx: Ctx = {
       params: r.params ? (r.params.parse(sample.params) as Record<string, unknown>) : {},
       query: r.query ? (r.query.parse(sample.query) as Record<string, unknown>) : {},
-      body: r.body ? (r.body.parse(sample.body ?? {})) : sample.body,
+      body: r.body ? r.body.parse(sample.body ?? {}) : sample.body,
     };
     const out = resolvers[id]!(ctx);
     const res = r.response!.safeParse(out);

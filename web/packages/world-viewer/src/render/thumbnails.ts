@@ -73,6 +73,7 @@ export class ThumbnailView implements RuntimeView {
   }
 
   interest(): Interest | null {
+    if (!this.onScreen) return null;
     const b = this.bot();
     return b ? { dim: b.dim, x: b.x, z: b.z, r: this.drawDistance + 16 } : null;
   }
@@ -154,7 +155,7 @@ export class ThumbnailView implements RuntimeView {
     this.target.set(b.x, b.y + 1.3, b.z);
     const wantYaw = (this.opts.angle ?? 'behind') === 'behind' ? b.yaw : 315;
     if (Number.isNaN(this.yaw)) this.yaw = wantYaw;
-    this.yaw += ((((wantYaw - this.yaw) % 360) + 540) % 360 - 180) * 0.35;
+    this.yaw += (((((wantYaw - this.yaw) % 360) + 540) % 360) - 180) * 0.35;
     this.camera.position.copy(this.target).addScaledVector(lookDir(this.yaw, this.opts.pitch ?? 28), -(this.opts.distance ?? 6));
     this.camera.lookAt(this.target);
     this.camera.far = this.drawDistance * 1.6 + 16;

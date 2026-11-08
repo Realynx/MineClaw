@@ -141,7 +141,7 @@ export interface StoryMapProps {
   layers: number;
   level: number;
   cutY: number | null;
-  view: 'top' | 'angled';
+  view: 'top' | 'angled' | 'fly';
   /** Keys held (pan), owned by the page's key handler. */
   keys: React.RefObject<Set<string>>;
   home: V3 | null;
@@ -483,6 +483,26 @@ export const StoryMap =forwardRef<StoryMapHandle, StoryMapProps>(function StoryM
 
   const engine = (): WorldViewerEngine | null => viewer.current?.engine() ?? null;
 
+  const startFly = (e: WorldViewerEngine) => {
+    // The top camera sits hundreds of blocks above its focus. Fly nearby while keeping the map framing for the return.
+    const t = e.rig.target;
+    e.rig.flyPos.set(t.x, t.y + 12, t.z + 16);
+    e.rig.flyPitch = 35;
+    e.rig.flyYaw = 180;
+    e.surface.focus();
+  };
+
+  useEffect(() => {
+    props.keys.current.clear();
+    hover.current = null;
+    lastHover.current = null;
+    if (gate.current.escape()) dropDrag();
+    if (props.view === 'fly') {
+      const e = engine();
+      if (e) startFly(e);
+    } else canvas.current?.focus();
+  }, [props.view]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const toPage = (x: number, y: number, z: number): Pt | null => {
     const m = mats.current,
       c = canvas.current;
@@ -499,6 +519,7 @@ export const StoryMap =forwardRef<StoryMapHandle, StoryMapProps>(function StoryM
       if (!e) return;
       e.rig.beginTransition(e.camera, performance.now(), 500);
       e.rig.target.set(x + 0.5, y ?? p.current.level + 1, z + 0.5);
+      if (p.current.view === 'fly') startFly(e);
     },
     center: () => {
       const t = engine()?.rig.target;
@@ -557,6 +578,7 @@ export const StoryMap =forwardRef<StoryMapHandle, StoryMapProps>(function StoryM
       const home = p.current.home;
       if (!home) p.current.onSettled?.(at[1]);
       e.rig.target.set(at[0] + 0.5, (home ? p.current.level : at[1]) + 1, at[2] + 0.5);
+      if (p.current.view === 'fly') startFly(e);
     };
     const loop = () => {
       tryPlace();
@@ -586,6 +608,11 @@ export const StoryMap =forwardRef<StoryMapHandle, StoryMapProps>(function StoryM
         c.width = w;
         c.height = h;
       }
+      if (p.current.view === 'fly') {
+        c.getContext('2d')?.clearRect(0, 0, c.width, c.height);
+        syncLabels([]);
+        return;
+      }
       panStep(e, dt, w, h, pan);
       const cam = e.camera;
       mats.current = {
@@ -614,9 +641,10 @@ export const StoryMap =forwardRef<StoryMapHandle, StoryMapProps>(function StoryM
       holo.current = { ghosts: null, builds: null, preview: '' };
       // The pawns and AI bodies are drawn as their player models; the overlay draws their names (no second label).
       e.setBotLabels(false);
+      if (p.current.view === 'fly') startFly(e); // free cam chosen before the viewer finished loading
     }
     syncLevelCut(e);
-    if (placed.current) e.rig.target.y = p.current.level + 1;
+    if (placed.current && p.current.view !== 'fly') e.rig.target.y = p.current.level + 1;
     // Day and night: the viewer's index time and the colony clock are one anchor (the newer sample wins).
     p.current.clock?.syncViewer({
       anchor: () => e.runtime.worldTimeAnchor(0),
@@ -627,6 +655,11 @@ export const StoryMap =forwardRef<StoryMapHandle, StoryMapProps>(function StoryM
 
   /** [frame] Above the ground storey, the storeys below are dimmed for reference; the cut hides what is above it. */
   const syncLevelCut = (e: WorldViewerEngine) => {
+    if (p.current.view === 'fly') {
+      if (appliedCut.current !== 'fly') e.setLevelCut(null);
+      appliedCut.current = 'fly';
+      return;
+    }
     const home = p.current.home;
     const dim = home && p.current.level > home[1] ? p.current.level + 1 : null;
     const cutKey = `${p.current.cutY}|${dim}`;
@@ -1812,7 +1845,7 @@ export const StoryMap =forwardRef<StoryMapHandle, StoryMapProps>(function StoryM
 
   // The viewer's element is kept while its inputs stay (React then skips its subtree): the page re-renders on every state
   // poll, and the viewer needs none of that (the overlay reads the state from a ref each frame).
-  const cameraMode = props.view === 'top' ? 'top' : 'iso';
+  const cameraMode = props.view === 'top' ? 'top' : props.view === 'fly' ? 'fly' : 'iso';
   const followName = mod && source ? '' : (props.state?.pawns[0]?.name ?? '');
   const viewerEl = useMemo(
     () =>
@@ -1826,7 +1859,7 @@ export const StoryMap =forwardRef<StoryMapHandle, StoryMapProps>(function StoryM
           cameraMode={cameraMode}
           xray="off"
           drawDistance={112}
-          hideHint
+          hideHint={cameraMode !== 'fly'}
           className="absolute inset-0"
         />
       ) : (
@@ -1841,10 +1874,10 @@ export const StoryMap =forwardRef<StoryMapHandle, StoryMapProps>(function StoryM
       {viewerEl}
       <canvas
         ref={canvas}
-        tabIndex={0}
+        tabIndex={props.view === 'fly' ? -1 : 0}
         aria-label="Colony map: drag to select, right-click for orders, wheel to zoom, WASD to pan"
         className="absolute inset-0 size-full cursor-crosshair outline-none"
-        style={{ touchAction: 'none' }}
+        style={{ touchAction: 'none', pointerEvents: props.view === 'fly' ? 'none' : undefined }}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={(e) => void onPointerUp(e)}

@@ -17,12 +17,13 @@ public static class ClearDigTool
 
     public static void Register(ToolRegistry tools, IGameClient c)
     {
-        tools.Register(ToolName, "Dig out the block in a build's cell before its own block goes in.", ToolSchema.Create().Str("at", "x,y,z").Build(),
+        tools.Register(ToolName, "Dig out the block in a build's cell before its own block goes in.", ToolSchema.Create().Str("at", "x,y,z")
+            .Bool("replacement", "explicit palette replacement: release old block protection at this cell", required: false).Build(),
             async (i, ct) =>
             {
                 if (Locations.ParseCoords(i.ReqStr("at")) is not { } p) return ToolResult.Error("at must be x,y,z");
                 if (GameClients.Minecraft(c)?.Inner is not { } real) return GameToolSet.R(await c.DigBlockAsync(p.X, p.Y, p.Z, ct).ConfigureAwait(false));
-                return GameToolSet.R(await real.DigForBuildAsync(new BlockPos(p.X, p.Y, p.Z), ct).ConfigureAwait(false));
+                return GameToolSet.R(await real.DigForBuildAsync(new BlockPos(p.X, p.Y, p.Z), ct, replacement: i.Bool("replacement") == true).ConfigureAwait(false));
             }, tiers: ToolTiers.None);
     }
 }

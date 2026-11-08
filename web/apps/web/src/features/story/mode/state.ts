@@ -178,7 +178,7 @@ function useLevel(state: StoryColonyState | undefined, tool: MapTool, buildHeigh
   const lv = level ?? ground;
   // X-ray above the working level: automatic while building or on an upper storey (trees and hills stay whole otherwise).
   const [xray, setXray] = useState<'auto' | 'on' | 'off'>('auto');
-  const [view, setView] = useState<'top' | 'angled'>('top');
+  const [view, setView] = useState<'top' | 'angled' | 'fly'>('top');
   const xrayOn = xray === 'on' || (xray === 'auto' && (tool.kind === 'build' || lv > ground));
   const cutY = levelCutY(lv, buildHeight, xrayOn);
   return { setSettledY, ground, setLevel, lv, setXray, xrayOn, cutY, view, setView };

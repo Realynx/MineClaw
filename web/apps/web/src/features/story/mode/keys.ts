@@ -137,6 +137,7 @@ const KEY_HANDLERS: Record<string, KeyHandler> = {
   escape,
   chat: (c) => c.setChat(true),
   view: (c) => c.setView((v) => (v === 'top' ? 'angled' : 'top')),
+  fly: (c) => c.setView((v) => (v === 'fly' ? 'top' : 'fly')),
   xray: (c) => c.setXray(c.xrayOn ? 'off' : 'on'),
   levelUp: levelKey(1),
   levelDown: levelKey(-1),
@@ -161,6 +162,10 @@ export function runKeyAction(c: Story, a: KeyAction, e: KeyboardEvent) {
 /** A key pressed anywhere on the page (not while typing or with a dialog open). */
 function onKeyDown(c: Story, e: KeyboardEvent) {
   if (isTyping(e.target) || document.querySelector('[role="dialog"][data-state="open"]')) return;
+  // Flight owns movement (including Space/Q/E/PgUp/PgDn); never pause, rotate tools or issue work while flying.
+  // V always gets back to the map even with the pointer locked. Esc only releases the pointer.
+  if (c.view === 'fly' && e.code !== 'KeyV') return;
+  if (e.repeat && e.code === 'KeyV') return;
   if (PAN_KEYS[e.code]) {
     c.keys.current.add(e.code);
     e.preventDefault();

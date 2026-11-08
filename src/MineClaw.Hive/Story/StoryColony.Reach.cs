@@ -45,6 +45,13 @@ public sealed partial class StoryColony
         int top = JobTop(job, at);
         if (job.Kind is not ("dig" or "place") && top <= live.Y + 3) return job;
         int have = live.Inventory.Where(s => PillarAny.Contains(s.Id)).Sum(s => s.Count);
+        // A cobble/stone/dirt build's permanent material is not spare scaffolding.
+        if (job.Kind == "place" && World is { } w && job.Json["block"] is JsonValue material && material.TryGetValue<string>(out var item))
+        {
+            int id = KeyOfItem(w, item, 0).Id;
+            if (PillarAny.Contains(id))
+                have -= Math.Min(live.Inventory.Where(s => s.Id == id).Sum(s => s.Count), (job.Json["cells"] as JsonArray)?.Count ?? 1);
+        }
         int want = Math.Max(8, Math.Min(Meta.PillarStack, top - (int)live.Y + 2));
         // The reachable base can be far below both target and pawn. Keep a supply hint for the longest supported climb;
         // the SDK only takes these extra blocks when its actual access plan needs them.

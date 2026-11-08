@@ -26,11 +26,14 @@ public sealed class WorldColumnSource(Func<IReadOnlyList<LiveBody>> bodies, Func
     private readonly Dictionary<(int, int, int, bool), (ChunkColumn Col, long Version, DateTimeOffset At, long Hash)> _liveHash = new();
     private readonly Dictionary<(int, int, int, bool), (ChunkColumn Col, long Version, long Hash, byte[] Data, byte[]? Light)> _payload = new();
     private readonly object _lock = new();
+    private long _hashComputations;
+    internal long HashComputations => Interlocked.Read(ref _hashComputations);
+    private long _mergedColumnVisits;
+    internal long MergedColumnVisits => Interlocked.Read(ref _mergedColumnVisits);
 
-    /// <summary>A live column's hash is kept while its <see cref="ChunkColumn.Version"/> stands still, at most this long (a backstop:
-    /// every write moves the version). Live 11-04 the index rehashed every live column each second (~18 ms of 64 KB FNV walks per
-    /// ask with 235 live columns, p95 415 ms through the gateway); now a quiet column costs a lookup.</summary>
-    public TimeSpan LiveHashTtl { get; init; } = TimeSpan.FromSeconds(30);
+    /// <summary>Hashes remain valid until the column's reference or version changes. A finite TTL may be supplied for diagnostics;
+    /// expiring quiet columns periodically otherwise rescans hundreds of unchanged arrays whenever the pawns spread out.</summary>
+    public TimeSpan LiveHashTtl { get; init; } = Timeout.InfiniteTimeSpan;
 
     private (ChunkColumn Col, string By)? Live(IReadOnlyList<LiveBody> bs, int dim, int cx, int cz)
     {
@@ -50,7 +53,9 @@ public sealed class WorldColumnSource(Func<IReadOnlyList<LiveBody>> bodies, Func
         var k = (dim, c.ChunkX, c.ChunkZ, light);
         long v = c.Version; // read before hashing: a write during the walk moves it, so the next ask hashes again
         lock (_lock)
-            if (_liveHash.TryGetValue(k, out var e) && ReferenceEquals(e.Col, c) && e.Version == v && now - e.At < LiveHashTtl) return e.Hash;
+            if (_liveHash.TryGetValue(k, out var e) && ReferenceEquals(e.Col, c) && e.Version == v
+                && (LiveHashTtl == Timeout.InfiniteTimeSpan || now - e.At < LiveHashTtl)) return e.Hash;
+        Interlocked.Increment(ref _hashComputations);
         long h = c.ContentHash(); // = ChunkSnapshot.ComputeHash(c.IdData, c.MetaData), without the two flat copies
         if (light) h = LightSnapshot.Combine(h, LightSnapshot.HashOf(c));
         lock (_lock)
@@ -80,13 +85,37 @@ public sealed class WorldColumnSource(Func<IReadOnlyList<LiveBody>> bodies, Func
                     map[(r.X, r.Z)] = new WorldColumnInfo(r.X, r.Z, r.Hash, r.LastSeen.ToUnixTimeMilliseconds(), r.SeenBy, false);
         }
         catch (Exception) { /* memory unavailable: live only */ }
-        var bs = Bodies();
-        if (bs.Any(b => b.World.Dimension == dim))
+        var bs = Bodies().Where(b => b.World.Dimension == dim && b.World.LoadedColumnCount > 0).ToArray();
+        // A small view usually belongs to the first body and needs one dictionary lookup per cell. A wide view spanning many
+        // bodies used to search every body again for every cell (including unloaded cells); merge their loaded columns once,
+        // but only when that scans fewer columns than direct lookups. An unloaded main must not turn a tiny view into a hive scan.
+        long cells = ((long)cx1 - cx0 + 1) * ((long)cz1 - cz0 + 1);
+        var live = bs.Length > 1 && cells > bs[0].World.LoadedColumnCount
+            && bs.Sum(b => (long)b.World.LoadedColumnCount) < cells * bs.Length
+            ? IndexLives(bs, dim, cx0, cz0, cx1, cz1) : null;
+        if (bs.Length > 0)
             for (int cx = cx0; cx <= cx1; cx++)
                 for (int cz = cz0; cz <= cz1; cz++)
-                    if (Live(bs, dim, cx, cz) is { } l)
+                    if ((live != null ? live.GetValueOrDefault((cx, cz)) : Live(bs, dim, cx, cz)) is { } l)
                         map[(cx, cz)] = new WorldColumnInfo(cx, cz, LiveHash(dim, l.Col, now, light), now.ToUnixTimeMilliseconds(), l.By, true);
         return map.Values.Take(Math.Max(0, max)).ToList();
+    }
+
+    private Dictionary<(int, int), (ChunkColumn Col, string By)?> IndexLives(IReadOnlyList<LiveBody> bodies, int dim,
+        int cx0, int cz0, int cx1, int cz1)
+    {
+        var map = new Dictionary<(int, int), (ChunkColumn Col, string By)?>();
+        long visited = 0;
+        foreach (var body in bodies)
+            foreach (var column in body.World.Columns)
+            {
+                visited++;
+                if (column.HasData && column.Dimension == dim && column.ChunkX >= cx0 && column.ChunkX <= cx1
+                    && column.ChunkZ >= cz0 && column.ChunkZ <= cz1)
+                    map.TryAdd((column.ChunkX, column.ChunkZ), (column, body.Name)); // preserve the existing main-first precedence
+            }
+        Interlocked.Add(ref _mergedColumnVisits, visited);
+        return map;
     }
 
     public IReadOnlyList<ColumnPayloadEntry> Columns(int dim, IReadOnlyList<(int Cx, int Cz)> cols) => Columns(dim, cols, false);

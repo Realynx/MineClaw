@@ -86,6 +86,25 @@ export interface Interest {
   z: number;
   /** Blocks; clamped 16..256 like the server. */
   r: number;
+  /** Interactive view before thumbnails; round-robin still gives background views a turn. */
+  priority?: number;
+}
+
+/** A view wholly covered by another shares its index/download work, including negative chunk coordinates. */
+export function sharedInterests(list: Record<string, Interest>): Map<string, Interest> {
+  const sorted = Object.entries(list)
+    .map(([k, i]) => [k, { ...i, r: Math.max(16, Math.min(256, Math.round(i.r))) }] as const)
+    .sort((a, b) => (b[1].priority ?? 0) - (a[1].priority ?? 0) || b[1].r - a[1].r);
+  const kept = new Map<string, Interest>();
+  for (const [k, i] of sorted) {
+    const r = indexRect(i.x, i.z, i.r);
+    const covered = [...kept.values()].some((other) => {
+      const q = indexRect(other.x, other.z, other.r);
+      return other.dim === i.dim && q[0] <= r[0] && q[1] <= r[1] && q[2] >= r[2] && q[3] >= r[3];
+    });
+    if (!covered) kept.set(k, i);
+  }
+  return kept;
 }
 
 export interface WorldSyncEvents {
@@ -103,11 +122,13 @@ export interface WorldSyncEvents {
  */
 export class WorldSync {
   private interests = new Map<string, Interest>();
+  private interestShape = '';
   private indexedAt = new Map<string, { at: Interest; t: number }>();
   private timer: ReturnType<typeof setTimeout> | null = null;
   private running = false;
   private busy = false;
   private rr = 0;
+  private priorityTurn = false;
   readonly indexBackoff = new Backoff();
   readonly chunkBackoff = new Backoff();
   periodMs = 900;
@@ -129,8 +150,23 @@ export class WorldSync {
 
   /** Every view's interest, by a stable key. */
   setInterests(list: Record<string, Interest>): void {
-    const next = new Map<string, Interest>();
-    for (const [k, i] of Object.entries(list)) next.set(k, { ...i, r: Math.max(16, Math.min(256, Math.round(i.r))) });
+    // Called every rendered frame. Recompute rectangle coverage only when a view crosses a chunk boundary, resizes,
+    // appears or disappears; retain current centres for nearest-first downloads without an O(views²) frame cost.
+    const shape = Object.entries(list)
+      .map(
+        ([k, i]) =>
+          `${k}:${i.dim}:${indexRect(i.x, i.z, Math.max(16, Math.min(256, Math.round(i.r)))).join(',')}:${i.priority ?? 0}`,
+      )
+      .join('|');
+    if (shape === this.interestShape) {
+      for (const k of this.interests.keys()) {
+        const i = list[k];
+        this.interests.set(k, { ...i, r: Math.max(16, Math.min(256, Math.round(i.r))) });
+      }
+      return;
+    }
+    this.interestShape = shape;
+    const next = sharedInterests(list);
     this.interests = next;
     for (const k of [...this.indexedAt.keys()]) if (!next.has(k)) this.indexedAt.delete(k);
   }
@@ -192,10 +228,23 @@ export class WorldSync {
   /** The next interest due for indexing (round robin), or null. */
   private nextDue(now: number): string | null {
     const keys = [...this.interests.keys()];
+    if (!this.priorityTurn) {
+      const primary = keys.find(
+        (k) => (this.interests.get(k)!.priority ?? 0) > 0 && this.due(k, this.interests.get(k)!, now),
+      );
+      if (primary) {
+        this.priorityTurn = true;
+        // Keep the background cursor advancing even when slow downloads make the primary due every turn.
+        // Only skip the primary itself; resetting to its neighbour would starve all later background views.
+        if (keys[this.rr % keys.length] === primary) this.rr = (this.rr + 1) % keys.length;
+        return primary;
+      }
+    }
     for (let n = 0; n < keys.length; n++) {
       const k = keys[(this.rr + n) % keys.length];
       if (this.due(k, this.interests.get(k)!, now)) {
         this.rr = (this.rr + n + 1) % keys.length;
+        this.priorityTurn = false;
         return k;
       }
     }
@@ -218,28 +267,56 @@ export class WorldSync {
   /** The changed columns, nearest the interest's centre first, in batches; a failed batch is retried on the next pass. */
   private async fetchColumns(key: string, it: Interest, want: Array<[number, number]>): Promise<void> {
     const ccx = Math.floor(it.x) >> 4, ccz = Math.floor(it.z) >> 4;
-    for (const batch of planBatches(want, ccx, ccz, this.batchColumns, this.maxBatches)) {
-      if (!this.running || this.chunkBackoff.waiting(Date.now())) break;
-      const res = await this.fetchBatch(it.dim, batch);
+    // A scattered thumbnail grid cannot hold the interactive view behind eight whole downloads. One view keeps full
+    // throughput; several views share short turns. Overlap the next download with the worker applying this one.
+    const limit = this.interests.size > 1 ? Math.min(2, this.maxBatches) : this.maxBatches;
+    const batches = planBatches(want, ccx, ccz, this.batchColumns, limit);
+    if (!batches.length || !this.currentInterest(key, it) || this.chunkBackoff.waiting(Date.now())) return;
+    let pending = this.downloadBatch(it.dim, batches[0]);
+    for (let n = 0; n < batches.length; n++) {
+      const buf = await pending;
+      if (!this.currentInterest(key, it)) break;
+      if (!buf) {
+        this.indexedAt.delete(key);
+        break;
+      }
+      if (n + 1 < batches.length && !this.chunkBackoff.waiting(Date.now()))
+        pending = this.downloadBatch(it.dim, batches[n + 1]);
+      const res = await this.applyBatch(buf);
       if (!res) {
         this.indexedAt.delete(key); // retried on the next pass
         break;
       }
       this.cache.applyStored(res.dim, res.columns, res.bytes);
       this.ev.onApplied(res);
+      if (this.chunkBackoff.waiting(Date.now())) break;
     }
   }
 
-  private async fetchBatch(dim: Dim, batch: Array<[number, number]>): Promise<ApplyResult | null> {
-    let buf: ArrayBuffer;
+  /** Stop a stale download sweep as soon as its view closes, changes dimension, or pans into another index rectangle. */
+  private currentInterest(key: string, it: Interest): boolean {
+    const current = this.interests.get(key);
+    return (
+      this.running &&
+      !!current &&
+      current.dim === it.dim &&
+      indexRect(current.x, current.z, current.r).join(',') === indexRect(it.x, it.z, it.r).join(',')
+    );
+  }
+
+  private async downloadBatch(dim: Dim, batch: Array<[number, number]>): Promise<ArrayBuffer | null> {
     try {
-      buf = await this.source.chunks(dim, batch);
+      const buf = await this.source.chunks(dim, batch);
       this.chunkBackoff.ok();
+      return buf;
     } catch (e) {
       this.chunkBackoff.fail(Date.now());
       this.ev.onError('chunks', e);
       return null;
     }
+  }
+
+  private async applyBatch(buf: ArrayBuffer): Promise<ApplyResult | null> {
     try {
       return await this.host.apply(buf);
     } catch (e) {

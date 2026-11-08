@@ -204,6 +204,7 @@ public sealed partial class StoryColony
         }
         _bedScan = null;
         StopInvalidQuarryBatches();
+        StopInvalidZoneGuards();
         PreserveZonesChanged(r, before);
         WakeIdle();
     }

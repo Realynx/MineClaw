@@ -159,7 +159,8 @@ beforeAll(() => {
   g.window = { addEventListener: () => undefined, removeEventListener: () => undefined };
   const doc = (g.document ??= {}) as Record<string, unknown>;
   // Labels and icons get no 2D context (as in the other runtime tests); the copy-mode engine's canvas does.
-  doc.createElement = () => (copyCanvasNext ? ((copyCanvasNext = false), fakeCanvas(320, 200, 'copy')) : { width: 0, height: 0, getContext: () => null });
+  doc.createElement = () =>
+    copyCanvasNext ? ((copyCanvasNext = false), fakeCanvas(320, 200, 'copy')) : { width: 0, height: 0, getContext: () => null };
   doc.addEventListener ??= () => undefined;
   doc.removeEventListener ??= () => undefined;
   doc.visibilityState = 'visible';
@@ -205,6 +206,9 @@ async function run(): Promise<string> {
   ] });
   // The world: one index + chunk pass around the views, meshed on the inline host.
   rt.step(clock, 0);
+  // Pin the initial world to the primary region. Multi-view loading now yields after two batches; this golden concerns
+  // rendering/cameras, not transport scheduling, so finish the original single-view download before recording frames.
+  rt.sync.setInterest(engine.interest());
   const sync = rt.sync as unknown as { running: boolean; tick(n: number): Promise<void> };
   sync.running = true;
   await sync.tick(EPOCH + clock);
@@ -363,6 +367,7 @@ describe('frame golden', () => {
     const frames = log.filter((l) => l.startsWith('---- frame')).length;
     expect(frames).toBe(25);
     expect(log.filter((l) => l.startsWith('render.camera')).length).toBeGreaterThan(40);
-    expect(a).toBe('6aa2a3888933a69b6d1dcb89a8a27f48');
+    // Only the interactive-view priority metadata changes; rendering and camera output match the previous trace.
+    expect(a).toBe('6e8cbb9a3730a4553df245508d947bac');
   }, 30000);
 });

@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { WorldCache, indexRect, planBatches } from '../src/world/cache';
-import { WorldSync } from '../src/world/sync';
+import { sharedInterests, WorldSync } from '../src/world/sync';
 import { InlineMeshHost } from '../src/mesh/host';
 import { createFixtureSource, PLAN } from '../src/fixtures/world';
 import type { WorldIndexColumn, WorldSource } from '../src/types';
@@ -119,6 +119,91 @@ describe('WorldSync index-then-fetch', () => {
     expect(src.calls.index).toBe(2);
     await sync.tick(20);
     expect(src.calls.index).toBe(2);
+  });
+
+  it('shares covered thumbnail interests and keeps distant or different-dimension views', () => {
+    const interests = sharedInterests({
+      thumb: { dim: 0, x: -20, z: -20, r: 24 },
+      main: { dim: 0, x: 0, z: 0, r: 96, priority: 1 },
+      distant: { dim: 0, x: 240, z: 0, r: 32 },
+      nether: { dim: -1, x: 0, z: 0, r: 32 },
+    });
+    expect([...interests.keys()]).toEqual(['main', 'distant', 'nether']);
+  });
+
+  it('downloads the next batch while the worker is still applying the first, without applying out of order', async () => {
+    const src = createFixtureSource({ radius: 3, now: () => 0, buildRate: 0 });
+    const { sync, host, cache } = rig(src);
+    const apply = host.apply.bind(host);
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const spy = vi.spyOn(host, 'apply').mockImplementationOnce(async (buf) => {
+      await gate;
+      return apply(buf);
+    });
+    sync.setInterest({ dim: 0, x: 0, z: 0, r: 64 });
+    const loading = sync.tick(0);
+    await vi.waitFor(() => expect(src.calls.chunks).toBe(2));
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(cache.count()).toBe(0);
+    release();
+    await loading;
+    expect(cache.count()).toBe(49);
+    expect(spy).toHaveBeenCalledTimes(2);
+  });
+
+  it('prioritizes the interactive view and gives a scattered view a bounded turn', async () => {
+    const src = createFixtureSource({ radius: 4, now: () => 0, buildRate: 0 });
+    const index = vi.spyOn(src, 'index');
+    const { sync } = rig(src);
+    sync.batchColumns = 8;
+    sync.setInterests({
+      thumbnail: { dim: 0, x: -48, z: 0, r: 32 },
+      main: { dim: 0, x: 48, z: 0, r: 48, priority: 1 },
+    });
+    await sync.tick(0);
+    expect(index.mock.calls[0]?.[1]).toBe(48);
+    expect(src.calls.chunks).toBe(2);
+    await sync.tick(1000); // even when main is due again, the thumbnail gets its turn
+    expect(index.mock.calls[1]?.[1]).toBe(-48);
+    expect(src.calls.chunks).toBeLessThanOrEqual(4);
+  });
+
+  it('keeps rotating all background views when slow primary loading makes every turn due', async () => {
+    const src = createFixtureSource({ radius: 1, now: () => 0, buildRate: 0 });
+    const index = vi.spyOn(src, 'index');
+    const { sync } = rig(src);
+    sync.setInterests({
+      main: { dim: 0, x: 0, z: 0, r: 16, priority: 2 },
+      near: { dim: 0, x: 128, z: 0, r: 16 },
+      far: { dim: 0, x: 256, z: 0, r: 16 },
+    });
+    for (let turn = 0; turn < 6; turn++) await sync.tick(turn * 1000);
+    expect(index.mock.calls.map((call) => call[1])).toEqual([0, 128, 0, 256, 0, 128]);
+  });
+
+  it('abandons old chunk sweeps after panning instead of applying and downloading the old region', async () => {
+    const src = createFixtureSource({ radius: 3, now: () => 0, buildRate: 0 });
+    const chunks = src.chunks.bind(src);
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const requested = vi.spyOn(src, 'chunks').mockImplementationOnce(async (...a) => {
+      await gate;
+      return chunks(...a);
+    });
+    const { sync, cache } = rig(src);
+    sync.setInterest({ dim: 0, x: 0, z: 0, r: 64 });
+    const loading = sync.tick(0);
+    await vi.waitFor(() => expect(requested).toHaveBeenCalledOnce());
+    sync.setInterest({ dim: 0, x: 256, z: 0, r: 64 });
+    release();
+    await loading;
+    expect(requested).toHaveBeenCalledOnce();
+    expect(cache.count()).toBe(0);
   });
 
   it('backs off after a failed index and retries later', async () => {

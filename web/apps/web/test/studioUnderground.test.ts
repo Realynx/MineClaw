@@ -273,7 +273,9 @@ describe('a placed design with a basement (Story Mode)', () => {
     ]);
     expect(items.every((i) => i.group === 'g1')).toBe(true);
     for (const i of items) expect(StoryBuildItem.safeParse(i).success).toBe(true);
-    expect(designItems(placeDesign([[0, 0, 0, 5, 0]], [1, 64, 1], 'n'))[0]!.group).toBeUndefined();
+    const single = designItems(placeDesign([[0, 0, 0, 5, 0]], [1, 64, 1], 'n'))[0]!;
+    expect(single.group).toBeTruthy();
+    expect(single.replaceArea).toEqual([1, 64, 1, 1, 64, 1]);
   });
 });
 

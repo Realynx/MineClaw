@@ -683,6 +683,18 @@ that meets all of these:
 
 Among guards with nothing better to do (idle or wandering), the nearest goes. Drafted pawns' attack orders are separate and unchanged.
 
+**Guard zones:** paint `kind: guard` through the usual `/zones` operations to designate columns where guards attack any mob,
+including passive animals. Guard is an independent overlay: it does not erase farms, quarries, home areas or other work zones.
+The actual painted X/Z cells apply at every height; an erased hole is not guarded. Players, colony pawns, dropped items and
+forbidden targets are excluded. Multiple guards may attack the same exact entity; hostile mobs are considered before animals.
+
+All available undrafted pawns with Guard work enabled can respond. Guard work interrupts lower-priority automatic work;
+the Guard / Hunter role also interrupts its other ordinary work. Higher-priority work, direct orders, urgent needs, equipment,
+deliveries, rescue/escape actions and off-duty schedules keep control. A guard without its own line of sight may approach a mob
+that another colony pawn currently sees, then attacks only after acquiring its own sight. Attacks stop when sight is lost;
+approaches stop when the colony loses sight, and both stop when the target leaves the guarded cells or the zone is erased.
+An unreachable target rests for that pawn for 60 seconds without preventing other guards from responding.
+
 ### Speed: Fast and Faster (added 2026-11-04)
 
 Fox 11-04: "next to the pause button on the bottom right, add a Fast and Faster mode. They should just change the movement speed
@@ -949,7 +961,7 @@ saved as rows at once; a growing zone's single `plant` becomes a one-bill list.
   its type and it keeps its id.
 - Work zones (farm, chop, mine, fish) are mutually exclusive: the painted cells leave every other work zone (`shrunk`; a zone left empty
   is `deleted`, a zone cut in two `split`).
-- Home areas, keep-out areas, drop spots and Preserve zones are **overlay layers** (RimWorld's home area and allowed areas are layers too): painting one never
+- Home areas, keep-out areas, drop spots, Preserve zones and Guard zones are **overlay layers** (RimWorld's home area and allowed areas are layers too): painting one never
   overwrites anything and work zones never overwrite them. A house can cover a field; a keep-out area can cover a quarry. Each
   layer merges only with itself.
 
@@ -1334,7 +1346,7 @@ override it), and awards fish only inside the bite window. Modern tests receive 
 
 Item: `{kind: wall|floor|roof|door|window|stairs|fence|block|remove|water|crafting_table|furnace|chest|bed|torch, area?:[x1,y1,z1,x2,y2,z2],
 blocks?:[[x,y,z]], material?: <block name> | [id,meta], height?:1..12, roof?:{style: flat|slab|gable|none, material?, overhang?:0|1},
-facing?: n|e|s|w, level?:y, name?, group?, infinite?, indoor?}` (`water`, `infinite`, `indoor`: see "Water").
+facing?: n|e|s|w, level?:y, name?, group?, replace_area?, infinite?, indoor?}` (`water`, `infinite`, `indoor`: see "Water").
 
 `{op:"preview", items}` → `{cells, done, error, warnings, flow:{spread, cells}}` checks water items and says where the water would
 run; nothing is queued (see "Water").
@@ -1394,6 +1406,18 @@ Execution:
   the goto tool's own; a cell with nothing at all to place against gets a scaffold block (see "Builds reconcile with the world").
 
 ### Building fast (added 2026-11-03, night)
+
+Palette placements carry `replace_area: [x1,y1,z1,x2,y2,z2]` on their first item (one design group per request,
+at most 262144 cells). Every unlisted cell inside those bounds is intentional air: the director queues obstructions for
+clearing before construction. It permanently removes overlapping cells from older builds, even completed or paused ones,
+and interrupts their active batches. Cancelling the new design does not resurrect the old one. Cells outside the bounds
+retain their previous ownership. These explicit replacement clears may remove old containers and placed objects;
+ordinary build repairs keep their existing protection rules. Footing, reach, unbreakable-block and harvest checks still apply.
+
+Ordinary wall and roof batches enable temporary access (`reach: true`). A builder uses stationary placement from its
+current footing, shares an access pillar across nearby cells in support order, and takes it down after the batch or when it
+must change approach. Climbing reserves the remaining building material. Every action checks that the job is still owned;
+cancellation or replacement stops further placements while still allowing the pawn to remove its own temporary access.
 
 Live 11-03 (`story-1`, 10 pawns): "Building floors and placing blocks seems to go very slowly." The pawns' shifts were
 `wait 256x 1023.8s, dig 40x 44.7s, goto 266x 23.5s`: about 90 % waiting while build cells were queued. The journal had
@@ -2391,7 +2415,9 @@ The design grew while it was built. The wire forms are in `docs/web/api.md` §6 
   (1–12), roofs a style (flat, slab, gable, none) and an overhang. State: `builds` and `ghosts`.
 - **Levels.** Top-down shows the working level: everything from the roof line up (level + wall height + 1) is x-rayed, drawn
   as the hatched cut. PgUp / PgDn move a storey; an angled view (V) builds in 3D with the same tools, placing against the
-  hovered face.
+  hovered face. **Free cam** (Shift+V) enters first-person flight near the map focus: click to look around, WASD to move,
+  Space/E up, Q down and Shift faster; Esc releases the mouse. V or **Map** returns to the same top-down framing and working
+  level, without reloading the viewer. Flight keys never pause the colony or operate a held tool.
 - **Designate tools** work by area the genre's way: pick a tool, drag a grid rectangle, every matching target lights up with a
   live count, release designates (Shift keeps the tool). Kinds gain `cut`, `hunt`, `forbid`, `allow` and a mine `filter`; the
   director expands an area to its targets and answers the count. Mine and Deconstruct send the exact cells instead (`blocks`):

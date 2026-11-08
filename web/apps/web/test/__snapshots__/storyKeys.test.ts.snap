@@ -20,7 +20,7 @@ KeyQ: -=rotateCcw shift=rotateCcw alt=rotateCcw shift+alt=rotateCcw
 KeyR: -=draft shift=draft alt=draft shift+alt=draft
 KeyT: -=chat shift=chat alt=chat shift+alt=chat
 KeyU: -=tab:queue shift=tab:queue alt=tab:queue shift+alt=tab:queue
-KeyV: -=view shift=view alt=view shift+alt=view
+KeyV: -=view shift=fly alt=view shift+alt=fly
 KeyX: -=xray shift=xray alt=xray shift+alt=xray
 KeyY: -=tab:schedule shift=tab:schedule alt=tab:schedule shift+alt=tab:schedule
 KeyZ: -=tool:cancel alt=tool:cancel
@@ -50,7 +50,7 @@ KeyQ: -=rotateCcw shift=rotateCcw alt=rotateCcw shift+alt=rotateCcw
 KeyR: -=draft shift=draft alt=draft shift+alt=draft
 KeyT: -=chat shift=chat alt=chat shift+alt=chat
 KeyU: -=tab:queue shift=tab:queue alt=tab:queue shift+alt=tab:queue
-KeyV: -=view shift=view alt=view shift+alt=view
+KeyV: -=view shift=fly alt=view shift+alt=fly
 KeyX: -=xray shift=xray alt=xray shift+alt=xray
 KeyY: -=tab:schedule shift=tab:schedule alt=tab:schedule shift+alt=tab:schedule
 KeyZ: -=tool:cancel alt=tool:cancel
@@ -84,7 +84,7 @@ KeyQ: -=rotateCcw shift=rotateCcw alt=rotateCcw shift+alt=rotateCcw
 KeyR: -=draft shift=draft alt=draft shift+alt=draft
 KeyT: -=chat shift=chat alt=chat shift+alt=chat
 KeyU: -=tab:queue shift=tab:queue alt=tab:queue shift+alt=tab:queue
-KeyV: -=view shift=view alt=view shift+alt=view
+KeyV: -=view shift=fly alt=view shift+alt=fly
 KeyX: -=xray shift=xray alt=xray shift+alt=xray
 KeyY: -=tab:schedule shift=tab:schedule alt=tab:schedule shift+alt=tab:schedule
 KeyZ: -=tool:cancel alt=tool:cancel
@@ -128,7 +128,7 @@ KeyQ: -=rotateCcw shift=rotateCcw alt=rotateCcw shift+alt=rotateCcw
 KeyR: -=draft shift=draft alt=draft shift+alt=draft
 KeyT: -=chat shift=chat alt=chat shift+alt=chat
 KeyU: -=tab:queue shift=tab:queue alt=tab:queue shift+alt=tab:queue
-KeyV: -=view shift=view alt=view shift+alt=view
+KeyV: -=view shift=fly alt=view shift+alt=fly
 KeyX: -=xray shift=xray alt=xray shift+alt=xray
 KeyY: -=tab:schedule shift=tab:schedule alt=tab:schedule shift+alt=tab:schedule
 KeyZ: -=tool:cancel alt=tool:cancel
@@ -172,7 +172,7 @@ KeyQ: -=rotateCcw shift=rotateCcw alt=rotateCcw shift+alt=rotateCcw
 KeyR: -=draft shift=draft alt=draft shift+alt=draft
 KeyT: -=chat shift=chat alt=chat shift+alt=chat
 KeyU: -=tab:queue shift=tab:queue alt=tab:queue shift+alt=tab:queue
-KeyV: -=view shift=view alt=view shift+alt=view
+KeyV: -=view shift=fly alt=view shift+alt=fly
 KeyX: -=xray shift=xray alt=xray shift+alt=xray
 KeyY: -=tab:schedule shift=tab:schedule alt=tab:schedule shift+alt=tab:schedule
 KeyZ: -=tool:cancel alt=tool:cancel
@@ -215,7 +215,7 @@ KeyQ: -=rotateCcw shift=rotateCcw alt=rotateCcw shift+alt=rotateCcw
 KeyR: -=draft shift=draft alt=draft shift+alt=draft
 KeyT: -=chat shift=chat alt=chat shift+alt=chat
 KeyU: -=tab:queue shift=tab:queue alt=tab:queue shift+alt=tab:queue
-KeyV: -=view shift=view alt=view shift+alt=view
+KeyV: -=view shift=fly alt=view shift+alt=fly
 KeyX: -=xray shift=xray alt=xray shift+alt=xray
 KeyY: -=tab:schedule shift=tab:schedule alt=tab:schedule shift+alt=tab:schedule
 KeyZ: -=tool:cancel alt=tool:cancel
@@ -262,7 +262,7 @@ KeyQ: -=rotateCcw shift=rotateCcw alt=rotateCcw shift+alt=rotateCcw
 KeyR: -=draft shift=draft alt=draft shift+alt=draft
 KeyT: -=chat shift=chat alt=chat shift+alt=chat
 KeyU: -=tab:queue shift=tab:queue alt=tab:queue shift+alt=tab:queue
-KeyV: -=view shift=view alt=view shift+alt=view
+KeyV: -=view shift=fly alt=view shift+alt=fly
 KeyX: -=xray shift=xray alt=xray shift+alt=xray
 KeyY: -=tab:schedule shift=tab:schedule alt=tab:schedule shift+alt=tab:schedule
 KeyZ: -=tool:cancel alt=tool:cancel
@@ -309,7 +309,7 @@ KeyQ: -=rotateCcw shift=rotateCcw alt=rotateCcw shift+alt=rotateCcw
 KeyR: -=draft shift=draft alt=draft shift+alt=draft
 KeyT: -=chat shift=chat alt=chat shift+alt=chat
 KeyU: -=tab:queue shift=tab:queue alt=tab:queue shift+alt=tab:queue
-KeyV: -=view shift=view alt=view shift+alt=view
+KeyV: -=view shift=fly alt=view shift+alt=fly
 KeyX: -=xray shift=xray alt=xray shift+alt=xray
 KeyY: -=tab:schedule shift=tab:schedule alt=tab:schedule shift+alt=tab:schedule
 KeyZ: -=tool:cancel alt=tool:cancel
@@ -356,7 +356,7 @@ KeyQ: -=rotateCcw shift=rotateCcw alt=rotateCcw shift+alt=rotateCcw
 KeyR: -=draft shift=draft alt=draft shift+alt=draft
 KeyT: -=chat shift=chat alt=chat shift+alt=chat
 KeyU: -=tab:queue shift=tab:queue alt=tab:queue shift+alt=tab:queue
-KeyV: -=view shift=view alt=view shift+alt=view
+KeyV: -=view shift=fly alt=view shift+alt=fly
 KeyX: -=xray shift=xray alt=xray shift+alt=xray
 KeyY: -=tab:schedule shift=tab:schedule alt=tab:schedule shift+alt=tab:schedule
 KeyZ: -=tool:cancel alt=tool:cancel
@@ -392,7 +392,7 @@ KeyQ: -=rotateCcw shift=rotateCcw alt=rotateCcw shift+alt=rotateCcw
 KeyR: -=draft shift=draft alt=draft shift+alt=draft
 KeyT: -=chat shift=chat alt=chat shift+alt=chat
 KeyU: -=tab:queue shift=tab:queue alt=tab:queue shift+alt=tab:queue
-KeyV: -=view shift=view alt=view shift+alt=view
+KeyV: -=view shift=fly alt=view shift+alt=fly
 KeyX: -=xray shift=xray alt=xray shift+alt=xray
 KeyY: -=tab:schedule shift=tab:schedule alt=tab:schedule shift+alt=tab:schedule
 KeyZ: -=tool:cancel alt=tool:cancel
@@ -432,7 +432,7 @@ KeyQ: -=rotateCcw shift=rotateCcw alt=rotateCcw shift+alt=rotateCcw
 KeyR: -=draft shift=draft alt=draft shift+alt=draft
 KeyT: -=chat shift=chat alt=chat shift+alt=chat
 KeyU: -=tab:queue shift=tab:queue alt=tab:queue shift+alt=tab:queue
-KeyV: -=view shift=view alt=view shift+alt=view
+KeyV: -=view shift=fly alt=view shift+alt=fly
 KeyX: -=xray shift=xray alt=xray shift+alt=xray
 KeyY: -=tab:schedule shift=tab:schedule alt=tab:schedule shift+alt=tab:schedule
 KeyZ: -=tool:cancel alt=tool:cancel
@@ -476,7 +476,7 @@ KeyQ: -=rotateCcw shift=rotateCcw alt=rotateCcw shift+alt=rotateCcw
 KeyR: -=draft shift=draft alt=draft shift+alt=draft
 KeyT: -=chat shift=chat alt=chat shift+alt=chat
 KeyU: -=tab:queue shift=tab:queue alt=tab:queue shift+alt=tab:queue
-KeyV: -=view shift=view alt=view shift+alt=view
+KeyV: -=view shift=fly alt=view shift+alt=fly
 KeyX: -=xray shift=xray alt=xray shift+alt=xray
 KeyY: -=tab:schedule shift=tab:schedule alt=tab:schedule shift+alt=tab:schedule
 KeyZ: -=tool:cancel alt=tool:cancel
@@ -520,7 +520,7 @@ KeyQ: -=rotateCcw shift=rotateCcw alt=rotateCcw shift+alt=rotateCcw
 KeyR: -=draft shift=draft alt=draft shift+alt=draft
 KeyT: -=chat shift=chat alt=chat shift+alt=chat
 KeyU: -=tab:queue shift=tab:queue alt=tab:queue shift+alt=tab:queue
-KeyV: -=view shift=view alt=view shift+alt=view
+KeyV: -=view shift=fly alt=view shift+alt=fly
 KeyX: -=xray shift=xray alt=xray shift+alt=xray
 KeyY: -=tab:schedule shift=tab:schedule alt=tab:schedule shift+alt=tab:schedule
 KeyZ: -=tool:cancel alt=tool:cancel
@@ -563,7 +563,7 @@ KeyQ: -=rotateCcw shift=rotateCcw alt=rotateCcw shift+alt=rotateCcw
 KeyR: -=draft shift=draft alt=draft shift+alt=draft
 KeyT: -=chat shift=chat alt=chat shift+alt=chat
 KeyU: -=tab:queue shift=tab:queue alt=tab:queue shift+alt=tab:queue
-KeyV: -=view shift=view alt=view shift+alt=view
+KeyV: -=view shift=fly alt=view shift+alt=fly
 KeyX: -=xray shift=xray alt=xray shift+alt=xray
 KeyY: -=tab:schedule shift=tab:schedule alt=tab:schedule shift+alt=tab:schedule
 KeyZ: -=tool:cancel alt=tool:cancel
@@ -610,7 +610,7 @@ KeyQ: -=rotateCcw shift=rotateCcw alt=rotateCcw shift+alt=rotateCcw
 KeyR: -=draft shift=draft alt=draft shift+alt=draft
 KeyT: -=chat shift=chat alt=chat shift+alt=chat
 KeyU: -=tab:queue shift=tab:queue alt=tab:queue shift+alt=tab:queue
-KeyV: -=view shift=view alt=view shift+alt=view
+KeyV: -=view shift=fly alt=view shift+alt=fly
 KeyX: -=xray shift=xray alt=xray shift+alt=xray
 KeyY: -=tab:schedule shift=tab:schedule alt=tab:schedule shift+alt=tab:schedule
 KeyZ: -=tool:cancel alt=tool:cancel
@@ -657,7 +657,7 @@ KeyQ: -=rotateCcw shift=rotateCcw alt=rotateCcw shift+alt=rotateCcw
 KeyR: -=draft shift=draft alt=draft shift+alt=draft
 KeyT: -=chat shift=chat alt=chat shift+alt=chat
 KeyU: -=tab:queue shift=tab:queue alt=tab:queue shift+alt=tab:queue
-KeyV: -=view shift=view alt=view shift+alt=view
+KeyV: -=view shift=fly alt=view shift+alt=fly
 KeyX: -=xray shift=xray alt=xray shift+alt=xray
 KeyY: -=tab:schedule shift=tab:schedule alt=tab:schedule shift+alt=tab:schedule
 KeyZ: -=tool:cancel alt=tool:cancel

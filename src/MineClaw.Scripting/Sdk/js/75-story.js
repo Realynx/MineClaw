@@ -23,15 +23,19 @@
   const isBuilt = (j, c) => j.want && H.block(c) == j.want;
   const BUILT = Object.freeze({ ok: true });
   const ON_IT = /I'm standing on/i;
-  // A dig of a build's own cell: clear_dig (the owner's order: soft protection on natural ground yields; a chest, a never-break mark
-  // or a player's block still refuses), plain dig on an older runtime.
-  const clearDig = c => (typeof globalThis.clear_dig === 'function' ? call('clear_dig', c) : call('dig', c));
+  // A dig of a build's own cell: clear_dig (soft protection on natural ground yields). Only an explicit palette replacement also
+  // permits replacing old objects in its footprint; temporary cleanup never receives that permission. Plain dig on older runtimes.
+  const clearDig = (c, j) => typeof globalThis.clear_dig === 'function'
+    ? (j && j.replace ? call('clear_dig', c, true) : call('clear_dig', c)) : call('dig', c);
   const digHere = c => (typeof globalThis.dig_here === 'function' ? call('dig_here', c) : call('dig', c));
+  const putHere = (b, c, m) => typeof globalThis.place_here === 'function'
+    ? (m == null ? call('place_here', b, c) : call('place_here', b, c, m))
+    : (m == null ? call('place', b, c) : call('place_turned', b, c, m));
   // A cell to clear (j.clear: another block in it, or its own block turned wrong) -> null once it is out, else why not ("can't clear
   // the cell …: protected …"): never "occupied by" for a dig that was refused. Standing on it, the pawn steps to the stand first.
   const clearOut = (j, c) => {
-    let r = clearDig(c);
-    if (!good(r) && ON_IT.test(why(r)) && j.stand) { call('go', j.stand, 0); r = clearDig(c); }
+    let r = clearDig(c, j);
+    if (!good(r) && ON_IT.test(why(r)) && j.stand) { call('go', j.stand, 0); r = clearDig(c, j); }
     return good(r) ? null : { ok: false, msg: "can't clear the cell " + c + ': ' + why(r) };
   };
   // A block put down for itself (a pillar step, a scaffold) or taken back: the colony keeps every one until the world shows it gone,
@@ -43,16 +47,20 @@
   const scaffoldBlock = j => CHEAP.find(b => H.inv(b) > 0) || j.block;
   // A floating cell's scaffold (j.scaffold {cell: spot}: nothing to click against there yet): a block at the spot, dug back once the
   // cell is in (or the placing failed) -> the spot, null (none), or the failure.
-  const scaffoldUp = (j, c) => {
+  const scaffoldUp = (j, c, access, act) => {
     const s = j.scaffold && j.scaffold[c];
     if (!s) return null;
-    const r = call('place', scaffoldBlock(j), s);
+    const b = scaffoldBlock(j), keep = { ...j._keep }, bid = H.item(b).id;
+    keep[bid] = (keep[bid] || 0) + 1;
+    const r = j.reach ? buildPut({ ...j, block: b, _keep: keep }, s, null, access, act)
+      : act(() => call('place', b, s));
+    if (r && r.cancelled) return r;
     if (!good(r)) return { ok: false, msg: 'no scaffold at ' + s + ' for ' + c + ': ' + why(r) };
     temp(s, true, 'build scaffold');
     return s;
   };
-  const scaffoldDown = s => {
-    const r = clearDig(s);
+  const scaffoldDown = (s, stationary) => {
+    const r = stationary ? digHere(s) : clearDig(s);
     if (good(r) || H.block(s) == 'air') temp(s, false, 'build scaffold');
   };
   // The placing, tried once more after stepping closer (or back to the stand).
@@ -65,39 +73,71 @@
     return put();
   };
   // One placing: dug first when it is to be cleared, walked to when far, on a scaffold when it floats.
-  const placeCell = (j, c, m, clear) => {
+  const placeCell = (j, c, m, clear, access, act) => {
     const put = () => (m == null ? call('place', j.block, c) : call('place_turned', j.block, c, m));
-    const no = clear.includes(c) ? clearOut(j, c) : null;
+    if (clear.includes(c)) { const r = releaseAccess(access); if (r) return r; }
+    const no = clear.includes(c) ? act(() => clearOut(j, c)) : null;
     if (no) return no;
-    if (eyes(c) > 4) call('go', c, 2);
-    const s = scaffoldUp(j, c);
+    if (!j.reach && eyes(c) > 4) { const r = act(() => call('go', c, 2)); if (r && r.cancelled) return r; }
+    const s = scaffoldUp(j, c, access, act);
     if (s && s.ok === false) return s;
     try {
-      const r = putCell(j, c, put);
-      return j.reach && !good(r) && REACH.test(why(r)) ? reachUp(c, put, j) : r;
-    } finally { if (s) scaffoldDown(s); }
+      return j.reach ? buildPut(j, c, m, access, act) : act(() => putCell(j, c, put));
+    } finally { if (s) scaffoldDown(s, access.placed.length > 0); }
+  };
+  const releaseAccess = access => {
+    if (!access.placed.length) return;
+    const left = unpole(access.placed, access.stand);
+    access.placed = [];
+    if (left.length) return { ok: false, msg: 'access pillar cleanup pending; remaining work returned to the colony' };
+  };
+  // One shared access for an ordered construction run. Try the visible face without moving; recover the tower before changing
+  // approach. The stationary tool also preserves requested rotation, so a retry cannot walk off our temporary footing.
+  const buildPut = (j, c, m, access, act) => {
+    const put = () => act(() => putHere(j.block, c, m));
+    const r = put();
+    if (good(r) || (r && r.cancelled) || !REACH.test(why(r))) return r;
+    const pending = releaseAccess(access);
+    if (pending) return pending;
+    return reachUp(c, put, { ...j, _place: H.item(j.block).id, _meta: m }, null, act, access);
   };
   // A cell of place(): already built -> BUILT; a batch out of items -> null (the rest go back); else the placing's result.
-  const placeOne = (j, c, m, clear) => {
+  const placeOne = (j, c, m, clear, access, act) => {
     if (!clear.includes(c) && isBuilt(j, c)) return BUILT;
     if (j.cells && !(H.inv(j.block) > 0)) return null;
-    return placeCell(j, c, m, clear);
+    return placeCell(j, c, m, clear, access, act);
   };
   const clearOf = j => (Array.isArray(j.clear) ? j.clear : j.clear ? [j.at] : []);
   const place = j => {
-    if (j.reach) ready(j);
     const cells = j.cells || [j.at], clear = clearOf(j), metas = j.metas || [];
-    if (j.stand && eyes(j.stand) > 1.8) call('go', j.stand, 0);
-    let n = 0;
-    for (let i = 0; i < cells.length; i++) {
-      const r = placeOne(j, cells[i], metas[i], clear);
-      if (r === null) break;
-      if (!j.cells && r !== BUILT) return r;
-      n += j.cells ? noteCell(j, cells[i], r) : 1;
-      // Later cells can depend on this one for a clickable face. Return the untouched tail to the planner.
-      if (!good(r)) break;
+    const access = { placed: [], stand: null }, interrupted = { ok: false, cancelled: true, msg: 'build batch interrupted' };
+    let n = 0, stopped = false;
+    const act = fn => {
+      if (stopped) return interrupted;
+      const r = j.id != null ? during(j, fn) : fn();
+      if (r && r.cancelled) stopped = true;
+      return r;
+    };
+    try {
+      if (j.reach) { const r = act(() => ready(j)); if (!good(r)) return r; }
+      if (j.stand && eyes(j.stand) > 1.8) { const r = act(() => call('go', j.stand, 0)); if (r && r.cancelled) return r; }
+      for (let i = 0; i < cells.length; i++) {
+        const job = { ...j, _keep: { [H.item(j.block).id]: cells.length - i }, _targets: cells.slice(i) };
+        const r = placeOne(job, cells[i], metas[i], clear, access, act);
+        if (r === null) break;
+        if (r && r.cancelled) return r;
+        if (!j.cells && r !== BUILT) return r;
+        if (good(r)) n++;
+        if (j.cells && !report(j, 'progress', 'cell ' + cells[i] + (good(r) ? ' done'
+          : (NO_SUPPORT.test(why(r)) ? ' waiting: ' : ' failed: ') + why(r)))) return interrupted;
+        // Later cells can depend on this one for a clickable face. Return the untouched tail to the planner.
+        if (!good(r)) break;
+      }
+      return { ok: true, msg: 'batch: ' + n + '/' + cells.length + ' placed' };
+    } finally {
+      // Cleanup is outside during(): losing the job forbids new building but must not strand the pawn on its own pole.
+      releaseAccess(access);
     }
-    return { ok: true, msg: 'batch: ' + n + '/' + cells.length + ' placed' };
   };
   // pour(job): a liquid build's cells (j.liquid water|lava), each a source once done. A cell already holding one is done; with no
   // full bucket the pawn fills its empty ones at j.source (fill_bucket: from dry land beside it). Then empty_bucket / move_lava pours
@@ -404,15 +444,18 @@
     if (!s.stand) return null;
     return g.ok(g.go(s.stand, 0)) ? { ok: true, msg: 'below it at ' + s.stand } : null;
   };
-  const REACH = /can't reach|out of reach|from my eyes|no walkable spot/i;
+  const REACH = /can't reach|out of reach|from my eyes|no walkable spot|no visible support face|no spot within reach/i;
   const feet = () => { const p = H.me('pos'); return Math.floor(p.x) + ',' + Math.floor(p.y + 1e-6) + ',' + Math.floor(p.z); };
   // reachUp(at, fn, job?): a block above reach. Walk to the column H.storyReach picks (under it or beside it), nerd-pole up (one
   // place at its own feet per step) until it is in reach, do fn, then dig the pillar back down from the top (every block it placed,
   // collected again). Short of blocks: the job's pillar stack from storage (j.pillar), else dirt dug around the column.
-  const reachScan = (at, j) => H.storyReach(String(at), j && j.dig_cells);
+  const reachScan = (at, j) => H.storyReach(String(at), j && (j.dig_cells || j._targets), j && j._place, j && j._meta);
   const NO_PILLAR = s => ({ ok: false, msg: 'out of reach even from a pillar: ' + s.why });
-  // A quarry placement keeps one block for the seal/step when it uses the same material for access.
-  const pillarNeed = (s, j) => s.steps + (j && j.reach && s.block === j.block ? 1 : 0);
+  // Reserve the remaining construction run before using any of that material as temporary access.
+  const keepMaterial = (b, j) => j && j.reach && j.block
+    ? (j._keep ? j._keep[H.item(b).id] || 0 : H.item(b).id === H.item(j.block).id ? 1 : 0) : 0;
+  const pillarReserve = j => ['3', '4', '87', '1', '24', '5'].reduce((n, b) => n + Math.min(keepMaterial(b, j), H.inv(b)), 0);
+  const pillarNeed = (s, j) => s.steps + pillarReserve(j);
   // Blocks to pole with: the job's pillar stack from storage when short, then dirt dug around the column. -> the scan after.
   const stockUp = (at, s, j) => {
     if (s.blocks >= pillarNeed(s, j)) return s;
@@ -428,10 +471,11 @@
   const pillarShort = (s, j) => (!s.stand ? NO_PILLAR(s)
     : s.blocks < pillarNeed(s, j) ? { ok: false, msg: 'out of reach: ' + pillarNeed(s, j) + ' block(s) needed, ' + s.blocks + ' on me' } : null);
   // Nerd-pole up (one place at its own feet per step) until it is in reach -> the cells placed, bottom first.
-  const poleUp = (at, steps, placed = [], act = fn => fn(), material) => {
+  const poleUp = (at, steps, placed = [], act = fn => fn(), material, j) => {
     for (let i = 0; i < steps + 2; i++) {
-      if (i >= steps && H.storyWithin(at)) break;
-      const block = [material, 'dirt', 'cobblestone', 'netherrack', 'stone', 'sandstone', 'planks'].find(b => b && H.inv(b) > 0);
+      if (i >= steps && H.storyWithin(at, j && j._place, j && j._meta)) break;
+      const block = [material, 'dirt', 'cobblestone', 'netherrack', 'stone', 'sandstone', 'planks']
+        .find(b => b && H.inv(b) > keepMaterial(b, j));
       if (!block) break;
       const f = feet(), p = act(() => globalThis.place(block, f));
       if (!globalThis.ok(p)) break;
@@ -459,11 +503,12 @@
   // home (the rescue teleport) and the rest of the pillar is a cleanup job; never left standing on purpose.
   const unpole = (placed, stand, visit) => {
     const left = poleDown(placed, visit);
-    if (!left.length || !(H.me('pos').y > +String(stand).split(',')[1] + 1.5)) return;
+    if (!left.length || !(H.me('pos').y > +String(stand).split(',')[1] + 1.5)) return left;
     try { H.storyStuck('stranded on its pillar at ' + feet() + ': ' + left.length + ' block(s) under it it could not take back'); }
     catch (e) { /* not a colony pawn: nobody to ask */ }
+    return left;
   };
-  const reachUp = (at, fn, j, visit, act = f => f()) => {
+  const reachUp = (at, fn, j, visit, act = f => f(), access) => {
     let s = reachScan(at, j);
     if (s.unloaded) {
       const w = act(() => globalThis.go(at, 16));
@@ -479,15 +524,17 @@
     if (short) return short;
     const w = act(() => globalThis.go(s.stand, 0));
     if (!globalThis.ok(w)) return { ok: false, msg: 'out of reach: ' + w.msg };
-    const placed = [];
-    try { poleUp(at, s.steps, placed, act, s.block); return fn(); } finally { unpole(placed, s.stand, visit); }
+    const placed = access ? access.placed : [];
+    if (access) access.stand = s.stand;
+    try { poleUp(at, s.steps, placed, act, s.block, j); return fn(); }
+    finally { if (!access) unpole(placed, s.stand, visit); }
   };
   // dig(at, job?): the usual dig; a block out of reach is reached from a pillar (reachUp), never just given up on. j.ordered (a
   // preserved zone's repair): the owner's clear (clear_dig), which the preserved-block filter lets through.
   const dig = (at, j) => {
-    const g = globalThis, one = () => (j && j.ordered ? clearDig(at) : g.dig(at)), r = one();
+    const g = globalThis, one = () => (j && (j.ordered || j.replace) ? clearDig(at, j) : g.dig(at)), r = one();
     if (g.ok(r) || !REACH.test(r.msg || '')) return r;
-    return reachUp(at, () => j && j.ordered ? clearDig(at) : digHere(at), j);
+    return reachUp(at, () => j && (j.ordered || j.replace) ? clearDig(at, j) : digHere(at), j);
   };
   // A reserved cluster shares its access: dig everything visible before dismantling the pillar, and visit lower cells on the way
   // down. A later target needing another approach waits until this pillar is recovered. Never walk off the top to chase a cell.
@@ -507,7 +554,7 @@
       if (j.id && !report(j, 'progress', 'digcell ' + c + (good(r) ? ' done' : ' failed: ' + why(r)))) stopped = true;
     };
     const one = c => {
-      const r = act(() => j.ordered ? clearDig(c) : digHere(c));
+      const r = act(() => j.ordered || j.replace ? clearDig(c, j) : digHere(c));
       note(c, r);
       return r;
     };

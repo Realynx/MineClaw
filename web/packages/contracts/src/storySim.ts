@@ -7,6 +7,7 @@
  * drops into chests whose storage filter accepts them, and work bills at workbenches. Area designations are expanded against
  * the world it is given, so counts are real. AI bodies take directives that go sent → acknowledged → done with a reply.
  */
+import { insideReplacement, replacementItems } from './storyReplacement.js';
 import {
   categoryItems,
   filterAccepts,
@@ -27,6 +28,7 @@ import {
   zoneCellSet,
 } from './storyZones.js';
 import { applyPreserveOp, preserveWarnings, preserveZoneFields, withPreserveState } from './storySimPreserve.js';
+import { guardedMobs, guardVisible } from './storySimGuard.js';
 
 const QUARRY_TOO_NARROW =
   'a quarry needs at least 2×2 (a 1-wide strip is a trench: paint it as Ores only, or designate Mine)';
@@ -129,6 +131,8 @@ export interface StoryWorld {
   ground(x: number, z: number): number;
   /** Mobs and dropped items right now. */
   entities(): SimEntity[];
+  /** Optional visibility for simulated guarding; absent uses a conservative ray through empty block cells. */
+  canSee?(from: readonly [number, number, number], target: SimEntity): boolean;
   /** Optional: the sim changed a block (a tree felled, a ghost built). */
   setBlock?(x: number, y: number, z: number, id: number, meta: number): void;
   /** AI bodies (main, hives, subhive bodies) to show beside the pawns. */
@@ -161,7 +165,9 @@ interface PawnSim {
   z: number;
   goal: [number, number, number] | null;
   work: number;
-  task: { kind: string; ref: Key | null; label: string; target: [number, number, number] | null; type: string } | null;
+  task: { kind: string; ref: Key | null; label: string; target: [number, number, number] | null; type: string;
+    entity?: number;
+  } | null;
   idleSince: number;
   lastAlert: number;
   /** Offline: when it comes back by itself (a whitelist re-add, a login under way); null = it waits for a seat. */
@@ -189,6 +195,7 @@ interface Colony {
   orders: Map<Key, Fn<StoryOrder>>;
   builds: Map<Key, Fn<StoryBuild>>;
   ghostCells: Map<Key, GhostCell[]>;
+  replacementClears: Set<Key>;
   ghostsRev: number;
   storages: Map<string, Fn<StoryStorage>>;
   benches: Map<string, Fn<StoryWorkbench>>;
@@ -399,7 +406,8 @@ function plantBills(
 }
 
 /** The state's `ghosts`: every blueprint cell. */
-const ghostsState = (c: Colony) => ({ ghosts: { rev: c.ghostsRev, blocks: [...c.ghostCells.values()].flat() } });
+const ghostsState = (c: Colony) => ({ ghosts: { rev: c.ghostsRev,
+  blocks: [...c.ghostCells].flatMap(([id, cells]) => c.replacementClears.has(id) ? cells.filter((g) => g[6] !== 'done') : cells) } });
 
 /** A delta's `removed`: what went since `since`, by kind (no key when nothing did). */
 function removedSince(gone: Colony['removed'], since: number) {
@@ -831,6 +839,7 @@ export class StorySim {
       orders: new Map(),
       builds: new Map(),
       ghostCells: new Map(),
+      replacementClears: new Set(),
       ghostsRev: 1,
       storages: new Map(),
       benches: new Map(),
@@ -1829,9 +1838,11 @@ export class StorySim {
     return this.designationInArea(d, cells, a) || designationListed(d, k, cells, body);
   }
 
-  private designationInArea(d: StoryDesignation, cells: ReadonlyArray<readonly number[]>, a: StoryArea | null): boolean {
+  private designationInArea(d: StoryDesignation, cells: ReadonlyArray<readonly number[]>, a: StoryArea | null,
+  ): boolean {
     if (!a) return false;
-    return cells.some((p) => inside(a, p)) || (d.entity !== null && d.entity !== undefined && this.entityIn(d.entity, a));
+    return (
+      cells.some((p) => inside(a, p)) || (d.entity !== null && d.entity !== undefined && this.entityIn(d.entity, a)));
   }
 
   private addDesignation(c: Colony, d: Omit<StoryDesignation, 'id'>): void {
@@ -1853,7 +1864,9 @@ export class StorySim {
     const ents = this.opts.world
       .entities()
       .filter((e) => (kind === 'hunt' ? e.kind === 'mob' && ANIMAL_TYPES.has(e.type ?? -1) : e.kind === 'item'))
-      .filter((e) => (a ? inside(a, [Math.floor(e.x), Math.floor(e.y), Math.floor(e.z)], 2) : body.entities?.includes(e.id)));
+      .filter((e) =>
+        a ? inside(a, [Math.floor(e.x), Math.floor(e.y), Math.floor(e.z)], 2) : body.entities?.includes(e.id),
+      );
     const fresh = ents.filter((e) => !heldEnt.has(e.id));
     for (const e of fresh)
       this.addDesignation(c, { kind, entity: e.id, block: [Math.floor(e.x), Math.floor(e.y), Math.floor(e.z)], state: 'todo' });
@@ -2024,7 +2037,14 @@ export class StorySim {
     const ids: Key[] = [];
     const water = items.some((i) => i.kind === 'water') ? this.checkWater(c, items) : null;
     if (water?.error) throw Object.assign(new Error(water.error), { status: 400 });
-    for (const item of items) ids.push(this.addBuild(c, item, items));
+    const replacement = replacementItems(items);
+    if (replacement.area) this.replaceBuildCells(c, replacement.area);
+    items = replacement.items;
+    for (const item of items) {
+      const id = this.addBuild(c, item, items);
+      ids.push(id);
+      if (replacement.area && item.kind === 'remove') c.replacementClears.add(id);
+    }
     c.ghostsRev = this.bump(c);
     this.plan(c);
     return {
@@ -2034,6 +2054,25 @@ export class StorySim {
       ...(water?.warnings.length ? { warnings: water.warnings } : {}),
       ...(water ? { flow: { spread: water.spread.length, cells: water.spread.slice(0, 256) } } : {}),
     };
+  }
+
+  private replaceBuildCells(c: Colony, area: StoryArea): void {
+    for (const [id, cells] of c.ghostCells) {
+      const rest = cells.filter((g) => !insideReplacement(area, g));
+      if (rest.length === cells.length) continue;
+      for (const p of c.pawns.values()) if (p.task?.ref === id) this.drop(c, p);
+      if (!rest.length) {
+        this.removeBuild(c, String(id));
+        continue;
+      }
+      c.ghostCells.set(id, rest);
+      const build = c.builds.get(id);
+      if (build) {
+        build.v.blocksTotal = rest.length;
+        build.v.blocksDone = rest.filter((g) => g[6] === 'done').length;
+        build.rev = this.bump(c);
+      }
+    }
   }
 
   /** Queues one build: its label, what it is short of, and its ghost cells (a pour with nothing under it fails at once). */
@@ -2077,6 +2116,7 @@ export class StorySim {
     items: readonly StoryBuildItem[],
     liquid: 'water' | 'lava' | null,
   ): GhostCell {
+    if (!liquid) return [x, y, z, bi, bm, bid, 'todo', bi === 0 ? 'dig' : 'place'];
     const below = this.opts.world.blockAt(x, y - 1, z)[0];
     const own = cells.some((o) => o[0] === x && o[1] === y - 1 && o[2] === z);
     const dug = items.some(
@@ -2086,9 +2126,9 @@ export class StorySim {
         i.group === item.group &&
         expandBuildItem(i).some((d) => d[0] === x && d[1] === y - 1 && d[2] === z),
     );
-    if (liquid && !own && (dug || [0, 8, 9, 10, 11, 31, 32, 37, 38, 78, 106, 175].includes(below)))
+    if (!own && (dug || [0, 8, 9, 10, 11, 31, 32, 37, 38, 78, 106, 175].includes(below)))
       return [x, y, z, bi, bm, bid, 'blocked', 'pour', `nothing under ${x},${y},${z} to hold the ${liquid}: it would pour down`];
-    return [x, y, z, bi, bm, bid, 'todo', bi === 0 ? 'dig' : liquid ? 'pour' : 'place'];
+    return [x, y, z, bi, bm, bid, 'todo', bi === 0 ? 'dig' : 'pour'];
   }
 
   /** The listed builds take the front of the queue in the listed order; the rest keep theirs after them. */
@@ -2108,6 +2148,7 @@ export class StorySim {
 
   private removeBuild(c: Colony, bid: string): void {
     c.builds.delete(bid);
+    c.replacementClears.delete(bid);
     c.ghostCells.delete(bid);
     c.removed.push({ rev: this.bump(c), kind: 'builds', key: bid });
     for (const p of c.pawns.values()) if (p.task?.ref === bid) this.drop(c, p);
@@ -2442,6 +2483,7 @@ export class StorySim {
    * missing bench is made and placed near home when the colony allows it; what can't be made is short, with its raw material.
    */
   private plan(c: Colony): void {
+    this.reconcileReplacementAir(c);
     const pool = new Map(c.stock);
     const benches: PlanBenches = { table: this.hasBench(c, 'crafting_table'), furnace: this.hasBench(c, 'furnace') };
     const wants: PlanWant[] = [];
@@ -2453,6 +2495,31 @@ export class StorySim {
     }
     // Auto bills follow the wants: targets track the shortfall, the rest go, new ones join the bench's front.
     for (const f of c.benches.values()) this.syncAutoBills(c, f, wants);
+  }
+
+  private reconcileReplacementAir(c: Colony): void {
+    if (!c.replacementClears.size) return;
+    const owners = new Map<string, Key>();
+    for (const [id, cells] of c.ghostCells)
+      for (const g of cells) if (g[7] !== 'dig' || c.replacementClears.has(id)) owners.set(g.slice(0, 3).join(','), id);
+    for (const id of c.replacementClears) {
+      const build = c.builds.get(id), cells = c.ghostCells.get(id) ?? [];
+      if (!build || build.v.status === 'paused') continue;
+      let changed = false;
+      for (const g of cells) {
+        const owned = owners.get(g.slice(0, 3).join(',')) === id;
+        if (g[6] === 'leased' && owned) continue;
+        if (!owned) for (const p of c.pawns.values())
+          if (p.task?.ref === id && p.task.target?.join(',') === g.slice(0, 3).join(',')) this.drop(c, p);
+        const state = !owned ? 'blocked'
+          : this.opts.world.blockAt(g[0], g[1], g[2])[0] === 0 ? 'done' : 'todo';
+        if (state !== g[6]) { g[6] = state; changed = true; }
+      }
+      if (!changed) continue;
+      build.v.blocksDone = cells.filter((g) => g[6] === 'done').length;
+      build.v.status = build.v.blocksDone === cells.length ? 'done' : 'queued';
+      build.rev = c.ghostsRev = this.bump(c);
+    }
   }
 
   /** A liquid build needs one bucket (kept, never used up), not one per cell. */
@@ -2884,6 +2951,7 @@ export class StorySim {
   private stepPawn(c: Colony, p: PawnSim, dt: number): void {
     const pawn = p.p;
     let changed = this.tickNeeds(p, dt);
+    if (p.task?.kind === 'guard') changed = this.refreshGuard(c, p) || changed;
     // 1. urgent needs (not while drafted)
     this.eatIfHungry(c, p);
     // 2. orders (drafted pawns only follow orders; undrafted ones do theirs first too)
@@ -3032,10 +3100,52 @@ export class StorySim {
     this.designationWork(c, p, here, cands);
     this.buildWork(c, p, here, cands);
     this.billWork(c, p, here, cands);
+    this.guardWork(c, p, here, cands);
     if (cands.length === 0) return false;
     cands.sort((a, b) => a.pri - b.pri || a.col - b.col || b.skill - a.skill || a.d - b.d);
     cands[0]!.take();
     return true;
+  }
+
+  /** Shared sightings let guards converge; every guard can join, without an exclusive entity lease. */
+  private guardTargets(c: Colony): SimEntity[] {
+    const world = this.opts.world;
+    const observers = [...c.pawns.values()].filter((p) => p.p.online);
+    return guardedMobs(
+      world,
+      [...c.zones.values()].map((f) => f.v),
+    ).filter((e) => observers.some((p) => guardVisible(world, [p.x, p.y, p.z], e)));
+  }
+
+  private guardWork(c: Colony, p: PawnSim, here: [number, number, number], cands: WorkCand[]): void {
+    if (!((p.p.priorities.guard ?? 0) > 0)) return;
+    for (const e of this.guardTargets(c))
+      this.addWork(p.p, here, cands, 'guard', [e.x, e.y, e.z], () => {
+        p.task = {
+          kind: 'guard',
+          ref: null,
+          label: 'Guarding zone',
+          target: [e.x, e.y, e.z],
+          type: 'guard',
+          entity: e.id,
+        };
+        p.work = Infinity; // the fixture owns mob life; guarding ends when the live target disappears or leaves the zone
+        this.refreshGuard(c, p);
+      });
+  }
+
+  private refreshGuard(c: Colony, p: PawnSim): boolean {
+    const target = this.guardTargets(c).find((e) => e.id === p.task?.entity);
+    const hour = p.p.schedule[storyHour(c.tod)] ?? 'anything';
+    if (!target || p.p.drafted || !((p.p.priorities.guard ?? 0) > 0) || hour === 'sleep' || hour === 'free') {
+      this.drop(c, p);
+      return true;
+    }
+    const visible = guardVisible(this.opts.world, [p.x, p.y, p.z], target);
+    p.task!.target = [target.x, target.y, target.z];
+    p.task!.label = visible ? 'Guarding zone' : 'Approaching guarded mob';
+    p.goal = visible && Math.hypot(target.x - p.x, target.z - p.z) <= 2.5 ? null : p.task!.target;
+    return false;
   }
 
   /** A job of a work type the pawn does (priority > 0) as a candidate. */
@@ -3535,7 +3645,8 @@ const arriveWithin = (kind: string): number =>
   kind.startsWith('order:move') || kind === 'sleep' || kind === 'free' ? 0.3 : 1.6;
 
 /** An order's work: hold forever, a move none, others by kind. */
-const orderWork = (kind: string): number => (kind === 'hold' ? Infinity : (WORK_MS[kind] ?? (kind === 'move' ? 0 : 1500)));
+const orderWork = (kind: string): number =>
+  kind === 'hold' ? Infinity : (WORK_MS[kind] ?? (kind === 'move' ? 0 : 1500));
 
 /** The food level a pawn stops to eat at: skittish pawns early, brave ones late. */
 function hungerLine(pawn: StoryPawn): number {

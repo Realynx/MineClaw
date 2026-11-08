@@ -23,6 +23,8 @@ public sealed class ActiveJob
     /// <summary>What it works off: designation | ghost | bill | furnace | order | deliver | move | drop | zone | crop | sow | feed | guard | need.</summary>
     public string Source { get; init; } = "";
     public string? SourceId { get; init; }
+    /// <summary>A painted guard zone allows several guards to converge on this mob; it is rechecked as the mob moves.</summary>
+    public bool GuardZone { get; set; }
     public List<(P3 Chest, Stack Stack)> Takes { get; } = new();
     public List<(P3 Chest, List<Stack> Stacks)> Puts { get; } = new();
     public double Xp { get; init; } = 20;

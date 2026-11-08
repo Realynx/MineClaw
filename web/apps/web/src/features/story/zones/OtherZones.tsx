@@ -15,7 +15,7 @@ import { ZonePreserve } from './PreservePanel';
 import { zoneCellCount } from './zonePaint';
 
 /** The kinds listed here, in this order (growing, fishing and quarry zones and houses have their own settings). */
-const KINDS = ['preserve', 'chop', 'forbidden', 'dump'] as const;
+const KINDS = ['guard', 'preserve', 'chop', 'forbidden', 'dump'] as const;
 const kindLabel = (kind: string) => ZONE_TOOLS.find((t) => t.id === kind)?.label ?? kind;
 
 export function OtherZonesPanel({
@@ -49,6 +49,12 @@ export function OtherZonesPanel({
             data-zone={String(z.id)}
           >
             <OtherZoneHeader z={z} canWrite={canWrite} onShow={onShow} onRemove={onRemove} />
+            {z.kind === 'guard' ? (
+              <p className="text-muted">
+                Available undrafted pawns with Guard enabled attack visible mobs here, including animals. Players are
+                excluded. They stop when the mob leaves or the zone is removed.
+              </p>
+            ) : null}
             <ZonePreserve z={z} />
           </li>
         ))}
@@ -77,7 +83,7 @@ function OtherZoneHeader({
       </button>
       <span className="text-subtle">{kindLabel(z.kind)}</span>
       <span className="text-subtle tabular-nums">{zoneCellCount(z)} cells</span>
-      {z.kind === 'preserve' ? (
+      {z.kind === 'preserve' || z.kind === 'guard' ? (
         <Button
           size="sm"
           variant="ghost"
@@ -85,7 +91,11 @@ function OtherZoneHeader({
           disabled={!canWrite}
           onClick={() => onRemove(z)}
           aria-label={`Remove ${name}`}
-          title="Remove the zone: its blocks are no longer kept"
+          title={
+            z.kind === 'guard'
+              ? 'Remove the zone: guarding here stops'
+              : "Remove the zone: its blocks are no longer kept"
+          }
         >
           <Trash2 className="size-3.5" />
         </Button>

@@ -58,7 +58,8 @@ public sealed partial class StoryColony
                 ["ghosts"] = new JsonObject
                 {
                     ["rev"] = _rev,
-                    ["blocks"] = new JsonArray(Builds.SelectMany(b => b.Ghosts.Where(g => New(g.Rev)).Select(g => GhostJson(b, g))).ToArray()),
+                    ["blocks"] = new JsonArray(Builds.SelectMany(b => b.Ghosts.Where(g => New(g.Rev)
+                        && !(ReplacementAir(b, g) && g.State == "done")).Select(g => GhostJson(b, g))).ToArray()),
                 },
                 ["storages"] = new JsonArray(Storages.Where(st => New(st.Rev)).Select(st => (JsonNode)new JsonObject
                 {

@@ -150,6 +150,7 @@ export class WorldViewerEngine implements RuntimeView {
   }
 
   setCameraMode(m: CameraMode): void {
+    this.keys.clear();
     this.rig.setMode(m, this.camera, performance.now());
     if (m !== 'fly' && document.pointerLockElement === this.surface) document.exitPointerLock();
     this.opts.onCameraModeChange?.(m);
@@ -353,7 +354,9 @@ export class WorldViewerEngine implements RuntimeView {
 
   interest(): Interest {
     const c = this.lookCentre();
-    return { dim: this.dim, x: c.x, z: c.z, r: Math.max(this.drawDistance, this.cover()) + 24 };
+    return { dim: this.dim, x: c.x, z: c.z, r: Math.max(this.drawDistance, this.cover()) + 24,
+      priority: this.runtime.isPrimary(this) ? 2 : 1,
+    };
   }
 
   centre(): Centre & { dim: Dim } {

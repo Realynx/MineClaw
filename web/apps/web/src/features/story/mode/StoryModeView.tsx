@@ -118,6 +118,7 @@ function Controls({ c }: Props) {
       onSpeed={c.setSpeed}
       view={c.view}
       onView={() => c.setView((v) => (v === 'top' ? 'angled' : 'top'))}
+      onFly={() => c.setView((v) => (v === 'fly' ? 'top' : 'fly'))}
       level={c.lv}
       ground={c.ground}
       height={c.build.height}

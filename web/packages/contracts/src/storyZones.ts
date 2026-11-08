@@ -8,7 +8,7 @@
  * - Add kind K: cells touching (4-neighbour) or overlapping zones of the same type join them; several touched zones merge into the
  *   oldest (its id, name, settings). Same type = same kind, and for growing zones (`farm`) the same plant. `into` extends that zone
  *   (its type wins). Work zones (farm, chop, mine) are mutually exclusive: the painted cells leave the other work zones.
- * - Home, keep-out (`forbidden`), the drop spot (`dump`) and Preserve (`preserve`) are overlay layers: they never overwrite and
+ * - Home, Guard, keep-out (`forbidden`), the drop spot (`dump`) and Preserve (`preserve`) are overlay layers: they never overwrite and
  *   are never overwritten.
  * - Erase: the cells leave the zones of a kind (or any); an empty zone goes, a zone cut in parts becomes several (" 2", " 3").
  */
@@ -27,7 +27,7 @@ export interface ZoneLike {
 }
 
 /** The overlay layers (the bot's `ZonePainter.Overlays`). */
-export const ZONE_OVERLAYS: readonly string[] = ['home', 'forbidden', 'dump', 'preserve'];
+export const ZONE_OVERLAYS: readonly string[] = ['home', 'guard', 'forbidden', 'dump', 'preserve'];
 export const ZONE_MAX_CELLS = 65_536;
 export const isOverlayZone = (kind: string): boolean => ZONE_OVERLAYS.includes(kind);
 

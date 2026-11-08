@@ -115,6 +115,7 @@ public sealed partial class StoryColony
     private ActiveJob WorkOrIdle(PawnState p, PawnLive live, int hour)
     {
         if (RescueJob(p, live) is { } rescue) return rescue; // a pawn stuck in a pit gets blocks brought to it first
+        if (p.Role == "guard" && GuardZoneJob(p, live) is { } guard) return guard;
         if (Work(p, live) is { } work) return work;
         if (Deliver(p, live, force: true) is { } leftovers) return leftovers; // nothing else to do: store what it still carries
         var idleLabel = WorkIdleLabel(p);
@@ -305,7 +306,7 @@ public sealed partial class StoryColony
     /// <summary>Each work type's job search (static: nothing is allocated per pick).</summary>
     private static readonly Dictionary<string, Func<StoryColony, PawnState, PawnLive, ActiveJob?>> CandidateSearch = new(StringComparer.Ordinal)
     {
-        [WorkTypes.Guard] = static (c, p, live) => c.GuardJob(p, live), // fresh, reachable monsters at home only (StoryColony.Defend.cs)
+        [WorkTypes.Guard] = static (c, p, live) => c.GuardJob(p, live), // painted guard zones, then visible monsters at home
         [WorkTypes.Doctor] = static (c, p, live) => c.FeedJob(p, live),
         [WorkTypes.Cook] = static (c, p, live) => c.BillJob(p, live, WorkTypes.Cook),
         [WorkTypes.Craft] = static (c, p, live) => c.BillJob(p, live, WorkTypes.Craft) ?? c.SupplyJob(p, live), // the builds' own crafts (a bench to place, a 2×2 craft)

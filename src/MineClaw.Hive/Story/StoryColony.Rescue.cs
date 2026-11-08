@@ -149,7 +149,7 @@ public sealed partial class StoryColony
     /// <summary>The target rests for this pawn only (a guard's monster a short while, else longer each time); no way there is noted.</summary>
     private void RestForPawn(PawnState p, ActiveJob j, string why, bool guard)
     {
-        if (j.Lease is { } lease)
+        if (MissKey(j) is { } lease)
         {
             var key = PawnKey(lease, p.Name);
             int n = _pawnFails[key] = _pawnFails.GetValueOrDefault(key) + 1;
@@ -157,6 +157,9 @@ public sealed partial class StoryColony
         }
         if (NoWay.IsMatch(why)) NoteUnreachable(p, j);
     }
+
+    // Several zone guards share a mob without an exclusive lease, but it remains one stable target for each pawn's failure history.
+    private static string? MissKey(ActiveJob j) => j.Lease ?? (j.GuardZone ? "e:" + j.SourceId : null);
 
     /// <summary>N different pawns couldn't reach it: then it is the target's failure (false), unless it is out of reach even from a
     /// pillar for every pawn that tried: the designation waits with why (no failure, no alert).</summary>
@@ -174,7 +177,7 @@ public sealed partial class StoryColony
     private void NoteUnreachable(PawnState p, ActiveJob j)
     {
         if (!_unreachRun.TryGetValue(p.Name, out var run)) _unreachRun[p.Name] = run = new();
-        run.Add((Now, j.Lease ?? j.Id));
+        run.Add((Now, MissKey(j) ?? j.Id));
         run.RemoveAll(r => Now - r.At > StuckWindow);
         if (run.Select(r => r.Key).Distinct().Count() < StuckStreak || _stuck.ContainsKey(p.Name)) return;
         var live = Host.Live(p.Name);
@@ -193,7 +196,7 @@ public sealed partial class StoryColony
             if (st.Asked) Alert("info", $"{p.Display} is out (was stuck at {st.At})", p.Name);
             if (st.Attempts > 0) _log.LogInformation("story {Colony}: {Pawn} is out (stuck at {At} after {N} escape attempt(s))", Id, p.Name, st.At, st.Attempts);
         }
-        if (j.Lease != null) { _unreachBy.Remove(j.Lease); _pawnFails.Remove(PawnKey(j.Lease, p.Name)); _quarryMiss.Remove(j.Lease); }
+        if (MissKey(j) is { } key) { _unreachBy.Remove(key); _pawnFails.Remove(PawnKey(key, p.Name)); _quarryMiss.Remove(key); }
         if (j.Source == "rescue" && j.SourceId is { } who && _stuck.TryGetValue(who, out var s)) s.Delivered = true;
     }
 

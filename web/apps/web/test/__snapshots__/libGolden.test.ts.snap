@@ -451,6 +451,7 @@ exports[`lib helpers (golden) > stale time per route 1`] = `
   "story.schedule": "30000",
   "story.storage": "30000",
   "story.time": "30000",
+  "story.timeRange": "30000",
   "story.workbenches": "30000",
   "story.zones": "30000",
   "vision.list": "30000",

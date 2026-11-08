@@ -28,7 +28,7 @@ public sealed partial class StoryColony
         IReadOnlyList<(P3 At, int Id, string Bot)> placed;
         try { placed = Host.PlacedByBots(); } catch (Exception) { return; }
         var cand = StrayCandidates(w, home, placed);
-        var builds = BuildCellSet();
+        var builds = BuildCellSet(includeReplacementAir: true); // intentional air owns historical strays; live access is adopted separately
         var found = Clusters(cand.Keys).Where(g => LooksTemporary(g, builds)).SelectMany(g => g).Take(StrayMax).Select(at => cand[at]).ToList();
         var (lids, unproven) = LidStrays(w, placed, builds, found);
         found.AddRange(lids);

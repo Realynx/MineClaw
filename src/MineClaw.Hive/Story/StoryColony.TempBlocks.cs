@@ -104,11 +104,14 @@ public sealed partial class StoryColony
         }
     }
 
-    /// <summary>Every build's cell: a directive, never a temporary block.</summary>
-    private HashSet<P3> BuildCellSet()
+    /// <summary>A solid build directive takes ownership of its block. Intentional air still permits temporary access whose owner
+    /// will remove it; forgetting that registry would let the replacement cleanup mine a live pillar.</summary>
+    private HashSet<P3> BuildCellSet(bool includeReplacementAir = false)
     {
         var set = new HashSet<P3>();
-        foreach (var b in Builds) foreach (var g in b.Ghosts) set.Add(g.At);
+        var temps = TempCellSet();
+        foreach (var b in Builds) foreach (var g in b.Ghosts)
+            if (includeReplacementAir || !ReplacementAir(b, g) && !(ReplacementBuild(b) && temps.Contains(g.At))) set.Add(g.At);
         return set;
     }
 

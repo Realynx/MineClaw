@@ -37,6 +37,7 @@ public sealed partial class ScriptBridge
         EscapeDigTool.ToolName, // hidden: escape_dig{at} (a Story pawn getting out: any tool, the drop may be lost)
         ClearDigTool.ToolName, // hidden: clear_dig{at} (a Story build's cell holding another block: dug out before its block goes in)
         StationaryDigTool.ToolName, // hidden: dig_here{at} (visible reserved cells, without walking off a shared access pillar)
+        StationaryPlaceTool.ToolName, // hidden: place_here{block,at,meta?} (construction from the current footing)
         ClearTemporaryTool.ToolName, // hidden: clear_temporary{} (a Story pawn's own scaffolds, pillars and boxes dug back after each job)
         FishingTool.ToolName, // hidden tool: fish(at, seconds) with a rod
         TurnedPlaceTool.ToolName, // hidden: place_turned(block, at, meta) (a design's facing, axis or half)
@@ -47,7 +48,7 @@ public sealed partial class ScriptBridge
     private static readonly HashSet<string> AtomicTools = new(StringComparer.OrdinalIgnoreCase)
     {
         "craft", "smelt", "collect_furnace", "deposit", "withdraw", "organize_chest", "place", "dig", "use_block", "eat", EquipTool.ToolName, EscapeDigTool.ToolName, ClearDigTool.ToolName, StationaryDigTool.ToolName,
-        TurnedPlaceTool.ToolName,
+        TurnedPlaceTool.ToolName, StationaryPlaceTool.ToolName,
     };
 
     private static readonly AsyncLocal<bool> InWorker = new();

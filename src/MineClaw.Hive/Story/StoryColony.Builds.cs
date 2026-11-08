@@ -48,6 +48,8 @@ public sealed partial class StoryColony
         var warnings = new List<string>();
         foreach (var n in items)
             if (ExpandBuildItem(w, n, made, warnings) is { } err) return (null, err);
+        if (PrepareDesignReplacement(w, made) is { } replaceError) return (null, replaceError);
+        ReplaceOldDesignCells(made);
         var flow = QueueBuilds(w, made);
         BuildConflictsPass();
         BuildsInQuarries(made, warnings); // a quarry digs them: blocked now, said (StoryColony.QuarryConflicts.cs)
@@ -91,7 +93,12 @@ public sealed partial class StoryColony
         b.Label = $"{b.Kind} ({b.BlocksTotal} block{(b.BlocksTotal == 1 ? "" : "s")}{(b.Material.Length > 0 && b.Kind != "remove" ? ", " + b.Material : "")})";
         var r = Touch();
         b.Rev = r;
-        foreach (var g in b.Ghosts) MarkBuiltAlready(w, g, r);
+        var temps = ReplacementBuild(b) ? TempCellSet() : null;
+        foreach (var g in b.Ghosts)
+        {
+            MarkBuiltAlready(w, g, r);
+            if (!g.Remove && temps?.Contains(g.At) == true) g.State = "todo"; // the access owner still has to recover this block
+        }
         Builds.Add(b);
         if (b.Ghosts.Count > 0 && StoryConstruction.IsLiquid(b.Ghosts[0])) flow = LiquidAdded(w, b, flow); // its label, the expected flow
         AlertUnplaceable(b);
@@ -298,6 +305,7 @@ public sealed partial class StoryColony
         var b = scan.Build;
         var key = $"g:{b.Id}|{g.At}";
         if (!Open(key, p.Name, g.At) || Occupied(g.At) || BuildConflicted(g) || QuarryHeld(b, g)) return null;
+        if (ReplacementBuild(b) && TempCellSet().Contains(g.At)) return null;
         if (g.Remove) return DigCell(w, p, live, b, g, key);
         // A liquid source: poured from a bucket filled at a still source (StoryColony.Water.cs).
         if (StoryConstruction.IsLiquid(g)) return PourCell(p, live, ref scan, g);
@@ -308,13 +316,19 @@ public sealed partial class StoryColony
 
     private ActiveJob? DigCell(IStoryWorld w, PawnState p, PawnLive live, BuildState b, GhostState g, string key)
     {
-        if (w.Block(g.At.X, g.At.Y, g.At.Z).Id == 0 && w.Loaded(g.At.X, g.At.Z)) { g.State = "done"; g.Rev = Touch(); return null; }
+        if (w.Block(g.At.X, g.At.Y, g.At.Z).Id == 0 && w.Loaded(g.At.X, g.At.Z))
+        {
+            if (ReplacementAir(b, g)) CellDone(b, g); else { g.State = "done"; g.Rev = Touch(); }
+            return null;
+        }
+        if (ReplacementAir(b, g) && TempCellSet().Contains(g.At)) return null;
         // A dug cell takes its material's tool (a mine design's ore: the right pickaxe), else the build waits for one.
         var dt = PlanTool(p, live, DigBlockAt(g.At, g.Id));
         if (dt is { Wait: { } why }) { NoteBuildWait(b, why); Blocked($"build {b.Id}: {b.Reason}"); return null; }
         ClearBuildWait(b);
         var job = Job(WorkTypes.Build, "dig", $"removing a block ({b.Label})", g.At, key, "ghost", $"{b.Id}|{g.At}", xp: 10);
-        if (b.Kind == "preserve") job.Json["ordered"] = true; // a repair's clear: the owner's order (clear_dig), past the preserved-block filter
+        if (b.Kind == "preserve" || b.Spec?["replacement_clear"]?.GetValue<bool>() == true) job.Json["ordered"] = true;
+        if (ReplacementBuild(b)) job.Json["replace"] = true;
         return Claim(b, [g], p.Name, WithTool(dt, job));
     }
 
@@ -336,7 +350,7 @@ public sealed partial class StoryColony
     {
         if (cur == 0) return false;
         if (Matches(g, cur, curMeta, Modern)) { CellDone(b, g); return true; }
-        if (!WrongTurn(g, cur, curMeta, Modern) || _turnRedo.GetValueOrDefault(key) < 1 && !KeepsItems(cur)) return false;
+        if (!WrongTurn(g, cur, curMeta, Modern) || _turnRedo.GetValueOrDefault(key) < 1 && (!KeepsItems(cur) || ReplacementBuild(b))) return false;
         Misrotated(b, g, curMeta);
         return true;
     }
@@ -417,6 +431,7 @@ public sealed partial class StoryColony
         var job = Job(WorkTypes.Build, "place", label, g.At, key, "ghost", $"{b.Id}|{g.At}", "working",
             f => PlaceFields(f, item, want, cells, clear, g, stand, fetch), xp: Math.Min(60, 8 + 4 * cells.Count));
         job.Takes.AddRange(takes);
+        if (ReplacementBuild(b)) job.Json["replace"] = true;
         if (scaffold is { } spot) job.Json["scaffold"] = new JsonObject { [g.At.ToString()] = spot.ToString() };
         var claimed = Claim(b, cells, p.Name, WithTool(clear.Count > 0 ? clearTool : null, job));
         CountRedo(w, b, cells, claimed);
@@ -442,6 +457,7 @@ public sealed partial class StoryColony
     private void PlaceFields(JsonObject f, string item, string? want, List<GhostState> cells, List<string> clear, GhostState g, P3? stand, JsonArray fetch)
     {
         f["block"] = item;
+        f["reach"] = true; // ordinary upper walls and roofs use the same temporary access as quarry remnants
         if (want != null) f["want"] = want; // what the cell shows once built: already there = done
         f["cells"] = new JsonArray(cells.Select(c => (JsonNode)c.At.ToString()).ToArray());
         if (clear.Count > 0) f["clear"] = new JsonArray(clear.Select(c => (JsonNode)c).ToArray());
@@ -645,6 +661,7 @@ public sealed partial class StoryColony
     private bool BatchTakes(IStoryWorld w, BuildState b, GhostState seed, GhostState x, string pawn, int clearId)
     {
         if (!BatchKin(seed, x) || !NearSeedLevel(seed, x) || QuarryConflict(x) != null) return false;
+        if (ReplacementBuild(b) && TempCellSet().Contains(x.At)) return false;
         var key = $"g:{b.Id}|{x.At}";
         if (!Open(key, pawn, x.At) || Occupied(x.At)) return false;
         var (cur, curMeta) = w.Block(x.At.X, x.At.Y, x.At.Z);
@@ -945,6 +962,7 @@ public sealed partial class StoryColony
         g.Holds = g.HoldsWords = null;
         g.Rev = Touch();
         MaterialsChanged();
+        if (ReplacementAir(b, g)) Removed("ghost", $"{b.Id}|{g.At}");
         if (b.Kind != "preserve") // a preserved zone's repair puts back what was there: it makes nothing new the colony's
         {
             StationBuilt(g); // a brewing stand, anvil or enchanting table the colony built is its own (StoryColony.Stations.cs)

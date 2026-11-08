@@ -206,7 +206,7 @@ public sealed class PawnState
 public sealed class ZoneState
 {
     public string Id { get; set; } = "";
-    /// <summary>chop | mine | farm | home | forbidden (storage is chests: see <see cref="StorageState"/>).</summary>
+    /// <summary>chop | mine | farm | fish | home | forbidden | dump | preserve | guard (storage is chests).</summary>
     public string Kind { get; set; } = "";
     /// <summary>The cells' bounding box (x, z) and the zone's level range (y: what it was painted at; the union when zones merge).</summary>
     public Area Area { get => _area; set { _area = value; if (_rows == null) _cells = null; } }

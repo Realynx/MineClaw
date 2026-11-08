@@ -29,6 +29,7 @@ public sealed partial class StoryColony
 
     internal ActiveJob? GuardJob(PawnState p, PawnLive live)
     {
+        if (GuardZoneJob(p, live) is { } zone) return zone;
         if (Home() is not { } home) return null;
         var from = live.Block;
         foreach (var mob in Ents().Where(e => e.Kind == "mob" && e.Hostile && Fresh(e) && InHome(e.Block, home) && Open("e:" + e.Id, p.Name, null)
@@ -44,7 +45,8 @@ public sealed partial class StoryColony
     private bool GuardSees(PawnState p, PawnLive live, StoryEntity mob)
     {
         var w = Host.ViewOf(p.Name) ?? World;
-        if (!live.Online || w == null || live.Dim != w.Dimension || !w.Loaded(mob.Block.X, mob.Block.Z)) return false;
+        if (!live.Online || World is not { } colony || live.Dim != colony.Dimension || w == null
+            || live.Dim != w.Dimension || !w.Loaded(mob.Block.X, mob.Block.Z)) return false;
         return CombatGeometry.HasLineOfSight(new StoryBlockAccess(w), new Vec3d(live.X, live.Y + 1.62, live.Z),
             new Vec3d(mob.X, mob.Y + 0.5, mob.Z));
     }
@@ -53,11 +55,13 @@ public sealed partial class StoryColony
     {
         foreach (var (name, job) in _current.Where(kv => kv.Value.Source == "guard").ToList())
         {
+            if (job.GuardZone) continue;
             var mob = Ents().FirstOrDefault(e => e.Id.ToString() == job.SourceId);
             if (mob != null && Fresh(mob) && GuardSees(Pawns[name], Host.Live(name), mob)) continue;
             Supersede(Pawns[name], "guard target out of sight");
             Pawns[name].Rev = Bump();
         }
+        GuardZoneTick();
     }
 
     /// <summary>Another guard with nothing better to do (idle, wandering) is clearly nearer the monster: it goes instead.</summary>

@@ -67,7 +67,10 @@ export type StoryOrderKind = z.infer<typeof StoryOrderKind>;
  * Zone kinds. Loot goes into chests with storage settings (`storage`): the director refuses a `stockpile` zone. `preserve` is an
  * overlay layer whose blocks pawns keep as they are (docs/web/story-mode.md "Preserve zones").
  */
-export const STORY_ZONE_KINDS = ['chop', 'mine', 'farm', 'fish', 'home', 'forbidden', 'dump', 'preserve'] as const;
+export const STORY_ZONE_KINDS = ['chop', 'mine', 'farm', 'fish', 'home',
+  'guard',
+  'forbidden', 'dump', 'preserve',
+] as const;
 export const StoryZoneKind = z.enum(STORY_ZONE_KINDS);
 export type StoryZoneKind = z.infer<typeof StoryZoneKind>;
 
@@ -1261,7 +1264,7 @@ const PreserveRange = z.number().int().min(0).max(STORY_PRESERVE_MAX_RANGE);
 /**
  * Zones are cell sets painted RimWorld-style (docs/web/story-mode.md "Zones"; houses are zones of kind `home`): `add` paints an
  * area (cells touching a zone of the same type join it, several merge into the oldest; other work zones under it are overwritten;
- * home, forbidden, dump and preserve are overlay layers; `into` extends one zone), `remove` erases an area's cells from zones of
+ * home, guard, forbidden, dump and preserve are overlay layers; `into` extends one zone), `remove` erases an area's cells from zones of
  * a kind (or any; empty zones go, cut ones split) or deletes one zone by id, `rename` one zone (an empty name clears it). A
  * growing zone (kind `farm`) takes a `plant` (from `plants`: its first planting bill), `sow` and `harvest`; `update` changes them;
  * `bill_*` edit its planting bills (like a workbench's: add, update, remove, pause, resume, reorder); `seek_seeds` designates tall
@@ -1389,6 +1392,9 @@ export type StoryRoofSpec = z.infer<typeof StoryRoofSpec>;
 export const StoryBuildItem = z
   .object({
     kind: StoryBuildKind,
+    replaceArea: StoryArea.optional().describe(
+      'palette design bounds: clear interior air and permanently release older overlapping build cells',
+    ),
     area: StoryArea.optional(),
     blocks: z.array(Vec3i).max(4096).optional(),
     place: z
