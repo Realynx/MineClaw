@@ -219,8 +219,12 @@ public sealed partial class MinecraftClient
     /// chunk's biome array (tints, spawn rules: mushroom islands spawn no monsters).</summary>
     private static void ReceiveChunkSections(ChunkSectionsMessage cs, WorldState w)
     {
-        foreach (var r in cs.Regions)
-            w.ApplyChunkRegion(r.X, r.Y, r.Z, r.SizeX, r.SizeY, r.SizeZ, r.BlockIds, r.Metadata, r.BlockLight, cs.HasSkyLight ? r.SkyLight : null);
+        if (cs.FullChunk && cs.SectionsOnly)
+            w.ApplyChunkSections(cs.ChunkX, cs.ChunkZ, cs.SectionMask, cs.Height, cs.HasSkyLight,
+                cs.Regions.Select(r => (r.Y, r.SizeY, r.BlockIds, r.Metadata, r.BlockLight, r.SkyLight)));
+        else
+            foreach (var r in cs.Regions)
+                w.ApplyChunkRegion(r.X, r.Y, r.Z, r.SizeX, r.SizeY, r.SizeZ, r.BlockIds, r.Metadata, r.BlockLight, cs.HasSkyLight ? r.SkyLight : null);
         if (cs.Biomes != null) w.SetBiomes(cs.ChunkX, cs.ChunkZ, cs.Biomes);
     }
 

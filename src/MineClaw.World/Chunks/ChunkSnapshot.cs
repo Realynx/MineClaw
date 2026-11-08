@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.IO.Compression;
 using System.Text;
 
@@ -33,6 +34,28 @@ public sealed class ChunkSnapshot
     /// newer copy).</summary>
     public static ChunkSnapshot Capture(ChunkColumn c) => new(c.CopyIds(), c.CopyMeta()); // the column stores metadata as nibbles already
 
+    /// <summary>Captures the durable persistence payload without retaining two full-column copies. Only the returned
+    /// compressed data and summary escape; the ids and metadata are borrowed scratch for this call.</summary>
+    public static (long Hash, string Summary, byte[] Data) CaptureEncoded(ChunkColumn c)
+    {
+        int n = c.CellCount;
+        var ids = ArrayPool<byte>.Shared.Rent(n);
+        byte[]? meta = null;
+        try
+        {
+            meta = ArrayPool<byte>.Shared.Rent(n);
+            c.CopyIds(ids.AsSpan(0, n));
+            c.CopyMeta(meta.AsSpan(0, n));
+            return (ComputeHash(ids.AsSpan(0, n), meta.AsSpan(0, n)), Summary(ids.AsSpan(0, n), c.Height),
+                Encode(ids.AsSpan(0, n), meta.AsSpan(0, n)));
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(ids);
+            if (meta is not null) ArrayPool<byte>.Shared.Return(meta);
+        }
+    }
+
     public static long ComputeHash(ReadOnlySpan<byte> ids, ReadOnlySpan<byte> meta)
     {
         const ulong prime = 1099511628211UL;
@@ -52,38 +75,50 @@ public sealed class ChunkSnapshot
     }
 
     /// <summary>Deflated bytes (ids, then metadata nibbles).</summary>
-    public byte[] Encode()
+    public byte[] Encode() => Encode(Ids, Meta);
+
+    private static byte[] Encode(ReadOnlySpan<byte> ids, ReadOnlySpan<byte> meta)
     {
-        int n = Ids.Length;
-        var packed = new byte[n + n / 2];
-        Ids.CopyTo(packed, 0);
-        for (int i = 0; i < n; i += 2) packed[n + i / 2] = (byte)((Meta[i] & 0x0F) | ((Meta[i + 1] & 0x0F) << 4));
-        using var ms = new MemoryStream();
-        using (var z = new DeflateStream(ms, CompressionLevel.Fastest, leaveOpen: true)) z.Write(packed);
-        return ms.ToArray();
+        int n = ids.Length, length = n + n / 2;
+        var packed = ArrayPool<byte>.Shared.Rent(length);
+        try
+        {
+            ids.CopyTo(packed);
+            for (int i = 0; i < n; i += 2) packed[n + i / 2] = (byte)((meta[i] & 0x0F) | ((meta[i + 1] & 0x0F) << 4));
+            using var ms = new MemoryStream();
+            using (var z = new DeflateStream(ms, CompressionLevel.Fastest, leaveOpen: true)) z.Write(packed.AsSpan(0, length));
+            return ms.ToArray();
+        }
+        finally { ArrayPool<byte>.Shared.Return(packed); }
     }
 
     /// <summary>Decodes <see cref="Encode"/>'s bytes; the column height (128 or 256) follows from the inflated length.</summary>
     public static ChunkSnapshot Decode(byte[] data)
     {
         const int small = Volume + Volume / 2, large = 2 * small;
-        var packed = new byte[large];
+        var packed = ArrayPool<byte>.Shared.Rent(large);
+        try { return Decode(data, packed.AsSpan(0, large), small, large); }
+        finally { ArrayPool<byte>.Shared.Return(packed); }
+    }
+
+    private static ChunkSnapshot Decode(byte[] data, Span<byte> packed, int small, int large)
+    {
         int read = 0;
         using (var z = new DeflateStream(new MemoryStream(data), CompressionMode.Decompress))
         {
             while (read < packed.Length)
             {
-                int n = z.Read(packed, read, packed.Length - read);
+                int n = z.Read(packed[read..]);
                 if (n <= 0) break;
                 read += n;
             }
             if (read == large && z.ReadByte() >= 0) throw new InvalidDataException("chunk snapshot too long");
         }
-        if (read is not (small or large)) throw new InvalidDataException("truncated chunk snapshot");
+        if (read != small && read != large) throw new InvalidDataException("truncated chunk snapshot");
         int v = read == small ? Volume : 2 * Volume;
         var ids = new byte[v];
         var meta = new byte[v];
-        Array.Copy(packed, ids, v);
+        packed[..v].CopyTo(ids);
         for (int i = 0; i < v; i += 2)
         {
             byte b = packed[v + i / 2];
@@ -97,18 +132,20 @@ public sealed class ChunkSnapshot
     /// Block-count summary per 16-high section: "3:4=40,1=12;4:64=2" (section:id=count, most common first, non-air only,
     /// at most 6 ids per section). Small enough to store beside the hash.
     /// </summary>
-    public string Summary()
+    public string Summary() => Summary(Ids, Height);
+
+    private static string Summary(ReadOnlySpan<byte> ids, int height)
     {
         var sb = new StringBuilder();
         var counts = new int[256];
-        for (int s = 0; s < Height / 16; s++)
+        for (int s = 0; s < height / 16; s++)
         {
             Array.Clear(counts);
             for (int x = 0; x < 16; x++)
             for (int z = 0; z < 16; z++)
             {
                 int b = ChunkColumn.Index(x, s * 16, z); // 16 y run: never crosses the 128 half boundary
-                for (int y = 0; y < 16; y++) counts[Ids[b + y]]++;
+                for (int y = 0; y < 16; y++) counts[ids[b + y]]++;
             }
             var top = Enumerable.Range(1, 255).Where(i => counts[i] > 0).OrderByDescending(i => counts[i]).Take(6).ToList();
             if (top.Count == 0) continue;

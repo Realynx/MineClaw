@@ -28,7 +28,7 @@ public static class ChunkData
 
     /// <summary>Decodes a Chunk Data body (after the packet id).</summary>
     /// <param name="hasSky">The current dimension has sky light (WorldProvider.hasSkyLight: overworld yes, nether/end no).</param>
-    public static ChunkSectionsMessage Decode(ReadOnlySpan<byte> body, bool hasSky)
+    public static ChunkSectionsMessage Decode(ReadOnlySpan<byte> body, bool hasSky, bool compact = false)
     {
         var r = new WireReader(body);
         int cx = r.ReadInt(), cz = r.ReadInt();
@@ -43,28 +43,28 @@ public static class ChunkData
         for (int i = 0; i < count; i++)
             if (Nbt.ReadRoot(ref r) is { } tag) entities.Add(tag);
         if (r.Remaining != 0) throw new ProtocolException($"chunk data: {r.Remaining} bytes after the block entities");
-        var regions = DecodeSections(data, cx, cz, full, mask, hasSky, out var biomes);
+        var regions = DecodeSections(data, cx, cz, full, mask, hasSky, out var biomes, compact);
         return new ChunkSectionsMessage
         {
             ChunkX = cx, ChunkZ = cz, FullChunk = full, SectionMask = mask, Height = Height, HasSkyLight = hasSky,
-            Regions = regions, Biomes = biomes, BlockEntities = entities,
+            Regions = regions, Biomes = biomes, BlockEntities = entities, SectionsOnly = compact,
         };
     }
 
     /// <summary>Decodes the section data of one column into world-coordinate regions (see <see cref="ChunkSectionsMessage"/>).</summary>
-    public static List<ChunkRegion> DecodeSections(ReadOnlySpan<byte> data, int cx, int cz, bool full, int mask, bool hasSky, out byte[]? biomes)
+    public static List<ChunkRegion> DecodeSections(ReadOnlySpan<byte> data, int cx, int cz, bool full, int mask, bool hasSky, out byte[]? biomes, bool compact = false)
     {
         if ((mask & ~0xFFFF) != 0) throw new ProtocolException($"chunk section mask 0x{mask:X} has bits above section 15");
         var r = new WireReader(data);
         var regions = new List<ChunkRegion>();
         ChunkRegion? column = null;
-        if (full)
+        if (full && !compact)
         {
             column = new ChunkRegion(cx * 16, 0, cz * 16, 16, Height, 16);
             if (hasSky) Array.Fill(column.SkyLight, (byte)15); // absent sections: open air (Chunk.getLightFor on an empty storage)
             regions.Add(column);
         }
-        var states = new int[SectionCells];
+        Span<int> states = stackalloc int[SectionCells];
         for (int s = 0; s < Sections; s++)
             if ((mask & 1 << s) != 0) ReadSection(ref r, states, column, cx, cz, s, hasSky, regions);
         biomes = full ? r.ReadBytes(256).ToArray() : null;
@@ -73,7 +73,7 @@ public static class ChunkData
     }
 
     /// <summary>One sent section into the full column, or into a 16³ region of its own (a partial chunk).</summary>
-    private static void ReadSection(ref WireReader r, int[] states, ChunkRegion? column, int cx, int cz, int s, bool hasSky, List<ChunkRegion> regions)
+    private static void ReadSection(ref WireReader r, scoped Span<int> states, ChunkRegion? column, int cx, int cz, int s, bool hasSky, List<ChunkRegion> regions)
     {
         ReadStates(ref r, states);
         var light = r.ReadBytes(SectionLightBytes);
@@ -85,7 +85,7 @@ public static class ChunkData
 
     /// <summary>One section's states and light into <paramref name="region"/> from row <paramref name="y0"/> (state id &gt; 255:
     /// <see cref="UnknownBlock"/>).</summary>
-    private static void CopySection(ChunkRegion region, int y0, int[] states, ReadOnlySpan<byte> light, bool hasSky, ReadOnlySpan<byte> sky)
+    private static void CopySection(ChunkRegion region, int y0, ReadOnlySpan<int> states, ReadOnlySpan<byte> light, bool hasSky, ReadOnlySpan<byte> sky)
     {
         for (int i = 0; i < SectionCells; i++)
         {
@@ -107,32 +107,35 @@ public static class ChunkData
         return (byte)((i & 1) == 0 ? n & 15 : n >> 4 & 15);
     }
 
-    /// <summary>A section's palette: ≤ 4 bits → 4, ≤ 8 → its own list; more → the global palette (null; bits become 13).</summary>
-    private static int[]? ReadPalette(ref WireReader r, ref int bits)
+    /// <summary>A section's palette: ≤ 4 bits → 4, ≤ 8 → its own list; more → the global palette (count -1; bits become 13).</summary>
+    private static int ReadPalette(ref WireReader r, ref int bits, scoped Span<int> palette)
     {
         if (bits > 8)
         {
             r.ReadVarInt(); // BlockStatePaletteRegistry.read: a VarInt (0) and nothing else
             bits = GlobalBits;
-            return null;
+            return -1;
         }
         if (bits <= 4) bits = 4;
         int n = r.ReadVarInt();
         if (n < 0 || n > 1 << bits) throw new ProtocolException($"section palette of {n} entries for {bits} bits");
-        var palette = new int[n];
         for (int i = 0; i < n; i++) palette[i] = r.ReadVarInt();
-        return palette;
+        return n;
     }
 
     /// <summary>BlockStateContainer.read: one section's 4096 states.</summary>
-    public static void ReadStates(ref WireReader r, int[] states)
+    public static void ReadStates(ref WireReader r, int[] states) => ReadStates(ref r, states.AsSpan());
+
+    private static void ReadStates(ref WireReader r, scoped Span<int> states)
     {
         int bits = r.ReadUByte();
-        var palette = ReadPalette(ref r, ref bits);
+        Span<int> palette = stackalloc int[256];
+        int paletteCount = ReadPalette(ref r, ref bits, palette);
         int longs = r.ReadVarInt();
         int expect = (SectionCells * bits + 63) / 64;
         if (longs != expect) throw new ProtocolException($"section data has {longs} longs, {bits} bits per block needs {expect}");
-        var arr = new long[longs];
+        // The validated count is at most 832 longs (13 bits per block), scoped to this section.
+        Span<long> arr = stackalloc long[longs];
         for (int i = 0; i < longs; i++) arr[i] = r.ReadLong();
         long maxValue = (1L << bits) - 1;
         for (int i = 0; i < SectionCells; i++)
@@ -145,7 +148,7 @@ public static class ChunkData
                 : ((long)((ulong)arr[lo] >> off) | arr[hi] << (64 - off)) & maxValue;
             int value = (int)v;
             // BlockStatePaletteLinear/HashMap.getBlockState: an index past the palette → null → air (BlockStateContainer.get)
-            states[i] = palette is null ? value : value < palette.Length ? palette[value] : 0;
+            states[i] = paletteCount < 0 ? value : value < paletteCount ? palette[value] : 0;
         }
     }
 

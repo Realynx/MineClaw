@@ -339,7 +339,7 @@ public sealed class WorldMemory : IDisposable
         while (_dropped.TryDequeue(out var gone))
         {
             long k = Key(gone.ChunkX, gone.ChunkZ);
-            puts.Add(RowOf(ChunkSnapshot.Capture(gone), gone.Dimension, gone.ChunkX, gone.ChunkZ, now));
+            puts.Add(RowOf(gone, now));
             if (gone.Dimension == _dim)
             {
                 _state.Remove(k);
@@ -357,17 +357,24 @@ public sealed class WorldMemory : IDisposable
         var col = _world.GetColumn(cx, cz);
         if (col is not { HasData: true } || col.Dimension != _dim) return;
         if (_state.ContainsKey(k)) { _dirty.TryAdd(k, 0); return; } // a later bulk update: a change, flushed on the timer
-        var snap = ChunkSnapshot.Capture(col);
         var stored = _store.GetChunk(_dim, cx, cz);
-        if (stored == null) { _state[k] = BaselineState.New; puts.Add(RowOf(snap, _dim, cx, cz, now)); }
-        else if (stored.Hash == snap.Hash) { _state[k] = BaselineState.Unchanged; touches.Add((cx, cz)); ColumnsUnchanged++; }
+        long version = col.Version;
+        if (stored == null) { _state[k] = BaselineState.New; puts.Add(RowOf(col, now)); }
+        else if (stored.Hash == col.ContentHash() && version == col.Version)
+        { _state[k] = BaselineState.Unchanged; touches.Add((cx, cz)); ColumnsUnchanged++; }
         else
         {
-            _state[k] = BaselineState.Changed;
-            _baseline[k] = stored;
-            ColumnsChanged++;
-            if (_arrivalOpen) Diff(stored, snap, cx, cz);
-            puts.Add(RowOf(snap, _dim, cx, cz, now));
+            var snap = ChunkSnapshot.Capture(col);
+            if (stored.Hash == snap.Hash)
+            { _state[k] = BaselineState.Unchanged; touches.Add((cx, cz)); ColumnsUnchanged++; }
+            else
+            {
+                _state[k] = BaselineState.Changed;
+                _baseline[k] = stored;
+                ColumnsChanged++;
+                if (_arrivalOpen) Diff(stored, snap, cx, cz);
+                puts.Add(RowOf(snap, _dim, cx, cz, now));
+            }
         }
         _arrivedAny = true;
         _arrivalLast = now;
@@ -396,7 +403,7 @@ public sealed class WorldMemory : IDisposable
             var now = _time.GetUtcNow();
             if (all) foreach (var c in _world.Columns) if (c.HasData && c.Dimension == _dim) _dirty.TryAdd(Key(c.ChunkX, c.ChunkZ), 0);
             var puts = new List<ChunkRow>();
-            while (_dropped.TryDequeue(out var gone)) puts.Add(RowOf(ChunkSnapshot.Capture(gone), gone.Dimension, gone.ChunkX, gone.ChunkZ, now));
+            while (_dropped.TryDequeue(out var gone)) puts.Add(RowOf(gone, now));
             puts.AddRange(DirtyRows(now));
             Write(puts, [], now);
         }
@@ -425,7 +432,7 @@ public sealed class WorldMemory : IDisposable
             _dirty.TryRemove(k, out _);
             var (cx, cz) = Col(k);
             if (_world.GetColumn(cx, cz) is { HasData: true } col && col.Dimension == _dim)
-                rows.Add(RowOf(ChunkSnapshot.Capture(col), _dim, cx, cz, now));
+                rows.Add(RowOf(col, now));
         }
         return rows;
     }
@@ -453,6 +460,12 @@ public sealed class WorldMemory : IDisposable
 
     private static ChunkRow RowOf(ChunkSnapshot s, int dim, int cx, int cz, DateTimeOffset now) =>
         new(dim, cx, cz, s.Hash, s.Summary(), s.Encode(), now);
+
+    private static ChunkRow RowOf(ChunkColumn column, DateTimeOffset now)
+    {
+        var encoded = ChunkSnapshot.CaptureEncoded(column);
+        return new(column.Dimension, column.ChunkX, column.ChunkZ, encoded.Hash, encoded.Summary, encoded.Data, now);
+    }
 
     /// <summary>A new visit of <paramref name="dim"/>: load what is remembered of it (stale) and open the arrival window.</summary>
     private void Arrive(int dim, DateTimeOffset now)

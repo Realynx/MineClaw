@@ -4,11 +4,81 @@ using MineClaw.Agent.Rag;
 using MineClaw.ViewerBridge.Data;
 using MineClaw.ViewerBridge.Graph;
 using System.Runtime.CompilerServices;
+using System.Collections;
+using System.Reflection;
 
 namespace MineClaw.ViewerBridge.Tests;
 
 public sealed class MemoryBankReloadTests
 {
+    private static Dictionary<long, float[]> StoredVectors(RagIndex rag)
+    {
+        var entries = (IDictionary)typeof(RagIndex).GetField("_vecs", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(rag)!;
+        var result = new Dictionary<long, float[]>();
+        var iterator = entries.GetEnumerator();
+        while (iterator.MoveNext()) result.Add((long)iterator.Key, (float[])iterator.Value!.GetType().GetProperty("Vec")!.GetValue(iterator.Value)!);
+        return result;
+    }
+
+    private sealed class NamedEmbeddings(string model, int dimensions) : IEmbeddingProvider
+    {
+        public string Model => model;
+        public int Dimensions => dimensions;
+        public bool IsAvailable => true;
+        public Task<EmbeddingResponse> EmbedAsync(IReadOnlyList<string> inputs, CancellationToken ct) =>
+            new HashEmbeddings(dimensions).EmbedAsync(inputs, ct);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Replacement_does_not_reuse_vectors_from_a_different_model_or_dimension(bool changeModel)
+    {
+        using var fixture = await FixtureDb.CreateAsync();
+        var config = BridgeConfig.ForTests(new BridgeOptions { DbPath = fixture.Path });
+        using var original = await MemoryBank.OpenAsync(fixture.Path, config.Agent, new HashEmbeddings());
+        var before = StoredVectors(original.Rag);
+        var provider = new NamedEmbeddings(changeModel ? "other-model" : "fake-hash", changeModel ? 48 : 24);
+        var expected = Enumerable.Repeat(0.125f, provider.Dimensions).ToArray();
+        using (var writer = AgentDb.Open(fixture.Path))
+            writer.Exec("UPDATE vectors SET model = $m, dims = $d, vec = $v", ("$m", provider.Model), ("$d", provider.Dimensions), ("$v", VectorMath.ToBlob(expected)));
+        using var replacement = await MemoryBank.OpenAsync(fixture.Path, config.Agent, provider, previous: original);
+        var after = StoredVectors(replacement.Rag);
+        Assert.Equal(before.Count, after.Count);
+        foreach (var (id, vector) in after) { Assert.NotSame(before[id], vector); Assert.Equal(expected, vector); }
+    }
+
+    [Fact]
+    public async Task Replacement_reuses_only_unchanged_vectors_and_remains_independent_after_old_bank_disposal()
+    {
+        using var fixture = await FixtureDb.CreateAsync();
+        var config = BridgeConfig.ForTests(new BridgeOptions { DbPath = fixture.Path });
+        var provider = new HashEmbeddings();
+        var original = await MemoryBank.OpenAsync(fixture.Path, config.Agent, provider);
+        var before = StoredVectors(original.Rag);
+        var changedId = before.Keys.First();
+        var changed = provider.Embed("new flowers roses garden");
+        using (var writer = AgentDb.Open(fixture.Path))
+        {
+            writer.Exec("UPDATE docs SET hash = 'changed-vector' WHERE id = $id", ("$id", changedId));
+            writer.Exec("UPDATE vectors SET hash = 'changed-vector', vec = $v WHERE doc_id = $id",
+                ("$id", changedId), ("$v", VectorMath.ToBlob(changed)));
+        }
+        using var replacement = await MemoryBank.OpenAsync(fixture.Path, config.Agent, provider, previous: original);
+        using var independent = await MemoryBank.OpenAsync(fixture.Path, config.Agent, provider);
+        var after = StoredVectors(replacement.Rag);
+        Assert.Equal(before.Count, after.Count);
+        foreach (var (id, vector) in after)
+            if (id == changedId) { Assert.NotSame(before[id], vector); Assert.Equal(changed, vector); }
+            else Assert.Same(before[id], vector);
+        original.Dispose();
+        var query = new RagQuery { Text = "cobblestone farm", Limit = 10 };
+        var qv = provider.Embed(query.Text);
+        Assert.Equal(independent.Rag.Search(query, qv).Select(h => (h.Ref, h.Cosine)), replacement.Rag.Search(query, qv).Select(h => (h.Ref, h.Cosine)));
+        Assert.True(replacement.Db.ScalarLong("SELECT count(*) FROM docs") > 0);
+        Assert.Empty(replacement.ReadTree(t => t.Validate(), ["missing tree"]));
+    }
+
     [Fact]
     public async Task Completed_cloud_layout_does_not_keep_a_retired_bank_alive()
     {

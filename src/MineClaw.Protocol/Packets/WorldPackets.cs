@@ -436,6 +436,9 @@ public sealed class ChunkSectionsMessage : IPacket
     public int Height { get; init; }
     /// <summary>Whether the packet carried sky light (overworld); false = the regions' sky light is null.</summary>
     public bool HasSkyLight { get; init; }
+    /// <summary>Regions contain only sent sections. For a full chunk the receiver must also clear omitted sections to air,
+    /// block light 0 and sky light 15 (when present), rather than preserving stale terrain from an earlier column.</summary>
+    public bool SectionsOnly { get; init; }
     public IReadOnlyList<ChunkRegion> Regions { get; init; } = [];
     /// <summary>256 biome ids (index z·16 + x) of a full chunk, else null.</summary>
     public byte[]? Biomes { get; init; }

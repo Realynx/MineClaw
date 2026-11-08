@@ -144,7 +144,7 @@ public sealed record ChatRow(long Id, DateTimeOffset At, string Kind, string? Pl
 public sealed class RagIndex : IRetrievalIndex, IDisposable
 {
     /// <param name="Dim">Dimension of a positioned doc; null for positionless docs (never dimension-filtered).</param>
-    private sealed record VecEntry(string Kind, string? Tag, float[] Vec, int? Dim);
+    private sealed record VecEntry(string Kind, string? Tag, float[] Vec, int? Dim, string Hash);
     private sealed record Pending(long Id, string Text, string Hash, string Kind, string? Tag, int? Dim);
 
     private const int CandidateLimit = 40;
@@ -169,7 +169,8 @@ public sealed class RagIndex : IRetrievalIndex, IDisposable
     private int _chatInserts;
 
     public RagIndex(AgentDb db, RagOptions? options = null, IEmbeddingProvider? embedder = null, UsageTracker? usage = null,
-        EmbeddingOptions? embeddingOptions = null, TimeProvider? time = null, ILogger? log = null, bool backgroundEmbedding = true)
+        EmbeddingOptions? embeddingOptions = null, TimeProvider? time = null, ILogger? log = null, bool backgroundEmbedding = true,
+        RagIndex? reuseStoredVectors = null)
     {
         _db = db;
         _o = options ?? new RagOptions();
@@ -178,7 +179,7 @@ public sealed class RagIndex : IRetrievalIndex, IDisposable
         _usage = usage;
         _time = time ?? TimeProvider.System;
         _log = log ?? NullLogger.Instance;
-        LoadVectors();
+        LoadVectors(reuse: reuseStoredVectors);
         if (!_embedder.IsAvailable) _log.LogInformation("embeddings not configured: retrieval runs FTS-only");
         else if (backgroundEmbedding)
         {
@@ -879,21 +880,31 @@ public sealed class RagIndex : IRetrievalIndex, IDisposable
     /// </summary>
     public void ReloadVectors() => LoadVectors(clear: true);
 
-    private void LoadVectors(bool clear = false)
+    private void LoadVectors(bool clear = false, RagIndex? reuse = null)
     {
         if (!_embedder.IsAvailable) return;
         // Convert each blob before advancing the reader. Retaining every blob and then every float array doubled
         // the live vector payload during a refresh (including the bridge's old bank and its replacement).
         var rows = _db.Query("""
-            SELECT v.doc_id, d.kind, d.tag, v.vec, CASE WHEN d.min_x IS NULL THEN NULL ELSE d.dimension END
+            SELECT v.doc_id, d.kind, d.tag, v.vec, CASE WHEN d.min_x IS NULL THEN NULL ELSE d.dimension END, v.hash
             FROM vectors v JOIN docs d ON d.id = v.doc_id WHERE v.model = $m AND v.dims = $d AND v.hash = d.hash
-            """, r => (r.GetInt64(0), r.GetString(1), AgentDb.StrOrNull(r, 2), VectorMath.FromBlob((byte[])r.GetValue(3)), r.IsDBNull(4) ? (int?)null : (int)r.GetInt64(4)),
+            """, r => (r.GetInt64(0), r.GetString(1), AgentDb.StrOrNull(r, 2),
+                reuse?.StoredVector(r.GetInt64(0), r.GetString(5), VecModel, _embedder.Dimensions) ?? VectorMath.FromBlob((byte[])r.GetValue(3)),
+                r.IsDBNull(4) ? (int?)null : (int)r.GetInt64(4), r.GetString(5)),
             ("$m", VecModel), ("$d", _embedder.Dimensions));
         lock (_vecLock)
         {
             if (clear) _vecs.Clear();
-            foreach (var (id, kind, tag, vector, dim) in rows) _vecs[id] = new VecEntry(kind, tag, vector, dim);
+            foreach (var (id, kind, tag, vector, dim, hash) in rows) _vecs[id] = new VecEntry(kind, tag, vector, dim, hash);
         }
+    }
+
+    // Stored vectors are immutable: updates replace entries, and search normalizes only its own query. A replacement
+    // read-only index can share unchanged payloads without retaining the previous index, its database, or its locks.
+    private float[]? StoredVector(long id, string hash, string model, int dimensions)
+    {
+        if (VecModel != model || _embedder.Dimensions != dimensions) return null;
+        lock (_vecLock) return _vecs.TryGetValue(id, out var entry) && entry.Hash == hash && entry.Vec.Length == dimensions ? entry.Vec : null;
     }
 
     public void SignalEmbedding()
@@ -1008,7 +1019,7 @@ public sealed class RagIndex : IRetrievalIndex, IDisposable
                 INSERT OR REPLACE INTO vectors(doc_id, model, dims, hash, vec)
                 SELECT id, $m, $d, $h, $v FROM docs WHERE id = $id AND hash = $h
                 """, ("$id", p.Id), ("$m", VecModel), ("$d", _embedder.Dimensions), ("$h", p.Hash), ("$v", VectorMath.ToBlob(v)));
-            if (n > 0) lock (_vecLock) _vecs[p.Id] = new VecEntry(p.Kind, p.Tag, v, p.Dim);
+            if (n > 0) lock (_vecLock) _vecs[p.Id] = new VecEntry(p.Kind, p.Tag, v, p.Dim, p.Hash);
         }
     }
 

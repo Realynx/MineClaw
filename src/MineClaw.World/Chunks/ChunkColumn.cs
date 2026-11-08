@@ -197,8 +197,14 @@ public sealed class ChunkColumn
     /// <summary>A copy of the block ids in the flat <see cref="Index"/> layout.</summary>
     public byte[] CopyIds() => Flatten(_ids, 0);
 
+    /// <summary>Copies block ids into caller-owned scratch storage in the flat <see cref="Index"/> layout.</summary>
+    public void CopyIds(Span<byte> destination) => Flatten(_ids, 0, destination);
+
     /// <summary>A copy of the metadata (low nibbles) in the flat <see cref="Index"/> layout.</summary>
     public byte[] CopyMeta() => Flatten(_meta, 0);
+
+    /// <summary>Copies metadata into caller-owned scratch storage in the flat <see cref="Index"/> layout.</summary>
+    public void CopyMeta(Span<byte> destination) => Flatten(_meta, 0, destination);
 
     /// <summary>
     /// The light of 16³ section <paramref name="section"/> packed one byte per cell, <c>sky &lt;&lt; 4 | block</c>, in the section's
@@ -222,14 +228,20 @@ public sealed class ChunkColumn
     private byte[] Flatten(byte[]?[] layer, byte def)
     {
         var r = new byte[CellCount];
-        if (def != 0) r.AsSpan().Fill(def);
+        Flatten(layer, def, r);
+        return r;
+    }
+
+    private void Flatten(byte[]?[] layer, byte def, Span<byte> destination)
+    {
+        var r = destination[..CellCount];
+        r.Fill(def); // Pooled scratch can contain an earlier column's formerly allocated sections.
         for (int sec = 0; sec < layer.Length; sec++)
         {
             if (layer[sec] is not { } s) continue;
             int dst = (sec >> 3) << 15 | (sec & 7) << 4;
-            for (int xz = 0; xz < 256; xz++) s.AsSpan(xz << 4, 16).CopyTo(r.AsSpan(dst + xz * SizeY, 16));
+            for (int xz = 0; xz < 256; xz++) s.AsSpan(xz << 4, 16).CopyTo(r.Slice(dst + xz * SizeY, 16));
         }
-        return r;
     }
 
     /// <summary><see cref="ChunkSnapshot.ComputeHash"/> of <see cref="IdData"/> and <see cref="MetaData"/> without copying them

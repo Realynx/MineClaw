@@ -79,15 +79,36 @@ internal static class WireDump
         bool firstMember = true;
         foreach (var m in Members(type))
         {
+            // Storage shape is an implementation detail: this golden pins wire bytes and decoded cell values.
+            // Compact storage and its allocation budget have dedicated ChunkAllocationTests.
+            if (o is MineClaw.Protocol.Packets.ChunkSectionsMessage && m.Name == "SectionsOnly") continue;
             if (!firstMember) sb.Append(' ');
             firstMember = false;
             sb.Append(m.Name).Append('=');
             object? v;
             try { v = m is PropertyInfo p ? p.GetValue(o) : ((FieldInfo)m).GetValue(o); }
             catch (TargetInvocationException ex) { sb.Append('!').Append(ex.InnerException?.GetType().Name); continue; }
+            if (o is MineClaw.Protocol.Packets.ChunkSectionsMessage { SectionsOnly: true, FullChunk: true } chunk && m.Name == "Regions")
+                v = ExpandedRegions(chunk);
             Append(sb, v, depth + 1);
         }
         sb.Append('}');
+    }
+
+    private static List<ChunkRegion> ExpandedRegions(MineClaw.Protocol.Packets.ChunkSectionsMessage chunk)
+    {
+        var full = new ChunkRegion(chunk.ChunkX * 16, 0, chunk.ChunkZ * 16, 16, chunk.Height, 16);
+        if (chunk.HasSkyLight) Array.Fill(full.SkyLight, (byte)15);
+        foreach (var region in chunk.Regions)
+            for (int x = 0; x < 16; x++) for (int z = 0; z < 16; z++)
+            {
+                int from = region.Index(x, 0, z), to = full.Index(x, region.Y, z);
+                region.BlockIds.AsSpan(from, region.SizeY).CopyTo(full.BlockIds.AsSpan(to));
+                region.Metadata.AsSpan(from, region.SizeY).CopyTo(full.Metadata.AsSpan(to));
+                region.BlockLight.AsSpan(from, region.SizeY).CopyTo(full.BlockLight.AsSpan(to));
+                region.SkyLight.AsSpan(from, region.SizeY).CopyTo(full.SkyLight.AsSpan(to));
+            }
+        return [full];
     }
 
     /// <summary>A quoted string; surrogates (a lone one can't be UTF-8 encoded) as \uXXXX.</summary>

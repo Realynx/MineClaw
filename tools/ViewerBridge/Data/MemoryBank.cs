@@ -52,7 +52,8 @@ public sealed class MemoryBank : IDisposable
 
     public static string StateKeyOf(RaptorTree t) => $"{t.BuildId}-{t.Count}-{t.InsertSeq}-{t.NextIndex}";
 
-    public static async Task<MemoryBank> OpenAsync(string path, AgentOptions options, IEmbeddingProvider provider, CancellationToken ct = default)
+    public static async Task<MemoryBank> OpenAsync(string path, AgentOptions options, IEmbeddingProvider provider, CancellationToken ct = default,
+        MemoryBank? previous = null)
     {
         var db = AgentDb.OpenReadOnly(path);
         RagIndex? rag = null;
@@ -65,7 +66,7 @@ public sealed class MemoryBank : IDisposable
                 long same = db.ScalarLong("SELECT count(*) FROM vectors WHERE dims = $d AND model = $m", ("$d", provider.Dimensions), ("$m", provider.Model));
                 if (same == 0 && other > 0) provider = NullEmbeddingProvider.Instance;
             }
-            rag = new RagIndex(db, options.Rag, provider, usage: null, options.Embeddings, backgroundEmbedding: false);
+            rag = new RagIndex(db, options.Rag, provider, usage: null, options.Embeddings, backgroundEmbedding: false, reuseStoredVectors: previous?.Rag);
             bank = new MemoryBank(path, db, rag, provider) { MoodHalfLifeHours = options.Self.MoodHalfLifeHours };
             await Task.Run(() => bank.LoadTreeAsync(options, ct), ct).ConfigureAwait(false);
             return bank;
@@ -244,7 +245,7 @@ public sealed class BankHost(BridgeConfig config, ILogger<BankHost> log) : IDisp
         {
             var sig = Signature(b.Db);
             if (sig == _signature) return;
-            var fresh = await MemoryBank.OpenAsync(b.Path, config.Agent, Embeddings ?? config.CreateEmbeddings());
+            var fresh = await MemoryBank.OpenAsync(b.Path, config.Agent, Embeddings ?? config.CreateEmbeddings(), previous: b);
             MemoryBank? old;
             lock (_reloadLock)
             {

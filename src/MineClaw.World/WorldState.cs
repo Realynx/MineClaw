@@ -431,6 +431,44 @@ public sealed class WorldState : IBlockAccess, IDisposable
             if (p.X >> 4 == chunkX && p.Z >> 4 == chunkZ) Told.TryRemove(p, out _);
     }
 
+    // Private constants copied into column storage by ApplyChunkRegion; never handed to packet consumers.
+    private static readonly byte[] EmptyChunkCells = new byte[16 * 256 * 16];
+    private static readonly byte[] OpenSkyChunkCells = CreateOpenSkyChunkCells();
+
+    private static byte[] CreateOpenSkyChunkCells()
+    {
+        var cells = new byte[EmptyChunkCells.Length];
+        Array.Fill(cells, (byte)15);
+        return cells;
+    }
+
+    /// <summary>Apply a full chunk from compact section slices. Omitted sections become air using constant source buffers;
+    /// lighting and notifications run once after every slice has been written, just as for one expanded full-column region.</summary>
+    public void ApplyChunkSections(int chunkX, int chunkZ, int sectionMask, int height, bool hasSkyLight,
+        IEnumerable<(int Y, int Height, byte[] Ids, byte[] Meta, byte[] BlockLight, byte[] SkyLight)> slices)
+    {
+        if (height is <= 0 or > 256 || height % 16 != 0) throw new ArgumentOutOfRangeException(nameof(height));
+        var newColumns = new List<(int, int)>();
+        int x = chunkX * 16, z = chunkZ * 16;
+        int sections = height / 16;
+        for (int section = 0; section < sections;)
+        {
+            if ((sectionMask & 1 << section) != 0) { section++; continue; }
+            int start = section++;
+            while (section < sections && (sectionMask & 1 << section) == 0) section++;
+            var air = new RegionRun(start * 16, (section - start) * 16, EmptyChunkCells, EmptyChunkCells, EmptyChunkCells, hasSkyLight ? OpenSkyChunkCells : null);
+            WriteRegionData(x, z, 16, 16, air, newColumns);
+        }
+        foreach (var slice in slices)
+        {
+            if (slice.Y < 0 || slice.Height <= 0 || slice.Y + slice.Height > height || slice.Ids.Length < 256 * slice.Height)
+                throw new ArgumentException("chunk slice is outside the full column", nameof(slices));
+            WriteRegionData(x, z, 16, 16,
+                new RegionRun(slice.Y, slice.Height, slice.Ids, slice.Meta, slice.BlockLight, hasSkyLight ? slice.SkyLight : null), newColumns);
+        }
+        CompleteRegion(x, 0, z, 16, height, 16, hasSkyLight, hasBlockLight: true, newColumns);
+    }
+
     /// <summary>
     /// Applies an unpacked 0x33 Map Chunk region. Arrays are one byte per block (nibbles already unpacked),
     /// indexed <c>(dx * sizeZ + dz) * sizeY + dy</c>. Regions may be partial or span several columns; missing
@@ -445,13 +483,24 @@ public sealed class WorldState : IBlockAccess, IDisposable
 
         var newColumns = new List<(int, int)>();
         var region = new RegionRun(originY, sizeY, ids, meta, blockLight, skyLight);
+        WriteRegionData(originX, originZ, sizeX, sizeZ, region, newColumns);
+        CompleteRegion(originX, originY, originZ, sizeX, sizeY, sizeZ, skyLight != null, blockLight != null, newColumns);
+    }
+
+    private void WriteRegionData(int originX, int originZ, int sizeX, int sizeZ, in RegionRun region, List<(int, int)> newColumns)
+    {
         // Iterate column by column so each chunk column is locked once per (dx,dz) run.
         for (int dx = 0; dx < sizeX; dx++)
         for (int dz = 0; dz < sizeZ; dz++)
-            WriteRegionColumn(originX + dx, originZ + dz, (dx * sizeZ + dz) * sizeY, region, newColumns);
+            WriteRegionColumn(originX + dx, originZ + dz, (dx * sizeZ + dz) * region.SizeY, region, newColumns);
+    }
+
+    private void CompleteRegion(int originX, int originY, int originZ, int sizeX, int sizeY, int sizeZ,
+        bool hasSkyLight, bool hasBlockLight, List<(int, int)> newColumns)
+    {
         // Live data replaces what was remembered of these columns.
         if (!_remembered.IsEmpty) ForgetRemembered(originX, originZ, sizeX, sizeZ);
-        Light.OnRegion(originX, originZ, sizeX, sizeZ, hasSky: skyLight != null, hasBlock: blockLight != null);
+        Light.OnRegion(originX, originZ, sizeX, sizeZ, hasSky: hasSkyLight, hasBlock: hasBlockLight);
         foreach (var (cx, cz) in newColumns) ColumnLoaded?.Invoke(cx, cz);
         RegionUpdated?.Invoke(new BlockPos(originX, originY, originZ), new BlockPos(sizeX, sizeY, sizeZ));
     }

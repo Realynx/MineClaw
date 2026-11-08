@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.IO.Compression;
 
 namespace MineClaw.Protocol.Release1122;
@@ -25,29 +26,68 @@ public sealed class Framing
     /// <summary>Reads one frame's payload, or null at a clean end of stream (EOF before the length).</summary>
     public byte[]? Read(Stream s)
     {
+        using var payload = ReadPooled(s);
+        return payload?.Memory.ToArray();
+    }
+
+    /// <summary>A receive buffer owned until synchronous packet translation completes. Public Read still returns an
+    /// independent byte array; packet/traffic consumers must never retain this borrowed memory.</summary>
+    internal sealed class PooledPayload(byte[] bytes, int offset, int length) : IDisposable
+    {
+        private byte[]? _bytes = bytes;
+        public ReadOnlyMemory<byte> Memory => (_bytes ?? throw new ObjectDisposedException(nameof(PooledPayload))).AsMemory(offset, length);
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _bytes, null) is { } b) ArrayPool<byte>.Shared.Return(b);
+        }
+    }
+
+    internal PooledPayload? ReadPooled(Stream s)
+    {
         int first = s.ReadByte();
         if (first < 0) return null;
         int length = ReadVarIntAfter(s, first);
         if (length < 0 || length > MaxPayload + 5) throw new ProtocolException($"frame length {length} out of range");
-        var frame = new byte[length];
-        s.ReadExactly(frame);
-        if (!Compressed) return frame;
-        var r = new WireReader(frame);
-        int dataLength = r.ReadVarInt();
-        if (dataLength == 0) return frame[r.Position..];
-        if (dataLength < Threshold) throw new ProtocolException($"badly compressed packet: size {dataLength} is below the threshold {Threshold}");
-        if (dataLength > MaxPayload) throw new ProtocolException($"badly compressed packet: size {dataLength} is over {MaxPayload}");
-        var payload = new byte[dataLength];
-        using var z = new ZLibStream(new MemoryStream(frame, r.Position, frame.Length - r.Position), CompressionMode.Decompress);
+        byte[]? frame = ArrayPool<byte>.Shared.Rent(length);
         try
         {
-            z.ReadExactly(payload);
+            s.ReadExactly(frame.AsSpan(0, length));
+            int offset = 0;
+            if (Compressed)
+            {
+                var r = new WireReader(frame.AsSpan(0, length));
+                int dataLength = r.ReadVarInt();
+                offset = r.Position;
+                if (dataLength != 0)
+                {
+                    if (dataLength < Threshold) throw new ProtocolException($"badly compressed packet: size {dataLength} is below the threshold {Threshold}");
+                    if (dataLength > MaxPayload) throw new ProtocolException($"badly compressed packet: size {dataLength} is over {MaxPayload}");
+                    return Inflate(frame, offset, length - offset, dataLength);
+                }
+            }
+            var result = new PooledPayload(frame, offset, length - offset);
+            frame = null; // Ownership moves to the lease (including raw frames after compression was enabled).
+            return result;
         }
-        catch (Exception ex) when (ex is EndOfStreamException or InvalidDataException)
+        finally { if (frame != null) ArrayPool<byte>.Shared.Return(frame); }
+    }
+
+    private static PooledPayload Inflate(byte[] frame, int offset, int length, int dataLength)
+    {
+        var payload = ArrayPool<byte>.Shared.Rent(dataLength);
+        try
         {
-            throw new ProtocolException($"compressed packet doesn't inflate to {dataLength} bytes: {ex.Message}", ex);
+            using var z = new ZLibStream(new MemoryStream(frame, offset, length), CompressionMode.Decompress);
+            z.ReadExactly(payload.AsSpan(0, dataLength));
+            return new PooledPayload(payload, 0, dataLength);
         }
-        return payload;
+        catch (Exception ex)
+        {
+            ArrayPool<byte>.Shared.Return(payload);
+            if (ex is EndOfStreamException or InvalidDataException)
+                throw new ProtocolException($"compressed packet doesn't inflate to {dataLength} bytes: {ex.Message}", ex);
+            throw;
+        }
     }
 
     /// <summary>Encodes one payload (id + data) into a full frame (length prefix included).</summary>

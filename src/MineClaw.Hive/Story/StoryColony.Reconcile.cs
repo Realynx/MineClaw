@@ -225,12 +225,16 @@ public sealed partial class StoryColony
     /// </summary>
     private (GhostState Seed, P3 Spot)? FloatingSeed(BuildState b, List<GhostState> open, P3 from)
     {
-        var pending = PendingPlaceCells(b);
+        var cells = PendingPlaceCells(b);
         foreach (var g in open)
             foreach (var n in Neighbours(g.At))
-                if (pending.Contains(n)) return null;
+                if (cells.Contains(n)) return null;
+        // No pending neighbour can provide support. Reuse this search's set for every reserved build cell, including
+        // finished/paused builds, digs and non-job cells. Rebuilding it per candidate made large floating levels allocate MBs.
+        foreach (var owner in Builds)
+            foreach (var ghost in owner.Ghosts) cells.Add(ghost.At);
         foreach (var g in open.Where(g => !g.Remove).OrderBy(g => g.At.Y).ThenBy(g => g.At.Dist(from)))
-            if (ScaffoldSpot(g.At) is { } spot) return (g, spot);
+            if (ScaffoldSpot(g.At, cells) is { } spot) return (g, spot);
         return null;
     }
 
@@ -252,10 +256,9 @@ public sealed partial class StoryColony
 
     /// <summary>Where a scaffold block can go for a floating cell: an open spot beside it (under it first), no build's cell, never on a
     /// container's lid or a workstation (it would shut it), with something to click against itself.</summary>
-    private P3? ScaffoldSpot(P3 cell)
+    private P3? ScaffoldSpot(P3 cell, HashSet<P3> cells)
     {
         if (World is not { } w) return null;
-        var cells = Builds.SelectMany(b => b.Ghosts).Select(g => g.At).ToHashSet();
         foreach (var n in Neighbours(cell))
         {
             var (id, _) = w.Block(n.X, n.Y, n.Z);

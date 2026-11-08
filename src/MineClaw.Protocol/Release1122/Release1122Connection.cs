@@ -141,20 +141,22 @@ public sealed partial class Release1122Connection : IGameConnection
         while (true)
         {
             if (_extra.TryDequeue(out var extra)) return extra;
-            byte[]? payload;
+            Framing.PooledPayload? frame;
             try
             {
-                payload = _framing.Read(_in);
+                frame = _framing.ReadPooled(_in);
             }
             catch (EndOfStreamException ex)
             {
                 throw new ProtocolException("stream ended mid-frame (1.12.2)", ex);
             }
-            if (payload is null) return null;
+            using var lease = frame;
+            if (lease is null) return null;
+            var payload = lease.Memory;
             PacketsReceived++;
-            var r = new WireReader(payload);
+            var r = new WireReader(payload.Span);
             int id = r.ReadVarInt();
-            var body = payload.AsSpan(r.Position);
+            var body = payload.Span[r.Position..];
             IPacket? canonical;
             try
             {
@@ -164,7 +166,7 @@ public sealed partial class Release1122Connection : IGameConnection
             {
                 throw new ProtocolException($"1.12.2 {_state} packet 0x{id:X2} ({body.Length} bytes): {ex.Message}", ex);
             }
-            TrafficLog?.Invoke(new PacketTraffic(PacketDirection.ClientBound, canonical ?? new WirePacket1122(id, body.ToArray()), payload));
+            TrafficLog?.Invoke(new PacketTraffic(PacketDirection.ClientBound, canonical ?? new WirePacket1122(id, body.ToArray()), payload.ToArray()));
             if (canonical is not null) return canonical;
         }
     }
@@ -315,7 +317,7 @@ public sealed partial class Release1122Connection : IGameConnection
 
     private IPacket? TranslateChunkData(ReadOnlySpan<byte> body)
     {
-        var chunk = ChunkData.Decode(body, hasSky: _dimension == 0);
+        var chunk = ChunkData.Decode(body, hasSky: _dimension == 0, compact: true);
         foreach (var be in chunk.BlockEntities) EnqueueChunkBlockEntity(be);
         return chunk;
     }
