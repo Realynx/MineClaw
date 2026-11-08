@@ -2,7 +2,7 @@
 
 /**
  * Settings → Viewer quality: one panel for how every world view of the explorer renders on this device (Live, the bot cards,
- * Story Mode, the Design Studio). Changes apply at once to every mounted viewer; a small live preview shows the effect and
+ * Controller, the Design Studio). Changes apply at once to every mounted viewer; a small live preview shows the effect and
  * measures the frame rate. Docs: docs/web/architecture.md, "Viewer settings".
  */
 import type { CameraMode } from '@mineclaw/world-viewer';
@@ -53,7 +53,7 @@ function ViewerQualitySection() {
           <h2 id="viewer-quality" className="text-base font-semibold text-fg">
             Viewer quality
           </h2>
-          <p className="text-sm text-muted">Applies at once to every world view: Live, the bot cards, Story Mode and the Design Studio.</p>
+          <p className="text-sm text-muted">Applies at once to every world view: Live, the bot cards, Controller and the Design Studio.</p>
         </div>
         <Button size="sm" variant="ghost" onClick={resetViewerSettings}>
           <RotateCcw className="size-3.5" /> Reset to defaults
@@ -189,7 +189,7 @@ function DistanceGroup({ f, set }: { f: Fields; set: SetField }) {
       />
       <Slider
         label="Map ground cover"
-        hint="Top-down and angled maps (Story Mode) draw the ground they show up to this far from the centre."
+        hint="Top-down and angled maps (Controller) draw the ground they show up to this far from the centre."
         value={f.coverCap}
         {...LIMITS.coverCap}
         format={fmtBlocks}
@@ -284,7 +284,7 @@ function OverlaysGroup({ f, set, perfOverlay }: { f: Fields; set: SetField; perf
       <SwitchRow label="Name tags" hint="Names over bots, players, mobs and drops." checked={f.labels} onChange={(v) => set('labels', v)} />
       <SwitchRow label="Chat bubbles" hint="What players and bots say, over their heads." checked={f.bubbles} onChange={(v) => set('bubbles', v)} />
       <SwitchRow label="X-ray silhouettes" hint="Bots and players hidden behind blocks show as outlines." checked={f.xray} onChange={(v) => set('xray', v)} />
-      <SwitchRow label="Build holograms" hint="Story Mode's queued builds as see-through blocks in the world; off: flat outlines on the map." checked={f.holograms} onChange={(v) => set('holograms', v)} />
+      <SwitchRow label="Build holograms" hint="Controller's queued builds as see-through blocks in the world; off: flat outlines on the map." checked={f.holograms} onChange={(v) => set('holograms', v)} />
       <SwitchRow label="Frame rate overlay" hint="A small fps and frame-time readout in the corner of every world view." checked={perfOverlay} onChange={setPerfOverlay} />
     </Group>
   );

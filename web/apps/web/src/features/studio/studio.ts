@@ -394,12 +394,13 @@ export class Studio {
   }
 
   /** Saves the canvas as a design (a new one with `asNew`, else the next revision of the loaded one). */
-  async save(name: string, summary?: string, asNew = false): Promise<DesignerSaveResponse> {
+  async save(name: string, summary?: string, asNew = false, previewPng?: string): Promise<DesignerSaveResponse> {
     await this.flush();
     const body: DesignerSaveRequest = {
       name: name.trim(),
       ...(summary?.trim() ? { summary: summary.trim() } : {}),
       ...(asNew ? { asNew: true } : {}),
+      ...(previewPng ? { previewPng } : {}),
     };
     // What is on the canvas as the save goes out is what the save holds (edits made meanwhile stay unsaved).
     const at = new Map([...this.diverged].map((k) => [k, this.stateAt(k)]));

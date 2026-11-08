@@ -28,6 +28,8 @@ const OVERRIDES: Partial<
   'memory.get': { params: { kind: 'facts', id: '12' } },
   'bots.chat': { body: { text: 'claude, set it to day', requestId: 'r-8f14e45fceea' } },
   'vision.render': { query: { see: '{"mode":"eye"}' } },
+  // Optional PNGs are binary camera captures, not meaningful generated strings; preview-only has its own save flow.
+  'designer.save': { body: { name: 'route test design', asNew: true } },
   'auth.stepUp': { body: { password: 'correct horse battery staple' } },
   'admin.settingsSave': { params: { node: 'local' }, body: { changes: [{ key: 'Supervisor:Viewer:PerMinute', value: 20 }], reason: 'route table test' } },
   // Story Mode: the mock bridge's colony `story-1` (Mock Hollow, founded at start) and its first pawn.

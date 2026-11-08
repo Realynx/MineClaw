@@ -8,6 +8,8 @@ import type { MapTool } from '../StoryMap';
 import { designBlocks, designCells, mineCheck, type DesignBlock } from '../tools';
 import type { Story } from './commands';
 import type { Say } from './state';
+import { releaseTool } from './release';
+import type { V3 } from '../math';
 
 interface DesignEnv {
   say: Say;
@@ -68,7 +70,7 @@ function pickUpMine(env: DesignEnv, id: number, name: string, blocks: DesignBloc
 }
 
 /** Picks design `id` up as the map's design tool (or says why it can't). */
-async function pickUpDesign(env: DesignEnv, id: number) {
+export async function pickUpDesign(env: DesignEnv, id: number) {
   const name = await designName(id);
   let blocks = await savedBlocks(id);
   let converted = '';
@@ -96,4 +98,14 @@ export function useDesignParam({ params, state, say, can, setTool }: Story) {
     if (!Number.isInteger(id) || id < 1) return;
     void pickUpDesign({ say, can, setTool }, id);
   }, [designParam, state, say, can, setTool]);
+}
+
+/** Resolve the design before using the drop coordinate; never rely on a pending React state change. */
+export async function dropDesign(c: Story, id: number, at: V3): Promise<void> {
+  let chosen: MapTool | null = null;
+  await pickUpDesign({ say: c.say, can: c.can, setTool: (tool) => { chosen = tool; } }, id);
+  if (!chosen) return;
+  await releaseTool({ ...c, tool: chosen }, {
+    rect: [at[0], at[2], at[0], at[2]], a: at, b: at, cells: [], entities: [], count: 1, moved: false,
+  }, false);
 }

@@ -131,6 +131,9 @@ export class WorldViewerEngine implements RuntimeView {
 
   // ------------------------------------------------------------------------------------------------------------ public
 
+  /** A bounded PNG of this camera's next rendered frame, without its DOM controls. */
+  capturePng(): Promise<string> { return this.runtime.capturePng(this.id); }
+
   setSource(src: WorldSource): void {
     if (this.ownsRuntime) this.runtime.setSource(src);
   }

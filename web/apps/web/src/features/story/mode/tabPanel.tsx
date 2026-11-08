@@ -4,15 +4,16 @@
  * section through `preserveWriter`).
  */
 import { isWaterTool, STORY_FURNITURE, type StoryArchitectEntry, type StoryPolicy } from '@mineclaw/contracts';
-import type { ReactElement } from 'react';
+import type { ReactElement, ReactNode } from 'react';
 import { AssignPanel } from '../assign/AssignPanel';
 import { GrowingZonesPanel } from '../GrowingZones';
+import { InventoryPanel } from '../InventoryPanel';
+import { DirectivesChat } from '../DirectivesChat';
 import { materialsFor, materialToolOf } from '../materials';
 import type { MapTool } from '../StoryMap';
 import {
   ArchitectPanel,
   ColonyPanel,
-  DirectivesPanel,
   QueuePanel,
   SchedulePanel,
   WorkPanel,
@@ -37,6 +38,7 @@ import {
   zoneBill,
 } from './actions';
 import type { Story } from './commands';
+import { pickUpDesign } from './designParam';
 import { irrigate } from './water';
 
 /** A placeable from the Architect: its default build tool, with it as the material (the build's auto bills craft what's missing). */
@@ -71,6 +73,7 @@ function architectPanel(c: Story) {
       zones={c.state?.zones}
       palette={c.architect.data}
       onPick={(e) => pickPlaceable(c, e)}
+      onDesignPick={(id) => void pickUpDesign(c, id)}
     />
   );
 }
@@ -196,19 +199,20 @@ function colonyPanel(c: Story) {
 }
 
 /** Each tab's window. */
-const TAB_PANELS: Record<TabId, (c: Story) => ReactElement> = {
+const TAB_PANELS: Record<TabId, (c: Story, visible?: boolean) => ReactElement> = {
   architect: architectPanel,
   work: workPanel,
   schedule: schedulePanel,
   queue: queuePanel,
-  directives: (c) => <DirectivesPanel state={c.state} />,
+  directives: (c, visible) => <DirectivesChat state={c.state} canWrite={c.canWrite} visible={visible} />,
   assign: assignPanel,
   colony: colonyPanel,
+  inventory: (c) => <InventoryPanel storages={c.state?.storages} />,
 };
 
 /** The open tab's window (null when no tab is open). */
-export function tabPanel(c: Story) {
-  return c.tab ? TAB_PANELS[c.tab](c) : null;
+export function tabPanel(c: Story, visible = true) {
+  return c.tab ? TAB_PANELS[c.tab](c, visible) : null;
 }
 
 /** Growing zones (GrowingZones.tsx), beside the Colony tab: plant, seeds, status, seek seeds. */
@@ -245,7 +249,7 @@ function growingZones(c: Story) {
 }
 
 /** The zone panels under the Colony tab: growing zones, fishing zones (water, fishers, catches, bills), quarries. */
-export function colonyZones(c: Story) {
+export function colonyZones(c: Story): ReactElement<{ children: ReactNode }> | null {
   if (c.tab !== 'colony') return null;
   return (
     <>

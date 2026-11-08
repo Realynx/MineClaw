@@ -386,10 +386,16 @@ export const resolvers: Partial<Record<RouteId, Resolver>> = {
     return d;
   },
   'designs.list': ({ query }) => misc.designList(query.q as string | undefined),
-  'designs.picture': ({ params }) =>
-    new Response(blockSheetSvg(num(params.id), 640, 400, `design #${String(params.id)}`), {
+  'designs.picture': ({ params }) => {
+    const picture = designer.saved.find((d) => d.id === num(params.id))?.previewPng;
+    if (picture) {
+      const bytes = Uint8Array.from(atob(picture.split(',')[1]!), (c) => c.charCodeAt(0));
+      return new Response(bytes, { headers: { 'Content-Type': 'image/png' } });
+    }
+    return new Response(blockSheetSvg(num(params.id), 640, 400, `design #${String(params.id)}`), {
       headers: { 'Content-Type': 'image/svg+xml' },
-    }),
+    });
+  },
   'designs.diff': ({ params, query }) => {
     const d = misc.designDetail(num(params.id));
     return misc.designDiff(

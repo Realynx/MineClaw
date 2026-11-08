@@ -301,6 +301,7 @@ export class WorldRuntime {
   private entityRadius = 0;
   private flash = 0;
   private readonly renderedAt = new Map<number, number>();
+  private readonly captures = new Map<number, { resolve: (png: string) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }>();
   private readonly tmpDir = new THREE.Vector3();
   /** World brightening from a lightning strike (decays over ~25 frames). */
   private lightningFlash = 0;
@@ -457,7 +458,50 @@ export class WorldRuntime {
     layer.set(badges);
   }
 
+  /** Capture the next fully drawn frame before WebGL clears its drawing buffer. No persistent buffer or extra render. */
+  capturePng(viewId: number): Promise<string> {
+    if (!this.views.has(viewId)) return Promise.reject(new Error('The viewer is not ready.'));
+    if (this.captures.has(viewId)) return Promise.reject(new Error('A picture is already being taken.'));
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.captures.delete(viewId);
+        reject(new Error('The viewer did not draw a picture. Keep the designer visible and try again.'));
+      }, 5000);
+      this.captures.set(viewId, { resolve, reject, timer });
+    });
+  }
+
+  private finishCapture(viewId: number, w: number, h: number): void {
+    const pending = this.captures.get(viewId);
+    if (!pending) return;
+    this.captures.delete(viewId);
+    clearTimeout(pending.timer);
+    try {
+      const image = document.createElement('canvas');
+      const context = image.getContext('2d');
+      if (!context) throw new Error('Pictures are unavailable in this browser.');
+      // Keep the full camera view and fit the JSON body cap, even with a detailed scene.
+      let scale = Math.min(1, 384 / w, 256 / h);
+      let png: string;
+      do {
+        image.width = Math.max(1, Math.round(w * scale));
+        image.height = Math.max(1, Math.round(h * scale));
+        context.drawImage(this.canvas, 0, this.canvas.height - h, w, h, 0, 0, image.width, image.height);
+        png = image.toDataURL('image/png');
+        scale *= 0.8;
+      } while (png.length > 190_000 && image.width > 64);
+      if (png.length > 190_000) throw new Error('The picture is too large.');
+      pending.resolve(png);
+    } catch (e) { pending.reject(e instanceof Error ? e : new Error(String(e))); }
+  }
+
   removeView(v: RuntimeView): void {
+    const pending = this.captures.get(v.id);
+    if (pending) {
+      clearTimeout(pending.timer);
+      pending.reject(new Error('The viewer closed before taking its picture.'));
+      this.captures.delete(v.id);
+    }
     this.views.delete(v.id);
     this.holoViews.get(v.id)?.dispose();
     this.holoViews.delete(v.id);
@@ -1316,7 +1360,7 @@ export class WorldRuntime {
     }
     for (const [id, badges] of this.badgeViews) {
       badges.group.visible = id === s.viewId && s.layers.bots && s.labels && this.q.labels;
-      if (badges.group.visible) badges.show(s.camera, s.dim, this.vpH / Math.max(0.01, s.pxScale ?? 1), s.drawDistance, (name) => this.store.bot(name));
+      if (badges.group.visible) badges.show(s.camera, s.dim, this.vpH / Math.max(0.01, s.pxScale ?? 1), s.drawDistance, (name) => this.store.bot(name), now);
     }
     this.aids.showAt(s.aids ?? null);
     this.showOutlines(s.outlines ?? NO_OUTLINES);
@@ -1329,6 +1373,7 @@ export class WorldRuntime {
     r.setViewport(0, 0, w, h);
     r.setScissor(0, 0, w, h);
     r.render(this.scene, s.camera);
+    if (s.viewId !== undefined) this.finishCapture(s.viewId, w, h);
     if (primary) this.report(now, s, radius);
     if (s.target !== 'primary') {
       const ctx = s.target;

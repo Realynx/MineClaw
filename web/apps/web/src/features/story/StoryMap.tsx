@@ -13,6 +13,7 @@ import { designationCells, type StoryBuild, type StoryColonyState, type StoryArc
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef } from 'react';
 import { useWorldHost } from '@/features/world/integration';
 import { DotMap } from '@/features/world/DotMap';
+import { DESIGN_DRAG_TYPE } from './DesignLibrary';
 import { StoryFlyCrosshair } from './StoryFlyCrosshair';
 import { pawnBadges } from './pawnBadges';
 import { StoryFlyEditor, useStoryFlyEditor } from './StoryFlyEditor';
@@ -137,6 +138,7 @@ export interface StoryMapHandle {
 export interface StoryMapProps {
   state: StoryColonyState | undefined;
   canEdit?: boolean;
+  onDropDesign?: (id: number, at: V3) => void;
   editPalette?: readonly StoryArchitectEntry[];
   onEditPlan?: EditSend;
   selection: Selection;
@@ -1911,7 +1913,25 @@ export const StoryMap =forwardRef<StoryMapHandle, StoryMapProps>(function StoryM
 
   if (!ready) return <div className="absolute inset-0 bg-canvas" aria-busy="true" />;
   return (
-    <div ref={wrap} className="absolute inset-0 overflow-hidden bg-canvas" data-testid="story-map">
+    <div ref={wrap} className="absolute inset-0 overflow-hidden bg-canvas" data-testid="story-map"
+      onDragOver={(event) => {
+        if (props.canEdit && props.onDropDesign && event.dataTransfer.types.includes(DESIGN_DRAG_TYPE) && props.view !== 'fly') {
+          event.preventDefault();
+          event.dataTransfer.dropEffect = 'copy';
+          const bounds = wrap.current?.getBoundingClientRect();
+          if (bounds) updateHover({ x: event.clientX - bounds.left, y: event.clientY - bounds.top });
+        }
+      }}
+      onDrop={(event) => {
+        if (!props.canEdit || !props.onDropDesign || props.view === 'fly') return;
+        const id = Number(event.dataTransfer.getData(DESIGN_DRAG_TYPE));
+        if (!Number.isSafeInteger(id) || id < 1) return;
+        event.preventDefault();
+        const bounds = wrap.current?.getBoundingClientRect();
+        if (!bounds) return;
+        const at = groundCell({ x: event.clientX - bounds.left, y: event.clientY - bounds.top });
+        if (at) props.onDropDesign(id, at);
+      }}>
       {viewerEl}
       <canvas
         ref={canvas}

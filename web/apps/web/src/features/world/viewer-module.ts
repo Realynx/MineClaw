@@ -7,7 +7,7 @@ import { bundleUrls, itemLookById } from '@mineclaw/world-viewer';
 
 export { WorldThumbnail, WorldViewer, WorldViewerProvider, useWorldRuntime, disposeWorldRuntimes } from '@mineclaw/world-viewer';
 /** The body inventory panel's item icons (features/live/inventory): the bundled atlases and the item looks per version. */
-export { itemLookById, loadBundle, blockIconAtlas } from '@mineclaw/world-viewer';
+export { itemLookById, loadBundle, blockIconAtlas, blockIconAtlasAsync } from '@mineclaw/world-viewer';
 
 /** Mock mode only: the package's fixture world, re-keyed onto the mock hive's bots (see ./mockSource.ts). */
 export async function loadMockSource(player?: () => string | null | undefined) {

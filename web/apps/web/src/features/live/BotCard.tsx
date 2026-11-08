@@ -29,7 +29,8 @@ function cardFacts(bot: BotStatusView, n: Now['data'], node: HiveTreeNode | unde
   };
 }
 
-const kindOf = (bot: BotStatusView, n: Now['data'], node: HiveTreeNode | undefined) => bot.kind ?? n?.kind ?? node?.kind;
+const kindOf = (bot: BotStatusView, n: Now['data'], node: HiveTreeNode | undefined) =>
+  bot.kind ?? n?.kind ?? node?.kind;
 
 function vitalsOf(bot: BotStatusView, n: Now['data']) {
   const body = n?.body;
@@ -37,11 +38,21 @@ function vitalsOf(bot: BotStatusView, n: Now['data']) {
 }
 
 /** The 3D thumbnail with its chips and the in-flight call. */
-function CardThumb({ bot, n, kind, compact }: { bot: BotStatusView; n: Now['data']; kind: ReturnType<typeof cardFacts>['kind']; compact?: boolean }) {
+function CardThumb({
+  bot,
+  n,
+  kind,
+  compact,
+}: {
+  bot: BotStatusView;
+  n: Now['data'];
+  kind: ReturnType<typeof cardFacts>['kind'];
+  compact?: boolean;
+}) {
   return (
     <div className={cn('relative w-full border-b border-border', compact ? 'aspect-[2/1]' : 'aspect-[16/9]')}>
-      {/* Subhive bodies redraw less often: twenty of them share one software renderer with the rest of the page. */}
-      <BotThumbnail bot={bot.name} fps={compact ? 2 : 3} className="absolute inset-0" />
+      {/* Every preview obeys the shared FPS slider and the renderer's fair scheduling budget. */}
+      <BotThumbnail bot={bot.name} className="absolute inset-0" />
       <CardChips bot={bot} kind={kind} />
       {n?.inFlight ? (
         <div className="absolute right-2 bottom-2 rounded-md bg-surface px-2 py-1 shadow-card">
@@ -67,12 +78,25 @@ function CardChips({ bot, kind }: { bot: BotStatusView; kind: ReturnType<typeof 
 function CardThought({ now, compact }: { now: Now; compact?: boolean }) {
   const thought = now.data?.thought?.text;
   if (now.isPending) return <Skeleton className="h-4 w-4/5" />;
-  if (thought) return <p className={cn('text-[13px] leading-snug text-muted', compact ? 'line-clamp-1' : 'line-clamp-2')}>“{thought}”</p>;
+  if (thought)
+    return (
+      <p className={cn('text-[13px] leading-snug text-muted', compact ? 'line-clamp-1' : 'line-clamp-2')}>
+        “{thought}”
+      </p>
+    );
   return <p className="text-[13px] text-subtle">No thought yet.</p>;
 }
 
 /** The footer badges: script, held item, and (dev details) the position. */
-function CardBadges({ bot, n, script }: { bot: BotStatusView; n: Now['data']; script: ReturnType<typeof cardFacts>['script'] }) {
+function CardBadges({
+  bot,
+  n,
+  script,
+}: {
+  bot: BotStatusView;
+  n: Now['data'];
+  script: ReturnType<typeof cardFacts>['script'];
+}) {
   const { devDetails } = usePrefs();
   return (
     <div className="mt-auto flex flex-wrap items-center gap-1.5">
@@ -88,13 +112,20 @@ function CardBadges({ bot, n, script }: { bot: BotStatusView; n: Now['data']; sc
 }
 
 /** One bot in the hive grid: thumbnail, vitals, task, one-line thought, script and brain state. Calm by design. */
-function BotCardInner({ bot, node, compact }: { bot: BotStatusView; node: HiveTreeNode | undefined; compact?: boolean }) {
+function BotCardInner({
+  bot,
+  node,
+  compact,
+}: {
+  bot: BotStatusView;
+  node: HiveTreeNode | undefined;
+  compact?: boolean;
+}) {
   const now = useNow(bot.name);
   const n = now.data;
   const f = cardFacts(bot, n, node);
   return (
-    <Link
-      href={`/live/${encodeURIComponent(bot.name)}`}
+    <article
       className={cn(
         'group flex flex-col overflow-hidden rounded-card border border-border bg-surface shadow-card transition-[border-color,box-shadow]',
         'hover:border-border-strong hover:shadow-pop focus-visible:outline-2',
@@ -103,26 +134,50 @@ function BotCardInner({ bot, node, compact }: { bot: BotStatusView; node: HiveTr
       aria-label={`${bot.name}: ${f.task ?? 'idle'}`}
       data-body={bot.name}
     >
-      <CardThumb bot={bot} n={n} kind={f.kind} compact={compact} />
-      <div className={cn('flex flex-1 flex-col', compact ? 'gap-2 p-3' : 'gap-3 p-4')}>
+      <Link
+        href={`/live/${encodeURIComponent(bot.name)}?pane=world`}
+        aria-label={`View ${bot.name} in the world`}
+        className="block focus-visible:outline-2"
+      >
+        <CardThumb bot={bot} n={n} kind={f.kind} compact={compact} />
+      </Link>
+      <Link
+        href={`/live/${encodeURIComponent(bot.name)}`}
+        aria-label={`${bot.name}: ${f.task ?? 'idle'}`}
+        className={cn('flex flex-1 flex-col focus-visible:outline-2', compact ? 'gap-2 p-3' : 'gap-3 p-4')}
+      >
         <div className="flex items-center gap-2">
           <StatusDot status={bot.status} />
-          <h3 className={cn('min-w-0 flex-1 truncate font-semibold text-fg', compact ? 'text-[14px]' : 'text-[15px]')}>{bot.name}</h3>
+          <h3 className={cn('min-w-0 flex-1 truncate font-semibold text-fg', compact ? 'text-[14px]' : 'text-[15px]')}>
+            {bot.name}
+          </h3>
           {f.brainState ? <span className="max-w-[45%] truncate text-xs text-subtle">{f.brainState}</span> : null}
         </div>
         <Vitals hp={f.hp} food={f.food} compact />
         <div className="min-h-0 space-y-1.5">
-          <p className="truncate text-[13px] font-medium text-fg">{f.task ?? <span className="text-subtle">Idle</span>}</p>
+          <p className="truncate text-[13px] font-medium text-fg">
+            {f.task ?? <span className="text-subtle">Idle</span>}
+          </p>
           {f.brainless ? null : <CardThought now={now} compact={compact} />}
         </div>
         <CardBadges bot={bot} n={n} script={f.script} />
-      </div>
-    </Link>
+      </Link>
+    </article>
   );
 }
 
 /** The status-row fields a card shows (its script compared by name, line and status). */
-const CARD_FIELDS = ['name', 'status', 'hp', 'food', 'task', 'brain', 'dim', 'pos', 'kind'] as const satisfies ReadonlyArray<keyof BotStatusView>;
+const CARD_FIELDS = [
+  'name',
+  'status',
+  'hp',
+  'food',
+  'task',
+  'brain',
+  'dim',
+  'pos',
+  'kind',
+] as const satisfies ReadonlyArray<keyof BotStatusView>;
 
 const sameScript = (x: BotStatusView['script'], y: BotStatusView['script']): boolean =>
   x?.name === y?.name && x?.line === y?.line && x?.status === y?.status;

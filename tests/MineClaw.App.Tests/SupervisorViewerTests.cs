@@ -10,6 +10,7 @@ namespace MineClaw.App.Tests;
 internal sealed class FakeViewerData : IViewerData
 {
     public readonly List<RemoteChat> Sent = [];
+    public Func<RemoteChat, bool>? Accept { get; set; }
     public readonly Dictionary<string, BrainContextPage?> Pages = new(StringComparer.OrdinalIgnoreCase);
     public readonly Dictionary<long, MemoryDocInfo> DocTable = [];
 
@@ -22,7 +23,7 @@ internal sealed class FakeViewerData : IViewerData
         _ => null,
     };
 
-    public Task<bool> SendAsync(RemoteChat chat, CancellationToken ct) { Sent.Add(chat); return Task.FromResult(true); }
+    public Task<bool> SendAsync(RemoteChat chat, CancellationToken ct) { Sent.Add(chat); return Task.FromResult(Accept?.Invoke(chat) ?? true); }
 
     public Task<ViewerNow?> NowAsync(string bot, CancellationToken ct) =>
         Task.FromResult<ViewerNow?>(new ViewerNow(bot, DateTimeOffset.UnixEpoch, "awake", null, null, null, "idle", null, new ViewerBody(20, 18, "1,64,2", 0, "stone pickaxe")));

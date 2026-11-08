@@ -4,6 +4,8 @@
  * `data-testid`s — so the components can be split into smaller ones without changing what the page shows.
  */
 import { cleanup, fireEvent, render } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { qk } from '@/lib/api/query';
 import type { ReactElement } from 'react';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { MaterialBar } from '@/features/story/MaterialBar';
@@ -221,15 +223,20 @@ describe('ArchitectPanel', () => {
     const entries = lava
       ? [...S.architect.entries, { ...S.architect.entries[0]!, id: 'lava', kind: 'lava' }]
       : S.architect.entries;
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+    queryClient.setQueryData(qk('designs.list', {}, { q: undefined, limit: 24, offset: 0 }), {
+      total: 1, revisionsTotal: 2, limit: 24, offset: 0,
+      items: [{ id: 8, name: 'Storehouse', status: 'accepted', rev: 2, revisions: 2, hasPicture: true, updated: 100 }],
+    });
     return (
-      <ArchitectPanel
+      <QueryClientProvider client={queryClient}><ArchitectPanel
         tool={into}
         onTool={vi.fn()}
         palette={withPalette ? { ...S.architect, entries } : undefined}
         onPick={withPalette ? vi.fn() : undefined}
         plants={S.ordered.plants}
         zones={S.ordered.zones}
-      />
+      /></QueryClientProvider>
     );
   };
 

@@ -2703,3 +2703,19 @@ Building is queued, colony-sim style. Pawns with Build enabled fill queued build
   materials from stockpiles. A material shortage marks the build blocked and raises an alert. Routes:
   `POST /api/story/colonies/{id}/builds` (add, remove, pause, resume, reorder), with `builds` and `ghosts` in the colony
   state.
+
+
+## Controller workspace and Live Hive (2026-11-08)
+
+The navigation entry is **Controller**, above **Live hive**; its existing `/story` URL and `story` permission remain compatible.
+
+- Freecam pawn activity badges use frame-rate-independent position damping, with immediate resets for teleports. The compact **Freecam tools** toggle contains Inspect/Edit plan, hides while looking around, and **B** opens the block list when editing. Palette icons prepare asynchronously and are shared across openings.
+- Time-loop settings start collapsed. An enabled interval is highlighted directly on the daylight slider, including intervals that cross dawn. Expand the loop control to change or disable it.
+- **Build queue** groups by the placed building's `group` identity. Multiple copies of the same design have separate instance labels. Completed parts contribute to progress; expand for individual parts. Pause/resume, reorder, retry and cancel on a group apply to that placement. Manual orders remain separate. Older named designs without group ids use a narrowly bounded creation batch for display; parts with missing timestamps are left separate.
+- **Inventory**, beside Colony, aggregates the last known contents of every registered colony chest. Double-chest aliases use their newest observation once. Exact item variants remain separate. Search and sort by name or count; unseen chests are identified instead of inventing contents.
+- Colony, Growing zones, Fishing zones, Quarries and Other zones are independent windows. Drag their headers (or use arrow keys on the focused header); positions persist per browser/account/colony. Windows stay within the viewport after resizing. **Reset windows** restores the initial arrangement.
+- In **Work**, drag across pawn names or selection checkboxes to select or deselect a contiguous range without altering priorities. The existing select-all checkbox and bulk role control remain available.
+- **Architect** keeps its tools and palette in one content pane. **Designs**, above Misc, browses the saved design library with pictures, search and paging. Click to pick up a placement or drag a card onto the map; both reuse the design's existing rotation/clearance/build path.
+- Saving in the designer captures the current camera as its picture. Existing cards have **Take picture / Change picture** links; choose N/E/S/W or the current camera and **Update picture**. Updating only the picture does not create a design revision. The snapshot hides editor overlays.
+- **Directives** chats with the actual main hive mind, using its existing chat history/feed. Requests carry the selected colony and are registered directives. The main-only `colony_control` tool reads state, explains payloads and invokes the same validated controller handlers for roles, schedules, zones, builds, bills, storage, gear and colony options. `story_directive` retrieves complete long requests. Sending acknowledges delivery; the reply and visible state report execution. Drafts and pending replies survive switching controller tabs. Refused delivery can be retried without resending to successful recipients. Client window/camera preferences remain local UI settings.
+- Live Hive's shared **Preview FPS** slider saves a cap for all small previews; it does not throttle full World views, Controller, simulation or network updates. The top-level World switch is removed. Click a pawn's preview to open its individual World entry. Hive-tree pawn icons/colors follow their current task; sub hive minds and the main hive mind have distinct color identities.

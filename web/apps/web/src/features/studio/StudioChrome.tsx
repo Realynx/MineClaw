@@ -209,9 +209,9 @@ export function SavedBar(p: {
       <Link
         href={`/story?design=${saved.designId}`}
         className="rounded-md bg-surface px-2 py-1 text-fg hover:bg-surface-2"
-        title="Opens Story Mode with a build placement for this design"
+        title="Opens Controller with a build placement for this design"
       >
-        Build in Story Mode
+        Build in Controller
       </Link>
       <Button
         size="sm"

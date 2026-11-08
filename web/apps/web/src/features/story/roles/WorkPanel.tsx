@@ -8,7 +8,7 @@
  */
 import type { StoryAiBody, StoryCraftTask, StoryPawn, StoryRole, StoryRolesRequest } from '@mineclaw/contracts';
 import { Flame, Undo2, Users } from 'lucide-react';
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Button } from '@/components/ui/primitives';
 import { cn } from '@/lib/utils';
 import { cyclePriority, nextSort, skillTint, sortPawns, WORK_LABELS, WORK_TYPES, type SortKey } from '../model';
@@ -154,6 +154,15 @@ export function WorkPanel(props: WorkProps) {
   const [showRoles, setShowRoles] = useState(false);
   const rows = useMemo(() => sortPawns(pawns, sort), [pawns, sort]);
   const g = useWorkGrid(props);
+  const drag = useRef<{
+    start: number;
+    x: number;
+    y: number;
+    initial: ReadonlySet<string>;
+    select: boolean;
+    moved: boolean;
+  } | null>(null);
+  const suppressClick = useRef(false);
   const pickedNames = rows.filter((p) => g.picked.has(p.name)).map((p) => p.name);
   const withRoles = !!onRole;
   const roleSelect = (value: string | null, onChange: (v: string | null) => void, label: string, testId?: string) => (
@@ -165,20 +174,84 @@ export function WorkPanel(props: WorkProps) {
       className={cn(panel, 'pointer-events-auto max-h-[46vh] overflow-auto p-2')}
       aria-label="Work priorities"
       data-testid="work-panel"
+      onPointerDown={(e) => {
+        if (e.button !== 0 || !withRoles) return;
+        const target = (e.target as HTMLElement).closest<HTMLElement>('[data-pawn-select]');
+        if (!target) return;
+        const start = rows.findIndex((p) => p.name === target.dataset.pawnSelect);
+        if (start < 0) return;
+        suppressClick.current = false;
+        drag.current = {
+          start,
+          x: e.clientX,
+          y: e.clientY,
+          initial: g.picked,
+          select: !g.picked.has(rows[start]!.name),
+          moved: false,
+        };
+        target.setPointerCapture(e.pointerId);
+      }}
+      onPointerMove={(e) => {
+        const d = drag.current;
+        if (!d || (!d.moved && Math.hypot(e.clientX - d.x, e.clientY - d.y) < 4)) return;
+        d.moved = true;
+        e.preventDefault();
+        const bodyRows = [...e.currentTarget.querySelectorAll<HTMLElement>('tr[data-row]')];
+        let end = d.start;
+        let closest = Infinity;
+        bodyRows.forEach((row, i) => {
+          const rect = row.getBoundingClientRect();
+          const distance = Math.abs(e.clientY - Math.max(rect.top, Math.min(e.clientY, rect.bottom)));
+          if (distance < closest) {
+            closest = distance;
+            end = i;
+          }
+        });
+        const next = new Set(d.initial);
+        for (let i = Math.min(d.start, end); i <= Math.max(d.start, end); i++) {
+          if (d.select) next.add(rows[i]!.name);
+          else next.delete(rows[i]!.name);
+        }
+        g.setPicked(next);
+        const rect = e.currentTarget.getBoundingClientRect();
+        if (e.clientY > rect.bottom - 24) e.currentTarget.scrollTop += 14;
+        else if (e.clientY < rect.top + 24) e.currentTarget.scrollTop -= 14;
+      }}
+      onPointerUp={() => {
+        suppressClick.current = drag.current?.moved ?? false;
+        drag.current = null;
+      }}
+      onPointerCancel={() => {
+        drag.current = null;
+        suppressClick.current = false;
+      }}
+      onClickCapture={(e) => {
+        if (suppressClick.current) {
+          e.preventDefault();
+          e.stopPropagation();
+          suppressClick.current = false;
+        }
+      }}
     >
-      {withRoles && pickedNames.length > 0 ? (
-        <div className="mb-1 flex items-center gap-2 px-1 text-[11px]" data-testid="role-bulk">
-          <span className="font-semibold">{pickedNames.length} selected</span>
-          <span className="text-muted">Set role:</span>
-          {roleSelect(
-            null,
-            (v) => g.assign(pickedNames, v),
-            `Set role for ${pickedNames.length} selected pawns`,
-            'role-bulk-select',
+      {withRoles ? (
+        <div className="mb-1 flex h-7 items-center">
+          {pickedNames.length > 0 ? (
+            <div className="flex items-center gap-2 px-1 text-[11px]" data-testid="role-bulk">
+              <span className="font-semibold">{pickedNames.length} selected</span>
+              <span className="text-muted">Set role:</span>
+              {roleSelect(
+                null,
+                (v) => g.assign(pickedNames, v),
+                `Set role for ${pickedNames.length} selected pawns`,
+                'role-bulk-select',
+              )}
+              <button type="button" className="text-subtle hover:text-fg" onClick={() => g.setPicked(new Set())}>
+                Clear
+              </button>
+            </div>
+          ) : (
+            <p className="px-1 text-[10px] text-subtle">Drag across pawn names or checkboxes to select several.</p>
           )}
-          <button type="button" className="text-subtle hover:text-fg" onClick={() => g.setPicked(new Set())}>
-            Clear
-          </button>
         </div>
       ) : null}
       <table className="border-separate border-spacing-0 text-xs">
@@ -294,23 +367,31 @@ function WorkRow({
   onSet: (t: string, back: boolean) => void;
 }) {
   return (
-    <tr data-row={p.name} data-role={r?.id ?? 'custom'}>
+    <tr data-row={p.name} data-role={r?.id ?? 'custom'} className={picked ? 'bg-accent-soft' : undefined}>
       {withRoles ? (
         <td className="pr-1">
           <input
             type="checkbox"
+            data-pawn-select={p.name}
             aria-label={`Select ${p.display}`}
             checked={picked}
             onChange={onToggle}
-            className="size-3.5 accent-[var(--accent)]"
+            className="size-3.5 touch-none accent-[var(--accent)]"
           />
         </td>
       ) : null}
       <td className="pr-2">
-        <span className="flex items-center gap-1.5">
+        <button
+          type="button"
+          data-pawn-select={withRoles ? p.name : undefined}
+          onClick={withRoles ? onToggle : undefined}
+          className="flex touch-none select-none items-center gap-1.5"
+          aria-label={`Select row ${p.display}`}
+          aria-pressed={picked}
+        >
           <Avatar name={p.name} size={18} />
           <span className="font-semibold">{p.display}</span>
-        </span>
+        </button>
       </td>
       {withRoles ? (
         <td className="pr-1">

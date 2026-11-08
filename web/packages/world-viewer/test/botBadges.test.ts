@@ -35,7 +35,8 @@ it('follows live positions, depth-tests against terrain and hides out-of-view or
   expect(sprite.material.depthTest).toBe(true);
   expect(sprite.material.depthWrite).toBe(false);
   const c = camera();
-  const show = (p: { x: number; y: number; z: number; dim: number } | null) => layer.show(c, 0, 600, 64, () => p);
+  let now = 0;
+  const show = (p: { x: number; y: number; z: number; dim: number } | null) => layer.show(c, 0, 600, 64, () => p, now += 600);
   show({ x: 0, y: 64, z: 0, dim: 0 });
   expect(sprite.visible).toBe(true);
   expect(sprite.position.toArray()).toEqual([0, 64 + HEAD_Y.bot, 0]);
@@ -54,6 +55,27 @@ it('follows live positions, depth-tests against terrain and hides out-of-view or
     expect(layer.labelLift(badge.name)).toBe(0);
   }
   layer.dispose();
+});
+
+it('smooths walking and step changes consistently across frame rates without restarting when the job changes', () => {
+  const c = camera();
+  const run = (frames: number) => {
+    const layer = new BotBadgeLayer();
+    layer.set([badge]);
+    layer.show(c, 0, 600, 64, () => ({ x: 0, y: 64, z: 0, dim: 0 }), 0);
+    for (let i = 1; i <= frames; i++) {
+      if (i === 1) layer.set([{ ...badge, activity: 'Hauling' }]);
+      layer.show(c, 0, 600, 64, () => ({ x: 1, y: 65, z: 0, dim: 0 }), (i * 90) / frames);
+    }
+    const sprite = layer.group.children[0] as THREE.Sprite;
+    expect(sprite.position.x).toBeCloseTo(1 - Math.exp(-1));
+    expect(sprite.position.y).toBeCloseTo(64 + HEAD_Y.bot + 1 - Math.exp(-1));
+    layer.show(c, 0, 600, 64, () => ({ x: 0, y: 64, z: -15, dim: 0 }), 100);
+    expect(sprite.position.z).toBe(-15); // teleport is immediate
+    layer.dispose();
+  };
+  run(3);
+  run(12);
 });
 
 it('lifts speech above the two-line badge only while that view shows it', () => {

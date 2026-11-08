@@ -89,7 +89,7 @@ export function disposeWorld(): void {
 }
 
 /** A bot card's live 3D thumbnail (shared renderer, a few fps, paused offscreen), or the dot map until it loads. */
-export function BotThumbnail({ bot, className, fps = 3 }: { bot: string; className?: string; fps?: number }) {
+export function BotThumbnail({ bot, className, fps }: { bot: string; className?: string; fps?: number }) {
   const { mod, source } = useWorldHost();
   if (mod && source) return <mod.WorldThumbnail follow={bot} fps={fps} className={className} title={`${bot} in the world`} />;
   return <DotMap follow={bot} radius={20} className={className} label={false} />;

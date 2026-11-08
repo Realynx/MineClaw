@@ -258,6 +258,9 @@ export const DesignerSaveRequest = z
     name: z.string().trim().min(1).max(48),
     summary: z.string().max(120).optional().describe('the revision message'),
     asNew: z.boolean().optional().describe('save as a new design instead of a new revision of the loaded one'),
+    previewPng: z.string().max(190_000).regex(/^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/).optional()
+      .describe('PNG of the designer camera, at most 384 by 256 pixels'),
+    previewOnly: z.boolean().optional().describe('update the loaded design picture without saving a revision'),
   })
   .strict();
 export type DesignerSaveRequest = z.infer<typeof DesignerSaveRequest>;
@@ -686,6 +689,7 @@ export interface MockSavedDesign {
   dug?: string[];
   revisions: DesignRevision[];
   updated: number;
+  previewPng?: string;
   /** The game version it is drawn for. */
   version?: string;
   /** build | mine, the mine's seed, its version tag, its anchor (a mine's entry). */
@@ -1072,13 +1076,21 @@ export function createDesignerMock(
     },
     save: (
       id: number,
-      body: { name: string; summary?: string; asNew?: boolean },
+      body: DesignerSaveRequest,
       owner: string,
     ): DesignerSaveResponse => {
       const s = get(id);
+      if (body.previewOnly) {
+        const d = saved.find((design) => design.id === s.designId);
+        if (!d || !body.previewPng || body.asNew) throw new Error('updating a picture requires an existing design and a PNG');
+        d.previewPng = body.previewPng;
+        d.updated = Date.now();
+        return { designId: d.id, rev: d.revisions[0]?.rev ?? 1, name: d.name, blocks: d.blocks.length, created: false, text: `Updated picture for ${d.name}.` };
+      }
       if (s.cells.size === 0 && s.holes.size === 0) throw new Error('the canvas is empty');
       const { d, created } = designToSave(s, saved, body, owner, () => nextDesign++);
       copyIntoDesign(d, s, body.name);
+      if (body.previewPng) d.previewPng = body.previewPng;
       const rev = (d.revisions[0]?.rev ?? 0) + 1;
       d.revs = { ...(d.revs ?? {}), [rev]: { blocks: [...d.blocks], dug: [...d.dug!] } };
       d.revisions.unshift({

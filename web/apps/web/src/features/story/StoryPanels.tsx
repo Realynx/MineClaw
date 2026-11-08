@@ -9,29 +9,25 @@ import {
   STORY_HOURS,
   storyClock,
   type StoryAiBody,
-  type StoryArchitectEntry,
-  type StoryArchitectResponse,
   type StoryBuild,
   type StoryBuildMaterial,
   type StoryColonyState,
   type StoryDirective,
   type StoryOnlineBlocked,
   type StoryPawn,
-  type StoryPlant,
   type StoryIdleMode,
   type StoryScheduleBlock,
   type StoryZone,
 } from '@mineclaw/contracts';
 import { ZonePreserve } from './zones/PreservePanel';
 import { buildTitle, isRepairBuild } from './zones/preserve';
+import { buildGroups, reorderBuildGroup, type BuildGroup } from './buildGroups';
 import { zoneCellCount } from './zones/zonePaint';
-import { ZoneToolbar } from './zones/ZoneToolbar';
 import {
   ClipboardPaste,
   Copy,
   GripVertical,
   Home,
-  Lock,
   MapPin,
   Pause,
   Pencil,
@@ -40,25 +36,16 @@ import {
   ShieldCheck,
   Trash2,
 } from 'lucide-react';
-import { useRef, useState, type ReactNode } from 'react';
+import { useRef, useState } from 'react';
 import { Button, Input } from '@/components/ui/primitives';
 import { cn } from '@/lib/utils';
-import {
-  applyPaint,
-  directiveStatusTone,
-  paintRequests,
-  paintSpan,
-  pasteRequest,
-  SCHEDULE_BRUSHES,
-} from './model';
+import { applyPaint, directiveStatusTone, paintRequests, paintSpan, pasteRequest, SCHEDULE_BRUSHES } from './model';
 import { useWorldClock, type WorldClock } from './clock';
 import { panel } from './StoryHud';
 import { BringOnlineBox } from './StoryInspector';
-import { DESIGNATE_TOOLS, FURNITURE_TOOLS, STRUCTURE_TOOLS, WATER_TOOLS } from './tools';
-import type { MapTool } from './StoryMap';
-import { AiMark, ItemIcon, ToolIcon } from './visuals';
+import { AiMark, ToolIcon } from './visuals';
 
-export type TabId = 'architect' | 'work' | 'schedule' | 'assign' | 'queue' | 'directives' | 'colony';
+export type TabId = 'architect' | 'work' | 'schedule' | 'assign' | 'queue' | 'directives' | 'colony' | 'inventory';
 
 export const TABS: ReadonlyArray<{ id: TabId; label: string; key: string }> = [
   { id: 'architect', label: 'Architect', key: 'B' },
@@ -68,6 +55,7 @@ export const TABS: ReadonlyArray<{ id: TabId; label: string; key: string }> = [
   { id: 'queue', label: 'Build queue', key: 'U' },
   { id: 'directives', label: 'Directives', key: 'O' },
   { id: 'colony', label: 'Colony', key: 'I' },
+  { id: 'inventory', label: 'Inventory', key: '' },
 ];
 
 export function TabBar({
@@ -110,235 +98,7 @@ export function TabBar({
   );
 }
 
-// ------------------------------------------------------------------ architect
-
-type ArchCat = 'orders' | 'zones' | 'structure' | 'furniture' | 'production' | 'storage' | 'lighting' | 'water' | 'misc';
-
-const TIER_LABEL: Record<string, string> = {
-  gathered: 'Gathered',
-  hand: 'Hand',
-  workbench: 'Workbench',
-  furnace: 'Furnace',
-};
-
-/** What the colony has of a placeable, can make, or is short of (one line under its name). */
-export function stockLine(e: StoryArchitectEntry): string {
-  if (e.have > 0) return `have ${e.have}`;
-  if (e.craftable > 0)
-    return `craftable ${e.craftable}${e.from.length ? ` from ${e.from.join(', ').toLowerCase()}` : ''}`;
-  if (e.short.length) return `short: ${e.short.join(', ').toLowerCase()}`;
-  return e.tier === 'gathered' ? 'none stored' : '';
-}
-
-/**
- * The Architect's placeables for one tab (the bot's palette: every block and piece of furniture the version has), each with
- * its tier and whether the colony unlocked it. Locked ones are greyed with a lock and the reason; picking an unlocked one
- * arms its build tool with it as the material.
- */
-export function ArchitectPalette({
-  entries,
-  tab,
-  onPick,
-}: {
-  entries: readonly StoryArchitectEntry[];
-  tab: string;
-  onPick: (e: StoryArchitectEntry) => void;
-}) {
-  const list = entries.filter((e) => e.tab === tab);
-  if (!list.length) return null;
-  return (
-    <section
-      className={cn(panel, 'pointer-events-auto max-h-[46vh] w-[22rem] overflow-auto p-2')}
-      aria-label="Placeables"
-      data-testid="architect-palette"
-    >
-      <div className="grid grid-cols-2 gap-1">
-        {list.map((e) => (
-          <button
-            key={e.id}
-            type="button"
-            data-entry={e.id}
-            data-tier={e.tier}
-            data-unlocked={e.unlocked ? 'true' : 'false'}
-            disabled={!e.unlocked}
-            onClick={() => onPick(e)}
-            title={
-              [e.reason, e.chain.length ? `Made: ${e.chain.join(' → ')}` : null].filter(Boolean).join('\n') || e.label
-            }
-            className={cn(
-              'flex min-w-0 items-center gap-1.5 rounded-md border px-1.5 py-1 text-left text-[11px]',
-              e.unlocked
-                ? 'border-border bg-surface-2 hover:border-border-strong'
-                : 'cursor-not-allowed border-dashed border-border bg-surface-1 opacity-50',
-            )}
-          >
-            <ItemIcon id={e.item[0]} meta={e.item[1]} size={20} />
-            <span className="min-w-0 flex-1">
-              <span className="flex items-center gap-1 truncate font-semibold">
-                {e.unlocked ? null : <Lock className="size-3 shrink-0" aria-label="locked" />}
-                <span className="truncate">{e.label}</span>
-              </span>
-              <span className="block truncate text-[10px] text-muted">
-                {TIER_LABEL[e.tier] ?? e.tier}
-                {e.unlocked ? (stockLine(e) ? ` · ${stockLine(e)}` : '') : ` · ${e.reason ?? 'locked'}`}
-              </span>
-            </span>
-          </button>
-        ))}
-      </div>
-    </section>
-  );
-}
-
-const ARCH_CATS: ReadonlyArray<[ArchCat, string]> = [
-  ['orders', 'Orders'],
-  ['zones', 'Zones'],
-  ['structure', 'Structure'],
-  ['furniture', 'Furniture'],
-  ['production', 'Production'],
-  ['storage', 'Storage'],
-  ['lighting', 'Lighting'],
-  ['water', 'Water'],
-  ['misc', 'Misc'],
-];
-
-/** The category the Architect opens on: the one holding the tool in hand. */
-function categoryOf(tool: MapTool): ArchCat {
-  if (tool.kind === 'zone') return 'zones';
-  if (tool.kind === 'storage') return 'storage';
-  if (tool.kind !== 'build') return 'orders';
-  if (tool.id.startsWith('furniture:')) return 'furniture';
-  return WATER_TOOLS.some((w) => w.id === tool.id) ? 'water' : 'structure';
-}
-
-type ToolBtn = (t: MapTool, icon: string, label: string, hint: string, key?: string) => ReactNode;
-
-/** One tool button (pressed while in hand; clicking it again puts it down). */
-function toolButton(tool: MapTool, onTool: (t: MapTool) => void): ToolBtn {
-  const active = (t: MapTool) => JSON.stringify(t) === JSON.stringify(tool);
-  return (t, icon, label, hint, key) => (
-    <button
-      key={label}
-      type="button"
-      onClick={() => onTool(active(t) ? { kind: 'select' } : t)}
-      aria-pressed={active(t)}
-      title={hint}
-      className={cn(
-        'relative flex h-[62px] w-[74px] flex-col items-center justify-center gap-1 rounded-md border text-[11px] leading-tight font-medium',
-        active(t)
-          ? 'border-accent bg-accent-soft text-fg'
-          : 'border-border bg-surface-2 text-muted hover:border-border-strong hover:text-fg',
-      )}
-    >
-      <ToolIcon id={icon} className="size-5" />
-      <span className="text-center">{label}</span>
-      {key ? <span className="absolute top-0.5 right-1 font-mono text-[9px] text-subtle">{key}</span> : null}
-    </button>
-  );
-}
-
-type CatProps = {
-  tool: MapTool;
-  onTool: (t: MapTool) => void;
-  palette?: StoryArchitectResponse;
-  plants?: readonly StoryPlant[] | null;
-  zones?: readonly StoryZone[];
-  btn: ToolBtn;
-};
-
-const loadingPalette = ({ palette }: CatProps) =>
-  palette ? null : <p className="w-56 text-[11px] leading-snug text-muted">Loading what the colony can make…</p>;
-
-/** Each category's tools (the palette's own entries show beside the panel). */
-const CATEGORY_TOOLS: Record<ArchCat, (p: CatProps) => ReactNode> = {
-  orders: ({ btn }) =>
-    DESIGNATE_TOOLS.map((t) => btn({ kind: 'designate', id: t.id }, t.id, t.label, t.hint, t.key.replace('Key', ''))),
-  zones: ({ tool, onTool, plants, zones, btn }) => (
-    <ZoneToolbar tool={tool} onTool={onTool} plants={plants} zones={zones ?? []} btn={btn} />
-  ),
-  structure: ({ btn }) => STRUCTURE_TOOLS.map((s) => btn({ kind: 'build', id: s.id }, s.id, s.label, s.hint)),
-  furniture: ({ btn }) =>
-    FURNITURE_TOOLS.map((f) =>
-      btn({ kind: 'build', id: `furniture:${f.id}` }, f.id, f.label, `Place a ${f.label.toLowerCase()} (Q/E turns)`),
-    ),
-  water: ({ palette, btn }) => (
-    <>
-      {WATER_TOOLS.filter(
-        // Lava only while the colony allows it (the palette lists it then).
-        (w) => w.id !== 'lava' || palette?.entries.some((e) => e.kind === 'lava'),
-      ).map((w) => btn({ kind: 'build', id: w.id }, w.id, w.label, w.hint))}
-      <p className="w-56 text-[11px] leading-snug text-muted" data-testid="water-note">
-        Pawns bring a bucket (3 iron ingots at a crafting table), fill it at still water and pour each cell. Dig the
-        trench first for a canal; a 2×2 infinite source refills.
-      </p>
-    </>
-  ),
-  storage: ({ btn }) => (
-    <>
-      {btn({ kind: 'storage' }, 'storage', 'Register chests', 'Drag over chests: every chest in the area becomes storage')}
-      <p className="w-56 text-[11px] leading-snug text-muted">
-        Loot lives in chests. Drag over chests to register them, then click one (or box-select several) to choose what it
-        keeps and how much it matters.
-      </p>
-    </>
-  ),
-  production: loadingPalette,
-  lighting: loadingPalette,
-  misc: loadingPalette,
-};
-
-export function ArchitectPanel({
-  tool,
-  onTool,
-  palette,
-  onPick,
-  plants,
-  zones,
-}: {
-  tool: MapTool;
-  onTool: (t: MapTool) => void;
-  palette?: StoryArchitectResponse;
-  onPick?: (e: StoryArchitectEntry) => void;
-  /** What a growing zone can grow here (the plant picker under the Zones tools). */
-  plants?: readonly StoryPlant[] | null;
-  /** The colony's zones (the Zones tools name the zone being extended). */
-  zones?: readonly StoryZone[];
-}) {
-  const [cat, setCat] = useState<ArchCat>(categoryOf(tool));
-  const btn = toolButton(tool, onTool);
-  return (
-    <div className="flex items-end gap-2">
-      <section
-        className={cn(panel, 'pointer-events-auto flex w-[34rem] gap-2 p-2')}
-        aria-label="Architect"
-        data-testid="architect"
-      >
-        <div className="flex w-24 flex-col gap-0.5">
-          {ARCH_CATS.map(([id, label]) => (
-            <button
-              key={id}
-              type="button"
-              onClick={() => setCat(id)}
-              aria-pressed={cat === id}
-              className={cn(
-                'rounded px-2 py-1.5 text-left text-xs font-semibold',
-                cat === id ? 'bg-accent-soft text-fg' : 'text-muted hover:bg-surface-2',
-              )}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-        <div className="flex flex-1 flex-wrap content-start gap-1.5">
-          {CATEGORY_TOOLS[cat]({ tool, onTool, palette, plants, zones, btn })}
-        </div>
-      </section>
-      {palette && onPick && cat !== 'orders' && cat !== 'zones' ? (
-        <ArchitectPalette entries={palette.entries} tab={cat} onPick={onPick} />
-      ) : null}
-    </div>
-  );
-}
+export { ArchitectPanel, ArchitectPalette, stockLine } from './ArchitectPanel';
 
 // ------------------------------------------------------------------ work
 
@@ -546,24 +306,23 @@ export function QueuePanel({
   failed?: ReadonlyMap<string, number>;
   onRetry?: (id: string | number) => void;
 }) {
-  const list = [...builds].filter((b) => b.status !== 'done').sort((a, b) => a.order - b.order);
-  // A preserved zone's repairs rest as done while the zone is intact: not a finished build.
-  const done = builds.filter((b) => b.status === 'done' && !isRepairBuild(b)).length;
-  const dragId = useRef<string | number | null>(null);
-  const [over, setOver] = useState<string | number | null>(null);
-  /** Dropping the dragged build on `onto`: it goes before it. */
-  const drop = (onto: string | number) => {
+  const groups = buildGroups(builds);
+  const list = groups.filter((g) => g.active.length);
+  const active = list.flatMap((g) => g.active);
+  const done = groups.filter((g) => !g.active.length && !isRepairBuild(g.builds[0])).length;
+  const dragId = useRef<string | null>(null);
+  const [over, setOver] = useState<string | null>(null);
+  const drop = (onto: string) => {
     setOver(null);
     const from = dragId.current;
     dragId.current = null;
-    if (from === null || from === undefined || from === onto) return;
-    const ids = list.map((x) => x.id).filter((x) => x !== from);
-    ids.splice(ids.indexOf(onto), 0, from);
-    onOp('reorder', ids);
+    if (!canWrite || from === null) return;
+    const ids = reorderBuildGroup(list, from, onto);
+    if (ids.length) onOp('reorder', ids);
   };
   return (
     <section
-      className={cn(panel, 'pointer-events-auto max-h-[46vh] w-[30rem] overflow-auto p-2')}
+      className={cn(panel, 'pointer-events-auto max-h-[55vh] w-[34rem] max-w-full overflow-auto p-2')}
       aria-label="Build queue"
       data-testid="queue-panel"
     >
@@ -571,37 +330,180 @@ export function QueuePanel({
         <p className="p-2 text-xs text-muted">Nothing queued. Pick a structure in the Architect and drag on the map.</p>
       ) : null}
       <ol className="space-y-1">
-        {list.map((b, i) => (
+        {list.map((g, i) => (
           <li
-            key={b.id}
-            data-build={b.id}
+            key={g.key}
+            data-build={g.grouped ? undefined : g.builds[0]!.id}
+            data-build-group={g.grouped ? g.key : undefined}
             draggable={canWrite}
-            onDragStart={() => (dragId.current = b.id)}
+            onDragStart={() => (dragId.current = g.key)}
+            onDragEnd={() => {
+              dragId.current = null;
+              setOver(null);
+            }}
             onDragOver={(e) => {
               e.preventDefault();
-              setOver(b.id);
+              setOver(g.key);
             }}
-            onDragLeave={() => setOver((o) => (o === b.id ? null : o))}
-            onDrop={() => drop(b.id)}
+            onDragLeave={() => setOver((o) => (o === g.key ? null : o))}
+            onDrop={(e) => {
+              e.preventDefault();
+              drop(g.key);
+            }}
             className={cn(
-              'flex items-center gap-2 rounded-md border border-border bg-surface-2 px-2 py-1.5 text-xs',
-              over === b.id && 'border-t-2 border-t-[#f5c542]',
+              'rounded-md border border-border bg-surface-2 px-2 py-1.5 text-xs',
+              over === g.key && 'border-t-2 border-t-[#f5c542]',
             )}
           >
-            <QueueRow
-              b={b}
-              i={i}
-              canWrite={canWrite}
-              onOp={onOp}
-              failedCells={failed?.get(String(b.id)) ?? 0}
-              onRetry={onRetry}
-              others={list}
-            />
+            {g.grouped ? (
+              <QueueGroup
+                group={g}
+                index={i}
+                canWrite={canWrite}
+                onOp={onOp}
+                failed={failed}
+                onRetry={onRetry}
+                others={active}
+              />
+            ) : (
+              <div>
+                <div className="mb-1 text-[9px] tracking-wide text-subtle uppercase">
+                  {isRepairBuild(g.builds[0]) ? 'Zone maintenance' : 'Manual order'}
+                </div>
+                <div className="flex items-center gap-2">
+                  <QueueRow
+                    b={g.active[0]!}
+                    i={i}
+                    canWrite={canWrite}
+                    onOp={onOp}
+                    failedCells={failed?.get(String(g.active[0]!.id)) ?? 0}
+                    onRetry={onRetry}
+                    others={active}
+                  />
+                </div>
+              </div>
+            )}
           </li>
         ))}
       </ol>
       {done ? <p className="mt-1 px-1 text-[10.5px] text-subtle">{done} finished</p> : null}
     </section>
+  );
+}
+
+function QueueGroup({
+  group: g,
+  index,
+  canWrite,
+  onOp,
+  failed,
+  onRetry,
+  others,
+}: {
+  group: BuildGroup;
+  index: number;
+  canWrite: boolean;
+  onOp: QueueOp;
+  failed?: ReadonlyMap<string, number>;
+  onRetry?: (id: string | number) => void;
+  others: readonly StoryBuild[];
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const ids = g.active.map((b) => b.id);
+  const paused = g.active.every((b) => b.status === 'paused');
+  const done = g.builds.reduce((n, b) => n + b.blocksDone, 0);
+  const total = g.builds.reduce((n, b) => n + b.blocksTotal, 0);
+  const failures = g.active.reduce((n, b) => n + (failed?.get(String(b.id)) ?? 0), 0);
+  const problems = [...new Set(g.active.map((b) => b.reason).filter(Boolean))];
+  const label = `${g.title} · ${g.builds[0]!.id}`;
+  return (
+    <>
+      <div className="flex items-center gap-2">
+        <GripVertical className="size-3.5 shrink-0 cursor-grab text-subtle" />
+        <button
+          type="button"
+          className="min-w-0 flex-1 text-left"
+          aria-expanded={expanded}
+          onClick={() => setExpanded(!expanded)}
+        >
+          <span className="text-[9px] tracking-wide text-subtle uppercase">Design / building instance</span>
+          <span className="block truncate font-semibold">
+            {expanded ? '▾' : '▸'} {label}
+          </span>
+          <span className="block text-[10.5px] text-muted">
+            {done}/{total} blocks · {g.active.length} remaining parts
+          </span>
+        </button>
+        <button
+          type="button"
+          disabled={!canWrite || index === 0}
+          className="rounded px-1 text-[10px] text-muted disabled:opacity-30"
+          aria-label={`Build ${label} first`}
+          onClick={() => onOp('reorder', [...ids, ...others.filter((b) => !ids.includes(b.id)).map((b) => b.id)])}
+        >
+          Top
+        </button>
+        <button
+          type="button"
+          disabled={!canWrite}
+          aria-label={`${paused ? 'Resume' : 'Pause'} ${label}`}
+          onClick={() => onOp(paused ? 'resume' : 'pause', ids)}
+        >
+          {paused ? <Play className="size-3.5" /> : <Pause className="size-3.5" />}
+        </button>
+        <button
+          type="button"
+          disabled={!canWrite}
+          className="text-danger"
+          aria-label={`Cancel ${label}`}
+          onClick={() =>
+            onOp(
+              'remove',
+              g.builds.map((b) => b.id),
+            )
+          }
+        >
+          <Trash2 className="size-3.5" />
+        </button>
+      </div>
+      <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-surface-3">
+        <div className="h-full bg-accent" style={{ width: `${total ? Math.min(100, (done / total) * 100) : 0}%` }} />
+      </div>
+      {paused ? <p className="mt-1 text-[10px] text-warn">Paused</p> : null}
+      {problems.slice(0, expanded ? undefined : 2).map((reason) => (
+        <p key={reason} className="mt-1 text-[10px] text-danger">
+          {reason}
+        </p>
+      ))}
+      {failures && onRetry ? (
+        <button
+          type="button"
+          disabled={!canWrite}
+          className="mt-1 text-[10px] text-accent"
+          onClick={() => g.active.filter((b) => failed?.get(String(b.id))).forEach((b) => onRetry(b.id))}
+        >
+          Retry failed cells ({failures})
+        </button>
+      ) : null}
+      {expanded ? (
+        <ol className="mt-2 space-y-1 border-l border-border pl-2">
+          {g.builds.map((b, i) => (
+            <li key={b.id} data-build={b.id} className="flex items-center gap-2 rounded border border-border p-1.5">
+              <QueueRow
+                b={b}
+                i={i}
+                canWrite={canWrite}
+                onOp={onOp}
+                failedCells={failed?.get(String(b.id)) ?? 0}
+                onRetry={onRetry}
+                others={others}
+                grouped
+              />
+            </li>
+          ))}
+        </ol>
+      ) : null}
+    </>
   );
 }
 
@@ -620,6 +522,7 @@ function QueueRow({
   failedCells,
   onRetry,
   others,
+  grouped = false,
 }: {
   b: StoryBuild;
   i: number;
@@ -628,6 +531,7 @@ function QueueRow({
   failedCells: number;
   onRetry?: (id: string | number) => void;
   others: readonly StoryBuild[];
+  grouped?: boolean;
 }) {
   const paused = b.status === 'paused';
   const title = buildTitle(b);
@@ -650,23 +554,28 @@ function QueueRow({
         ))}
       </div>
       <span
-        className={cn('rounded px-1 text-[10px] font-semibold uppercase', STATUS_TONE[b.status] ?? 'bg-surface-3 text-muted')}
+        className={cn(
+          'rounded px-1 text-[10px] font-semibold uppercase',
+          STATUS_TONE[b.status] ?? 'bg-surface-3 text-muted',
+        )}
       >
         {b.status}
       </span>
+      {!grouped ? (
+        <button
+          type="button"
+          disabled={!canWrite || i === 0}
+          onClick={() => onOp('reorder', [b.id, ...others.filter((x) => x.id !== b.id).map((x) => x.id)])}
+          className="rounded px-1 text-[10px] font-semibold text-muted hover:bg-surface-3 disabled:opacity-30"
+          title="Build first"
+          aria-label={`Build ${title} first`}
+        >
+          Top
+        </button>
+      ) : null}
       <button
         type="button"
-        disabled={!canWrite || i === 0}
-        onClick={() => onOp('reorder', [b.id, ...others.filter((x) => x.id !== b.id).map((x) => x.id)])}
-        className="rounded px-1 text-[10px] font-semibold text-muted hover:bg-surface-3 disabled:opacity-30"
-        title="Build first"
-        aria-label={`Build ${title} first`}
-      >
-        Top
-      </button>
-      <button
-        type="button"
-        disabled={!canWrite}
+        disabled={!canWrite || b.status === 'done'}
         onClick={() => onOp(paused ? 'resume' : 'pause', [b.id])}
         className="rounded p-0.5 hover:bg-surface-3"
         aria-label={paused ? `Resume ${title}` : `Pause ${title}`}
@@ -881,7 +790,13 @@ export function ColonyPanel({
       <ColonyList colonies={colonies} current={current} onSwitch={onSwitch} />
       {state ? (
         <>
-          <ColonyActions state={state} canWrite={canWrite} onPause={onPause} onRelease={onRelease} onResume={onResume} />
+          <ColonyActions
+            state={state}
+            canWrite={canWrite}
+            onPause={onPause}
+            onRelease={onRelease}
+            onResume={onResume}
+          />
           {state.options && onOptions ? (
             <ColonyOptions opts={state.options} canWrite={canWrite} onOptions={onOptions} />
           ) : null}
@@ -991,7 +906,8 @@ function ColonyActions({
   );
 }
 
-type ColonyFlag = 'autoPlaceBenches' | 'detectBenches' | 'unfilteredStorageTakesAnything' | 'keepDisallowed' | 'rescueTeleport';
+type ColonyFlag =
+  'autoPlaceBenches' | 'detectBenches' | 'unfilteredStorageTakesAnything' | 'keepDisallowed' | 'rescueTeleport';
 
 /** The colony's on / off options, in the panel's order. */
 const COLONY_FLAGS: ReadonlyArray<{ key: ColonyFlag; label: string; title: string }> = [
@@ -1078,7 +994,8 @@ function capText(seats: NonNullable<StoryColonyState['seats']>): string {
  * upper limit, so the line says which real limit keeps the rest out (or the free seats when nothing does).
  */
 function SeatsLine({ seats }: { seats: NonNullable<StoryColonyState['seats']> }) {
-  const memory = seats.memoryRoom === null || seats.memoryRoom === undefined ? '' : ` · memory: room for ${seats.memoryRoom} more`;
+  const memory =
+    seats.memoryRoom === null || seats.memoryRoom === undefined ? '' : ` · memory: room for ${seats.memoryRoom} more`;
   return (
     <div className="text-muted" data-testid="colony-seats">
       {seats.online} of {seats.wanted} pawns in game
@@ -1169,8 +1086,8 @@ function HomeBox({
         <MigrateConfirm migrate={migrate} onConfirm={onConfirmMove} onCancel={onCancelMove} />
       ) : (
         <p className="text-[10.5px] text-subtle">
-          {centre ? `Here is ${centre[0]}, ${centre[2]}: the map centre.` : 'Here is the map centre.'} Pawns far from the
-          new home are brought to it.
+          {centre ? `Here is ${centre[0]}, ${centre[2]}: the map centre.` : 'Here is the map centre.'} Pawns far from
+          the new home are brought to it.
         </p>
       )}
     </div>
@@ -1393,8 +1310,8 @@ export function NewColony({
         )}
       </p>
       <p className="text-[10.5px] text-subtle">
-        Pawns are script-only bodies running the colony script. Any number: as many as the server&apos;s seats and memory allow come
-        now, the rest join as room frees up.
+        Pawns are script-only bodies running the colony script. Any number: as many as the server&apos;s seats and
+        memory allow come now, the rest join as room frees up.
       </p>
       <Button type="submit" size="sm" variant="primary" disabled={!canWrite}>
         Found colony

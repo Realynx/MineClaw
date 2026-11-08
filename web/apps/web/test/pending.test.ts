@@ -125,3 +125,18 @@ describe('reconcile', () => {
     expect(p.error).toBe('viewer chat disabled');
   });
 });
+
+
+it('does not let an earlier failed delivery echo or intervening reply resolve a retried directive', () => {
+  const pending = onAccepted(createPending('maid_chan', 'Set the schedule', 'retry-request-1'), { accepted: true, id: 'dir1', feedSeq: 12 });
+  const previous = [line(10, 'viewer', { requestId: 'retry-request-1' }), line(11, 'said')];
+  const waiting = reconcile([pending], previous);
+  expect(waiting.resolved).toEqual([]);
+  expect(waiting.pending[0]?.viewerSeq).toBe(12);
+  expect(waiting.pending[0]?.echoed).toBe(false);
+  const withEcho = reconcile(waiting.pending, [...previous, line(12, 'viewer', { requestId: 'retry-request-1' })]);
+  expect(withEcho.resolved).toEqual([]);
+  expect(withEcho.pending[0]?.viewerSeq).toBe(12);
+  expect(withEcho.pending[0]?.echoed).toBe(true);
+  expect(reconcile(withEcho.pending, [...previous, line(12, 'viewer', { requestId: 'retry-request-1' }), line(13, 'said')]).resolved).toEqual(['retry-request-1']);
+});

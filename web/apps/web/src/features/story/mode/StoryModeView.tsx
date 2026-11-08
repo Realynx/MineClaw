@@ -4,12 +4,15 @@
  * toast, the tab bar, chat) plus the confirm dialogs and the context menu.
  */
 import { isWaterTool } from '@mineclaw/contracts';
+import { Children } from 'react';
 import { Maximize2, Minimize2 } from 'lucide-react';
 import { ChatOverlay } from '@/features/world/InWorld';
 import { cn } from '@/lib/utils';
 import { AttackConfirm, PickupDialog } from '../assign/GearActions';
 import { draftedOf, rememberConfirm } from '../assign/gear';
 import { MaterialBar } from '../MaterialBar';
+import { ColonyWorkspace } from '../ColonyWorkspace';
+import { RetainedPanel } from '../RetainedPanel';
 import { clickBody, EMPTY_SELECTION, slowestSpeed } from '../model';
 import {
   ColonistBar,
@@ -44,6 +47,7 @@ import {
   stalledCount,
 } from './actions';
 import type { Story } from './commands';
+import { dropDesign } from './designParam';
 import { openContext, pickMenu } from './menu';
 import { releaseTool } from './release';
 import { selectionInspector } from './SelectionInspector';
@@ -75,6 +79,7 @@ export function StoryMapSlot({ c }: Props) {
       canEdit={c.canWrite && !!state}
       editPalette={c.architect.data?.entries}
       onEditPlan={(cells, buildId) => c.write('story.builds', { op: 'edit', cells, ...(buildId ? { buildId } : {}) })}
+      onDropDesign={(id, at) => void dropDesign(c, id, at)}
       selection={selection}
       tool={tool}
       build={matHover ? { ...build, material: matHover.material } : build}
@@ -238,7 +243,7 @@ function NoColonyCard({ c }: Props) {
   return (
     <div className="absolute inset-0 grid place-items-center">
       <div className={cn(panel, 'pointer-events-auto w-96 space-y-2 p-4')}>
-        <h2 className="text-base font-semibold">Story Mode</h2>
+        <h2 className="text-base font-semibold">Controller</h2>
         <p className="text-xs text-muted">
           Run a colony of pawns: script-only bodies that take work by your priorities and schedule. Pan to where they
           should settle, then found it.
@@ -352,20 +357,35 @@ export function StoryHudLayer({ c }: Props) {
       ) : null}
       {c.noColony ? <NoColonyCard c={c} /> : null}
 
+      {c.tab === 'colony' ? (
+        <PreserveContext.Provider value={preserveWriter(c)}>
+          <ColonyWorkspace
+            key={`${c.me.username}:${c.id}`}
+            storageKey={`mcx-controller-windows:${c.me.username}:${c.id}`}
+            windows={[
+              { id: 'colony', title: 'Colony', content: tabPanel(c) },
+              ...Children.toArray(colonyZones(c)?.props.children).map((content, i) => ({
+                id: ['growing', 'fishing', 'quarries', 'other'][i]!,
+                title: ['Growing zones', 'Fishing zones', 'Quarries', 'Other zones'][i]!,
+                content,
+              })),
+            ]}
+          />
+        </PreserveContext.Provider>
+      ) : null}
+
       {/* bottom: inspector + the open tab's window, the tab bar, the toast, the chat */}
       <div className="absolute right-[22rem] bottom-9 left-2 flex flex-col items-start gap-2">
         <PreserveContext.Provider value={preserveWriter(c)}>
           <div
-            className={
-              c.tab === 'colony'
-                ? 'pointer-events-auto flex max-w-full items-end gap-2 overflow-x-auto pb-1 [&>section]:shrink-0'
-                : 'flex max-w-[calc(100vw-1rem)] items-end gap-2'
-            }
+            className="flex max-w-[calc(100vw-1rem)] items-end gap-2"
             data-testid="story-panel-strip"
           >
             {selectionInspector(c)}
-            {tabPanel(c)}
-            {colonyZones(c)}
+            {c.tab !== 'colony' && c.tab !== 'directives' ? tabPanel(c) : null}
+            <RetainedPanel key={`${c.me.username}:${c.id}`} active={c.tab === 'directives'}>
+              {tabPanel({ ...c, tab: 'directives' }, c.tab === 'directives')}
+            </RetainedPanel>
           </div>
         </PreserveContext.Provider>
         <WaterConfirmSlot c={c} />

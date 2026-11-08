@@ -245,13 +245,64 @@ export interface IconAtlas {
 }
 
 const atlases = new Map<string, IconAtlas>();
+const atlasJobs = new Map<string, Promise<IconAtlas>>();
+type AtlasEntry = { id: number; meta: number; icon?: string | null };
+
+function atlasKey(bundle: AssetBundle, entries: readonly AtlasEntry[], size: number): string {
+  return `${bundle.version}:${size}:${entries.map((e) => `${e.id}.${e.meta}.${e.icon ?? ''}`).join(',')}`;
+}
+
+/** Build a palette during idle slices, sharing the cached result and any in-flight request with every opener. */
+export function blockIconAtlasAsync(bundle: AssetBundle, entries: readonly AtlasEntry[], size = 32): Promise<IconAtlas> {
+  const key = atlasKey(bundle, entries, size);
+  const hit = atlases.get(key);
+  if (hit) return Promise.resolve(hit);
+  const pending = atlasJobs.get(key);
+  if (pending) return pending;
+  const job = new Promise<IconAtlas>((resolve, reject) => {
+    const cols = 16, rows = Math.max(1, Math.ceil(entries.length / cols));
+    const c = document.createElement('canvas');
+    c.width = cols * size;
+    c.height = rows * size;
+    const g = c.getContext('2d');
+    if (!g) { reject(new Error('Block icons need a 2D canvas')); return; }
+    const index = new Map<string, number>();
+    let next = 0;
+    const schedule = () => {
+      if (typeof requestIdleCallback === 'function') requestIdleCallback(draw, { timeout: 150 });
+      else setTimeout(draw, 0);
+    };
+    const draw = () => {
+      try {
+        const start = performance.now();
+        do {
+          const i = next++, e = entries[i];
+          if (!e) break;
+          index.set(`${e.id}:${e.meta}`, i);
+          try { drawBlockIcon(g, bundle, e.id, e.meta, size, (i % cols) * size, Math.floor(i / cols) * size, e.icon); }
+          catch { /* A single unavailable model leaves its slot empty. */ }
+          g.setTransform(1, 0, 0, 1, 0, 0);
+          g.filter = 'none';
+        } while (next < entries.length && performance.now() - start < 4);
+        if (next < entries.length) { schedule(); return; }
+        const atlas = { url: c.toDataURL('image/png'), size, cols, rows, index };
+        atlases.set(key, atlas);
+        resolve(atlas);
+      } catch (error) { reject(error instanceof Error ? error : new Error(String(error))); }
+    };
+    schedule();
+  });
+  atlasJobs.set(key, job);
+  void job.then(() => atlasJobs.delete(key), () => atlasJobs.delete(key));
+  return job;
+}
 
 /**
  * Every entry's icon in one image (cached per version, size and entry list): the palette shows them as CSS background
  * positions of a single sheet. Needs a DOM canvas.
  */
 export function blockIconAtlas(bundle: AssetBundle, entries: ReadonlyArray<{ id: number; meta: number; icon?: string | null }>, size = 32): IconAtlas {
-  const key = `${bundle.version}:${size}:${entries.length}:${entries.map((e) => `${e.id}.${e.meta}`).join(',')}`;
+  const key = atlasKey(bundle, entries, size);
   const hit = atlases.get(key);
   if (hit) return hit;
   const cols = 16, rows = Math.max(1, Math.ceil(entries.length / cols));

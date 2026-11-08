@@ -248,6 +248,8 @@ it('edits only in explicit mode, stacks on optimistic holograms and leaves ordin
   props.state = { id: 'colony', version: '1.12.2', rev: 1, builds: [], ghosts: { rev: 1, blocks: [] } } as unknown as StoryMapProps['state'];
   render(<StoryMap {...props} view="fly" canEdit onEditPlan={edit} />);
   const block = { kind: 'block' as const, x: 0, y: 64, z: 3, id: 4, meta: 0, face: 2, name: 'Cobble', distance: 3 };
+  expect(screen.queryByRole('button', { name: 'Edit plan' })).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: 'Freecam tools' }));
   fireEvent.click(screen.getByRole('button', { name: 'Edit plan' }));
   act(() => viewer.aimClick!(block, { shift: false, ctrl: false, button: 2 }));
   expect(edit).not.toHaveBeenCalled(); // acquisition click never edits
@@ -278,9 +280,31 @@ it('does not attach edits or additions to transient preserve repair items', () =
     ghosts: { rev: 1, blocks: [[0, 64, 3, 4, 0, 'repair', 'pending']] },
   } as unknown as StoryMapProps['state'];
   render(<StoryMap {...props} view="fly" canEdit onEditPlan={edit} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Freecam tools' }));
   fireEvent.click(screen.getByRole('button', { name: 'Edit plan' }));
   expect(screen.queryByRole('option', { name: /Preserve repair/ })).not.toBeInTheDocument();
   viewer.locked = true;
   act(() => viewer.aimClick!({ kind: 'block', x: 0, y: 64, z: 3, id: 4, meta: 0, face: 2, name: 'Cobble', distance: 3, plan: 'repair' }, { shift: false, ctrl: false, button: 0 }));
   expect(edit).toHaveBeenCalledExactlyOnceWith([[0, 64, 3, 0, 0]], undefined);
+});
+
+it('hides freecam tools while looking around and opens blocks with B while editing', () => {
+  const props = mapProps();
+  props.state = { id: 'colony', version: 'b1.8.1', rev: 1, builds: [] } as unknown as StoryMapProps['state'];
+  render(<StoryMap {...props} view="fly" canEdit onEditPlan={vi.fn()} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Freecam tools' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Edit plan' }));
+  Object.defineProperty(document, 'pointerLockElement', { configurable: true, value: screen.getByTestId('fake-viewer') });
+  fireEvent(document, new Event('pointerlockchange'));
+  expect(screen.queryByTestId('fly-editor')).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Freecam tools' })).not.toBeInTheDocument();
+  const key = new KeyboardEvent('keydown', { code: 'KeyB', key: 'b', cancelable: true, bubbles: true });
+  fireEvent(window, key);
+  expect(key.defaultPrevented).toBe(true);
+  expect(screen.getByRole('dialog', { name: 'Block palette' })).toBeInTheDocument();
+  Object.defineProperty(document, 'pointerLockElement', { configurable: true, value: null });
+  fireEvent(document, new Event('pointerlockchange'));
+  fireEvent.click(screen.getByRole('button', { name: 'Close the palette' }));
+  expect(screen.getByRole('button', { name: 'Freecam tools' })).toBeInTheDocument();
+  expect(screen.queryByTestId('fly-editor')).not.toBeInTheDocument();
 });

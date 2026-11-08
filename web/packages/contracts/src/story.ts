@@ -1778,9 +1778,16 @@ export const StoryDirectiveSpec = z
     filter: StoryMineFilter.optional(),
     build: z.array(StoryBuildItem).max(64).optional(),
     bill: StoryBillSpec.extend({ bench: Vec3i }).strict().optional(),
-    text: z.string().trim().min(1).max(500).optional(),
+    text: z.string().trim().min(1).max(4000).optional(),
+    colony: z.string().regex(/^[A-Za-z0-9_.:-]{1,80}$/).optional().describe('Controller chat: target this colony through the main bot.'),
   })
-  .strict();
+  .strict()
+  .superRefine((d, ctx) => {
+    if (d.colony && (d.kind !== 'text' || !d.text))
+      ctx.addIssue({ code: 'custom', path: ['colony'], message: 'Colony chat requires text.' });
+    if (!d.colony && d.text && d.text.length > 200)
+      ctx.addIssue({ code: 'custom', path: ['text'], message: 'Map directives allow at most 200 characters.' });
+  });
 export type StoryDirectiveSpec = z.infer<typeof StoryDirectiveSpec>;
 
 export const StoryDirectiveRequest = z
@@ -1797,6 +1804,7 @@ export const StoryDirectiveResponse = z.object({
   delivered: z.union([z.boolean(), z.array(z.string())]).describe('true, or the bots that got it'),
   line: z.string().nullish().describe('the one chat line it became'),
   design: z.union([z.string(), z.number()]).nullish(),
+  feedSeq: z.number().int().nullish().describe('Controller chat: latest viewer echo for this delivery attempt.'),
 });
 export type StoryDirectiveResponse = z.infer<typeof StoryDirectiveResponse>;
 

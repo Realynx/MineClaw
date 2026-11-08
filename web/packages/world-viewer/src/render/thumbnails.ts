@@ -11,6 +11,7 @@ import type { Interest } from '../world/sync';
 import { lookDir } from './cameraRig';
 import { newViewId, type RuntimeView, type ViewSetup, type WorldRuntime } from './runtime';
 import type { Centre } from './sections';
+import { thumbnailFrameRate } from './previewRate';
 
 export interface ThumbnailViewOptions {
   /** Camera behind the bot (default) or at the Explorer's fixed angle (yaw 315). */
@@ -19,7 +20,7 @@ export interface ThumbnailViewOptions {
   distance?: number;
   /** Camera pitch in degrees (default 28). */
   pitch?: number;
-  /** Renders per second (default 3; 1..10). */
+  /** Renders per second, bounded by the shared preview ceiling (default: that ceiling). */
   fps?: number;
   /** Blocks drawn around the bot (default 40). */
   drawDistance?: number;
@@ -135,7 +136,7 @@ export class ThumbnailView implements RuntimeView {
   private due(rt: WorldRuntime, now: number): boolean {
     if (!this.onScreen) return false;
     if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return false;
-    const fps = Math.max(0.5, Math.min(10, (this.opts.fps ?? 3) * rt.quality.state.profile.thumbFpsScale));
+    const fps = thumbnailFrameRate(this.opts.fps, rt.quality.state.profile.thumbFpsScale);
     return now - this.lastAt >= 1000 / fps && rt.takeSlot();
   }
 

@@ -30,7 +30,7 @@ export function savedDesigns(): DesignSummary[] {
     rev: d.revisions[0]?.rev ?? 1,
     revisions: Math.max(1, d.revisions.length),
     updated: d.updated,
-    hasPicture: false,
+    hasPicture: !!d.previewPng,
     version: d.version ?? null,
     kind: d.kind ?? null,
   }));

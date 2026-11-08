@@ -476,7 +476,7 @@ public sealed class DesignerRoutes
     private sealed record Selection(int[]? Min, int[]? Max);
     private sealed record MessageBody(string? Text, string? Model, CanvasRef? Canvas, Selection? Selection, string? Player, string? Who);
     private sealed record CanvasBody(int Rev, OpBody[]? Ops, int[]? Anchor, bool? ClearAnchor, string? Player, string? Who);
-    private sealed record SaveBody(string? Name, string? Summary, bool? AsNew, string? Player, string? Who);
+    private sealed record SaveBody(string? Name, string? Summary, bool? AsNew, string? Player, string? Who, string? PreviewPng, bool? PreviewOnly);
 
     /// <summary>The user's edits applied in order; null = nothing malformed. Each changed cell is summarised for the AI's next turn.</summary>
     private static string? ApplyEdits(DesignerSessionRecord s, OpBody[]? ops, out int applied) => ApplyEdits(s, ops, out applied, out _);
@@ -604,11 +604,39 @@ public sealed class DesignerRoutes
         var b = Parse<SaveBody>(r.Body);
         if (b == null || string.IsNullOrWhiteSpace(b.Name)) return Reply(400, new { error = "body must be JSON {name, summary?, as_new?}" });
         if (b.Summary is { Length: > 120 }) return Reply(400, new { error = "summary over 120 chars" });
+        if (!TryPicture(b.PreviewPng, out var picture)) return Reply(400, new { error = "preview_png must be a PNG up to 384 by 256 pixels and 190000 base64 characters" });
+        if (b.PreviewOnly == true)
+        {
+            if (picture == null || b.AsNew == true) return Reply(400, new { error = "updating a picture requires preview_png and an existing design" });
+            if (s.DesignId is not { } did || svc.Store.Get(did) is not { } existing) return Reply(400, new { error = "save the design before taking its picture" });
+            svc.Store.Update(existing, picture);
+            return Reply(200, new { design_id = did, rev = existing.Rev, name = existing.Name, blocks = s.Canvas.Count, created = false, text = $"Updated picture for {existing.Name}." });
+        }
         var res = DesignerSave.Save(svc, s, b.Name, b.Summary, Requester(b.Player, b.Who), b.AsNew == true, _bot());
         if (!res.Ok) return Reply(400, new { error = res.Text });
+        if (picture != null && svc.Store.Get(res.DesignId) is { } record) svc.Store.Update(record, picture);
         _store.Update(s);
         _store.AddMessage(s.Id, "assistant", res.Text);
         return Reply(200, new { design_id = res.DesignId, rev = res.Rev, name = s.Name, blocks = res.Blocks, created = res.Created, text = res.Text });
+    }
+
+    private static bool TryPicture(string? source, out byte[]? bytes)
+    {
+        bytes = null;
+        if (source == null) return true;
+        const string prefix = "data:image/png;base64,";
+        if (source.Length > 190000 || !source.StartsWith(prefix, StringComparison.Ordinal)) return false;
+        try
+        {
+            var decoded = System.Convert.FromBase64String(source[prefix.Length..]);
+            // Bound dimensions before decoding compressed pixels.
+            if (MineClaw.Render.Png.Header(decoded) is not { Width: > 0 and <= 384, Height: > 0 and <= 256 }) return false;
+            _ = MineClaw.Render.Png.Decode(decoded);
+            bytes = decoded;
+            return true;
+        }
+        catch (Exception e) when (e is FormatException or InvalidDataException or ArgumentException or EndOfStreamException or NotSupportedException or IndexOutOfRangeException or OverflowException)
+        { return false; }
     }
 
     // ------------------------------------------------------------------ helpers

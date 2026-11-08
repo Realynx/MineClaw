@@ -55,7 +55,7 @@ import {
 } from './tools';
 import type { MapTool } from './StoryMap';
 import { AiMark, Avatar, ToolIcon } from './visuals';
-import { TimeRangeEditor } from './TimeRangeEditor';
+import { TimeRangeEditor, timeRangeSpans } from './TimeRangeEditor';
 
 export const panel = 'rounded-lg border border-border bg-surface/95 text-fg shadow-pop';
 
@@ -1036,6 +1036,12 @@ export function TimeSlider({
     <div className="space-y-0.5" data-testid="time-control" title={hint}>
       <div className="flex items-center gap-2">
         <span className="w-10 shrink-0 tabular-nums font-medium">{tickClock(value)}</span>
+        <div className="relative h-4 min-w-0 flex-1">
+          <div className="pointer-events-none absolute inset-x-0 top-[5px] h-1.5 overflow-hidden rounded-full bg-surface-3" aria-hidden>
+            {timeRangeSpans(control?.range).map((span) => (
+              <span key={span.left} className="absolute inset-y-0 bg-[#f5c542]/65" style={{ left: `${span.left}%`, width: `${span.width}%` }} data-testid="time-loop-highlight" />
+            ))}
+          </div>
         <input
           type="range"
           min={0}
@@ -1052,8 +1058,9 @@ export function TimeSlider({
           }}
           onPointerUp={commit}
           onKeyUp={commit}
-          className="h-1.5 flex-1 cursor-pointer accent-[#f5c542] disabled:cursor-not-allowed disabled:opacity-50"
+          className="relative block h-4 w-full cursor-pointer appearance-none bg-transparent accent-[#f5c542] disabled:cursor-not-allowed disabled:opacity-50 [&::-webkit-slider-runnable-track]:bg-transparent [&::-moz-range-track]:bg-transparent [&::-webkit-slider-thumb]:size-3 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-[#f5c542] [&::-moz-range-thumb]:size-3 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:border-0 [&::-moz-range-thumb]:bg-[#f5c542]"
         />
+        </div>
       </div>
       <div className="relative ml-12 h-3 text-[9.5px] text-subtle" aria-hidden>
         {DAY_MARKS.map(([t, name]) => (

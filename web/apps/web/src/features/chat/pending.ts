@@ -87,11 +87,12 @@ export function reconcile(
 
 /** The message with its viewer line's seq once the feed echoes it (matched by seq or request id). */
 function withEcho(p: PendingMessage, lines: readonly FeedLine[], aliases: readonly string[]): PendingMessage {
-  const echo = lines.find(
+  const echo = lines.findLast(
     (l) =>
       l.kind === 'viewer' &&
       sameBot(l, p.bot, aliases) &&
-      ((p.viewerSeq !== null && l.seq === p.viewerSeq) || (!!l.requestId && l.requestId === p.requestId)),
+      ((p.viewerSeq !== null && l.seq === p.viewerSeq) ||
+        (!!l.requestId && l.requestId === p.requestId && (p.viewerSeq === null || l.seq >= p.viewerSeq))),
   );
   // Only a real change makes a new object: callers compare by identity to decide whether anything changed (a fresh
   // object on every pass made ChatPane's reconcile effect set state forever while a reply was pending).

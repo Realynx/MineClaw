@@ -151,6 +151,10 @@ export function designerReply(env: MockEnv, call: MockCall): Reply | null {
 
 /** The fixture's designs with the studio's saved ones first. */
 function designsListReply(env: MockEnv, call: MockCall): Reply | null {
+  if (call.id === 'designs.picture') {
+    const picture = env.designer.saved.find((d) => d.id === Number(call.params.id))?.previewPng;
+    return picture ? { bytes: Buffer.from(picture.split(',')[1]!, 'base64'), type: 'image/png' } : null;
+  }
   if (call.id !== 'designs.list') return null;
   const base = env.dataFor(call.id, call.params) as { items?: Obj[]; total?: number };
   const saved = env.designer.saved.map((d) => ({
@@ -161,7 +165,7 @@ function designsListReply(env: MockEnv, call: MockCall): Reply | null {
     rev: d.revisions[0]?.rev ?? 1,
     revisions: d.revisions.length,
     updated: d.updated,
-    has_picture: false,
+    has_picture: !!d.previewPng,
     version: d.version ?? null,
     kind: d.kind ?? null,
   }));

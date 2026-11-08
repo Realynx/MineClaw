@@ -277,10 +277,12 @@ public sealed partial class SupervisorStoryRoutes(SupervisorOptions o, StoryColo
         if (input == null) return refused!;
         var (dir, err) = await directives.SendAsync(input.Bots, input.Directive, input.Player, input.Commands, S(b, "request_id"), ct).ConfigureAwait(false);
         if (dir == null) return err!.StartsWith("no such bot", StringComparison.Ordinal) ? Reply(404, new JsonObject { ["error"] = err }) : Bad(err);
-        return Reply(200, new JsonObject
+        var reply = new JsonObject
         {
             ["id"] = dir.Id, ["delivered"] = new JsonArray(dir.Delivered.Select(x => (JsonNode)x!).ToArray()), ["line"] = dir.Line, ["design"] = dir.Design,
-        });
+        };
+        if (dir.FeedText != null) reply["feed_seq"] = dir.ViewerSeq;
+        return Reply(200, reply);
     }
 
     /// <summary>A directive request: the trusted player sending it, the directive, the bots it goes to, whether commands are allowed.</summary>
@@ -293,6 +295,15 @@ public sealed partial class SupervisorStoryRoutes(SupervisorOptions o, StoryColo
         if (player == null) return (null, Reply(403, new JsonObject { ["error"] = "player is not trusted (Agent:Self:TrustedPlayers)" }));
         if (b["directive"] is not JsonObject d) return (null, Bad("directive must be {kind, area?, targets?, filter?, build?, bill?, text?}"));
         var bots = b["bots"] is JsonArray ba ? ba.Select(x => x?.GetValue<string>() ?? "").Where(x => x.Length > 0).ToList() : [];
+        if (d["colony"] != null)
+        {
+            if (S(d, "colony") is not { Length: > 0 } colony || colonies.Get(colony) == null) return (null, NoColony());
+            if (S(d, "kind") != "text") return (null, Bad("colony context requires a text directive"));
+            // The client cannot redirect a Controller request to an arbitrary pawn or hive.
+            var main = ai?.Invoke().FirstOrDefault(b => b.IsMain);
+            if (main == null) return (null, Reply(503, new JsonObject { ["error"] = "main bot is unavailable" }));
+            bots = [main.Name];
+        }
         if (bots.Count == 0) return (null, Bad("bots required"));
         if (S(b, "request_id") is { } rid && !System.Text.RegularExpressions.Regex.IsMatch(rid, @"^[A-Za-z0-9_.:\-]{1,64}$"))
             return (null, Bad("request_id: 1-64 of A-Z a-z 0-9 _ . : -"));

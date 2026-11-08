@@ -17,7 +17,7 @@ export { cellIndex, unpackSnapshot, parseLight, lightPacked } from './wire/chunk
 export { hashKey } from './wire/hash';
 export { blockName, type GameVersion } from './world/blocks';
 export { itemLookById, itemName, type ItemLook } from './render/entities/items';
-export { blockIconUrl, blockIconAtlas, drawBlockIcon, type IconAtlas } from './render/icons';
+export { blockIconUrl, blockIconAtlas, blockIconAtlasAsync, drawBlockIcon, type IconAtlas } from './render/icons';
 export type { BotView, EntityView } from './world/entities';
 export { HologramLayer, boxLines, type HologramStats } from './render/holograms';
 export { BOT_DETAIL_MIN } from './render/entityLayer';

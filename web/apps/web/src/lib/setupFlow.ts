@@ -21,7 +21,7 @@ export const ROLE_INFO: ReadonlyArray<{ role: Role; label: string; hint: string 
   { role: 'admin', label: 'Admin', hint: 'memory edits, rebuilds, backups, shard import, the audit log' },
   { role: 'chat', label: 'Chat', hint: 'talk to the bots as the linked player' },
   { role: 'commands', label: 'Commands', hint: 'your chat lines may arm command grants (with Chat)' },
-  { role: 'story', label: 'Story Mode', hint: 'run colonies: orders, work, schedules, builds (Admin can too)' },
+  { role: 'story', label: 'Controller', hint: 'run colonies: orders, work, schedules, builds (Admin can too)' },
   { role: 'design', label: 'Design Studio', hint: 'co-design builds with a model and save them (Admin can too)' },
   { role: 'viewer', label: 'Viewer', hint: 'read everything (every account can)' },
 ];

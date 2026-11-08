@@ -41,7 +41,7 @@ public sealed class ViewerFeed(int capacity = 1000, TimeProvider? time = null)
     /// <summary>Adds a line; returns its seq (0 = empty text, nothing added).</summary>
     public long Add(string bot, string kind, string? from, string text, string origin, string? requestId = null)
     {
-        var line = OneLine(text);
+        var line = OneLine(text, kind == "viewer" && origin == "viewer" ? 4000 : MaxText);
         if (line.Length == 0) return 0;
         lock (_lock)
         {
@@ -65,9 +65,9 @@ public sealed class ViewerFeed(int capacity = 1000, TimeProvider? time = null)
 
     public long Last { get { lock (_lock) return _next; } }
 
-    private static string OneLine(string? text)
+    private static string OneLine(string? text, int maxText)
     {
         var t = (text ?? "").Replace("\r", "").Replace('\n', ' ').Trim();
-        return t.Length > MaxText ? t[..(MaxText - 1)] + "…" : t;
+        return t.Length > maxText ? t[..(maxText - 1)] + "…" : t;
     }
 }

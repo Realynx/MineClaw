@@ -33,8 +33,8 @@ export const NAV: NavGroup[] = [
   {
     label: 'Live',
     items: [
+      { href: '/story', label: 'Controller', icon: Castle, description: 'Manage your colony, plans and pawns', keywords: ['story', 'colony', 'pawns', 'build', 'work', 'schedule'] },
       { href: '/live', label: 'Live hive', icon: Radio, description: 'Bots, thoughts, scripts and chat', keywords: ['bots', 'hive', 'world'] },
-      { href: '/story', label: 'Story Mode', icon: Castle, description: 'Run a colony of pawns from a top-down map', keywords: ['colony', 'pawns', 'build', 'work', 'schedule'] },
       { href: '/memory-activity', label: 'Memory activity', icon: Activity, description: 'Which memories each brain is using, as a map or a cloud', keywords: ['heat', 'raptor', 'context', 'tree', 'graph', 'cluster', 'cloud', 'umap'] },
     ],
   },

@@ -1,10 +1,31 @@
 'use client';
 
-import { ArrowLeft, Box, Brain, Bug, ChevronDown, Eye, History, LayoutPanelLeft, MessageSquareText, Package, Wrench } from 'lucide-react';
+import {
+  ArrowLeft,
+  Box,
+  Brain,
+  Bug,
+  ChevronDown,
+  Eye,
+  History,
+  LayoutPanelLeft,
+  MessageSquareText,
+  Package,
+  Wrench,
+} from 'lucide-react';
 import Link from 'next/link';
-import { useParams } from 'next/navigation';
-import { useState } from 'react';
-import { Badge, Button, Card, CardHeader, EmptyState, ErrorState, Skeleton, SkeletonLines } from '@/components/ui/primitives';
+import { useParams, useRouter, useSearchParams } from 'next/navigation';
+import { Suspense, useState } from 'react';
+import {
+  Badge,
+  Button,
+  Card,
+  CardHeader,
+  EmptyState,
+  ErrorState,
+  Skeleton,
+  SkeletonLines,
+} from '@/components/ui/primitives';
 import { Segmented } from '@/components/ui/overlays';
 import { ChatPane } from '@/features/chat/ChatPane';
 import { InFlight, KIND_LABEL, StatusDot, useHiveIndex, Vitals } from '@/features/live/common';
@@ -55,7 +76,7 @@ function ownerOf(n: NowData | undefined, view: BotView | undefined, node: HiveNo
 type Kind = ReturnType<typeof botFacts>['kind'];
 type Owner = ReturnType<typeof botFacts>['owner'];
 
-export default function BotPage() {
+function BotPageInner() {
   const { bot: raw } = useParams<{ bot: string }>();
   const bot = decodeURIComponent(raw);
   const { devDetails } = usePrefs();
@@ -63,7 +84,11 @@ export default function BotPage() {
   const now = useNow(bot);
   const hive = useHiveIndex();
   const view = status.data?.bots.find((b) => b.name === bot);
-  const [pane, setPane] = useState<Pane>('now');
+  const params = useSearchParams();
+  const router = useRouter();
+  const pane: Pane = params.get('pane') === 'world' ? 'world' : 'now';
+  const setPane = (next: Pane) =>
+    router.replace(`/live/${encodeURIComponent(bot)}${next === 'world' ? '?pane=world' : ''}`, { scroll: false });
   const [history, setHistory] = useState<false | 'turns' | 'context'>(false);
   const [vision, setVision] = useState(false);
   const [debug, setDebug] = useState(false);
@@ -107,7 +132,11 @@ export default function BotPage() {
             />
           )}
         </div>
-        <ChatPane bot={bot} aliases={aliases} className="h-[32rem] border-t border-border bg-surface lg:h-auto lg:border-t-0 lg:border-l" />
+        <ChatPane
+          bot={bot}
+          aliases={aliases}
+          className="h-[32rem] border-t border-border bg-surface lg:h-auto lg:border-t-0 lg:border-l"
+        />
       </div>
 
       <HistoryDrawer
@@ -125,11 +154,27 @@ export default function BotPage() {
   );
 }
 
+export default function BotPage() {
+  return (
+    <Suspense fallback={null}>
+      <BotPageInner />
+    </Suspense>
+  );
+}
+
 function NoSuchBot({ bot }: { bot: string }) {
   return (
     <div className="p-6">
       <Card>
-        <EmptyState title={`No bot called ${bot}`} hint="It may have gone offline." action={<Link href="/live" className="text-sm text-accent">Back to the hive</Link>} />
+        <EmptyState
+          title={`No bot called ${bot}`}
+          hint="It may have gone offline."
+          action={
+            <Link href="/live" className="text-sm text-accent">
+              Back to the hive
+            </Link>
+          }
+        />
       </Card>
     </div>
   );
@@ -151,13 +196,21 @@ function BotHeader(p: {
   const { n, kind, owner } = p;
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-border bg-surface px-4 py-3 sm:px-6">
-      <Link href="/live" aria-label="Back to the hive" className="grid size-8 place-items-center rounded-lg text-muted hover:bg-surface-2 hover:text-fg">
+      <Link
+        href="/live"
+        aria-label="Back to the hive"
+        className="grid size-8 place-items-center rounded-lg text-muted hover:bg-surface-2 hover:text-fg"
+      >
         <ArrowLeft className="size-4" />
       </Link>
       <StatusDot status={p.view?.status} />
       <h1 className="text-lg font-semibold tracking-tight text-fg">{p.bot}</h1>
       {kind ? <Badge>{KIND_LABEL[kind]}</Badge> : null}
-      {owner && kind !== 'main' ? <Link href={`/live/${encodeURIComponent(owner)}`} className="text-xs text-muted hover:text-fg">of {owner}</Link> : null}
+      {owner && kind !== 'main' ? (
+        <Link href={`/live/${encodeURIComponent(owner)}`} className="text-xs text-muted hover:text-fg">
+          of {owner}
+        </Link>
+      ) : null}
       {n?.brainState ? <span className="text-sm text-muted">{n.brainState}</span> : null}
       <div className="ml-auto flex flex-wrap items-center gap-1.5">
         <Segmented<Pane>
@@ -166,8 +219,22 @@ function BotHeader(p: {
           value={p.pane}
           onChange={p.setPane}
           options={[
-            { value: 'now', label: <><LayoutPanelLeft className="size-3.5" /> Now</> },
-            { value: 'world', label: <><Box className="size-3.5" /> World</> },
+            {
+              value: 'now',
+              label: (
+                <>
+                  <LayoutPanelLeft className="size-3.5" /> Now
+                </>
+              ),
+            },
+            {
+              value: 'world',
+              label: (
+                <>
+                  <Box className="size-3.5" /> World
+                </>
+              ),
+            },
           ]}
         />
         <span className="mx-1 h-5 w-px bg-border" aria-hidden />
@@ -199,7 +266,11 @@ function WorldView({ bot, n }: { bot: string; n: NowData | undefined }) {
         </WorldHost>
       </div>
       <div className="flex flex-wrap items-center gap-4 border-t border-border bg-surface px-5 py-3 text-sm">
-        {n?.body ? <div className="w-64"><Vitals hp={n.body.hp} food={n.body.food} compact /></div> : null}
+        {n?.body ? (
+          <div className="w-64">
+            <Vitals hp={n.body.hp} food={n.body.food} compact />
+          </div>
+        ) : null}
         <p className="min-w-0 flex-1 truncate text-muted">{n?.thought?.text}</p>
       </div>
     </div>
@@ -250,7 +321,8 @@ function ThoughtCard(p: {
       </div>
       <div className="flex flex-wrap items-center gap-x-5 gap-y-2 border-t border-border px-5 py-3 text-[13px]">
         <span className="min-w-0 text-muted">
-          <span className="text-subtle">Task</span> <span className="font-medium text-fg">{n?.task ?? p.view?.task ?? 'Idle'}</span>
+          <span className="text-subtle">Task</span>{' '}
+          <span className="font-medium text-fg">{n?.task ?? p.view?.task ?? 'Idle'}</span>
         </span>
         {n?.tool ? <ToolInHand tool={n.tool} /> : null}
       </div>
@@ -275,7 +347,11 @@ function ThoughtText({ now, kind }: { now: NowQuery; kind: Kind | undefined }) {
   if (now.error) return <ErrorState error={now.error} onRetry={() => void now.refetch()} />;
   const text = now.data?.thought?.text;
   if (text) return <p className="text-[17px] leading-relaxed text-pretty text-fg">{text}</p>;
-  return <p className="text-muted">{kind === 'script' ? 'This body runs a script only; it has no brain of its own.' : 'No thought yet.'}</p>;
+  return (
+    <p className="text-muted">
+      {kind === 'script' ? 'This body runs a script only; it has no brain of its own.' : 'No thought yet.'}
+    </p>
+  );
 }
 
 /** The hidden thinking's toggle (kept by the page, so it survives pane switches and new thoughts). */
@@ -293,7 +369,9 @@ function Thinking({ text, toggle }: { text: string; toggle: ThinkingToggle }) {
         <ChevronDown className={cn('size-3.5 transition-transform', showThinking && 'rotate-180')} />
         {showThinking ? 'Hide thinking' : 'Show thinking'}
       </button>
-      {showThinking ? <p className="mt-2 border-l-2 border-border pl-3 text-sm leading-relaxed text-muted italic">{text}</p> : null}
+      {showThinking ? (
+        <p className="mt-2 border-l-2 border-border pl-3 text-sm leading-relaxed text-muted italic">{text}</p>
+      ) : null}
     </div>
   );
 }
@@ -321,7 +399,11 @@ function BodyCard(p: {
   const { view } = p;
   return (
     <Card>
-      <CardHeader title="Body" icon={<Package className="size-4" />} subtitle={body?.held ? `Holding ${body.held}` : undefined} />
+      <CardHeader
+        title="Body"
+        icon={<Package className="size-4" />}
+        subtitle={body?.held ? `Holding ${body.held}` : undefined}
+      />
       <div className="space-y-3 p-5">
         <BodyVitals body={body} view={view} />
         <div className="flex flex-wrap gap-x-6 gap-y-1 text-xs text-muted">

@@ -63,6 +63,7 @@ const { WorldViewerEngine } = await import('../src/render/engine');
 const { ThumbnailView } = await import('../src/render/thumbnails');
 const { SectionManager } = await import('../src/render/sections');
 const { resetViewerQuality, setViewerQuality, viewerStatus } = await import('../src/render/viewerQuality');
+const { DEFAULT_PREVIEW_FPS, setPreviewFps } = await import('../src/render/previewRate');
 const { createFixtureSource } = await import('../src/testing');
 
 const EPOCH = 1_700_000_000_000;
@@ -148,6 +149,7 @@ const random = rng(4242);
 let copyCanvasNext = false;
 
 beforeAll(() => {
+  setPreviewFps(10); // This rendering fixture pins a 10 FPS thumbnail, independent of the user's preview ceiling.
   const g = globalThis as Record<string, unknown>;
   g.requestAnimationFrame = () => 0;
   g.cancelAnimationFrame = () => undefined;
@@ -169,6 +171,7 @@ beforeAll(() => {
   vi.spyOn(Math, 'random').mockImplementation(random);
 });
 afterAll(() => {
+  setPreviewFps(DEFAULT_PREVIEW_FPS);
   resetViewerQuality();
   vi.restoreAllMocks();
 });
@@ -367,7 +370,7 @@ describe('frame golden', () => {
     const frames = log.filter((l) => l.startsWith('---- frame')).length;
     expect(frames).toBe(25);
     expect(log.filter((l) => l.startsWith('render.camera')).length).toBeGreaterThan(40);
-    // Only the interactive-view priority metadata changes; rendering and camera output match the previous trace.
-    expect(a).toBe('6e8cbb9a3730a4553df245508d947bac');
+    // Includes badge-era label cache keys and speech-bubble ordering; matches the isolated 21cf234 baseline trace.
+    expect(a).toBe('4409f6464d20b00f2f7f430c32397317');
   }, 30000);
 });

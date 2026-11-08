@@ -126,6 +126,14 @@ export class Overlay3D {
     );
   }
 
+  /** Keep editor handles, selection, grid and temporary ghosts out of a saved camera picture. */
+  async withoutGuides<T>(capture: () => Promise<T>): Promise<T> {
+    const visible = this.group.visible;
+    this.group.visible = false;
+    try { return await capture(); }
+    finally { this.group.visible = visible; }
+  }
+
   setGrid(on: boolean): void {
     const g = this.group.getObjectByName('grid');
     if (g) g.visible = on;

@@ -1,6 +1,6 @@
 'use client';
 
-import type { FeedLine } from '@mineclaw/contracts';
+import type { ChatAccepted, FeedLine } from '@mineclaw/contracts';
 import { ArrowDown, EyeOff, Eye, Gamepad2, Globe, Lock, RotateCcw, Send } from 'lucide-react';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import { api, ApiError, errorText } from '@/lib/api/client';
@@ -23,7 +23,7 @@ import {
 } from './pending';
 
 const PRIVATE = new Set(['internal', 'muted']);
-const MAX = 256;
+const DEFAULT_MAX = 256;
 
 function Line({ line, mine, bot }: { line: FeedLine; mine: boolean; bot: string }) {
   if (line.kind === 'system') {
@@ -142,11 +142,22 @@ function TypingHint({ bot, slow }: { bot: string; slow: boolean }) {
 }
 
 /** The conversation with one bot: viewer, in-game and bot lines threaded together; private speech behind a toggle. */
-export function ChatPane({ bot, aliases: aliasList, className }: { bot: string; aliases?: string[]; className?: string }) {
+export function ChatPane({ bot, aliases: aliasList, className, sendMessage, canSend, maxLength = DEFAULT_MAX, title = 'Chat', placeholder, visible = true }: {
+  bot: string;
+  aliases?: string[];
+  className?: string;
+  sendMessage?: (text: string, requestId: string) => Promise<ChatAccepted>;
+  canSend?: boolean;
+  maxLength?: number;
+  title?: string;
+  placeholder?: string;
+  visible?: boolean;
+}) {
   // Callers pass a fresh array each render; key the memo on its content so the effects below don't re-run every render.
   const aliasKey = (aliasList ?? []).join('\n');
   const aliases = useMemo(() => (aliasKey ? aliasKey.split('\n') : []), [aliasKey]);
   const { me, canChat } = useAuth();
+  const allowed = canSend ?? canChat;
   const { showPrivateSpeech } = usePrefs();
   const feed = useFeed();
   const [pending, setPending] = useState<PendingMessage[]>([]);
@@ -177,12 +188,13 @@ export function ChatPane({ bot, aliases: aliasList, className }: { bot: string; 
   const count = lines.length + pending.length;
   const prevCount = useRef(count);
   useLayoutEffect(() => {
+    if (!visible) return;
     const el = scroller.current;
     if (!el) return;
     if (atBottom) el.scrollTop = el.scrollHeight;
     else if (count > prevCount.current) setUnseen((u) => u + (count - prevCount.current));
     prevCount.current = count;
-  }, [count, atBottom]);
+  }, [count, atBottom, visible]);
 
   const onScroll = () => {
     const el = scroller.current;
@@ -195,7 +207,9 @@ export function ChatPane({ bot, aliases: aliasList, className }: { bot: string; 
   const send = async (p: PendingMessage) => {
     setPending((list) => [...list.filter((x) => x.localId !== p.localId), p]);
     try {
-      const res = await api('bots.chat', { params: { bot }, body: { text: p.text, requestId: p.requestId } });
+      const res = sendMessage
+        ? await sendMessage(p.text, p.requestId)
+        : await api('bots.chat', { params: { bot }, body: { text: p.text, requestId: p.requestId } });
       setPending((list) => list.map((x) => (x.localId === p.localId ? onAccepted(x, res as typeof res & { feedSeq?: unknown }) : x)));
     } catch (e) {
       const rate = e instanceof ApiError && e.status === 429 ? (e.retryAfterMs ?? 5000) : undefined;
@@ -205,7 +219,7 @@ export function ChatPane({ bot, aliases: aliasList, className }: { bot: string; 
 
   const submit = () => {
     const t = text.trim();
-    if (!t || t.length > MAX) return;
+    if (!allowed || !t || t.length > maxLength) return;
     setText('');
     setAtBottom(true);
     void send(createPending(bot, t, newRequestId()));
@@ -225,7 +239,7 @@ export function ChatPane({ bot, aliases: aliasList, className }: { bot: string; 
 
   return (
     <section className={cn('flex min-h-0 flex-col', className)} aria-label={`Chat with ${bot}`}>
-      <ChatHeader showPrivateSpeech={showPrivateSpeech} privateCount={privateCount} />
+      <ChatHeader title={title} showPrivateSpeech={showPrivateSpeech} privateCount={privateCount} />
       <div className="relative min-h-0 flex-1">
         <div ref={scroller} onScroll={onScroll} className="h-full overflow-y-auto px-3 py-3" aria-live="polite" aria-relevant="additions">
           <FeedLines feed={feed} lines={lines} empty={lines.length === 0 && bubbles.length === 0} bot={bot} player={me.player} />
@@ -244,16 +258,16 @@ export function ChatPane({ bot, aliases: aliasList, className }: { bot: string; 
           />
         ) : null}
       </div>
-      {canChat ? <Composer bot={bot} player={me.player} text={text} setText={setText} onKey={onKey} submit={submit} rateLimited={rateLimited} now={now} /> : null}
+      {allowed ? <Composer maxLength={maxLength} placeholder={placeholder} bot={bot} player={me.player} text={text} setText={setText} onKey={onKey} submit={submit} rateLimited={rateLimited} now={now} /> : null}
     </section>
   );
 }
 
 /** The title and the private-speech toggle (with how many private lines there are). */
-function ChatHeader({ showPrivateSpeech, privateCount }: { showPrivateSpeech: boolean; privateCount: number }) {
+function ChatHeader({ title, showPrivateSpeech, privateCount }: { title: string; showPrivateSpeech: boolean; privateCount: number }) {
   return (
     <div className="flex items-center gap-2 border-b border-border px-4 py-2.5">
-      <h2 className="flex-1 text-[13px] font-semibold text-fg">Chat</h2>
+      <h2 className="flex-1 text-[13px] font-semibold text-fg">{title}</h2>
       <Tooltip content={showPrivateSpeech ? 'Hide private speech (internal thoughts, muted lines)' : 'Show private speech (internal thoughts, muted lines)'}>
         <Button size="sm" variant="ghost" aria-pressed={showPrivateSpeech} onClick={() => setPrefs({ showPrivateSpeech: !showPrivateSpeech })}>
           {showPrivateSpeech ? <Eye className="size-3.5" /> : <EyeOff className="size-3.5" />}
@@ -286,6 +300,8 @@ function UnseenButton({ unseen, onClick }: { unseen: number; onClick: () => void
 
 /** The message box: Enter sends, Shift+Enter breaks the line; held back while rate limited; a counter near the limit. */
 function Composer(p: {
+  maxLength: number;
+  placeholder?: string;
   bot: string;
   player: string | null | undefined;
   text: string;
@@ -295,8 +311,8 @@ function Composer(p: {
   rateLimited: PendingMessage | undefined;
   now: number;
 }) {
-  const { bot, text, rateLimited, now } = p;
-  const tooLong = text.trim().length > MAX;
+  const { bot, text, rateLimited, now, maxLength } = p;
+  const tooLong = text.trim().length > maxLength;
   return (
     <form
       className="border-t border-border p-3"
@@ -315,8 +331,8 @@ function Composer(p: {
           onChange={(e) => p.setText(e.target.value)}
           onKeyDown={p.onKey}
           rows={1}
-          maxLength={MAX + 40}
-          placeholder={`Message ${bot} as ${p.player ?? ''}…`}
+          maxLength={maxLength + 40}
+          placeholder={p.placeholder ?? `Message ${bot} as ${p.player ?? ''}…`}
           className="max-h-32 min-h-8 flex-1 resize-none bg-transparent px-2 py-1.5 text-[13.5px] text-fg outline-none placeholder:text-subtle"
           style={{ fieldSizing: 'content' }}
           disabled={!!rateLimited}
@@ -327,7 +343,7 @@ function Composer(p: {
       </div>
       <div className="mt-1 flex justify-between px-1 text-[11px] text-subtle">
         <span>{rateLimited ? `Rate limited — wait ${Math.ceil(((rateLimited.retryAt ?? now) - now) / 1000)}s` : 'Enter to send · Shift+Enter for a new line'}</span>
-        <span className={cn('tabular', tooLong && 'text-danger')}>{text.length > MAX - 40 ? `${text.trim().length}/${MAX}` : ''}</span>
+        <span className={cn('tabular', tooLong && 'text-danger')}>{text.length > maxLength - 40 ? `${text.trim().length}/${maxLength}` : ''}</span>
       </div>
     </form>
   );

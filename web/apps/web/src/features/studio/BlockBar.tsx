@@ -6,7 +6,7 @@
  * the world viewer draws on a 2D canvas (`blockIconAtlas`): one image for ~400 entries, CSS positions, no WebGL per entry.
  */
 import { Search, Star, X } from 'lucide-react';
-import { useMemo, useState, type CSSProperties } from 'react';
+import { memo, useMemo, useState, type CSSProperties } from 'react';
 import { cn } from '@/lib/utils';
 import {
   categoryCounts,
@@ -149,7 +149,7 @@ function Cell({
   );
 }
 
-export function PaletteDrawer({
+export const PaletteDrawer = memo(function PaletteDrawer({
   palette,
   version,
   current,
@@ -263,4 +263,4 @@ export function PaletteDrawer({
       {shown.length === 0 ? <p className="px-3 pb-3 text-xs text-muted">No {version} block matches “{q}”.</p> : null}
     </div>
   );
-}
+});

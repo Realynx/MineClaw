@@ -18,6 +18,9 @@ interface BadgeSprite {
   sprite: THREE.Sprite;
   width: number;
   height: number;
+  anchor: THREE.Vector3;
+  dim: number | null;
+  shownAt: number | null;
 }
 
 /** Readable CSS-pixel scale with a bounded range, without raycasts or per-frame texture regeneration. */
@@ -61,7 +64,11 @@ export class BotBadgeLayer {
         border: badge.color,
         icon: badge.icon,
       });
-      this.sprites.set(name, { badge, key, sprite, width: sprite.scale.x, height: sprite.scale.y });
+      // A job change replaces the texture, but must not restart the position filter.
+      this.sprites.set(name, {
+        badge, key, sprite, width: sprite.scale.x, height: sprite.scale.y,
+        anchor: old?.anchor ?? new THREE.Vector3(), dim: old?.dim ?? null, shownAt: old?.shownAt ?? null,
+      });
       sprite.visible = false;
       this.group.add(sprite);
     }
@@ -74,13 +81,26 @@ export class BotBadgeLayer {
     cssHeight: number,
     range: number,
     position: (name: string) => Position | null,
+    now = performance.now(),
   ): void {
     for (const entry of this.sprites.values()) {
       const { sprite, badge } = entry;
       sprite.visible = false;
       const bot = position(badge.name);
-      if (!bot || bot.dim !== dim) continue;
+      if (!bot || bot.dim !== dim) {
+        entry.shownAt = null;
+        continue;
+      }
       this.point.set(bot.x, bot.y + HEAD_Y.bot, bot.z);
+      const elapsed = entry.shownAt === null ? Infinity : Math.max(0, now - entry.shownAt);
+      // Short, frame-rate-independent damping softens steps and starts/stops without making labels trail far behind.
+      // Teleports, dimension changes and returning to an inactive view must never glide across the world.
+      if (entry.dim !== bot.dim || elapsed > 500 || entry.anchor.distanceToSquared(this.point) > 64)
+        entry.anchor.copy(this.point);
+      else entry.anchor.lerp(this.point, -Math.expm1(-elapsed / 90));
+      entry.dim = bot.dim;
+      entry.shownAt = now;
+      this.point.copy(entry.anchor);
       const distance = this.point.distanceTo(camera.position);
       const view = camera.matrixWorldInverse.elements;
       const depth = -(view[2] * this.point.x + view[6] * this.point.y + view[10] * this.point.z + view[14]);
@@ -95,7 +115,7 @@ export class BotBadgeLayer {
         this.point.z > 1
       )
         continue;
-      sprite.position.set(bot.x, bot.y + HEAD_Y.bot, bot.z);
+      sprite.position.copy(entry.anchor);
       sprite.scale.set(entry.width * size.scale, entry.height * size.scale, 1);
       sprite.material.opacity = size.alpha;
       sprite.visible = true;

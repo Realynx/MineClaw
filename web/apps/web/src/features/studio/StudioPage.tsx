@@ -42,6 +42,7 @@ import { useNavigationGuard } from '@/lib/navGuard';
 import { Crosshair } from '@/features/world/InWorld';
 import { Hotbar, PaletteDrawer, type IconOf, type IconSheet } from './BlockBar';
 import { EARTH, plotMode, type Selection, selectAll, sizeOf, type V3, type Cell } from './canvas';
+import { PictureControls } from './PictureControls';
 import { ChatPanel, type ChatPanelHandle } from './ChatPanel';
 import { MinePanel } from './MinePanel';
 import { xrayCells } from './mine/mineStats';
@@ -169,6 +170,7 @@ function modelChoice(m: ReturnType<typeof useApi<'designer.models'>>['data']) {
 
 export function StudioPage() {
   const params = useSearchParams();
+  const [pictureRequested] = useState(() => params.get('picture') === '1');
   const router = useRouter();
   const qc = useQueryClient();
   const { me, can, canChat } = useAuth();
@@ -215,19 +217,21 @@ export function StudioPage() {
     <StudioBody
       key={sessionKey(session)}
       session={session}
+      pictureTools={pictureRequested}
       onSession={setSession}
       mod={mod}
       {...modelChoice(models.data)}
       canWrite={canWrite}
       canChat={canChat}
       player={me.player ?? me.username}
-      invalidate={() => void qc.invalidateQueries({ predicate: (q) => q.queryKey[0] === 'designs.list' })}
+      invalidate={() => void qc.invalidateQueries({ predicate: (q) => q.queryKey[0] === 'designs.list' || q.queryKey[0] === 'designs.get' })}
     />
   );
 }
 
 function StudioBody({
   session,
+  pictureTools,
   onSession,
   mod,
   models,
@@ -239,6 +243,7 @@ function StudioBody({
   invalidate,
 }: {
   serverSeed: string | null;
+  pictureTools: boolean;
   session: DesignerSession;
   /** A new session state (another version: the body remounts on it). */
   onSession: (s: DesignerSession) => void;
@@ -858,6 +863,12 @@ function StudioBody({
     [studio, model, withSel],
   );
 
+  const capturePicture = useCallback(async () => {
+    const engine = viewer.current?.engine();
+    if (!engine) throw new Error('The designer is still loading. Try again when the view is ready.');
+    return overlay.withoutGuides(() => engine.capturePng());
+  }, [overlay]);
+
   const doSave = useCallback(
     async (asNew: boolean): Promise<boolean> => {
       if (!saveName.trim()) {
@@ -867,7 +878,8 @@ function StudioBody({
       setSaving(true);
       setNotice(null);
       try {
-        const r = await studio.save(saveName, saveSummary, asNew);
+        const previewPng = await capturePicture();
+        const r = await studio.save(saveName, saveSummary, asNew, previewPng);
         setSaved({ designId: r.designId, rev: r.rev, text: r.text });
         setSaveSummary('');
         invalidate();
@@ -881,7 +893,7 @@ function StudioBody({
         setSaving(false);
       }
     },
-    [studio, saveName, saveSummary, invalidate],
+    [studio, saveName, saveSummary, invalidate, capturePicture],
   );
   useEffect(() => {
     saveRef.current = () => (canWrite ? doSave(false) : Promise.resolve(false));
@@ -910,8 +922,10 @@ function StudioBody({
   const h = hitOf(aim, studio.canvas, under !== null);
   const selBlocks = useMemo(
     () => (sel ? studio.canvas.cells().filter((c) => inBox(c, sel)).length : 0),
+    // The canvas mutates in place; its revision/count invalidate the derived selection.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [sel, studio, snap.rev, snap.blocks],
-  ); // eslint-disable-line react-hooks/exhaustive-deps
+  );
   const bounds = useMemo(() => studio.canvas.bounds(), [studio, snap.blocks, snap.rev]); // eslint-disable-line react-hooks/exhaustive-deps
   const selMaterials = useMemo(() => {
     const ids = new Map<number, string>();
@@ -966,6 +980,14 @@ function StudioBody({
         changeVersion={(v) => void changeVersion(v, true)}
         cancelVersion={() => setVersionAsk(null)}
       />
+      <PictureControls viewer={viewer} bounds={bounds} baseY={plotMode().baseY} defaultOpen={pictureTools} canWrite={canWrite} busy={busy || saving}
+        designId={saved?.designId ?? null} dirty={snap.dirty}
+        onCapture={async () => {
+          const previewPng = await capturePicture();
+          const result = await api('designer.save', { params: { id: studio.id }, body: { name: snap.name, previewPng, previewOnly: true } });
+          setNotice(result.text);
+          invalidate();
+        }} />
       <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
         <div ref={stage} className="relative min-h-[420px] min-w-0 flex-1 bg-black" data-testid="studio-stage">
           <mod.WorldViewer

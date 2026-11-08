@@ -20,12 +20,16 @@ public sealed class Directive
     public string Status { get; set; } = "sent";
     public string? Reply { get; set; }
     public string? RequestId { get; init; }
+    public string? Player { get; init; }
+    public string? FeedText { get; set; }
+    public long? ViewerSeq { get; set; }
     public long? Design { get; set; }
     /// <summary>The exact targets/blocks behind the summary (the brain's <c>story_directive</c> lookup).</summary>
     public JsonNode? Detail { get; set; }
     /// <summary>The feed seq after which a brain's lines are its replies.</summary>
     public long FeedSeq { get; set; }
     public HashSet<string> Delivered { get; } = new(StringComparer.OrdinalIgnoreCase);
+    public HashSet<string> Retryable { get; } = new(StringComparer.OrdinalIgnoreCase);
 }
 
 /// <summary>
@@ -45,6 +49,7 @@ public sealed class StoryDirectives(IViewerData data, ViewerFeed? feed, TimeProv
     private readonly List<Directive> _all = new();
     private readonly object _lock = new();
     private int _seq;
+    private readonly SemaphoreSlim _sendLock = new(1, 1);
 
     /// <summary>Saves a build as a design (name, ghosts, requester) → its id, or null when it can't be one (too big, no designs here).</summary>
     public Func<string, IReadOnlyList<GhostState>, string, long?>? SaveDesign { get; set; }
@@ -123,26 +128,71 @@ public sealed class StoryDirectives(IViewerData data, ViewerFeed? feed, TimeProv
     public async Task<(Directive? D, string? Error)> SendAsync(IReadOnlyList<string> bots, JsonObject directive, string player, bool allowCommands,
         string? requestId, CancellationToken ct)
     {
+        // Retries from a disconnected viewer must not repeat a colony configuration request.
+        await _sendLock.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            if (!string.IsNullOrEmpty(requestId))
+            {
+                Directive? prior;
+                lock (_lock) prior = _all.FirstOrDefault(d => d.RequestId == requestId && string.Equals(d.Player, player, StringComparison.OrdinalIgnoreCase));
+                if (prior != null) return await RetryDeliveryAsync(prior, player, allowCommands, requestId, ct).ConfigureAwait(false);
+            }
+            return await SendCoreAsync(bots, directive, player, allowCommands, requestId, ct).ConfigureAwait(false);
+        }
+        finally { _sendLock.Release(); }
+    }
+
+    private async Task<(Directive? D, string? Error)> RetryDeliveryAsync(Directive prior, string player, bool allowCommands,
+        string requestId, CancellationToken ct)
+    {
+        // Successful deliveries are never replayed. Only an explicit refusal (or an unattempted target) is safe to retry;
+        // a transport exception may have delivered the message before losing its acknowledgement.
+        var retry = prior.Retryable.Where(n => !prior.Delivered.Contains(n)).ToList();
+        if (retry.Count == 0) return (prior, null);
+        var (targets, error) = Targets(retry);
+        if (targets == null) return (null, error);
+        prior.FeedSeq = feed?.Last ?? 0;
+        prior.Status = "sent";
+        prior.Reply = null;
+        await DeliverAsync(prior, targets, player, allowCommands, requestId, ct).ConfigureAwait(false);
+        if (prior.Delivered.Count == 0) prior.Status = "failed";
+        return (prior, null);
+    }
+
+    private async Task<(Directive? D, string? Error)> SendCoreAsync(IReadOnlyList<string> bots, JsonObject directive, string player,
+        bool allowCommands, string? requestId, CancellationToken ct)
+    {
         var (kind, invalid) = KindOf(directive);
         if (kind == null) return (null, invalid);
         var (targets, unknown) = Targets(bots);
         if (targets == null) return (null, unknown);
         string id;
         lock (_lock) id = "dir" + (++_seq).ToString(CultureInfo.InvariantCulture);
-        var d = new Directive { Id = id, At = _time.GetUtcNow(), Bots = targets.Select(t => t.Login).ToList(), Kind = kind, RequestId = requestId };
+        var d = new Directive { Id = id, At = _time.GetUtcNow(), Bots = targets.Select(t => t.Login).ToList(), Kind = kind, RequestId = requestId, Player = player };
         // Counts from the world view (the brain gets the count and the bounds; the list stays here for its lookup).
         int? count = CountTargets(kind, directive, d);
         if (kind == "build" && ExpandBuild(directive, player, d) is { } buildError) return (null, buildError);
         d.Line = Render(player, kind, directive, id, count, d.Design);
         d.Summary = d.Line[(d.Line.IndexOf(": ", StringComparison.Ordinal) + 2)..];
+        if (directive["colony"]?.GetValue<string>() is { } colony)
+        {
+            // The compact line directs the brain to the full request, never silently truncates the owner's instructions.
+            d.Detail = (JsonObject)directive.DeepClone();
+            d.FeedText = directive["text"]!.GetValue<string>().Trim();
+            d.Summary = d.FeedText.Length > 160 ? d.FeedText[..159] + "…" : d.FeedText;
+            d.Line = $"{player} (Controller {colony}): read story_directive {{id:'{id}'}} for my full request. Use colony_control to change the registered colony settings and work, then report the result.";
+        }
         d.FeedSeq = feed?.Last ?? 0;
-        await DeliverAsync(d, targets, player, allowCommands, requestId, ct).ConfigureAwait(false);
-        if (d.Delivered.Count == 0) d.Status = "failed";
+        d.Retryable.UnionWith(targets.Select(t => t.Login));
+        // Publish before waking the brain: it may immediately look up the reference in its first tool call.
         lock (_lock)
         {
             _all.Add(d);
             if (_all.Count > 200) _all.RemoveRange(0, _all.Count - 200);
         }
+        await DeliverAsync(d, targets, player, allowCommands, requestId, ct).ConfigureAwait(false);
+        if (d.Delivered.Count == 0) d.Status = "failed";
         return (d, null);
     }
 
@@ -152,7 +202,9 @@ public sealed class StoryDirectives(IViewerData data, ViewerFeed? feed, TimeProv
         var kind = directive["kind"]?.GetValue<string>()?.Trim().ToLowerInvariant();
         if (kind == null || !Kinds.Contains(kind)) return (null, $"directive.kind must be {string.Join("|", Kinds)}");
         if (kind == "text" && string.IsNullOrWhiteSpace(directive["text"]?.GetValue<string>())) return (null, "a text directive needs text");
-        if (directive["text"]?.GetValue<string>() is { Length: > 200 }) return (null, "text over 200 chars");
+        int maxText = directive["colony"] == null ? 200 : 4000;
+        if (directive["text"]?.GetValue<string>() is { } text && text.Length > maxText) return (null, $"text over {maxText} chars");
+        if (directive["colony"] != null && kind != "text") return (null, "colony context requires a text directive");
         if (directive["area"] != null && Area.Parse(directive["area"]) == null) return (null, "area must be [x1,y1,z1,x2,y2,z2]");
         return (kind, null);
     }
@@ -203,9 +255,11 @@ public sealed class StoryDirectives(IViewerData data, ViewerFeed? feed, TimeProv
     {
         foreach (var (_, login) in targets)
         {
-            feed?.Add(login, "viewer", player, d.Line, "viewer", requestId);
+            d.ViewerSeq = feed?.Add(login, "viewer", player, d.FeedText ?? d.Line, "viewer", requestId);
+            d.Retryable.Remove(login);
             if (await data.SendAsync(new RemoteChat(player, d.Line, "viewer", login, allowCommands, requestId ?? d.Id), ct).ConfigureAwait(false))
                 d.Delivered.Add(login);
+            else d.Retryable.Add(login);
         }
     }
 
@@ -257,6 +311,9 @@ public sealed class StoryDirectives(IViewerData data, ViewerFeed? feed, TimeProv
     public string Lookup(string id)
     {
         if (Get(id) is not { } d) return $"no directive {id}";
+        if (d.Detail?["colony"] is { } colony)
+            return new JsonObject { ["id"] = d.Id, ["colony"] = colony.DeepClone(), ["request"] = d.Detail["text"]?.DeepClone(),
+                ["instruction"] = "Inspect colony_control state, use help for action payloads, apply the requested changes through colony_control, and report actual results. Changes appear in the Controller tabs and map. Ask the owner if their requested area or targets are ambiguous." }.ToJsonString();
         var sb = new StringBuilder($"{d.Id} {d.Kind} ({d.Status}): {d.Summary}");
         if (d.Detail?["targets"] is JsonArray t) sb.Append("; targets ").Append(string.Join(" ", t.Take(64).Select(x => x is JsonArray p ? string.Join(",", p) : x?.ToString()))).Append(t.Count > 64 ? $" (+{t.Count - 64})" : "");
         if (d.Design is { } ds) sb.Append($"; design #{ds}");

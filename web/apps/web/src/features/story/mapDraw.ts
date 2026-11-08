@@ -13,6 +13,7 @@ import { clusterFailed, type FailedCluster, type FailedMark } from './failedLabe
 import { project, type Pt, type V3, type ViewMats } from './math';
 import { failedCells, type FailedCell } from './tools';
 import { COLORS, glyph, pawnColor } from './visuals';
+import { WORK_GLYPHS } from './workAppearance';
 
 type Pawn = StoryColonyState['pawns'][number];
 type AiBody = NonNullable<StoryColonyState['ai']>[number];
@@ -41,19 +42,7 @@ export interface FailedRing {
 export const k3 = (p: readonly number[]) => `${p[0]},${p[1]},${p[2]}`;
 
 /** The job glyph drawn beside a pawn doing it. */
-export const GLYPH_OF: Record<string, string> = {
-  chop: 'chop',
-  mine: 'mine',
-  harvest: 'harvest',
-  cut: 'cut',
-  haul: 'haul',
-  hunt: 'hunt',
-  build: 'build',
-  deconstruct: 'deconstruct',
-  attack: 'hunt',
-  craft: 'bench',
-  cook: 'bench',
-};
+export const GLYPH_OF = WORK_GLYPHS;
 
 const STORAGE_PRIORITIES = ['low', 'normal', 'preferred', 'important', 'critical'];
 const BRACKET_CORNERS = [

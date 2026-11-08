@@ -68,7 +68,9 @@ internal static class StoryWiring
         var timeControl = new StoryTimeControl(() => OpAccounts(o, bot, client), (account, line, why) => SendOpAsync(rt, bot, client, account, line, why),
             log: log, store: new StoryTimeRangeStore(rt.Memory.Db));
         timeControl.Start(() => client.IsPlaying ? host.World?.TimeOfDay : null);
-        return new SupervisorStoryRoutes(o, colonies, directives, bodies == null ? null : bodies.Rows, viewer, timeControl: timeControl);
+        var routes = new SupervisorStoryRoutes(o, colonies, directives, bodies == null ? null : bodies.Rows, viewer, timeControl: timeControl);
+        routes.RegisterControllerTools(rt.Tools);
+        return routes;
     }
 
     /// <summary>The accounts this process controls (main, then its in-process bodies) and whether each is op: the server's word (1.12.2),

@@ -7,6 +7,7 @@
  */
 import { getViewerQuality, PROFILES, probeRendererOnce, setViewerQuality, viewerStatus, type RendererProbe } from '@mineclaw/world-viewer/settings';
 import { useEffect, useState, useSyncExternalStore } from 'react';
+import { initPreviewSettings } from '@/features/live/previewSettings';
 import {
   DEFAULT_SETTINGS,
   effectiveQuality,
@@ -111,6 +112,7 @@ let started = false;
  * mock mode, exposes `window.__mcxViewer` (the applied quality and the live viewer status) for headless checks.
  */
 export function initViewerSettings(): void {
+  initPreviewSettings();
   load();
   push();
   if (started || typeof window === 'undefined') return;
