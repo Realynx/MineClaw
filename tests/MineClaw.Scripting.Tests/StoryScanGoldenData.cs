@@ -68,7 +68,7 @@ internal static class StoryScanGoldenData
   reach 0,12,1 {"within":false,"block":null,"blocks":0,"stand":"-7,70,5","steps":4,"gather":["-4,69,4"]}
   reach 2,30,-1 {"within":false,"block":null,"blocks":0,"stand":"-3,72,3","steps":20,"gather":[]}
   reach 0,2,0 {"within":true,"block":null,"blocks":0}
-  reach 3,6,0 {"within":false,"block":null,"blocks":0,"stand":"-4,70,4","steps":0,"gather":["-7,69,5"]}
+  reach 3,6,0 {"within":false,"block":null,"blocks":0,"stand":"-3,72,4","steps":0,"gather":[]}
   reach -2,9,2 {"within":false,"block":null,"blocks":0,"stand":"-7,70,5","steps":1,"gather":["-4,69,4"]}
 @ -6,65,6
   pit  {"feet":"-6,65,6","pit":false,"feet_y":65}
@@ -86,7 +86,7 @@ internal static class StoryScanGoldenData
   home {"feet":"-4,66,-6","pit":false,"feet_y":66}
   clmb {"feet":"-4,66,-6","pit":true,"feet_y":66,"climb":true,"approach":"4,67,-6","need":0,"stair":null,"pillar":true,"block":null,"blocks":0,"gather":["-4,66,-5"],"toward":"9,67,0"}
   reach 0,4,0 {"within":true,"block":null,"blocks":0}
-  reach 1,7,0 {"within":false,"block":null,"blocks":0,"stand":"-3,67,-6","steps":1,"gather":["-5,66,-9","-5,66,-7","-5,66,-3","-4,66,-8","-4,66,-5","-3,66,-8","-3,66,-7","-2,66,-6","-1,66,-9","-1,66,-3","0,66,-5"]}
+  reach 1,7,0 {"within":false,"block":null,"blocks":0,"stand":"0,71,-7","steps":0,"gather":[]}
   reach 0,12,1 {"within":false,"block":null,"blocks":0,"stand":"-6,69,-6","steps":5,"gather":[]}
   reach 2,30,-1 {"within":false,"block":null,"blocks":0,"stand":"0,71,-7","steps":21,"gather":[]}
   reach 0,2,0 {"within":true,"block":null,"blocks":0}
@@ -123,7 +123,7 @@ internal static class StoryScanGoldenData
   reach 0,12,1 {"within":false,"block":null,"blocks":0,"stand":"-3,72,3","steps":3,"gather":[]}
   reach 2,30,-1 {"within":false,"block":null,"blocks":0,"stand":"-4,71,-2","steps":22,"gather":[]}
   reach 0,2,0 {"within":true,"block":null,"blocks":0}
-  reach 3,6,0 {"within":false,"block":null,"blocks":0,"stand":"-1,66,0","steps":2,"gather":["-4,65,1","-3,65,-2","-3,65,0","-2,65,-3","-2,65,2","0,65,-3","0,65,-2","0,65,0","0,65,2","1,65,0","1,65,2","1,65,3"]}
+  reach 3,6,0 {"within":false,"block":null,"blocks":0,"stand":"-4,71,-2","steps":0,"gather":[]}
   reach -2,9,2 {"within":false,"block":null,"blocks":0,"stand":"-4,70,4","steps":3,"gather":["-7,69,5"]}
 @ -4,67,2
   pit  {"feet":"-4,67,2","pit":false,"feet_y":67}
@@ -152,11 +152,11 @@ internal static class StoryScanGoldenData
   home {"feet":"-4,65,6","pit":false,"feet_y":65}
   clmb {"feet":"-4,65,6","pit":true,"feet_y":65,"climb":true,"approach":"0,66,0","need":0,"stair":{"dig":["-4,66,5"],"to":"-4,66,5"},"pillar":true,"block":null,"blocks":0,"gather":["-4,66,5"],"toward":"9,67,0"}
   reach 0,4,0 {"within":true,"block":null,"blocks":0}
-  reach 1,7,0 {"within":false,"block":null,"blocks":0,"stand":"-4,68,7","steps":0,"gather":[]}
+  reach 1,7,0 {"within":false,"block":null,"blocks":0,"stand":"-3,72,6","steps":0,"gather":[]}
   reach 0,12,1 {"within":false,"block":null,"blocks":0,"stand":"-3,72,6","steps":1,"gather":[]}
   reach 2,30,-1 {"within":false,"block":null,"blocks":0,"stand":"-2,72,5","steps":18,"gather":[]}
   reach 0,2,0 {"within":true,"block":null,"blocks":0}
-  reach 3,6,0 {"within":false,"block":null,"blocks":0,"stand":"0,68,6","steps":0,"gather":["2,67,4"]}
+  reach 3,6,0 {"within":false,"block":null,"blocks":0,"stand":"-2,72,5","steps":0,"gather":[]}
   reach -2,9,2 {"within":false,"block":null,"blocks":0,"stand":"-4,71,9","steps":0,"gather":["-2,70,8","-2,70,10"]}
 @ -2,67,-6
   pit  {"feet":"-2,67,-6","pit":false,"feet_y":67}
@@ -196,11 +196,11 @@ internal static class StoryScanGoldenData
   home {"feet":"-2,67,0","pit":false,"feet_y":67}
   clmb {"feet":"-2,67,0","pit":true,"feet_y":67,"climb":true,"approach":"4,66,-1","need":null,"stair":null,"pillar":true,"block":null,"blocks":0,"gather":[],"toward":"9,67,0"}
   reach 0,4,0 {"within":true,"block":null,"blocks":0}
-  reach 1,7,0 {"within":false,"block":null,"blocks":0,"stand":"-1,66,0","steps":3,"gather":["-4,65,1","-3,65,-2","-3,65,0","-2,65,-3","-2,65,2","0,65,-3","0,65,-2","0,65,0","0,65,2","1,65,0","1,65,2","1,65,3"]}
+  reach 1,7,0 {"within":false,"block":null,"blocks":0,"stand":"-3,72,3","steps":0,"gather":[]}
   reach 0,12,1 {"within":false,"block":null,"blocks":0,"stand":"-3,72,3","steps":3,"gather":[]}
   reach 2,30,-1 {"within":false,"block":null,"blocks":0,"why":"no ground to stand on below or beside it within 24 blocks"}
   reach 0,2,0 {"within":true,"block":null,"blocks":0}
-  reach 3,6,0 {"within":false,"block":null,"blocks":0,"stand":"2,68,-1","steps":1,"gather":[]}
+  reach 3,6,0 {"within":false,"block":null,"blocks":0,"stand":"-1,72,3","steps":0,"gather":[]}
   reach -2,9,2 {"within":false,"block":null,"blocks":0,"stand":"-3,72,3","steps":0,"gather":[]}
 @ -2,67,2
   pit  {"feet":"-2,67,2","pit":false,"feet_y":67}
@@ -218,7 +218,7 @@ internal static class StoryScanGoldenData
   home {"feet":"-2,65,4","pit":true,"feet_y":65,"cave":true,"exit":"-1,65,2","stair":{"dig":["-2,66,3"],"to":"-2,66,3"},"pillar":true,"block":null,"blocks":0,"gather":["-2,66,3","-1,65,4"],"toward":"9,67,0"}
   clmb {"feet":"-2,65,4","pit":true,"feet_y":65,"cave":true,"climb":true,"approach":"9,65,0","stair":{"dig":["-2,66,3"],"to":"-2,66,3"},"pillar":true,"block":null,"blocks":0,"gather":["-2,66,3","-1,65,4"],"toward":"9,67,0"}
   reach 0,4,0 {"within":true,"block":null,"blocks":0}
-  reach 1,7,0 {"within":false,"block":null,"blocks":0,"stand":"-2,67,2","steps":1,"gather":["-4,66,0","-4,66,1","-4,66,5","-3,66,-1","-3,66,1","-2,66,-1","-2,66,0","-2,66,3","0,66,-1","0,66,2","0,66,3","0,66,4","1,66,-1","1,66,4","1,66,5"]}
+  reach 1,7,0 {"within":false,"block":null,"blocks":0,"stand":"-1,72,4","steps":0,"gather":[]}
   reach 0,12,1 {"within":false,"block":null,"blocks":0,"stand":"-2,72,5","steps":0,"gather":[]}
   reach 2,30,-1 {"within":false,"block":null,"blocks":0,"stand":"0,72,3","steps":18,"gather":[]}
   reach 0,2,0 {"within":true,"block":null,"blocks":0}
@@ -233,7 +233,7 @@ internal static class StoryScanGoldenData
   reach 0,12,1 {"within":false,"block":null,"blocks":0,"stand":"-2,72,7","steps":1,"gather":[]}
   reach 2,30,-1 {"within":false,"block":null,"blocks":0,"stand":"0,72,5","steps":19,"gather":[]}
   reach 0,2,0 {"within":true,"block":null,"blocks":0}
-  reach 3,6,0 {"within":false,"block":null,"blocks":0,"why":"no ground to stand on below or beside it within 24 blocks"}
+  reach 3,6,0 {"within":false,"block":null,"blocks":0,"stand":"1,72,6","steps":0,"gather":[]}
   reach -2,9,2 {"within":false,"block":null,"blocks":0,"stand":"-4,71,9","steps":0,"gather":["-2,70,8","-2,70,10"]}
 @ 0,66,-6
   pit  {"feet":"0,66,-6","pit":false,"feet_y":66}
@@ -262,18 +262,18 @@ internal static class StoryScanGoldenData
   home {"feet":"0,66,-2","pit":false,"feet_y":66}
   clmb {"feet":"0,66,-2","pit":true,"feet_y":66,"climb":true,"approach":"6,67,-3","need":0,"stair":{"dig":["0,67,-3"],"to":"0,67,-3"},"pillar":true,"block":null,"blocks":0,"gather":["1,66,-2","-1,66,-2","0,66,-1"],"toward":"9,67,0"}
   reach 0,4,0 {"within":true,"block":null,"blocks":0}
-  reach 1,7,0 {"within":false,"block":null,"blocks":0,"stand":"1,67,-2","steps":1,"gather":["-2,66,-1","-2,66,0","-1,66,-3","-1,66,-2","0,66,-5","0,66,-1","1,66,-1","2,66,-5","2,66,-1","3,66,-1","3,66,0","4,66,-2","4,66,1"]}
+  reach 1,7,0 {"within":false,"block":null,"blocks":0,"stand":"4,70,-3","steps":0,"gather":["3,69,-5","5,69,-2","6,69,-2"]}
   reach 0,12,1 {"within":false,"block":null,"blocks":0,"stand":"0,67,-1","steps":6,"gather":["-3,66,-2","-3,66,-1","-3,66,1","-2,66,-1","-2,66,0","-2,66,2","-1,66,-3","-1,66,-2","0,66,2","1,66,-2","1,66,-1","2,66,-1","3,66,-1","3,66,0","3,66,2"]}
   reach 2,30,-1 {"within":false,"block":null,"blocks":0,"stand":"3,70,-5","steps":22,"gather":["4,69,-3","5,69,-2","6,69,-2"]}
   reach 0,2,0 {"within":true,"block":null,"blocks":0}
   reach 3,6,0 {"within":false,"block":null,"blocks":0,"stand":"2,68,-1","steps":0,"gather":[]}
-  reach -2,9,2 {"within":false,"block":null,"blocks":0,"stand":"-4,71,-2","steps":1,"gather":[]}
+  reach -2,9,2 {"within":false,"block":null,"blocks":0,"stand":"-3,72,3","steps":0,"gather":[]}
 @ 0,66,0
   pit  {"feet":"0,66,0","pit":false,"feet_y":66}
   home {"feet":"0,66,0","pit":false,"feet_y":66}
   clmb {"feet":"0,66,0","pit":true,"feet_y":66,"climb":true,"approach":"4,66,-1","need":0,"stair":null,"pillar":true,"block":null,"blocks":0,"gather":["0,66,-1"],"toward":"9,67,0"}
   reach 0,4,0 {"within":true,"block":null,"blocks":0}
-  reach 1,7,0 {"within":false,"block":null,"blocks":0,"stand":"2,68,-1","steps":1,"gather":[]}
+  reach 1,7,0 {"within":false,"block":null,"blocks":0,"stand":"-1,72,3","steps":0,"gather":[]}
   reach 0,12,1 {"within":false,"block":null,"blocks":0,"stand":"-1,72,3","steps":2,"gather":[]}
   reach 2,30,-1 {"within":false,"block":null,"blocks":0,"stand":"2,68,-1","steps":23,"gather":[]}
   reach 0,2,0 {"within":true,"block":null,"blocks":0}
@@ -305,7 +305,7 @@ internal static class StoryScanGoldenData
   pit  {"feet":"0,68,6","pit":true,"feet_y":68,"cave":true,"exit":"4,67,6","stair":{"dig":["0,69,5"],"to":"0,69,5"},"pillar":true,"block":null,"blocks":0,"gather":["0,69,5"]}
   home {"feet":"0,68,6","pit":true,"feet_y":68,"cave":true,"exit":"4,67,6","stair":{"dig":["0,69,5"],"to":"0,69,5"},"pillar":true,"block":null,"blocks":0,"gather":["0,69,5"],"toward":"9,67,0"}
   clmb {"feet":"0,68,6","pit":true,"feet_y":68,"cave":true,"climb":true,"approach":"9,65,0","stair":{"dig":["0,69,5"],"to":"0,69,5"},"pillar":true,"block":null,"blocks":0,"gather":["0,69,5"],"toward":"9,67,0"}
-  reach 0,4,0 {"within":true,"block":null,"blocks":0}
+  reach 0,4,0 {"within":false,"block":null,"blocks":0,"stand":"0,72,6","steps":0,"gather":[]}
   reach 1,7,0 {"within":false,"block":null,"blocks":0,"stand":"1,72,6","steps":0,"gather":[]}
   reach 0,12,1 {"within":false,"block":null,"blocks":0,"stand":"0,72,7","steps":3,"gather":[]}
   reach 2,30,-1 {"within":false,"block":null,"blocks":0,"stand":"2,72,5","steps":21,"gather":[]}
@@ -344,7 +344,7 @@ internal static class StoryScanGoldenData
   reach 2,30,-1 {"within":false,"block":null,"blocks":0,"stand":"4,70,-3","steps":20,"gather":["3,69,-5","5,69,-2","6,69,-2"]}
   reach 0,2,0 {"within":true,"block":null,"blocks":0}
   reach 3,6,0 {"within":false,"block":null,"blocks":0,"stand":"5,70,-2","steps":0,"gather":["3,69,-5","4,69,-3","4,69,1","6,69,-2"]}
-  reach -2,9,2 {"within":false,"block":null,"blocks":0,"stand":"2,68,-1","steps":2,"gather":[]}
+  reach -2,9,2 {"within":false,"block":null,"blocks":0,"stand":"-2,72,3","steps":0,"gather":[]}
 @ 2,66,0
   pit  {"feet":"2,66,0","pit":false,"feet_y":66}
   home {"feet":"2,66,0","pit":false,"feet_y":66}
@@ -580,7 +580,7 @@ internal static class StoryScanGoldenData
   pit  {"feet":"8,65,2","pit":false,"feet_y":65}
   home {"feet":"8,65,2","pit":false,"feet_y":65}
   clmb {"feet":"8,65,2","pit":true,"feet_y":65,"climb":true,"need":0,"stair":{"dig":["8,67,2"],"to":"8,66,3"},"pillar":false,"block":null,"blocks":0,"gather":["8,66,1","7,65,2"],"toward":"9,67,0"}
-  reach 0,4,0 {"within":true,"block":null,"blocks":0}
+  reach 0,4,0 {"within":false,"block":null,"blocks":0,"stand":"7,70,1","steps":0,"gather":["4,69,1","5,69,-2","6,69,-2"]}
   reach 1,7,0 {"within":false,"block":null,"blocks":0,"stand":"9,70,2","steps":0,"gather":["11,69,5"]}
   reach 0,12,1 {"within":false,"block":null,"blocks":0,"stand":"8,70,3","steps":2,"gather":["11,69,5"]}
   reach 2,30,-1 {"within":false,"block":null,"blocks":0,"stand":"9,70,1","steps":21,"gather":["6,69,-2"]}
@@ -602,7 +602,7 @@ internal static class StoryScanGoldenData
   pit  {"feet":"7,66,3","pit":false,"feet_y":66}
   home {"feet":"7,66,3","pit":false,"feet_y":66}
   clmb {"feet":"7,66,3","pit":true,"feet_y":66,"climb":true,"approach":"9,65,0","need":0,"stair":{"dig":["7,68,2","7,67,2"],"to":"7,67,2"},"pillar":true,"block":null,"blocks":0,"gather":["7,66,4"],"toward":"9,67,0"}
-  reach 0,4,0 {"within":true,"block":null,"blocks":0}
+  reach 0,4,0 {"within":false,"block":null,"blocks":0,"stand":"7,70,3","steps":0,"gather":["4,69,1"]}
   reach 1,7,0 {"within":false,"block":null,"blocks":0,"stand":"8,70,3","steps":0,"gather":["11,69,5"]}
   reach 0,12,1 {"within":false,"block":null,"blocks":0,"stand":"7,70,3","steps":4,"gather":["4,69,1"]}
   reach 2,30,-1 {"within":false,"block":null,"blocks":0,"stand":"9,70,2","steps":21,"gather":["11,69,5"]}
@@ -679,7 +679,7 @@ internal static class StoryScanGoldenData
   pit  {"feet":"-11,67,10","pit":false,"feet_y":67}
   home {"feet":"-11,67,10","pit":false,"feet_y":67}
   clmb {"feet":"-11,67,10","pit":true,"feet_y":67,"climb":true,"approach":"-3,65,10","need":1,"stair":{"dig":["-11,69,10","-11,68,9"],"to":"-11,68,9"},"pillar":false,"block":null,"blocks":0,"gather":["-11,68,9"],"toward":"9,67,0"}
-  reach 0,4,0 {"within":true,"block":null,"blocks":0}
+  reach 0,4,0 {"within":false,"block":null,"blocks":0,"stand":"-12,72,9","steps":0,"gather":[]}
   reach 1,7,0 {"within":false,"block":null,"blocks":0,"stand":"-10,72,10","steps":0,"gather":[]}
   reach 0,12,1 {"within":false,"block":null,"blocks":0,"stand":"-11,72,11","steps":2,"gather":[]}
   reach 2,30,-1 {"within":false,"block":null,"blocks":0,"stand":"-10,72,9","steps":21,"gather":[]}
@@ -702,7 +702,7 @@ internal static class StoryScanGoldenData
   home {"feet":"-12,65,11","pit":false,"feet_y":65}
   clmb {"feet":"-12,65,11","pit":true,"feet_y":65,"climb":true,"approach":"-5,66,10","need":0,"stair":{"dig":["-12,66,12"],"to":"-12,66,12"},"pillar":true,"block":null,"blocks":0,"gather":["-13,66,11","-12,66,12","-12,65,10"],"toward":"9,67,0"}
   reach 0,4,0 {"within":true,"block":null,"blocks":0}
-  reach 1,7,0 {"within":false,"block":null,"blocks":0,"stand":"-11,69,12","steps":0,"gather":["-11,68,9","-9,68,9"]}
+  reach 1,7,0 {"within":false,"block":null,"blocks":0,"stand":"-11,72,11","steps":0,"gather":[]}
   reach 0,12,1 {"within":false,"block":null,"blocks":0,"stand":"-12,72,11","steps":1,"gather":[]}
   reach 2,30,-1 {"within":false,"block":null,"blocks":0,"stand":"-10,72,10","steps":18,"gather":[]}
   reach 0,2,0 {"within":true,"block":null,"blocks":0}
@@ -735,7 +735,7 @@ internal static class StoryScanGoldenData
   home {"feet":"6,66,-5","pit":false,"feet_y":66}
   clmb {"feet":"6,66,-5","pit":true,"feet_y":66,"climb":true,"approach":"9,65,0","need":null,"stair":null,"pillar":true,"block":null,"blocks":0,"gather":[],"toward":"9,67,0"}
   reach 0,4,0 {"within":true,"block":null,"blocks":0}
-  reach 1,7,0 {"within":false,"block":null,"blocks":0,"stand":"7,68,-4","steps":1,"gather":["10,67,-4"]}
+  reach 1,7,0 {"within":false,"block":null,"blocks":0,"stand":"6,70,-2","steps":0,"gather":["3,69,-5","4,69,-3","4,69,1","5,69,-2"]}
   reach 0,12,1 {"within":false,"block":null,"blocks":0,"stand":"4,70,-3","steps":4,"gather":["3,69,-5","5,69,-2","6,69,-2"]}
   reach 2,30,-1 {"within":false,"block":null,"blocks":0,"stand":"7,68,-4","steps":24,"gather":["10,67,-4"]}
   reach 0,2,0 {"within":true,"block":null,"blocks":0}
@@ -745,7 +745,7 @@ internal static class StoryScanGoldenData
   pit  {"feet":"0,68,6","pit":true,"feet_y":68,"cave":true,"exit":"4,67,6","stair":{"dig":["0,69,5"],"to":"0,69,5"},"pillar":true,"block":null,"blocks":0,"gather":["0,69,5"]}
   home {"feet":"0,68,6","pit":true,"feet_y":68,"cave":true,"exit":"4,67,6","stair":{"dig":["0,69,5"],"to":"0,69,5"},"pillar":true,"block":null,"blocks":0,"gather":["0,69,5"],"toward":"9,67,0"}
   clmb {"feet":"0,68,6","pit":true,"feet_y":68,"cave":true,"climb":true,"approach":"9,65,0","stair":{"dig":["0,69,5"],"to":"0,69,5"},"pillar":true,"block":null,"blocks":0,"gather":["0,69,5"],"toward":"9,67,0"}
-  reach 0,4,0 {"within":true,"block":null,"blocks":0}
+  reach 0,4,0 {"within":false,"block":null,"blocks":0,"stand":"0,72,6","steps":0,"gather":[]}
   reach 1,7,0 {"within":false,"block":null,"blocks":0,"stand":"1,72,6","steps":0,"gather":[]}
   reach 0,12,1 {"within":false,"block":null,"blocks":0,"stand":"0,72,7","steps":3,"gather":[]}
   reach 2,30,-1 {"within":false,"block":null,"blocks":0,"stand":"2,72,5","steps":21,"gather":[]}
@@ -768,12 +768,12 @@ internal static class StoryScanGoldenData
   home {"feet":"-1,65,7","pit":true,"feet_y":65,"cave":true,"exit":"-1,65,10","stair":{"dig":["0,66,7"],"to":"0,66,7"},"pillar":true,"block":null,"blocks":0,"gather":["0,65,7","-2,65,7"],"toward":"9,67,0"}
   clmb {"feet":"-1,65,7","pit":true,"feet_y":65,"cave":true,"climb":true,"approach":"9,65,0","stair":{"dig":["0,66,7"],"to":"0,66,7"},"pillar":true,"block":null,"blocks":0,"gather":["0,65,7","-2,65,7"],"toward":"9,67,0"}
   reach 0,4,0 {"within":true,"block":null,"blocks":0}
-  reach 1,7,0 {"within":false,"block":null,"blocks":0,"why":"no ground to stand on below or beside it within 24 blocks"}
+  reach 1,7,0 {"within":false,"block":null,"blocks":0,"stand":"0,72,7","steps":0,"gather":[]}
   reach 0,12,1 {"within":false,"block":null,"blocks":0,"stand":"-1,72,8","steps":0,"gather":[]}
   reach 2,30,-1 {"within":false,"block":null,"blocks":0,"stand":"1,72,6","steps":18,"gather":[]}
   reach 0,2,0 {"within":true,"block":null,"blocks":0}
-  reach 3,6,0 {"within":false,"block":null,"blocks":0,"stand":"1,67,6","steps":0,"gather":["-2,66,3","0,66,3","0,66,4","0,66,8","1,66,4","1,66,5","1,66,8","3,66,6","3,66,8","4,66,6","4,66,7"]}
+  reach 3,6,0 {"within":false,"block":null,"blocks":0,"stand":"1,72,6","steps":0,"gather":[]}
   reach -2,9,2 {"within":false,"block":null,"blocks":0,"stand":"-3,72,9","steps":0,"gather":[]}
-all 9C31AE8B61362B91
+all 29494969C65C6CED
 """;
 }

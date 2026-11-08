@@ -618,6 +618,7 @@ public sealed partial class StoryColony
 
     private void Done(PawnState p, ActiveJob j, string? note)
     {
+        if (j.DigCells != null) { DigBatchDone(p, j); return; }
         DeferredCraftStorage(p, j, note);
         SettleStock(j);
         GearTakesEnded(j, done: true);
@@ -765,6 +766,8 @@ public sealed partial class StoryColony
 
     private void Failed(PawnState p, ActiveJob j, string? note)
     {
+        // A batch has already accounted for every attempted cell. Its untouched tail is simply released.
+        if (j.DigCells != null && (j.DigReported || note == "dig batch interrupted")) { GearTakesEnded(j, done: false); return; }
         // Older/single-cell callers can report the whole placement as failed when only its support is pending.
         if (j.Source == "ghost" && j.Kind == "place" && NoFaceYet(note ?? ""))
         {

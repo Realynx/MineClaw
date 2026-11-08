@@ -79,14 +79,14 @@ public sealed class StoryReachSdkTests
     private static int Count(Rig rig, int id) => rig.World.Inventory.CountItem(id);
 
     [Fact]
-    public async Task A_quarry_seal_below_the_rim_is_placed_from_the_floor_and_its_access_pillar_is_removed()
+    public async Task A_quarry_seal_is_placed_from_the_floor_and_its_access_pillar_is_removed()
     {
         using var rig = Make(w => { w.SetBlock(2, 71, 0, 0, 0); w.SetBlock(3, 71, 0, Blocks.Stone, 0); });
         var colony = new Colony();
         rig.Host.Story = colony;
         rig.Give(36, Blocks.Dirt, 8);
         rig.Give(37, Blocks.Cobblestone, 1);
-        rig.World.Player.ServerTeleport(new Vec3d(0.5, 76, 0.5), 77.62, 0, 0, true);
+        rig.World.Player.ServerTeleport(new Vec3d(0.5, 65, 0.5), 66.62, 0, 0, true);
         var pillar = rig.On["place"];
         rig.On["place"] = (a, ct) =>
         {
@@ -163,8 +163,11 @@ public sealed class StoryReachSdkTests
     {
         public HashSet<string> Temps { get; } = new();
         public List<string> Stuck { get; } = new();
+        public List<string> Reports { get; } = new();
+        public bool Active { get; set; } = true;
         public System.Text.Json.Nodes.JsonObject? Next(string body) => null;
-        public bool Report(string body, string job, string status, string? note, double? pct) => true;
+        public bool Report(string body, string job, string status, string? note, double? pct) { Reports.Add(note ?? ""); return Active; }
+        public bool Holds(string body, string job) => Active;
         public void Temporary(string body, string cell, bool placed, string why) { if (placed) Temps.Add(cell); else Temps.Remove(cell); }
         string MineClaw.Scripting.Story.IStoryPort.Stuck(string body, string why) { Stuck.Add(why); return "teleported home"; }
     }
@@ -191,7 +194,7 @@ public sealed class StoryReachSdkTests
         Assert.Contains("\"ok\":true", s.Outcome); // the target came down
         Assert.Equal(0, rig.World.GetBlock(2, 75, 0));
         for (int y = 67; y <= 70; y++) Assert.Equal(0, rig.World.GetBlock(2, y, 0)); // everything above the stuck block dug back
-        Assert.True(colony.Temps.SetEquals(["2,66,0"]), string.Join(" ", colony.Temps) + " | " + string.Join(" | ", rig.Norm()));
+        Assert.True(colony.Temps.SetEquals(["2,65,0", "2,66,0"]), string.Join(" ", colony.Temps) + " | " + string.Join(" | ", rig.Norm()));
         var why = Assert.Single(colony.Stuck);
         Assert.Contains("stranded on its pillar", why);
     }
@@ -266,5 +269,134 @@ public sealed class StoryReachSdkTests
         Assert.Contains("out of reach even from a pillar", s.Outcome);
         Assert.Contains("liquid", s.Outcome);
         Assert.DoesNotContain(rig.Norm(), c => c.StartsWith("place "));
+    }
+
+    [Fact]
+    public async Task Nearby_remnants_are_dug_before_a_shared_pillar_is_removed()
+    {
+        using var rig = Make(w => w.SetBlock(3, 71, 0, Blocks.Cobblestone, 0));
+        var colony = new Colony();
+        rig.Host.Story = colony;
+        rig.Give(36, Blocks.Dirt, 8);
+        var s = await rig.Run("return JSON.stringify(story.digBatch({id:'q1',at:'2,71,0',dig_cells:['2,71,0','3,71,0']}))");
+        Assert.Contains("batch: 2/2 dug", s.Outcome);
+        Assert.Equal(0, rig.World.GetBlock(2, 71, 0));
+        Assert.Equal(0, rig.World.GetBlock(3, 71, 0));
+        var calls = rig.Norm();
+        int second = calls.FindIndex(c => c == "dig {\"at\":\"3,71,0\"}");
+        int down = calls.FindIndex(c => c.StartsWith("dig ") && c.Contains(",65,"));
+        Assert.True(second >= 0 && down > second, string.Join(" | ", calls));
+        Assert.Single(calls.Where(c => c.StartsWith("goto ")));
+        Assert.Equal(8, Count(rig, Blocks.Dirt));
+        Assert.Empty(colony.Temps);
+        Assert.Equal(["digcell 2,71,0 done", "digcell 3,71,0 done"], colony.Reports);
+    }
+
+    [Fact]
+    public async Task Lower_remnants_are_removed_on_the_descent_without_a_second_climb()
+    {
+        using var rig = Make(w =>
+        {
+            w.SetBlock(2, 71, 0, 0, 0);
+            w.SetBlock(2, 75, 0, Blocks.Cobblestone, 0);
+            w.SetBlock(3, 68, 0, Blocks.Cobblestone, 0);
+        });
+        var colony = new Colony();
+        rig.Host.Story = colony;
+        rig.Give(36, Blocks.Dirt, 12);
+        var s = await rig.Run("return JSON.stringify(story.digBatch({id:'q1',at:'2,75,0',dig_cells:['2,75,0','3,68,0']}))");
+        Assert.Contains("batch: 2/2 dug", s.Outcome);
+        var calls = rig.Norm();
+        int up = calls.FindLastIndex(c => c.StartsWith("place "));
+        int lower = calls.FindIndex(c => c == "dig {\"at\":\"3,68,0\"}");
+        Assert.True(lower > up, string.Join(" | ", calls));
+        Assert.Single(calls.Where(c => c.StartsWith("goto ")));
+        Assert.Equal(12, Count(rig, Blocks.Dirt));
+        Assert.Equal(65, (int)Math.Floor(rig.World.Player.Position.Y));
+        Assert.Empty(colony.Temps);
+    }
+
+    [Fact]
+    public async Task Cancelling_a_cluster_recovers_access_and_leaves_unattempted_blocks_alone()
+    {
+        using var rig = Make(w => w.SetBlock(3, 71, 0, Blocks.Cobblestone, 0));
+        var colony = new Colony();
+        rig.Host.Story = colony;
+        rig.Give(36, Blocks.Dirt, 8);
+        var dig = rig.On["dig"];
+        rig.On["dig"] = async (a, ct) =>
+        {
+            var r = await dig(a, ct);
+            if (a.GetProperty("at").GetString() == Ceiling && r.Ok) colony.Active = false;
+            return r;
+        };
+        var s = await rig.Run("return JSON.stringify(story.digBatch({id:'q1',at:'2,71,0',dig_cells:['2,71,0','3,71,0']}))");
+        Assert.Contains("interrupted", s.Outcome);
+        Assert.Equal(Blocks.Cobblestone, rig.World.GetBlock(3, 71, 0));
+        Assert.Equal(8, Count(rig, Blocks.Dirt));
+        Assert.Equal(65, (int)Math.Floor(rig.World.Player.Position.Y));
+        Assert.Empty(colony.Temps);
+        Assert.DoesNotContain(colony.Reports, r => r.Contains("3,71,0"));
+    }
+
+    [Fact]
+    public async Task A_full_inventory_leaves_the_cluster_unattempted()
+    {
+        using var rig = Make();
+        var colony = new Colony();
+        rig.Host.Story = colony;
+        for (int i = 9; i < 45; i++) rig.Give(i, Blocks.Dirt, 64);
+        var s = await rig.Run("return JSON.stringify(story.digBatch({id:'q1',at:'2,71,0',dig_cells:['2,71,0']}))");
+        Assert.Contains("inventory full", s.Outcome);
+        Assert.Empty(colony.Reports);
+        Assert.DoesNotContain(rig.Norm(), c => c.StartsWith("dig ") || c.StartsWith("place "));
+        Assert.Equal(Blocks.Cobblestone, rig.World.GetBlock(2, 71, 0));
+    }
+
+    [Fact]
+    public async Task A_distant_cluster_is_loaded_before_planning_its_access()
+    {
+        using var rig = Make();
+        var colony = new Colony();
+        rig.Host.Story = colony;
+        rig.Give(36, Blocks.Dirt, 8);
+        var walk = rig.On["goto"];
+        rig.On["goto"] = (a, ct) =>
+        {
+            if (a.GetProperty("to").GetString() != "96,71,0") return walk(a, ct);
+            var w = rig.World;
+            w.ApplyChunkRegion(80, 0, -16, 32, 128, 32, new byte[32 * 128 * 32], null, null, null);
+            for (int x = 90; x <= 102; x++) for (int z = -6; z <= 6; z++) w.SetBlock(x, 64, z, Blocks.Stone, 0);
+            w.SetBlock(96, 71, 0, Blocks.Cobblestone, 0);
+            w.SetBlock(97, 71, 0, Blocks.Cobblestone, 0);
+            w.Player.ServerTeleport(new Vec3d(94.5, 65, 0.5), 66.62, 0, 0, true);
+            return Task.FromResult(ActResult.Success("near the cluster"));
+        };
+        var s = await rig.Run("return JSON.stringify(story.digBatch({id:'q1',at:'96,71,0',dig_cells:['96,71,0','97,71,0']}))");
+        Assert.Contains("batch: 2/2 dug", s.Outcome);
+        Assert.Contains(rig.Norm(), c => c.StartsWith("goto ") && c.Contains("96,71,0"));
+        Assert.Equal(8, Count(rig, Blocks.Dirt));
+        Assert.Empty(colony.Temps);
+    }
+
+    [Theory]
+    [InlineData(71, false)]
+    [InlineData(75, true)]
+    public async Task A_supply_hint_is_used_only_when_the_planned_cluster_climb_needs_more_blocks(int y, bool fetch)
+    {
+        using var rig = Make(w =>
+        {
+            w.SetBlock(2, 71, 0, 0, 0);
+            w.SetBlock(2, y, 0, Blocks.Cobblestone, 0);
+            w.SetBlock(3, y, 0, Blocks.Cobblestone, 0);
+        });
+        var colony = new Colony();
+        rig.Host.Story = colony;
+        rig.Give(36, Blocks.Dirt, 4);
+        var s = await rig.Run($$$"""return JSON.stringify(story.digBatch({id:'q1',at:'2,{{{y}}},0',dig_cells:['2,{{{y}}},0','3,{{{y}}},0'],pillar:{from:'0,64,9',item:'dirt',n:20}}))""");
+        Assert.Contains("batch: 2/2 dug", s.Outcome);
+        Assert.Equal(fetch ? 1 : 0, rig.Norm().Count(c => c.StartsWith("withdraw ")));
+        Assert.Equal(fetch ? 24 : 4, Count(rig, Blocks.Dirt));
+        Assert.Empty(colony.Temps);
     }
 }

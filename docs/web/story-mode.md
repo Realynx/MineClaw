@@ -527,12 +527,14 @@ own and destroy the nerd pole on the way back down. Not many blocks should truly
   - The scan picks a column under the target (a ceiling) or beside it, up to 2 away. The column needs ground under it (never a
     liquid) and must be free all the way up, with no lava beside it. A column under the target is not used when sand or gravel sits
     over the target.
-  - It picks the fewest blocks to stack (at most 24, never above the build height) until the target's centre is within 4 blocks of
-    the eyes. The pawn checks a walking path to that base; an isolated ledge or wall pocket is skipped for another reachable
-    column. The preferred-path probe and combined alternative search have bounded budgets.
+  - It first checks existing standing spots within 3 horizontally, including rim and stair spots above the target. A face must be
+    visible within 4 blocks of the eyes; distance through a wall does not count. Otherwise it picks a column needing the fewest
+    blocks to stack (at most 24, never above the build height), with a visible face at its top. The pawn checks a walking path to
+    that base; an isolated ledge or wall pocket is skipped for another reachable column. The path searches have bounded budgets.
   - The pawn walks there and nerd-poles up: each step is `place(block, its own feet)`, a pillar step (jump, place under itself, land
     on it). It digs the target, then digs its pillar back down from the top, standing on each block it placed and collecting them
-    again. Nothing is left behind.
+    again. If a descent block cannot be removed, it stops before digging out the blocks supporting it; the remaining access is
+    registered for cleanup and the stranded pawn requests rescue.
   - A walk that can't get within reach stops on ground below the target instead (`story.go`), and the dig climbs from there.
     This floor approach comes before building from the rim, which can otherwise leave the pawn perched over a quarry remnant.
     This also applies when the pawn starts above the target, such as a quarry remnant below the rim but high above the floor.
@@ -553,8 +555,10 @@ own and destroy the nerd pole on the way back down. Not many blocks should truly
 - **Truly out of reach** (only liquid under it, no free column, more than 24 up): "out of reach even from a pillar: …". The target
   rests for that pawn; once 3 different pawns (fewer when fewer are online) couldn't reach it, the designation waits with the reason
   (`wait`). It is not counted as a failure and raises no alert.
-- Not yet: several targets from one pillar top (each high block is its own climb; a tree is one job), a short staircase instead of a
-  pillar, the night-outside rule while climbing.
+- **Quarry clusters:** nearby reserved cells share one climb. The pawn mines every visible cell from the pillar, then checks lower
+  targets as it descends. It does not walk off its pillar to chase another target. Each cell reports success or failure separately;
+  interrupted or inventory-limited work releases untouched cells for later. Individual designations still use separate dig jobs.
+- Not yet: a short staircase instead of a pillar, the night-outside rule while climbing.
 
 ### Temporary blocks (added 2026-11-05)
 
@@ -1074,6 +1078,15 @@ a step", "3 cell(s) on y 57 resting after failures", "waiting for the stair step
 floors and rules, StoryColony.Gear.cs), loot batched like any gathering. A cell beside lava or water is
 left standing as a seal; lava sources in the zone are collected in buckets, water and flowing lava covered first; caves, falling
 blocks and spawners too (see "Quarry hazards").
+
+**Shared access for remnants.** One dig job reserves up to 12 compatible nearby cells within 3 blocks horizontally. It includes
+cells on the current layer and thin, exposed remnants up to 8 blocks below it (at least 3 open horizontal sides). It never batches
+the next intact floor, the stair, hazard seals, another pawn's support, or another job's reserved cells. The pawn clears visible
+targets before dismantling its access pillar and works lower targets while descending. Unattempted cells remain quarry work;
+a failed cell keeps its own retry reason without marking the rest of the cluster failed. Cancelling a reserved cell interrupts
+the current batch; deleting or changing the quarry also stops work that no longer belongs to it.
+The entire access column stays protected from quarry and cleanup jobs while its owner stands above it, even when the bottom is
+more than 8 blocks away. Descent waits for each landing before removing the next support.
 
 **The stair.** Along the inside of the zone's edge: the edge cells in a ring, clockwise from the north-west-most one; layer k
 (y = top − k) leaves ring cell k mod n standing as a step. So the steps go down one block per cell around the ring, a helix from

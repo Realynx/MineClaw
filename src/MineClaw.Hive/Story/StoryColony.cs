@@ -30,6 +30,9 @@ public sealed class ActiveJob
     /// <summary>A build job's cells (ghost ids "build|x,y,z", its own first), each leased <c>g:</c>+id to the pawn while it works the
     /// batch; a cell leaves the list as the pawn reports it (docs/web/story-mode.md "Building fast"). Null for other jobs.</summary>
     public List<string>? Cells { get; set; }
+    /// <summary>A quarry dig's reserved cells still awaiting a per-cell report. Access is shared for the whole batch.</summary>
+    public List<P3>? DigCells { get; set; }
+    public bool DigReported { get; set; }
     /// <summary>Runs once when the job is handed to the pawn (a pick that only probes for work claims nothing).</summary>
     public Action? Assign { get; set; }
     /// <summary>Further targets the job holds besides <see cref="Lease"/> (a hauler's batch of drops), leased and released with it.</summary>
@@ -290,6 +293,7 @@ public sealed partial class StoryColony : IStoryPort
         if (cur.Source == "escape" && note != null) EscapeStep(body, note); // what a stuck pawn tries now
         if (cur.Lease != null) _leases[cur.Lease] = (body, Now + LeaseTtl);
         if (p != null && cur.Source == "ghost") BuildProgress(p, cur, note); // a batch's cells, one by one
+        if (p != null && cur.DigCells != null) DigProgress(p, cur, note);
         if (p != null) p.Rev = Bump();
     }
 

@@ -39,7 +39,6 @@ function sleepAt(j) {
   if (j.bed && ok(there) && night()) use_block(j.bed)
   return wait(j.s || 5)
 }
-// j.stand: it stands on its target, step off first. A block still there after an ok dig gets one more go.
 function digAt(j) {
   if (j.stand) go(j.stand, 0)
   const was = block(j.at), r = story.dig(j.at, j)
@@ -58,7 +57,7 @@ function harvestAt(j, a) {
 const acts = new Map(Object.entries({
   go: (j, a) => (j.stash ? go : story.go)(a, j.dist || 1),
   chop: chopTree,
-  dig: (j, a) => { story.ready(j); const t = reach(a, 3); return ok(t) ? digAt(j) : t },
+  dig: (j, a) => { if (j.dig_cells) return story.digBatch(j); story.ready(j); const t = reach(a, 3); return ok(t) ? digAt(j) : t },
   harvest: harvestAt,
   till: j => story.till(j),
   collect: (j, a) => { const t = go(a, 1), r = collect(j.r || 4); return ok(r) || ok(t) ? r : t },
@@ -79,7 +78,6 @@ function work(j) {
   const f = acts.get(j.kind)
   return f ? f(j, j.at) : story.work(j)
 }
-// Fetch, crafts first (a bench a build needs; at the table if need be), the work, then stash.
 function runJob(j) {
   let r = story.fetch(j)
   if (ok(r)) r = each(j.craft, c => { if (c.at) { const g = go(c.at, 2); if (!ok(g)) return g } return craft(c.item, c.n) })

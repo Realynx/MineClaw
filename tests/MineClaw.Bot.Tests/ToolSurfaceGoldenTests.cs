@@ -54,7 +54,7 @@ public class ToolSurfaceGoldenTests
     /// <summary>Generated from the pre-refactor code (WP03).</summary>
     private static readonly string[] Expected =
     [
-        "fake all: stop,remember_waypoint,mark_structure,describe_structure,remember_note,recall,recall_detail,forget,list_memory,where_is,identity,save_routine,run_routine,ask_player,standing_order,reflect_self,run_command,delegate,amend_task,ask_memory,say,activity,status,inventory,look,window,goto,follow,mine,harvest_generator,collect_drops,craft,smelt,collect_furnace,deposit,withdraw,organize_chest,place,dig,use_block,eat,chop_tree,fish,place_turned,acquire,equip,face,escape_dig,clear_dig,clear_temporary,ask_stand,watch_demo,act,find_skill,skill,design,build,blueprint,script,see,do",
+        "fake all: stop,remember_waypoint,mark_structure,describe_structure,remember_note,recall,recall_detail,forget,list_memory,where_is,identity,save_routine,run_routine,ask_player,standing_order,reflect_self,run_command,delegate,amend_task,ask_memory,say,activity,status,inventory,look,window,goto,follow,mine,harvest_generator,collect_drops,craft,smelt,collect_furnace,deposit,withdraw,organize_chest,place,dig,use_block,eat,chop_tree,fish,place_turned,acquire,equip,face,escape_dig,clear_dig,dig_here,clear_temporary,ask_stand,watch_demo,act,find_skill,skill,design,build,blueprint,script,see,do",
         "fake acquire 4B46011A8047BAAF",
         "fake act 1BA285CCCBFEF603",
         "fake activity 18EE0AA639868F61",
@@ -75,6 +75,7 @@ public class ToolSurfaceGoldenTests
         "fake describe_structure 1FFAFC662DFB3F82",
         "fake design 24457C7223BAFEF5",
         "fake dig EA150A0C89548BAB",
+        "fake dig_here DFC379F30DB5A664",
         "fake do 0D3CAD0B7F412A47",
         "fake eat 565E1C34C2B9E24A",
         "fake equip 767FD6058FDF2144",
@@ -119,7 +120,7 @@ public class ToolSurfaceGoldenTests
         "fake Main: stop,remember_waypoint,mark_structure,describe_structure,remember_note,recall_detail,forget,list_memory,where_is,identity,run_routine,ask_player,standing_order,reflect_self,run_command,delegate,amend_task,ask_memory,say,status,inventory,look,ask_stand,watch_demo,design,script,see,do",
         "fake Worker: remember_waypoint,recall,where_is,save_routine,run_routine,status,inventory,look,window,goto,mine,harvest_generator,collect_drops,craft,smelt,collect_furnace,deposit,withdraw,organize_chest,place,dig,use_block,eat,chop_tree,find_skill,skill,build,script,see",
         "fake Cheap: stop,remember_waypoint,remember_note,recall,recall_detail,list_memory,where_is,identity,reflect_self,activity,status,inventory,look",
-        "real all: stop,remember_waypoint,mark_structure,describe_structure,remember_note,recall,recall_detail,forget,list_memory,where_is,identity,save_routine,run_routine,ask_player,standing_order,reflect_self,run_command,delegate,amend_task,ask_memory,say,activity,status,inventory,look,window,goto,follow,mine,harvest_generator,collect_drops,craft,smelt,collect_furnace,deposit,withdraw,organize_chest,place,dig,use_block,eat,chop_tree,fish,place_turned,acquire,equip,face,escape_dig,clear_dig,clear_temporary,ask_stand,watch_demo,spar,stop_spar,defend,guard,attack,combat_status,act,find_skill,skill,design,build,blueprint,script,see,do",
+        "real all: stop,remember_waypoint,mark_structure,describe_structure,remember_note,recall,recall_detail,forget,list_memory,where_is,identity,save_routine,run_routine,ask_player,standing_order,reflect_self,run_command,delegate,amend_task,ask_memory,say,activity,status,inventory,look,window,goto,follow,mine,harvest_generator,collect_drops,craft,smelt,collect_furnace,deposit,withdraw,organize_chest,place,dig,use_block,eat,chop_tree,fish,place_turned,acquire,equip,face,escape_dig,clear_dig,dig_here,clear_temporary,ask_stand,watch_demo,spar,stop_spar,defend,guard,attack,combat_status,act,find_skill,skill,design,build,blueprint,script,see,do",
         "real acquire 4B46011A8047BAAF",
         "real act 1BA285CCCBFEF603",
         "real activity 18EE0AA639868F61",
@@ -143,6 +144,7 @@ public class ToolSurfaceGoldenTests
         "real describe_structure 1FFAFC662DFB3F82",
         "real design 24457C7223BAFEF5",
         "real dig EA150A0C89548BAB",
+        "real dig_here DFC379F30DB5A664",
         "real do 0D3CAD0B7F412A47",
         "real eat 565E1C34C2B9E24A",
         "real equip 767FD6058FDF2144",

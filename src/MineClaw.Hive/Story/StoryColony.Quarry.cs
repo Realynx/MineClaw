@@ -249,15 +249,17 @@ public sealed partial class StoryColony
             var tool = PlanTool(p, live, id);
             if (tool is { Wait: not null }) continue;
             P3? stand = mine.Contains(at) ? StandBeside(w, at, c => c == at || q.Dig.Contains(c)) : null;
-            return WithTool(tool, Job(WorkTypes.Mine, "dig", $"quarrying (y {at.Y})", at, "b:" + at, "zone", z.Id, "working",
-                f => { if (stand is { } s) f["stand"] = s.ToString(); }));
+            var job = Job(WorkTypes.Mine, "dig", $"quarrying (y {at.Y})", at, "b:" + at, "zone", z.Id, "working",
+                f => { if (stand is { } s) f["stand"] = s.ToString(); });
+            return WithTool(tool, QuarryDigBatch(p, live, w, z, q, job, mine, stoodOn));
         }
         return null;
     }
 
     /// <summary>Free, not resting, still there (not dug since the scan), exposed, and nobody else stands on it.</summary>
     private bool QuarryCellOpen(PawnState p, IStoryWorld w, P3 at, HashSet<P3> stoodOn) =>
-        Open("b:" + at, p.Name, at) && !OpenCell(w.Block(at.X, at.Y, at.Z).Id) && Exposed(w, at) && !stoodOn.Contains(at);
+        Open("b:" + at, p.Name, at) && !OpenCell(w.Block(at.X, at.Y, at.Z).Id) && Exposed(w, at) && !stoodOn.Contains(at)
+        && !(Meta.TempBlocks?.Any(t => t.At == at && (t.Cancelled || !LeftBehind(t))) ?? false);
 
     /// <summary>Why a quarry with work left offers none (status and idle audit), or null. <paramref name="anyResting"/>: a pawn that found
     /// nothing there (its idle audit) hears of resting cells even when others are still open to other pawns.</summary>
@@ -306,6 +308,7 @@ public sealed partial class StoryColony
         if (mode == "quarry" && StoryQuarry.Ring(z.Cells) == null) return (null, QuarryTooNarrow);
         z.Mode = mode;
         z.Rev = Touch();
+        StopInvalidQuarryBatches();
         _quarryScan.Remove(z.Id);
         _zoneScan.Remove(z.Id);
         WakeIdle();

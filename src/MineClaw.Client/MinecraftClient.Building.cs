@@ -196,8 +196,19 @@ public sealed partial class MinecraftClient
     public Task<ActionResult> DigForBuildAsync(BlockPos pos, CancellationToken ct = default) =>
         RunActionAsync("dig", ct, c => DigCoreAsync(pos, c, floorGuard: true, requested: true, ordered: true));
 
-    public Task<ActionResult> DigHereAsync(BlockPos pos, CancellationToken ct = default) =>
-        RunActionAsync("dig", ct, c => DigCoreAsync(pos, c, allowPathing: false, requested: true));
+    /// <summary>Digs only from the current position. Quarry jobs enable the normal walkway floor guard; construction's own
+    /// access blocks keep the existing default, while all protection, footing, liquid and harvest checks always apply.</summary>
+    public Task<ActionResult> DigHereAsync(BlockPos pos, CancellationToken ct = default, bool floorGuard = false) =>
+        RunActionAsync("dig", ct, async c =>
+        {
+            bool descending = floorGuard && FeetCell() == new BlockPos(pos.X, pos.Y + 1, pos.Z);
+            var r = await DigCoreAsync(pos, c, allowPathing: false, floorGuard: floorGuard, requested: true).ConfigureAwait(false);
+            if (!r.Ok || !descending) return r;
+            // A block update arrives before the body lands. Do not drill another support block until this one-block descent ends.
+            bool landed = await WaitUntilAsync(() => World.Player.Snapshot is var p && p.OnGround && p.Position.Y <= pos.Y + 0.05,
+                TimeSpan.FromSeconds(2), c).ConfigureAwait(false);
+            return landed ? r : ActionResult.Fail($"dug at {Fmt(pos)}, but have not landed below it yet");
+        });
 
     /// <summary>
     /// The build slicer's pillar step (nerd pole): standing in <paramref name="feet"/>, jump and place <paramref name="itemId"/>

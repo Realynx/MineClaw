@@ -203,6 +203,7 @@ public sealed partial class StoryColony
             _growScan.Remove(id);
         }
         _bedScan = null;
+        StopInvalidQuarryBatches();
         PreserveZonesChanged(r, before);
         WakeIdle();
     }

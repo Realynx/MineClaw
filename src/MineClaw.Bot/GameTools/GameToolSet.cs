@@ -347,6 +347,7 @@ public static class GameToolSet
         FaceTool.Register(tools, c); // hidden: scripts' face{at} (Story pawns' body language)
         EscapeDigTool.Register(tools, c); // hidden: escape_dig{at} (Story pawns getting out of a pit or a ravine, the drop may be lost)
         ClearDigTool.Register(tools, c); // hidden: clear_dig{at} (a Story build's cell holding another block: dug out first)
+        StationaryDigTool.Register(tools, c); // hidden: dig_here{at} (quarry batches keep their access while digging nearby cells)
         ClearTemporaryTool.Register(tools, c); // hidden: clear_temporary{} (a Story pawn takes back its own scaffolds after each job)
     }
 

@@ -144,13 +144,15 @@ public sealed class StoryLootBatchingTests(ITestOutputHelper output)
         h.Lives[c.P()] = FakeStoryHost.Live(10, 64, 10);
         h.Lives[c.P(1)] = FakeStoryHost.Live(10, 64, 10);
         var first = c.Next();
-        var other = c.Next(1);
         Assert.Equal("dig", Kind(first));
-        Assert.Equal("dig", Kind(other));
         var at = At(first);
         w.Set(at.X, at.Y, at.Z, 0);
         h.Lives[c.P()] = FakeStoryHost.Live(10, 64, 10, inv: new Stack(4, 0, 3));
-        c.Report(c.P(), Id(first), "done", null, null);
+        // The first miner finishes part of its batch, releasing the untouched cell for the second miner.
+        c.Report(c.P(), Id(first), "progress", $"digcell {at} done", null);
+        c.Report(c.P(), Id(first), "done", "batch: 1/2 dug", null);
+        var other = c.Next(1);
+        Assert.Equal("dig", Kind(other));
         if (seal)
         {
             at = At(other);

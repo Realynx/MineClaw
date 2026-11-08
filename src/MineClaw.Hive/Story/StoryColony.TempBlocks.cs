@@ -120,9 +120,23 @@ public sealed partial class StoryColony
         AdoptSeen(t, now);
         if (Gone(t, now) || buildCells.Contains(t.At)) { ForgetTemp(t); return; }
         if (t.Cancelled || t.DeferredReason != null) { KeepTemp(t); return; }
+        if (!LeftBehind(t))
+        {
+            // An owner back on its tower needs the whole column, including a bottom once queued while it was away.
+            if (OnOwnPillar(t, Host.Live(t.Pawn)) && Designations.FirstOrDefault(d => d.Id == t.Designation) is { Auto: true } cleanup)
+            {
+                foreach (var (owner, job) in _current.ToList())
+                    if (job.Source == "designation" && job.SourceId == cleanup.Id && Pawns.TryGetValue(owner, out var p))
+                        Supersede(p, "temporary access still in use");
+                RemoveTempDesignation(t);
+                _tempQueued.Remove(t);
+                _dirty = true;
+            }
+            return;
+        }
         if (t.RetryAfter > Now && Designations.FirstOrDefault(d => d.Id == t.Designation) is { } resting)
             _skip[DesignationKey(resting)] = t.RetryAfter.Value;
-        if (t.Designation == null && t.Id != 0 && LeftBehind(t)) QueueTemp(t);
+        if (t.Designation == null && t.Id != 0) QueueTemp(t);
     }
 
     /// <summary>A placement registered before the view showed it: its block, once it does.</summary>
@@ -163,8 +177,14 @@ public sealed partial class StoryColony
         if (!Pawns.ContainsKey(t.Pawn)) return true;
         var live = Host.Live(t.Pawn);
         if (!live.Online) return true;
+        if (OnOwnPillar(t, live)) return false;
         return Now - t.Since >= LeftAfter && t.At.Dist(live.X, live.Y, live.Z) > LeftRange;
     }
+
+    private static bool OnOwnPillar(TempBlockState t, PawnLive live) => live.Online
+        && t.Kind is "reach pillar" or "escape pillar" && live.Y > t.At.Y
+        && live.Y - t.At.Y <= Scripting.Story.ReachScan.MaxPillar + 2
+        && Math.Abs(live.X - (t.At.X + 0.5)) <= 0.8 && Math.Abs(live.Z - (t.At.Z + 0.5)) <= 0.8;
 
     /// <summary>A deconstruct designation (the colony's own, Auto) for a block left behind; one already on the cell is reused.
     /// <paramref name="said"/>: the caller says it (the stray look), not the minute's alert.</summary>

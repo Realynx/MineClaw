@@ -281,7 +281,8 @@ public sealed partial class StoryColony
                     Supersede(p, "task cancelled by owner");
                     p.Rev = Bump();
                 }
-            return (new JsonObject { ["count"] = gone.Count, ["removed"] = new JsonArray(gone.Select(d => (JsonNode)d.Id!).ToArray()) }, null);
+            int batches = kind is null or "mine" ? CancelQuarryBatches(area, blocks) : 0;
+            return (new JsonObject { ["count"] = gone.Count + batches, ["removed"] = new JsonArray(gone.Select(d => (JsonNode)d.Id!).ToArray()) }, null);
         }
     }
 

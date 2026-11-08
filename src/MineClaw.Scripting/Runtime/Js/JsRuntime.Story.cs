@@ -41,7 +41,17 @@ internal sealed partial class JsRuntime
         {
             s.SafePoint();
             var at = (Str(a, 0) is { } t ? ScriptSession.PosOf(JsonValue.Create(t)) : null) ?? throw ScriptSession.Bug("storyReach(at) needs a position");
-            return V(Story.ReachScan.Scan(s.Host.World, s.Host.Data, s.Host.World.Player.Position, at, walkable: true));
+            if (!s.Host.World.IsLoaded(at.X, at.Z)) return V(new JsonObject { ["unloaded"] = true, ["why"] = "target is not loaded" });
+            var targets = (JsConvert.ToNode(JsConvert.Arg(a, 1), 2) as JsonArray)?.Select(ScriptSession.PosOf)
+                .OfType<World.BlockPos>().Append(at).Distinct().Take(24).ToArray();
+            return V(Story.ReachScan.Scan(s.Host.World, s.Host.Data, s.Host.World.Player.Position, at, walkable: true, targets));
+        });
+        // Cheap visibility check for a reserved dig batch: do not search a path for each cell while standing on a pillar.
+        H(h, "storyWithin", a =>
+        {
+            s.SafePoint();
+            var at = (Str(a, 0) is { } t ? ScriptSession.PosOf(JsonValue.Create(t)) : null) ?? throw ScriptSession.Bug("storyWithin(at) needs a position");
+            return Story.ReachScan.Within(s.Host.World, s.Host.World.Player.Position, at) ? JsBoolean.True : JsBoolean.False;
         });
         // story.pour's eyes: the liquid at a cell -> "water" | "lava" (a source: what a poured bucket leaves), "flowing_water" |
         // "flowing_lava" (a flow level, or falling), "" (no liquid). Zero tokens, no action.

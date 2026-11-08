@@ -56,13 +56,36 @@ public sealed class StoryReachTests
         Assert.Equal(Chest.ToString(), j["pillar"]!["from"]!.GetValue<string>());
         Assert.Equal("cobblestone", j["pillar"]!["item"]!.GetValue<string>());
         c.Report(c.P(), Id(j), "failed", "too hard", null);
-        // Carrying enough: no detour to storage.
+        // Sixteen blocks cover ordinary work; a deeper climb has an optional top-up, with no mandatory fetch.
         h.Lives[c.P()] = FakeStoryHost.Live(0, 64, 0, inv: new Stack(3, 0, 16));
         w.Set(4, 71, 3, 3);
         c.Designate("add", "mine", null, [new P3(4, 71, 3)], "all");
         var next = c.Next();
         Assert.Equal("4,71,3", next["at"]!.GetValue<string>());
-        Assert.Null(next["pillar"]);
+        Assert.Equal(8, next["pillar"]!["n"]!.GetValue<int>());
+        Assert.Null(next["fetch"]);
+    }
+
+    [Fact]
+    public void A_remnant_below_the_rim_keeps_a_supply_hint_for_a_climb_taller_than_the_retained_stack()
+    {
+        var (c, h, w) = StoryRig.Make();
+        Only(c, WorkTypes.Mine);
+        var chest = new P3(196, 64, 368);
+        w.Set(chest.X, chest.Y, chest.Z, 54);
+        c.StorageOp("set", [chest], null, null, null);
+        c.AddContents(c.StorageAt(chest)!, new Stack(4, 0, 64));
+        h.Lives[c.P()] = FakeStoryHost.Live(195, 64, 370, inv: new Stack(4, 0, 16));
+        var at = new P3(195, 57, 370);
+        for (int y = 35; y <= 63; y++) w.Set(at.X, y, at.Z, 0);
+        w.Set(at.X, at.Y, at.Z, 4);
+        c.Designate("add", "mine", null, [at], "all");
+        var job = c.Next();
+        Assert.Equal("dig", Kind(job));
+        Assert.Equal(at.ToString(), job["at"]!.GetValue<string>());
+        Assert.Equal(chest.ToString(), job["pillar"]!["from"]!.GetValue<string>());
+        Assert.Equal(8, job["pillar"]!["n"]!.GetValue<int>());
+        Assert.Null(job["fetch"]);
     }
 
     [Fact]

@@ -28,9 +28,9 @@ build r0 maid_chan_101 job => {"id":"story-1.j1","type":"build","kind":"place","
   report True
 build r0 maid_chan_102 job => {"id":"story-1.j2","type":"build","kind":"place","label":"building wall (65 blocks, planks): 7 blocks","at":"10,64,11","block":"planks","want":"planks","cells":["10,64,11","10,64,12","10,64,13","10,64,14","11,64,14","12,64,14","11,64,10"],"stand":"9,64,12","fetch":[{"from":"4,64,9","item":"planks","n":7}]}
   report True
-build r0 maid_chan_103 job => {"id":"story-1.j3","type":"build","kind":"dig","label":"removing a block (remove (2 blocks))","at":"1,63,1","tool":"stone_pickaxe","tool_ench":"none","pillar":{"from":"0,64,9","item":"cobblestone","n":16}}
+build r0 maid_chan_103 job => {"id":"story-1.j3","type":"build","kind":"dig","label":"removing a block (remove (2 blocks))","at":"1,63,1","tool":"stone_pickaxe","tool_ench":"none","pillar":{"from":"0,64,9","item":"cobblestone","n":24}}
   report True
-build r1 maid_chan_101 job => {"id":"story-1.j4","type":"build","kind":"dig","label":"removing a block (remove (2 blocks))","at":"2,63,1","tool":"stone_pickaxe","tool_ench":"none","pillar":{"from":"0,64,9","item":"cobblestone","n":16}}
+build r1 maid_chan_101 job => {"id":"story-1.j4","type":"build","kind":"dig","label":"removing a block (remove (2 blocks))","at":"2,63,1","tool":"stone_pickaxe","tool_ench":"none","pillar":{"from":"0,64,9","item":"cobblestone","n":24}}
   report True
 build r1 maid_chan_102 job => {"id":"story-1.j5","type":"craft","kind":"craft","label":"Make Stick (from any planks) (0/16)","at":"3,64,-3","item":"stick","n":16,"fetch":[{"from":"4,64,9","item":"planks","n":8}],"recipe":"craft:stick","stash":[{"to":"4,64,9","items":["stick"]}]}
   report True

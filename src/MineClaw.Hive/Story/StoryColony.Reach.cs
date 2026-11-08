@@ -46,11 +46,15 @@ public sealed partial class StoryColony
         if (job.Kind is not ("dig" or "place") && top <= live.Y + 3) return job;
         int have = live.Inventory.Where(s => PillarAny.Contains(s.Id)).Sum(s => s.Count);
         int want = Math.Max(8, Math.Min(Meta.PillarStack, top - (int)live.Y + 2));
+        // The reachable base can be far below both target and pawn. Keep a supply hint for the longest supported climb;
+        // the SDK only takes these extra blocks when its actual access plan needs them.
+        if (job.Kind == "dig") want = Math.Max(want, Scripting.Story.ReachScan.MaxPillar);
         if (have >= want) return job;
         if (FindStored(s => PillarKeep.Contains(s.Id), live.Block, 64) is not { } st) return job;
         job.Json["pillar"] = new JsonObject
         {
-            ["from"] = st.Store.Chest.ToString(), ["item"] = ItemName(st.Stack.Id, st.Stack.Meta), ["n"] = Math.Min(st.Stack.Count, Math.Max(want, Meta.PillarStack) - have),
+            ["from"] = st.Store.Chest.ToString(), ["item"] = ItemName(st.Stack.Id, st.Stack.Meta),
+            ["n"] = Math.Min(st.Stack.Count, (job.Kind == "dig" ? want : Math.Max(want, Meta.PillarStack)) - have),
         };
         return job;
     }
