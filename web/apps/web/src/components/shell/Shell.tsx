@@ -37,7 +37,7 @@ function SidebarNav({ collapsed, onNavigate }: { collapsed: boolean; onNavigate?
   const pathname = usePathname();
   const { can } = useAuth();
   return (
-    <nav aria-label="Main" className="flex-1 overflow-y-auto px-2 pb-4">
+    <nav aria-label="Main" className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-2 pb-4">
       {NAV.map((group) => {
         const items = group.items.filter((i) => !i.access || can(i.access));
         if (items.length === 0) return null;
@@ -163,8 +163,9 @@ export function Shell({ children }: { children: ReactNode }) {
     return () => window.removeEventListener('keydown', onKey);
   }, []);
 
+  // The navigation stays on the viewport; only main and the sidebar navigation scroll.
   return (
-    <div className="flex h-dvh overflow-hidden bg-bg">
+    <div className="fixed inset-0 flex h-dvh overflow-hidden bg-bg">
       <a
         href="#main"
         className="sr-only z-50 rounded-md bg-surface px-3 py-2 focus:not-sr-only focus:absolute focus:top-2 focus:left-2"
@@ -215,7 +216,7 @@ export function Shell({ children }: { children: ReactNode }) {
         </div>
       ) : null}
 
-      <div className="flex min-w-0 flex-1 flex-col">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
         <Header
           onOpenPalette={() => setPaletteOpen(true)}
           menuButton={
@@ -230,7 +231,8 @@ export function Shell({ children }: { children: ReactNode }) {
             </Button>
           }
         />
-        <main id="main" className="min-h-0 flex-1 overflow-auto">
+        {/* Contain absolute field labels in their scroll pane so focus/hash scrolling cannot move the shell. */}
+        <main id="main" className="relative min-h-0 flex-1 overflow-auto overscroll-contain">
           {children}
         </main>
       </div>
