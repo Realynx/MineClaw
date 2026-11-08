@@ -433,9 +433,7 @@ public sealed partial class StoryColony
         job.Takes.AddRange(takes);
         if (ReplacementBuild(b)) job.Json["replace"] = true;
         if (scaffold is { } spot) job.Json["scaffold"] = new JsonObject { [g.At.ToString()] = spot.ToString() };
-        var claimed = Claim(b, cells, p.Name, WithTool(clear.Count > 0 ? clearTool : null, job));
-        CountRedo(w, b, cells, claimed);
-        return claimed;
+        return Claim(b, cells, p.Name, WithTool(clear.Count > 0 ? clearTool : null, job));
     }
 
     /// <summary>What a batch fetches: from the nearest stores first, as much as it lacks.</summary>
@@ -468,15 +466,6 @@ public sealed partial class StoryColony
             f["metas"] = new JsonArray(cells.Select(c => (JsonNode)c.Meta).ToArray());
         if (stand is { } sp) f["stand"] = sp.ToString(); // where the whole batch is within reach
         if (fetch.Count > 0) f["fetch"] = fetch;
-    }
-
-    /// <summary>A wrong-turned cell this batch takes back and places again: its one second chance, counted when handed out.</summary>
-    private void CountRedo(IStoryWorld w, BuildState b, List<GhostState> cells, ActiveJob claimed)
-    {
-        var redo = cells.Where(c => w.Block(c.At.X, c.At.Y, c.At.Z) is var (rid, rmeta) && WrongTurn(c, rid, rmeta, Modern))
-            .Select(c => $"g:{b.Id}|{c.At}").ToList();
-        if (redo.Count > 0 && claimed.Assign is { } assign)
-            claimed.Assign = () => { assign(); foreach (var k in redo) _turnRedo[k] = _turnRedo.GetValueOrDefault(k) + 1; };
     }
 
     /// <summary>Nothing here for this pawn: a material is out, the open cells are another builder's, or the level below isn't built yet.</summary>
@@ -549,7 +538,8 @@ public sealed partial class StoryColony
     /// <summary>Chest, trapped chest, furnace and lit furnace, dispenser, dropper, hopper, brewing stand, jukebox.</summary>
     private static readonly HashSet<int> ItemHolders = [54, 146, 61, 62, 23, 158, 154, 117, 84];
 
-    /// <summary>Cells taken back once for a wrong rotation (<c>g:build|x,y,z</c>): the second time the cell is left misrotated.</summary>
+    /// <summary>Cells reporting a verified wrong placement (<c>g:build|x,y,z</c>). Dispatch, fetch, approach and an untouched batch
+    /// tail do not consume the repair attempt: only a placement result can leave a cell misrotated.</summary>
     private readonly Dictionary<string, int> _turnRedo = new(StringComparer.Ordinal);
 
     /// <summary>
@@ -904,7 +894,12 @@ public sealed partial class StoryColony
         // Placed, but turned the wrong way: the client already took it back and tried once more (or couldn't): the cell says so.
         if (View(p.Name, g) is var (tid, tmeta) && WrongTurn(g, tid, tmeta, Modern)
             && (status.Contains("wrong rotation", StringComparison.OrdinalIgnoreCase) || status == "done"))
-        { Misrotated(b, g, tmeta); return; }
+        {
+            var key = "g:" + id;
+            _turnRedo[key] = _turnRedo.GetValueOrDefault(key) + 1;
+            Misrotated(b, g, tmeta);
+            return;
+        }
         if (status == "done") status = $"failed: {g.At} is occupied by {BlockNameOr(View(p.Name, g).Id, "another block")}";
         if (g.State == "leased") { g.State = "todo"; g.Rev = Touch(); }
         CellFailed(p, b, g, id, status.StartsWith("failed: ", StringComparison.Ordinal) ? status[8..] : status);

@@ -39,6 +39,47 @@ public sealed class StoryRotationTests
 
     private static string Id(JsonObject j) => j["id"]!.GetValue<string>();
 
+    [Theory]
+    [InlineData("no oak_stairs in the chest at 0,64,9: it is empty")]
+    [InlineData("can't reach chest at 0,64,9")]
+    public void A_failed_fetch_or_approach_does_not_spend_any_cells_rotation_repair(string failure)
+    {
+        var (c, h, w) = Rig(Release1122GameData.Instance, new Stack(53, 0, 8));
+        var b = Add(c, Block(53, 3, [4, 64, 12], [5, 64, 12]));
+        w.Set(4, 64, 12, 53, 2);
+        w.Set(5, 64, 12, 53, 2);
+        var first = c.Next();
+        Assert.Equal(2, first["clear"]!.AsArray().Count);
+        Assert.NotNull(first["fetch"]);
+        Assert.True(c.Report(c.P(), Id(first), "failed", failure, null));
+        // Another supply is now carried; the missing or inaccessible chest is no longer needed.
+        h.Lives[c.P()] = FakeStoryHost.Live(0, 64, 4, inv: [new Stack(53, 0, 8)]);
+        var retry = c.Next();
+        Assert.Equal("place", retry["kind"]!.GetValue<string>());
+        Assert.Equal(2, retry["clear"]!.AsArray().Count);
+        Assert.All(b.Ghosts, g => Assert.Equal("leased", g.State));
+        Assert.DoesNotContain(c.Alerts, a => a.Text.Contains("was placed with the wrong rotation"));
+    }
+
+    [Fact]
+    public void A_verified_wrong_placement_stops_only_that_cell_and_returns_its_untouched_batch_tail()
+    {
+        var (c, _, w) = Rig(Release1122GameData.Instance, new Stack(53, 0, 8));
+        var b = Add(c, Block(53, 3, [4, 64, 12], [5, 64, 12]));
+        w.Set(4, 64, 12, 53, 2);
+        w.Set(5, 64, 12, 53, 2);
+        var first = c.Next();
+        var attempted = first["cells"]![0]!.GetValue<string>();
+        var untouched = first["cells"]![1]!.GetValue<string>();
+        c.Report(c.P(), Id(first), "progress", $"cell {attempted} failed: placed with wrong rotation at {attempted}", null);
+        c.Report(c.P(), Id(first), "done", "batch: 0/2 placed", null);
+        var retry = c.Next();
+        Assert.Equal("place", retry["kind"]!.GetValue<string>());
+        Assert.Equal([untouched], retry["cells"]!.AsArray().Select(x => x!.GetValue<string>()));
+        Assert.Equal("misrotated", b.Ghosts.Single(g => g.At.ToString() == attempted).State);
+        Assert.Equal("leased", b.Ghosts.Single(g => g.At.ToString() == untouched).State);
+    }
+
     [Fact]
     public void The_Architects_turn_becomes_the_ghosts_meta_and_a_designs_meta_is_kept()
     {
