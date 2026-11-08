@@ -1,6 +1,16 @@
 # Local Minecraft resources and Controller audio
 
-Settings → Minecraft textures and sounds imports a Java 1.12.2 or Beta 1.8.1 client JAR using the browser's file picker.
+Settings → Set up Minecraft textures and sounds walks through two separate imports. Choose the launcher to see the
+appropriate folder hints; Windows paths have a copy button. Other operating systems and custom launcher locations can
+use the same file and folder pickers.
+
+1. **Import textures:** choose a Java 1.12.2 or Beta 1.8.1 client JAR. Its version is detected and selected automatically.
+   The textures step becomes ready and the Java sound step becomes the next action.
+2. **Import sounds:** for Java 1.12.2, select the launcher's entire `assets` folder, including `indexes` and `objects`.
+   The step displays the imported sound count and points to the Controller's Sound menu. Existing imports are recognized
+   when Settings is reopened; replacements can be made independently.
+
+Beta textures work, but the launcher's legacy Beta sound folders are not supported by this walkthrough yet.
 The browser reads only allowlisted textures, models, blockstates and sound resources. It never executes Java classes or
 uploads the archive. The prepared atlases and audio remain in IndexedDB for that site address on that browser profile.
 An installed PWA uses the same origin's storage. HTTP and HTTPS addresses have separate storage.
@@ -14,6 +24,11 @@ For Java 1.12.2, the client JAR is normally `.minecraft/versions/1.12.2/1.12.2.j
 the Minecraft launcher. After launching the version once, import `.minecraft/assets` with the sound folder picker. The
 importer reads `indexes/1.12.json` and its referenced hash-named `objects` files; it does not fetch assets from the internet.
 The original JAR alone generally contains no sounds. Missing resources remain silent rather than using unrelated clips.
+
+Prism Launcher keeps these resources outside individual instances. On a typical Windows install, its JAR is under
+`%APPDATA%\PrismLauncher\libraries\com\mojang\minecraft\1.12.2`, and the sound folder is
+`%APPDATA%\PrismLauncher\assets`, beside `instances` and `libraries`. Select `assets` itself, not an instance's
+`minecraft` folder or one of the asset subfolders.
 
 The Controller's Sound menu controls a volume saved on this device. A click or key gesture enables Web Audio playback.
 Live server sound packets and block-break effects travel through the existing entity event feed, deduplicated across
