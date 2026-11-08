@@ -532,6 +532,9 @@
   // dig(at, job?): the usual dig; a block out of reach is reached from a pillar (reachUp), never just given up on. j.ordered (a
   // preserved zone's repair): the owner's clear (clear_dig), which the preserved-block filter lets through.
   const dig = (at, j) => {
+    // A chest designation never falls back to a plain/forced dig: the atomic action must freshly prove both halves empty.
+    if (j && j.deconstruct) return typeof globalThis.deconstruct_chest === 'function'
+      ? call('deconstruct_chest', at) : { ok: false, msg: 'safe chest deconstruction is unavailable' };
     const g = globalThis, one = () => (j && (j.ordered || j.replace) ? clearDig(at, j) : g.dig(at)), r = one();
     if (g.ok(r) || !REACH.test(r.msg || '')) return r;
     return reachUp(at, () => j && (j.ordered || j.replace) ? clearDig(at, j) : digHere(at), j);
@@ -659,7 +662,9 @@
   // Crafting has already succeeded when stash runs. A failed delivery leaves its output carried, not an undone craft.
   const stash = j => {
     for (const s of j.stash || []) {
-      const r = call('deposit', s.to, s.items);
+      // Falling back to another chest can refill the very source being dismantled. Keep a failed delivery carried.
+      if (j.deconstruct_id && typeof globalThis.deposit_at !== 'function') return { ok: false, msg: 'strict chest delivery is unavailable' };
+      const r = call(j.deconstruct_id ? 'deposit_at' : 'deposit', s.to, s.items);
       if (!good(r)) return j.kind === 'craft' ? { ok: true, msg: 'crafted; storage pending: ' + why(r) } : r;
     }
     return { ok: true };

@@ -99,8 +99,11 @@ public sealed partial class StoryColony
         {
             IReadOnlyList<(P3 At, int Id)> mine;
             try { mine = Host.TemporaryBlocks(p.Name); } catch (Exception) { continue; }
-            foreach (var (at, id) in mine)
+            foreach (var (at, id) in mine.ToArray())
+            {
+                if (PreservedTemp(at, id)) { Host.KeepTemporaryBlock(p.Name, at); continue; }
                 if (!buildCells.Contains(at) && !(Meta.TempBlocks?.Any(t => t.At == at) ?? false)) { Temps.Add(new TempBlockState { At = at, Id = id, Pawn = p.Name, Kind = "scaffold", Since = Now }); _dirty = true; }
+            }
         }
     }
 
@@ -121,6 +124,7 @@ public sealed partial class StoryColony
         if (!w.Loaded(t.At.X, t.At.Z)) return;
         int now = w.Block(t.At.X, t.At.Y, t.At.Z).Id;
         AdoptSeen(t, now);
+        if (PreservedTemp(t.At, now)) { RetirePreservedTemp(t); return; }
         if (Gone(t, now) || buildCells.Contains(t.At)) { ForgetTemp(t); return; }
         if (t.Cancelled || t.DeferredReason != null) { KeepTemp(t); return; }
         if (!LeftBehind(t))
@@ -140,6 +144,22 @@ public sealed partial class StoryColony
         if (t.RetryAfter > Now && Designations.FirstOrDefault(d => d.Id == t.Designation) is { } resting)
             _skip[DesignationKey(resting)] = t.RetryAfter.Value;
         if (t.Designation == null && t.Id != 0) QueueTemp(t);
+    }
+
+    private bool PreservedTemp(P3 at, int id) => id != 0
+        && PreserveFilter()?.Invoke(new MineClaw.World.BlockPos(at.X, at.Y, at.Z), id) == true;
+
+    /// <summary>A preserved foundation may have been placed by a pawn, but it is no longer disposable access. Retire only the
+    /// registry's automatic cleanup; a manual designation at the same cell remains the owner's order.</summary>
+    private void RetirePreservedTemp(TempBlockState temp)
+    {
+        if (temp.Designation is { } id && Designations.Any(d => d.Id == id && d.Auto))
+            foreach (var (name, job) in _current.ToList())
+                if (job.Source == "designation" && job.SourceId == id && Pawns.TryGetValue(name, out var pawn))
+                    Supersede(pawn, "temporary cleanup is now preserved");
+        KeepTemp(temp);
+        _tempQueued.Remove(temp);
+        ForgetTemp(temp);
     }
 
     /// <summary>A placement registered before the view showed it: its block, once it does.</summary>

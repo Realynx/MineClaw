@@ -276,12 +276,14 @@ public sealed partial class StoryColony
             }
             var cancelled = gone.Select(d => d.Id).ToHashSet();
             foreach (var p in Pawns.Values)
-                if (_current.TryGetValue(p.Name, out var job) && job.Source == "designation" && job.SourceId is { } id && cancelled.Contains(id))
+                if (_current.TryGetValue(p.Name, out var job) && (job.Source == "designation" && job.SourceId is { } id && cancelled.Contains(id)
+                    || job.Json["deconstruct_id"]?.GetValue<string>() is { } demolition && cancelled.Contains(demolition)))
                 {
                     Supersede(p, "task cancelled by owner");
                     p.Rev = Bump();
                 }
             int batches = kind is null or "mine" ? CancelQuarryBatches(area, blocks) : 0;
+            if (gone.Count > 0) { _resort = null; WakeIdle(); }
             return (new JsonObject { ["count"] = gone.Count + batches, ["removed"] = new JsonArray(gone.Select(d => (JsonNode)d.Id!).ToArray()) }, null);
         }
     }
@@ -335,6 +337,7 @@ public sealed partial class StoryColony
             var made = batch.Made;
             if (made.Count > 4096) return (null, $"{made.Count} targets: designate a smaller area (max 4096)");
             foreach (var d in made) { d.Auto = auto; d.Rev = Touch(); Designations.Add(d); }
+            if (!auto && kind == "deconstruct") ReconcileChestDeconstruction(w);
             if (made.Count > 0 || batch.Revived > 0) WakeIdle();
             var answer = new JsonObject { ["count"] = made.Count + batch.Revived, ["revived"] = batch.Revived, ["targets"] = batch.Targets };
             if (!auto) DesignationsOverPreserved(made, answer); // done as asked, then kept as they leave it (StoryColony.Preserve.cs)

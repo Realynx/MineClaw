@@ -26,7 +26,7 @@ public sealed partial class StoryColony
     public StorageState? BestChest(int id, int meta, P3 from, StorageState? except = null)
     {
         lock (_lock)
-            return Storages.Where(s => s != except && ChestOpen(s.Chest) && Accepts(s, id, meta) && HasRoom(s, id, meta))
+            return Storages.Where(s => s != except && !ChestDeconstructing(s.Chest) && ChestOpen(s.Chest) && Accepts(s, id, meta) && HasRoom(s, id, meta))
                 .OrderByDescending(s => StoragePriority.Rank(s.Priority)).ThenBy(s => s.Chest.Dist(from)).FirstOrDefault();
     }
 

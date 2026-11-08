@@ -468,10 +468,20 @@ public sealed partial class StoryColony
         return (stoodOn ??= StoodOnByOthers(pawn)).Contains(at) ? MarkPass.Underfoot : null;
     }
 
-    private ActiveJob MarkJob(PawnState p, PawnLive live, string type, string scriptKind, string label, List<(DesignationState D, string Key, P3 Target)> list,
+    private ActiveJob? MarkJob(PawnState p, PawnLive live, string type, string scriptKind, string label, List<(DesignationState D, string Key, P3 Target)> list,
         (DesignationState D, string Key, P3 Target) best, MarkSearch s)
     {
         var (d, key, target) = best;
+        bool chest = s.W is { } world && ManualChestRemoval(d, world, target);
+        if (chest)
+        {
+            var preparation = PrepareChestRemoval(p, live, d, target);
+            if (!preparation.Ready)
+            {
+                if (preparation.Job == null) _skip[key] = Now + TimeSpan.FromSeconds(2);
+                return preparation.Job;
+            }
+        }
         // A temporary block's cleanup always digs from beside it (live 11-06: "won't dig the dirt I'm standing on … the drop below is too far").
         P3? stand = s.Digs && s.W != null && (s.Mine.Contains(target) || IsTempMark(d))
             ? StandBeside(s.W, target, c => c == target || list.Any(o => o.Target == c)) : null;
@@ -481,6 +491,7 @@ public sealed partial class StoryColony
         return WithTool(tool, Job(type, scriptKind, d.Label ?? label, target, key, "designation", d.Id, "working",
             j =>
             {
+                if (chest) j["deconstruct"] = true;
                 if (d.Replant != null) j["replant"] = d.Replant;
                 if (kind == "chop") ChopFill(j, d.Blocks);
                 if (stand is { } st) j["stand"] = st.ToString(); // it stands on its target: step off to the side first
@@ -767,6 +778,7 @@ public sealed partial class StoryColony
 
     private void Failed(PawnState p, ActiveJob j, string? note)
     {
+        if (ChestRemovalWait(j, note)) return;
         // A batch has already accounted for every attempted cell. Its untouched tail is simply released.
         if (j.DigCells != null && (j.DigReported || note == "dig batch interrupted")) { GearTakesEnded(j, done: false); return; }
         // Older/single-cell callers can report the whole placement as failed when only its support is pending.

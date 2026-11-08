@@ -84,7 +84,7 @@ public sealed partial class StoryColony
     /// <summary>"Unfiltered storage takes anything": a chest with room that doesn't deny it, open ("*") chests first, then the lowest
     /// priority (general storage), then the nearest.</summary>
     private StorageState? Fallback(int id, int meta, P3 from, StorageState? except) =>
-        Storages.Where(s => s != except && HasRoom(s, id, meta) && !Denied(s, id, meta) && LidBlocked(s.Chest) == null)
+        Storages.Where(s => s != except && !ChestDeconstructing(s.Chest) && ChestOpen(s.Chest) && HasRoom(s, id, meta) && !Denied(s, id, meta))
             .OrderBy(s => s.Filter.Allow.Contains("*") ? 0 : 1).ThenBy(s => StoragePriority.Rank(s.Priority)).ThenBy(s => s.Chest.Dist(from))
             .FirstOrDefault();
 
@@ -458,7 +458,9 @@ public sealed partial class StoryColony
     private List<(StorageState Src, Stack St, StorageState? Dst, bool Fallback)> Resorts()
     {
         long stamp = Storages.Count + (Meta.UnfilteredTakesAnything ? 7 : 0) + (Meta.KeepDisallowed ? 13 : 0);
-        foreach (var s in Storages) stamp = stamp * 31 + s.Rev;
+        // Availability is pawn-specific and expires with route cooldowns. Do not share a negative
+        // fallback decision with another pawn or keep it after the route can be tried again.
+        foreach (var s in Storages) stamp = (stamp * 31 + s.Rev) * 2 + (ChestOpen(s.Chest) ? 1 : 0);
         if (_resort is { } r && r.Stamp == stamp) return r.Moves;
         var moves = new List<(StorageState, Stack, StorageState?, bool)>();
         foreach (var src in Storages)
@@ -502,22 +504,25 @@ public sealed partial class StoryColony
     /// <summary>One stack of a re-sort trip: how many, to where (null: dropped), whether to a fallback chest.</summary>
     private readonly record struct ResortPart(Stack St, int N, StorageState? Dst, bool Fallback);
 
-    private ActiveJob? ResortTrip(PawnState p, PawnLive live, StorageState src, IEnumerable<(StorageState Src, Stack St, StorageState? Dst, bool Fallback)> moves)
+    private ActiveJob? ResortTrip(PawnState p, PawnLive live, StorageState src, IEnumerable<(StorageState Src, Stack St, StorageState? Dst, bool Fallback)> moves,
+        string work = WorkTypes.Haul)
     {
         var key = "resort:" + src.Chest;
+        if (!ChestOpen(src.Chest) || work != WorkTypes.Build && ChestDeconstructing(src.Chest)) return null;
         if (!Open(key, p.Name, null)) return null;
-        var take = ResortParts(moves, Math.Max(1, live.FreeSlots - 1));
+        var take = ResortParts(moves.Where(m => m.Dst == null || !ChestDeconstructing(m.Dst.Chest) && ChestOpen(m.Dst.Chest)), Math.Max(1, live.FreeSlots - 1));
         if (take.Count == 0) return null;
         var drops = take.Where(t => t.Dst == null).ToList();
         var puts = take.Where(t => t.Dst != null).GroupBy(t => t.Dst!).ToList();
         foreach (var fb in take.Where(x => x.Fallback)) _fallbackStored.Add((fb.Dst!.Chest, fb.St.Id, fb.St.Meta));
-        var fetch = new JsonArray(take.Select(t => (JsonNode)new JsonObject { ["from"] = src.Chest.ToString(), ["item"] = ItemName(t.St.Id, t.St.Meta), ["n"] = t.N }).ToArray());
+        var fetch = new JsonArray(take.Select(t => (JsonNode)new JsonObject { ["from"] = src.Chest.ToString(),
+            ["item"] = work == WorkTypes.Build ? BillTakeName(t.St) : ItemName(t.St.Id, t.St.Meta), ["n"] = t.N }).ToArray());
         var stash = new JsonArray(puts.Select(pg => (JsonNode)new JsonObject
         {
             ["to"] = pg.Key.Chest.ToString(),
-            ["items"] = new JsonArray(pg.Select(t => ItemName(t.St.Id, t.St.Meta)).Distinct().Select(n => (JsonNode)n!).ToArray()),
+            ["items"] = new JsonArray(pg.Select(t => work == WorkTypes.Build ? BillTakeName(t.St) : ItemName(t.St.Id, t.St.Meta)).Distinct().Select(n => (JsonNode)n!).ToArray()),
         }).ToArray());
-        var j = drops.Count > 0 ? ResortDropJob(src, key, drops, fetch, stash) : ResortMoveJob(src, key, take, puts[0].Key, fetch, stash);
+        var j = drops.Count > 0 ? ResortDropJob(src, key, drops, fetch, stash) : ResortMoveJob(src, key, take, puts[0].Key, fetch, stash, work);
         foreach (var t in take) j.Takes.Add((src.Chest, t.St with { Count = t.N }));
         foreach (var pg in puts) j.Puts.Add((pg.Key.Chest, pg.Select(t => t.St with { Count = t.N }).ToList()));
         return j;
@@ -556,10 +561,10 @@ public sealed partial class StoryColony
         return j;
     }
 
-    private ActiveJob ResortMoveJob(StorageState src, string key, List<ResortPart> take, StorageState to, JsonArray fetch, JsonArray stash)
+    private ActiveJob ResortMoveJob(StorageState src, string key, List<ResortPart> take, StorageState to, JsonArray fetch, JsonArray stash, string work)
     {
         string where = src.Label ?? src.Chest.ToString();
-        return Job(WorkTypes.Haul, "go", $"re-sorting {where}: moving {string.Join(", ", take.Select(t => ItemName(t.St.Id, t.St.Meta)).Distinct())}",
+        return Job(work, "go", $"re-sorting {where}: moving {string.Join(", ", take.Select(t => ItemName(t.St.Id, t.St.Meta)).Distinct())}",
             to.Chest, key, "move", src.Chest.ToString(), "working", f =>
             {
                 f["dist"] = 2;

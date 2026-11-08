@@ -469,6 +469,8 @@ public sealed partial class MinecraftClient
                 WindowItemsArriving?.Invoke(wi.WindowId); // synchronous: the inventory ledger tags the model change it causes
                 NoteSlotPacket(wi.WindowId, -1, fullWindow: true);
                 w.Inventory.SetWindowItems(wi.WindowId, wi.Items);
+                if (w.Inventory.OpenWindow is { } fullWindow && fullWindow.Id == wi.WindowId
+                    && wi.Items.Length >= fullWindow.SlotCount) _confirmedContainerWindow = fullWindow;
                 Interlocked.Increment(ref _windowItemsVersion);
                 return true;
             case UpdateProgressBarPacket pb:

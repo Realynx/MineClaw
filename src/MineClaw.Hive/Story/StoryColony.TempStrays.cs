@@ -62,6 +62,7 @@ public sealed partial class StoryColony
         {
             if (taken.Contains(lid) || builds.Contains(lid)) continue;
             int id = w.Block(lid.X, lid.Y, lid.Z).Id;
+            if (PreservedTemp(lid, id)) continue;
             var by = placed.FirstOrDefault(p => p.At == lid && Pawns.ContainsKey(p.Bot) && SameTempBlock(p.Id, id));
             if (by.Bot != null) queued.Add(new TempBlockState { At = lid, Id = id, Pawn = by.Bot, Kind = "on a chest's lid", Since = Now });
             else unproven.Add(lid);
@@ -78,7 +79,8 @@ public sealed partial class StoryColony
         foreach (var (at, id, bot) in placed)
         {
             if (!Pawns.ContainsKey(bot) || !TempKinds.Contains(id) || known.Contains(at) || !NearHome(home, at) || InQuarry(at)) continue;
-            if (!w.Loaded(at.X, at.Z) || !SameTempBlock(id, w.Block(at.X, at.Y, at.Z).Id)) continue;
+            if (!w.Loaded(at.X, at.Z) || !SameTempBlock(id, w.Block(at.X, at.Y, at.Z).Id)
+                || PreservedTemp(at, w.Block(at.X, at.Y, at.Z).Id)) continue;
             cand[at] = new TempBlockState { At = at, Id = id, Pawn = bot, Kind = "stray", Since = Now };
         }
         return cand;

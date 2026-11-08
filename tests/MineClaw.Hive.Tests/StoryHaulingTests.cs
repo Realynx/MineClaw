@@ -9,6 +9,32 @@ namespace MineClaw.Hive.Tests;
 /// </summary>
 public sealed class StoryHaulingTests
 {
+    [Theory]
+    [InlineData(true, false)]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    public void A_cached_resort_and_fallback_respect_the_pawns_current_container_cooldown(bool sourceFailed, bool fallback)
+    {
+        var clock = NewClock();
+        var (c, _, w) = StoryRig.Make(pawns: 2, time: clock);
+        Prio(c, (WorkTypes.Haul, 1));
+        c.SetHaulOptions(null, true, true);
+        P3 source = new(2, 64, 0), destination = new(6, 64, 0);
+        w.Set(source.X, source.Y, source.Z, 54);
+        w.Set(destination.X, destination.Y, destination.Z, 54);
+        c.StorageOp("set", [source], new StorageFilter { Allow = ["food"] }, null, null);
+        c.StorageOp("set", [destination], new StorageFilter { Allow = [fallback ? "food" : "stone_building"] }, null, null);
+        c.AddContents(c.StorageAt(source)!, new Stack(4, 0, 30));
+        var first = c.Next(0);
+        Assert.Equal("go", Kind(first)); // fills the cached re-sort plan
+        var failed = sourceFailed ? source : destination;
+        Assert.True(c.Report(c.P(0), Id(first), "failed", $"can't reach chest at {failed}", null));
+        if (fallback) c.StorageOp("set", [destination], null, null, "forces a fresh fallback decision");
+        Assert.NotEqual("go", Kind(c.Next(0)));
+        Assert.False(c.ChestUnreachable(failed)); // another pawn can still try; the first pawn's cooldown is sufficient
+        Assert.Equal("go", Kind(c.Next(1)));
+    }
+
     private sealed class Clock(DateTimeOffset now) : TimeProvider
     {
         public DateTimeOffset Now = now;

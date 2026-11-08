@@ -167,7 +167,7 @@ public sealed partial class StoryColony
                 if (fill != null) f["fill"] = fill;
             }, xp: 20 * steps.Count, count: batch);
         g.Attach(job, fetch);
-        var dst = bill.Store is JsonObject so && P3.Parse(so["chest"]) is { } c ? StorageAt(c) : BestChest(last.Form, Brewing.TypeId(last.Type), bench.Pos);
+        var dst = bill.Store is JsonObject so && P3.Parse(so["chest"]) is { } c && !ChestDeconstructing(c) ? StorageAt(c) : BestChest(last.Form, Brewing.TypeId(last.Type), bench.Pos);
         if (dst != null)
         {
             job.Json["stash"] = new JsonArray(new JsonObject { ["to"] = dst.Chest.ToString(), ["items"] = new JsonArray(StoryBrewing.FormName(last.Form)) });

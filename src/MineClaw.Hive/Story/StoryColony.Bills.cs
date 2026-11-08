@@ -693,7 +693,7 @@ public sealed partial class StoryColony
     /// <summary>The product goes to storage right after crafting: the bill's chest, else the best one.</summary>
     private ActiveJob StashBatch(ActiveJob job, WorkbenchState bench, BillState bill, StoryRecipe r, int crafts)
     {
-        var dst = bill.Store is JsonObject so && P3.Parse(so["chest"]) is { } c ? StorageAt(c) : BestChest(r.Output.Id, r.Output.Meta, bench.Pos);
+        var dst = bill.Store is JsonObject so && P3.Parse(so["chest"]) is { } c && !ChestDeconstructing(c) ? StorageAt(c) : BestChest(r.Output.Id, r.Output.Meta, bench.Pos);
         if (dst != null)
         {
             job.Json["stash"] = new JsonArray(new JsonObject { ["to"] = dst.Chest.ToString(), ["items"] = new JsonArray(ItemName(r.Output.Id, r.Output.Meta)) });

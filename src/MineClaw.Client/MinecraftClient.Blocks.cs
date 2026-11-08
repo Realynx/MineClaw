@@ -154,25 +154,37 @@ public sealed partial class MinecraftClient
     }
 
     /// <summary>Looks at the face, sends the start, swings every 4 ticks for the dig time (or until it breaks early), sends the finish.</summary>
-    private async Task DigForTicksAsync(BlockPos pos, int id, DigAim a, int ticks, CancellationToken ct)
+    private async Task<string?> DigForTicksAsync(BlockPos pos, int id, DigAim a, int ticks, CancellationToken ct, Func<string?>? verify = null)
     {
         await LookCoreAsync(a.Yaw, a.Pitch, ct).ConfigureAwait(false);
+        if (verify?.Invoke() is { } refused) return refused;
         int eid = World.Player.EntityId;
         byte face = (byte)a.Face;
         Send(new AnimationPacket { EntityId = eid, Animation = 1 });
         Send(new PlayerDiggingPacket { Status = PlayerDiggingPacket.StatusStarted, X = pos.X, Y = pos.Y, Z = pos.Z, Face = face });
-        if (ticks <= 0) return;
+        if (ticks <= 0) return null;
         int total = ticks + 2; // small margin: the server counts its own ticks since the start packet
         long startTick = TickCount;
         int lastSwing = 0;
+        string? Check()
+        {
+            if (verify?.Invoke() is not { } changed) return null;
+            var cancel = new PlayerDiggingPacket { Status = PlayerDiggingPacket.StatusCancelled, X = pos.X, Y = pos.Y, Z = pos.Z, Face = face };
+            // Beta has no abort packet: withholding the finish leaves its block intact.
+            if (_session?.Conn.CanSend(cancel) == true) Send(cancel);
+            return changed;
+        }
         while (TickCount < startTick + total)
         {
             await WaitUntilTickAsync(Math.Min(startTick + total, TickCount + 4), ct).ConfigureAwait(false);
             if (Broke(pos, id)) break;
+            if (Check() is { } changed) return changed;
             int elapsed = (int)(TickCount - startTick);
             if (elapsed - lastSwing >= 4) { lastSwing = elapsed; Send(new AnimationPacket { EntityId = eid, Animation = 1 }); }
         }
+        if (!Broke(pos, id) && Check() is { } late) return late;
         Send(new PlayerDiggingPacket { Status = PlayerDiggingPacket.StatusFinished, X = pos.X, Y = pos.Y, Z = pos.Z, Face = face });
+        return null;
     }
 
     /// <summary>Waits for the server to break it (a revert is the macro's first failed edit: spawn protection, claims).</summary>

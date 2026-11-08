@@ -45,6 +45,7 @@ public sealed partial class StoryColony
     /// <summary>One pass over every unpaused build (done ones too: a finished house that changed reopens).</summary>
     internal void Reconcile(IStoryWorld w)
     {
+        ReconcileChestDeconstruction(w);
         BuildConflictsPass();
         PreservePass(w); // preserved zones: their changed cells become their repair builds' ghosts (StoryColony.PreserveRepair.cs)
         var seen = new HashSet<string>(StringComparer.Ordinal);
