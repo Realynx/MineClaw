@@ -440,7 +440,8 @@ public sealed partial class StoryColony
         if (d.Auto && Meta.TempBlocks?.Any(t => t.Designation == d.Id && (t.RetryAfter > Now || t.DeferredReason != null)) == true) return false;
         if (MarkPassedOver(p.Name, d, at, s, ref stoodOn) is { } pass) { PassedMark(pass, s.Kind, at); return false; }
         // No tool for its material (carried or stored): the target waits, said on the map, no failure.
-        if (s.Tooled && s.W is { } w && PlanTool(p, live, w.Block(at.X, at.Y, at.Z).Id) is { Wait: { } why }) { NoteWait(d, why); return false; }
+        if (s.Tooled && s.W is { } w && PlanTool(p, live, s.Kind == "chop" ? ChopBlockAt(w, at, d.Blocks) : w.Block(at.X, at.Y, at.Z).Id)
+            is { Wait: { } why }) { NoteWait(d, why); return false; }
         return true;
     }
 
@@ -488,7 +489,8 @@ public sealed partial class StoryColony
         P3? stand = s.Digs && s.W != null && (s.Mine.Contains(target) || IsTempMark(d))
             ? StandBeside(s.W, target, c => c == target || list.Any(o => o.Target == c)) : null;
         NoteWait(d, null);
-        var tool = s.Tooled && s.W != null ? PlanTool(p, live, s.W.Block(target.X, target.Y, target.Z).Id) : null;
+        var tool = s.Tooled && s.W != null ? PlanTool(p, live,
+            s.Kind == "chop" ? ChopBlockAt(s.W, target, d.Blocks) : s.W.Block(target.X, target.Y, target.Z).Id) : null;
         string kind = s.Kind;
         return WithTool(tool, Job(type, scriptKind, d.Label ?? label, target, key, "designation", d.Id, "working",
             j =>

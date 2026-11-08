@@ -87,4 +87,26 @@ public sealed class StoryChopToolPolicyTests
         c.MaterialRulesOp(Rule());
         Assert.True(c.Holds(c.P(), mine["id"]!.GetValue<string>()));
     }
+
+    [Theory]
+    [InlineData("mark")]
+    [InlineData("order")]
+    public void A_missing_trunk_base_does_not_let_remaining_upper_logs_bypass_the_axe_rule(string route)
+    {
+        var (c, h, w) = Make(route);
+        w.Set(Tree.X, Tree.Y, Tree.Z, 0);
+        w.Set(Tree.X, Tree.Y + 1, Tree.Z, 0);
+        Assert.Equal(17, w.Block(Tree.X, Tree.Y + 2, Tree.Z).Id);
+        if (route == "mark") Assert.Contains(Tree.Add(0, 2, 0), c.Designations.Single().Blocks!);
+        h.Lives[c.P()] = FakeStoryHost.Bare(0, 64, 0, new Stack(271, 0, 1));
+        var wait = c.Next();
+        Assert.NotEqual("chop", wait["kind"]!.GetValue<string>());
+        Assert.Null(c.StorageOp("set", [Chest], null, null, null).Error);
+        c.AddContents(c.StorageAt(Chest)!, new Stack(275, 0, 1));
+        c.Report(c.P(), wait["id"]!.GetValue<string>(), "done", null, null);
+        var job = c.Next();
+        Assert.Equal("chop", job["kind"]!.GetValue<string>());
+        Assert.Equal("stone_axe", job["tool"]!.GetValue<string>());
+        Assert.Contains(job["fetch"]!.AsArray(), f => f!["item"]!.GetValue<string>() == "stone_axe");
+    }
 }

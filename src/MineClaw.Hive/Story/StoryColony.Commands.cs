@@ -225,7 +225,7 @@ public sealed partial class StoryColony
 
     private ActiveJob ChopOrderJob(PawnState p, PawnLive live, Order o, P3? at)
     {
-        var tool = at is { } target ? PlanTool(p, live, DigBlockAt(target)) : null;
+        var tool = at is { } target && World is { } w ? PlanTool(p, live, ChopBlockAt(w, target)) : null;
         if (tool?.Wait is { } wait) return Job("order", "hold", wait, null, null, "tool_wait", o.Id, "idle", j => j["s"] = 3, xp: 0);
         return WithTool(tool, Job(WorkTypes.Chop, "chop", "chopping (order)", at, at is { } c ? "b:" + c : null, "order", o.Id,
             fill: j => ChopFill(j, at is { } ct && World is { } ow ? StoryBlocks.TreeFrom(ow, ct) : null), xp: 40));
