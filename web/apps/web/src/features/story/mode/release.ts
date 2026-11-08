@@ -137,7 +137,7 @@ async function releaseStorage(c: Story, r: DragResult) {
 
 /** A design (or a mine design) queued where it was clicked, turned to the build facing. */
 async function releaseDesign(c: Story, tool: ToolOf<'design'>, r: DragResult) {
-  const placed = placeDesign(tool.blocks, r.a, c.build.facing, !!tool.mine);
+  const placed = placeDesign(tool.blocks, r.a, c.build.facing, !!tool.mine, c.state?.version);
   let items;
   try {
     items = tool.mine ? mineItems(placed, tool.name) : designItems(placed, tool.name);

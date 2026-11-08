@@ -278,7 +278,7 @@ export function drawDesignHover(
   holoOn: boolean,
 ): void {
   if (!holoOn)
-    for (const b of placeDesign(tool.blocks, a, props.build.facing, !!tool.mine).slice(0, 2500))
+    for (const b of placeDesign(tool.blocks, a, props.build.facing, !!tool.mine, props.state?.version).slice(0, 2500))
       pt.cube(b[0], b[1], b[2], b[3] === 0 ? '#ff6b6b' : '#7fd3ff', 0.38, false);
   pt.label(
     at,

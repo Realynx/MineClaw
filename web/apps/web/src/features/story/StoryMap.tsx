@@ -772,10 +772,10 @@ export const StoryMap =forwardRef<StoryMapHandle, StoryMapProps>(function StoryM
   };
 
   const showDesignHologram = (e: WorldViewerEngine, h: HoloSync, tool: Extract<MapTool, { kind: 'design' }>, a: V3) => {
-    const key = `${tool.id}|${a.join(',')}|${p.current.build.facing}`;
+    const key = `${tool.id}|${a.join(',')}|${p.current.build.facing}|${p.current.state?.version}`;
     if (key === h.preview) return;
     h.preview = key;
-    e.setHologramPreview(placeDesign(tool.blocks, a, p.current.build.facing, !!tool.mine).slice(0, 4096).flat(), key);
+    e.setHologramPreview(placeDesign(tool.blocks, a, p.current.build.facing, !!tool.mine, p.current.state?.version).slice(0, 4096).flat(), key);
   };
 
   const showBuildHologram = (e: WorldViewerEngine, h: HoloSync, id: BuildToolId, ba: V3, d: DragState | null) => {

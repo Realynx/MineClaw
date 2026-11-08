@@ -28,7 +28,7 @@ import {
   waterToolCells,
   type WaterToolId,
 } from '@mineclaw/contracts';
-import { hasFacing, withFacing, type Dir } from '../studio/facing';
+import { hasFacing, rotateMeta, withFacing, type Dir } from '../studio/facing';
 
 type V3 = [number, number, number];
 
@@ -738,13 +738,20 @@ export function mineCheck(blocks: readonly DesignBlock[]): { min: number; max: n
  * A design placed with its origin at `at`, turned by `facing` (n = as drawn, then clockwise). An `absolute` design (a mine)
  * keeps its own y: only x and z follow the click.
  */
-export function placeDesign(blocks: readonly DesignBlock[], at: V3, facing: StoryFacing, absolute = false): DesignBlock[] {
+export function placeDesign(
+  blocks: readonly DesignBlock[],
+  at: V3,
+  facing: StoryFacing,
+  absolute = false,
+  version: string | number | null = '1.12.2',
+): DesignBlock[] {
   const turns = FACINGS.indexOf(facing);
   const y0 = absolute ? 0 : at[1];
+  const gameVersion = version === 'b1.8.1' ? 'b1.8.1' : '1.12.2';
   return blocks.map(([x, y, z, id, meta]) => {
     let dx = x, dz = z;
     for (let i = 0; i < turns; i++) [dx, dz] = [-dz, dx];
-    return [at[0] + dx, y0 + y, at[2] + dz, id, meta];
+    return [at[0] + dx, y0 + y, at[2] + dz, id, rotateMeta(id, meta, turns, gameVersion)];
   });
 }
 
