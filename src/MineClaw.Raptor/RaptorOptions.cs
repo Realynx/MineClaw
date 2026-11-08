@@ -79,6 +79,13 @@ public sealed record RaptorOptions
 
     // ---------------- retrieval (tree_retriever.py) ----------------
 
+    /// <summary>
+    /// Avoid a second copy of every embedding for collapsed retrieval in read-only indexes. The caller must never
+    /// modify the contents of the tree's embedding arrays. Replacing an array is observed on the next retriever
+    /// refresh. False retains the default copied-vector snapshot, even if a caller modifies an array in place.
+    /// </summary>
+    public bool ReuseImmutableEmbeddings { get; init; }
+
     /// <summary>Paper §3/§4: collapsed tree performed best; RetrievalAugmentation.retrieve collapse_tree=True.</summary>
     public bool DefaultCollapsed { get; init; } = true;
     /// <summary>Paper §4 "collapsed tree with 2000 maximum tokens" (code default is 3500).</summary>

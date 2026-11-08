@@ -87,7 +87,10 @@ public sealed class MemoryBank : IDisposable
         catch (JsonException) { TreeMeta = null; }
         if (TreeMeta == null) { TreeNote = "unreadable RAPTOR metadata"; return; }
         var embedder = new StoredModelEmbedder(TreeMeta.EmbeddingModel, TreeMeta.Dimensions, Embeddings);
-        var raptor = new RaptorMemory(Db, Rag, embedder, ReadOnlySummarizer.Instance, options.Rag.Raptor);
+        // Banks never mutate loaded embeddings. Reuse those arrays for retrieval instead of copying the entire tree into
+        // a second dense matrix; during a live refresh both the old and replacement bank must fit in the bridge's heap.
+        var raptor = new RaptorMemory(Db, Rag, embedder, ReadOnlySummarizer.Instance, options.Rag.Raptor,
+            raptorOptions: new RaptorOptions { ReuseImmutableEmbeddings = true });
         raptor.Store.LoadWritesBack = false;
         bool loaded;
         try { loaded = await raptor.LoadAsync(ct).ConfigureAwait(false); }
@@ -256,7 +259,7 @@ public sealed class BankHost(BridgeConfig config, ILogger<BankHost> log) : IDisp
             log.LogInformation("reloaded the agent db caches (the bot changed the tree, docs or vectors)");
             if (old != null) _ = Task.Delay(TimeSpan.FromSeconds(30)).ContinueWith(_ => old.Dispose(), TaskScheduler.Default);
         }
-        catch (Exception ex) { log.LogWarning("db reload check failed: {Message}", ex.Message); }
+        catch (Exception ex) { log.LogWarning(ex, "db reload check failed: {Message}", ex.Message); }
         finally { lock (_reloadLock) _reload = null; }
     }
 

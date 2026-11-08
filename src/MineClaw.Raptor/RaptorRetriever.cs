@@ -44,6 +44,7 @@ public sealed class RaptorRetriever
     private readonly RaptorTree _tree;
     private readonly RaptorOptions _o;
     private float[] _matrix = [];
+    private float[][]? _embeddingRows;
     private int[] _rowIndex = [];
     private int _dims;
 
@@ -54,18 +55,29 @@ public sealed class RaptorRetriever
         Refresh();
     }
 
-    /// <summary>Rebuilds the flat embedding matrix used by collapsed search (call after the tree changed).</summary>
+    /// <summary>Rebuilds the embedding rows used by collapsed search (call after the tree changed).</summary>
     public void Refresh()
     {
         var nodes = _tree.AllNodes.Values.OrderBy(n => n.Index).ToArray();
-        _dims = nodes.Length > 0 ? nodes[0].Embedding.Length : 0;
-        _matrix = new float[nodes.Length * _dims];
-        _rowIndex = new int[nodes.Length];
+        int dims = nodes.Length > 0 ? nodes[0].Embedding.Length : 0;
+        var embeddingRows = _o.ReuseImmutableEmbeddings ? new float[nodes.Length][] : null;
+        var matrix = embeddingRows == null ? new float[nodes.Length * dims] : [];
+        var rowIndex = new int[nodes.Length];
         for (int r = 0; r < nodes.Length; r++)
         {
-            _rowIndex[r] = nodes[r].Index;
-            nodes[r].Embedding.AsSpan().CopyTo(_matrix.AsSpan(r * _dims, _dims));
+            rowIndex[r] = nodes[r].Index;
+            if (embeddingRows != null)
+            {
+                if (nodes[r].Embedding.Length != dims) throw new ArgumentException("Vector length mismatch.");
+                embeddingRows[r] = nodes[r].Embedding;
+            }
+            else nodes[r].Embedding.AsSpan().CopyTo(matrix.AsSpan(r * dims, dims));
         }
+        // RaptorIndex holds its write lock during refresh. Publish only a completed set of rows.
+        _dims = dims;
+        _matrix = matrix;
+        _embeddingRows = embeddingRows;
+        _rowIndex = rowIndex;
     }
 
     public RaptorResult Retrieve(float[] queryVector, RaptorQuery q)
@@ -145,7 +157,7 @@ public sealed class RaptorRetriever
         return result;
     }
 
-    /// <summary>Cosine of the query with every row of the flat matrix (in parallel blocks for big trees).</summary>
+    /// <summary>Cosine of the query with every embedding row (in parallel blocks for big trees).</summary>
     private float[] ScoreRows(float[] qv)
     {
         int rows = _rowIndex.Length;
@@ -154,12 +166,16 @@ public sealed class RaptorRetriever
             Parallel.For(0, (rows + 2047) / 2048, b =>
             {
                 int end = Math.Min(rows, (b + 1) * 2048);
-                for (int r = b * 2048; r < end; r++) scores[r] = VectorMath.Dot(qv, _matrix.AsSpan(r * _dims, _dims));
+                for (int r = b * 2048; r < end; r++) scores[r] = VectorMath.Dot(qv, EmbeddingRow(r));
             });
         else
-            for (int r = 0; r < rows; r++) scores[r] = VectorMath.Dot(qv, _matrix.AsSpan(r * _dims, _dims));
+            for (int r = 0; r < rows; r++) scores[r] = VectorMath.Dot(qv, EmbeddingRow(r));
         return scores;
     }
+
+    private ReadOnlySpan<float> EmbeddingRow(int row) => _embeddingRows == null
+        ? _matrix.AsSpan(row * _dims, _dims)
+        : _embeddingRows[row];
 
     /// <summary>Pinned leaves first, each one that still fits the budget (skipping, not stopping); returns the tokens used.</summary>
     private int TakePinned(List<Scored> pinned, int maxTokens, List<Scored> result, HashSet<int> taken)

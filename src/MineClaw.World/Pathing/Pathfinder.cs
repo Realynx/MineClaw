@@ -1133,11 +1133,15 @@ public sealed partial class Pathfinder
 
         var list = PanelToggles(x, z, tx, tz, y, sweep);
         if (list is null || list.Count == 0) return false; // a panel that can't be opened, or something other than a panel in the gap
-        bool clear = WithToggles(list, () => BlockShapes.GetCollidingBoxes(_w, sweep, _boxes).Count == 0);
+        bool clear = TransitAfterOpening(list, sweep);
         if (!clear) return false;
         toggles = list;
         return true;
     }
+
+    // Keep the captured sweep out of TransitOk: its closure would otherwise allocate even when HasPanels returns false.
+    private bool TransitAfterOpening(List<DoorToggle> toggles, AABB sweep) =>
+        WithToggles(toggles, () => BlockShapes.GetCollidingBoxes(_w, sweep, _boxes).Count == 0);
 
     /// <summary>The toggles of every panel in either column that the sweep hits (each once); null when one can't be opened.</summary>
     private List<DoorToggle>? PanelToggles(int x, int z, int tx, int tz, int y, AABB sweep)

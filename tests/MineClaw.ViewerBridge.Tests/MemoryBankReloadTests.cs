@@ -80,6 +80,45 @@ public sealed class MemoryBankReloadTests
     }
 
     [Fact]
+    public async Task Repeated_replacements_release_retired_banks_indexes_and_databases_while_reusing_payloads()
+    {
+        using var fixture = await FixtureDb.CreateAsync();
+        var config = BridgeConfig.ForTests(new BridgeOptions { DbPath = fixture.Path });
+        var (latest, retired) = ReplaceRepeatedly(fixture.Path, config);
+        using (latest)
+        {
+            Assert.True(latest.Raptor!.Index.Options.ReuseImmutableEmbeddings);
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            GC.Collect();
+            Assert.All(retired, old => Assert.False(old.Reference.IsAlive, $"The replacement retained its retired {old.Kind}."));
+            Assert.True(latest.Rag.VectorCount > 0);
+            Assert.True(latest.Db.ScalarLong("SELECT count(*) FROM docs") > 0);
+            Assert.Empty(latest.ReadTree(t => t.Validate(), ["missing tree"]));
+            GC.KeepAlive(latest);
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static (MemoryBank Latest, List<(string Kind, WeakReference Reference)> Retired) ReplaceRepeatedly(string path, BridgeConfig config)
+    {
+        var provider = new HashEmbeddings();
+        var bank = MemoryBank.OpenAsync(path, config.Agent, provider).GetAwaiter().GetResult();
+        var retired = new List<(string, WeakReference)>();
+        for (int i = 0; i < 4; i++)
+        {
+            var previous = bank;
+            bank = MemoryBank.OpenAsync(path, config.Agent, provider, previous: previous).GetAwaiter().GetResult();
+            retired.Add(("bank", new WeakReference(previous)));
+            retired.Add(("flat index", new WeakReference(previous.Rag)));
+            retired.Add(("tree index", new WeakReference(previous.Raptor!.Index)));
+            retired.Add(("database", new WeakReference(previous.Db)));
+            previous.Dispose();
+        }
+        return (bank, retired);
+    }
+
+    [Fact]
     public async Task Completed_cloud_layout_does_not_keep_a_retired_bank_alive()
     {
         using var fixture = await FixtureDb.CreateAsync();

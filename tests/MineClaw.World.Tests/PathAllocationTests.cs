@@ -62,6 +62,31 @@ public sealed class PathAllocationTests(ITestOutputHelper output)
         for (int i = 0; i < count; i++) Assert.NotNull(Parkour.Plan(world, from, 64, to, 64, true, false, 4.3, 3, out _));
         long perPlan = (GC.GetAllocatedBytesForCurrentThread() - before) / count;
         output.WriteLine($"gap plan: {perPlan:N0} bytes/plan");
-        Assert.True(perPlan < 20_000, $"A robust gap plan allocated {perPlan:N0} bytes; temporary world and contact buffers should be reused.");
+        Assert.True(perPlan < 12_000, $"A robust gap plan allocated {perPlan:N0} bytes; candidate flight tracks should stay private and reusable.");
+    }
+
+    [Fact]
+    public void Retained_plan_and_public_simulation_tracks_survive_later_planning()
+    {
+        using var world = ParkourPhysicsTests.GapWorld(2, 0);
+        var from = new BlockPos(-3, 64, 0);
+        var to = new BlockPos(3, 64, 0);
+        var plan = Assert.IsType<ParkourPlan>(Parkour.Plan(world, from, 64, to, 64, true, false, 4.3, 3, out _));
+        var expected = plan.Nominal.ToArray();
+        var simulated = Parkour.Simulate(world, Parkour.StandingAt(plan.Start, plan.Schedule.Yaw),
+            plan.Schedule, 0, plan.To, plan.ToFloor, plan.MaxFall, record: true);
+        Assert.True(simulated.Ok);
+        var simulatedTrack = simulated.Track!.ToArray();
+
+        for (int gap = 1; gap <= 5; gap++)
+        {
+            using var other = ParkourPhysicsTests.GapWorld(gap, 0, voidBelow: true);
+            _ = Parkour.Plan(other, from, 64, new BlockPos(gap + 1, 64, 0), 64, true, true, 4.3, 3, out _);
+        }
+        Assert.Equal(expected, plan.Nominal);
+        Assert.Equal(simulatedTrack, simulated.Track);
+        Assert.Equal(plan.Start, plan.Nominal[0]);
+        Assert.Equal(simulated.LandTick, plan.LandTick);
+        Assert.Equal(simulatedTrack, plan.Nominal);
     }
 }

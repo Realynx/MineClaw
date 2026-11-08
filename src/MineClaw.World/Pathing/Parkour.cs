@@ -110,8 +110,16 @@ public static class Parkour
     /// </summary>
     public static ParkourOutcome Simulate(IBlockAccess w, PhysicsState start, ParkourSchedule sch, int fromTick, BlockPos to,
         double toFloor, double maxFall, bool record = false)
+        => SimulateCore(w, start, sch, fromTick, to, toFloor, maxFall, record ? new List<Vec3d>(sch.JumpTick + 24) : null);
+
+    private static ParkourOutcome SimulateCore(IBlockAccess w, PhysicsState start, ParkourSchedule sch, int fromTick, BlockPos to,
+        double toFloor, double maxFall, List<Vec3d>? track)
+        => SimulateOwned(w, start.Clone(), sch, fromTick, to, toFloor, maxFall, track);
+
+    private static ParkourOutcome SimulateOwned(IBlockAccess w, PhysicsState state, ParkourSchedule sch, int fromTick, BlockPos to,
+        double toFloor, double maxFall, List<Vec3d>? track)
     {
-        var run = new SimRun(w, start.Clone(), sch, fromTick, record);
+        var run = new SimRun(w, state, sch, fromTick, track);
         int end = Math.Max(fromTick, sch.JumpTick) + MaxFlightTicks + SettleTicks;
         for (int k = fromTick; k < end; k++)
             if (SimTick(w, ref run, sch, k, to, toFloor, maxFall) is { } outcome) return outcome;
@@ -132,10 +140,10 @@ public static class Parkour
         public Vec3d Takeoff;
         public double Distance;
 
-        public SimRun(IBlockAccess w, PhysicsState s, ParkourSchedule sch, int fromTick, bool record)
+        public SimRun(IBlockAccess w, PhysicsState s, ParkourSchedule sch, int fromTick, List<Vec3d>? track)
         {
             S = s;
-            Track = record ? new List<Vec3d>(sch.JumpTick + 24) : null;
+            Track = track;
             HazardBefore = s.InLava || Safety.TouchesHazard(w, s.BoundingBox);
             Airborne = fromTick > sch.JumpTick && !s.OnGround;
             Peak = s.Position.Y + (s.OnGround ? 0 : Math.Max(0, s.FallDistance));
@@ -311,12 +319,17 @@ public static class Parkour
         if (lastGround < 2) { why = "no run-up"; return null; }
 
         // Nominal runs for every candidate takeoff tick (latest = longest jump); validate them closest landing first.
-        foreach (var nominal in Nominals(w, run, lastGround, spec, ref why).OrderBy(n => n.Err))
+        var nominals = Nominals(w, run, lastGround, spec, ref why);
+        try
         {
-            var verdict = Validate(w, spec, nominal, ref why, out var plan);
-            if (verdict == Verdict.Accept) return plan;
-            if (verdict == Verdict.Abort) return null;
+            foreach (var nominal in nominals.OrderBy(n => n.Err))
+            {
+                var verdict = Validate(w, spec, run, nominal, ref why, out var plan);
+                if (verdict == Verdict.Accept) return plan;
+                if (verdict == Verdict.Abort) return null;
+            }
         }
+        finally { foreach (var nominal in nominals) ReturnTrack(nominal.O.Track!); }
         why ??= "no takeoff tick lands";
         return null;
     }
@@ -330,8 +343,19 @@ public static class Parkour
 
     private enum Verdict { Next, Accept, Abort }
 
-    /// <summary>The nominal flight of each candidate takeoff tick that lands, with its full track (the shared run-up first)
-    /// and how far its first contact is from the landing centre.</summary>
+    [ThreadStatic] private static Stack<List<Vec3d>>? _planningTracks;
+
+    private static List<Vec3d> RentTrack() => _planningTracks is { Count: > 0 } tracks ? tracks.Pop() : new List<Vec3d>(80);
+
+    private static void ReturnTrack(List<Vec3d> track)
+    {
+        track.Clear();
+        var tracks = _planningTracks ??= new Stack<List<Vec3d>>(4);
+        if (tracks.Count < 8) tracks.Push(track);
+    }
+
+    /// <summary>Each candidate's flight starts at its takeoff tick; scratch tracks stay private to this planning call.
+    /// Only an accepted plan receives an owned copy including the shared run-up.</summary>
     private static List<Nominal> Nominals(IBlockAccess w, List<PhysicsState> run, int lastGround, JumpSpec spec, ref string? why)
     {
         var nominals = new List<Nominal>();
@@ -339,10 +363,17 @@ public static class Parkour
         {
             var sch = new ParkourSchedule(spec.Yaw, spec.Sprint, t, spec.Tx, spec.Tz);
             // The run-up up to the takeoff is shared by every candidate tick: start from the recorded state at t.
-            var o = Simulate(w, run[t], sch, t, spec.To, spec.ToFloor, spec.MaxFall, record: true);
-            if (!o.Ok) { why ??= o.Reason; continue; }
-            o = o with { Track = WithRunUp(run, t, o.Track!) };
-            var c = o.Track![Math.Min(o.LandTick + 1, o.Track.Count - 1)]; // first contact
+            var track = RentTrack();
+            ParkourOutcome o;
+            try { o = SimulateCore(w, run[t], sch, t, spec.To, spec.ToFloor, spec.MaxFall, track); }
+            catch
+            {
+                ReturnTrack(track);
+                foreach (var previous in nominals) ReturnTrack(previous.O.Track!);
+                throw;
+            }
+            if (!o.Ok) { ReturnTrack(track); why ??= o.Reason; continue; }
+            var c = track[Math.Min(o.LandTick + 1 - t, track.Count - 1)]; // first contact, relative to takeoff
             double err = Math.Sqrt((c.X - spec.Tx) * (c.X - spec.Tx) + (c.Z - spec.Tz) * (c.Z - spec.Tz));
             nominals.Add(new Nominal(t, sch, o, err));
         }
@@ -359,22 +390,22 @@ public static class Parkour
 
     /// <summary>A nominal flight as a plan: refused over the void unless allowed (abort), with too little margin, without a
     /// clutch block in reach (over the void), or when a perturbed run misses; else accepted.</summary>
-    private static Verdict Validate(IBlockAccess w, JumpSpec spec, Nominal n, ref string? why, out ParkourPlan? plan)
+    private static Verdict Validate(IBlockAccess w, JumpSpec spec, List<PhysicsState> run, Nominal n, ref string? why, out ParkourPlan? plan)
     {
         plan = null;
         var (t, sch, nominal, _) = n;
-        bool overVoid = MissIsDeadly(w, nominal.Track!, sch.JumpTick, nominal.LandTick, spec.FromFloor, spec.ToFloor, spec.SafeMissFall);
+        bool overVoid = MissIsDeadly(w, nominal.Track!, 0, nominal.LandTick - t, spec.FromFloor, spec.ToFloor, spec.SafeMissFall);
         if (overVoid && !spec.AllowVoid) { why = "a miss falls into the void"; return Verdict.Abort; }
         double need = overVoid ? VoidMargin : GroundMargin;
         if (nominal.Margin < need) { why = $"landing margin {nominal.Margin:0.00}"; return Verdict.Next; }
-        if (overVoid && !ClutchCoverage(w, nominal.Track!, sch.JumpTick, nominal.LandTick))
+        if (overVoid && !ClutchCoverage(w, nominal.Track!, 0, nominal.LandTick - t))
         {
             why = "no block within clutch reach mid-flight";
             return Verdict.Next;
         }
         if (!Robust(w, spec, sch, t, overVoid, nominal.Margin, ref why, out double worst)) return Verdict.Next;
         plan = new ParkourPlan(spec.From, spec.To, spec.FromFloor, spec.ToFloor, sch, nominal.LandTick, nominal.Distance, worst, overVoid,
-            nominal.Track!, spec.MaxFall);
+            WithRunUp(run, t, nominal.Track!), spec.MaxFall);
         return Verdict.Accept;
     }
 
@@ -388,7 +419,8 @@ public static class Parkour
         {
             var p = Perturb(spec.Start, spec.Yaw, along, across);
             var ps = sch with { JumpTick = t + dt, Yaw = spec.Yaw + dyaw };
-            var o = Simulate(w, StandingAt(p, ps.Yaw), ps, 0, spec.To, spec.ToFloor, spec.MaxFall);
+            // This state belongs only to this perturbation; there is no caller snapshot to preserve with a clone.
+            var o = SimulateOwned(w, StandingAt(p, ps.Yaw), ps, 0, spec.To, spec.ToFloor, spec.MaxFall, null);
             if (!o.Ok || o.Margin < (overVoid ? 0 : PerturbedMargin))
             {
                 why = $"not robust ({(o.Ok ? $"margin {o.Margin:0.00}" : o.Reason)} at {along:+0.##;-0.##;0},{across:+0.##;-0.##;0} tick {dt:+0;-0;0})";
