@@ -462,4 +462,15 @@ public sealed class StoryReachSdkTests
         Assert.Equal(2, rig.Norm().Count(c => c.StartsWith("withdraw ")));
         Assert.Equal(64, Count(rig, Blocks.Planks));
     }
+
+    [Fact]
+    public async Task Optional_preparation_counts_stone_and_dirt_variants_the_same_way_as_the_director()
+    {
+        using var rig = Rig.Js(data: MineClaw.Data.Versioning.Release1122GameData.Instance);
+        rig.Give(36, Blocks.Stone, 2, dmg: 1); // granite
+        rig.Give(37, Blocks.Dirt, 2, dmg: 1); // coarse dirt
+        var s = await rig.Run("return JSON.stringify(story.ready({id:'q1',pillar:{from:'0,64,9',item:'cobblestone',n:16}}))");
+        Assert.Contains("\"ok\":true", s.Outcome);
+        Assert.DoesNotContain(rig.Norm(), c => c.StartsWith("withdraw "));
+    }
 }

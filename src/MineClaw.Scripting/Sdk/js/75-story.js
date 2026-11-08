@@ -543,7 +543,7 @@
   };
   // Match the director's quarry-exit decision: any carried cheap pillar blocks satisfy this optional preparation, regardless of
   // which material its supply hint names. Repeating ready after the approach must not retry a failed chest trip for the same job.
-  const PILLAR_STOCK = ['dirt', 'cobblestone', 'netherrack', 'stone', 'sandstone'];
+  const PILLAR_STOCK = ['3', '4', '87', '1', '24']; // dirt, cobble, netherrack, stone, sandstone; every metadata variant, like Hive
   let lastReadyAttempt;
   const ready = j => {
     const g = globalThis;
