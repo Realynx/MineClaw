@@ -53,6 +53,9 @@ export interface RouteTypes {
   'admin.shardImport': { params: never; query: never; body: z.input<typeof C.ShardImportOptions>; response: z.output<typeof C.ShardImportResult> };
   'groom.preview': { params: never; query: never; body: z.input<typeof C.GroomPreviewRequest>; response: z.output<typeof C.GroomPreviewResponse> };
   'admin.webHosting': { params: never; query: never; body: never; response: z.output<typeof C.WebHostingResponse> };
+  'admin.humanSkins': { params: never; query: never; body: never; response: z.output<typeof C.HumanSkinSettings> };
+  'admin.humanSkinsSave': { params: never; query: never; body: z.input<typeof C.HumanSkinSave>; response: z.output<typeof C.HumanSkinSettings> };
+  'world.humanSkins': { params: never; query: z.input<typeof C.HumanSkinQuery>; body: never; response: z.output<typeof C.HumanSkinFeed> };
   'admin.webHostingSave': { params: never; query: never; body: z.input<typeof C.WebHostingSaveRequest>; response: z.output<typeof C.WebHostingResponse> };
   'admin.nodes': { params: never; query: never; body: never; response: z.output<typeof C.AdminNodesResponse> };
   'admin.settings': { params: z.input<typeof C.AdminNodeParams>; query: never; body: never; response: z.output<typeof C.AdminSettingsResponse> };
@@ -130,6 +133,7 @@ export interface RouteTypes {
   'designer.get': { params: z.input<typeof C.DesignerSessionParams>; query: never; body: never; response: z.output<typeof C.DesignerSession> };
   'designer.message': { params: z.input<typeof C.DesignerSessionParams>; query: never; body: z.input<typeof C.DesignerMessageRequest>; response: z.output<typeof C.DesignerMessageResponse> };
   'designer.canvas': { params: z.input<typeof C.DesignerSessionParams>; query: never; body: z.input<typeof C.DesignerCanvasRequest>; response: z.output<typeof C.DesignerCanvasResponse> };
+  'designer.deleteDesign': { params: z.input<typeof C.DesignerSessionParams>; query: never; body: z.input<typeof C.DesignerDeleteRequest>; response: z.output<typeof C.DesignerDeleteResponse> };
   'designer.save': { params: z.input<typeof C.DesignerSessionParams>; query: never; body: z.input<typeof C.DesignerSaveRequest>; response: z.output<typeof C.DesignerSaveResponse> };
   'designer.version': { params: z.input<typeof C.DesignerSessionParams>; query: never; body: z.input<typeof C.DesignerVersionRequest>; response: z.output<typeof C.DesignerVersionResponse> };
 }

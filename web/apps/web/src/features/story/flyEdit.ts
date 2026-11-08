@@ -194,6 +194,26 @@ export function editVariants(e: PaletteEntry, version: Version): Array<{ meta: n
   return [{ meta: e.meta & 15, label: 'Default' }];
 }
 
+/** Creative pick: keep the material variant and its supported placement state, without copying runtime flags. */
+export function pickEditMaterial(
+  target: AimTarget | null,
+  entries: readonly PaletteEntry[],
+  version: Version,
+): { entry: PaletteEntry; meta: number } | null {
+  if (target?.kind !== 'block' || target.id <= 0) return null;
+  const id = target.id === 62 ? 61 : target.id === 74 ? 73 : target.id;
+  const family = familyOf(id);
+  const meta = family === 'gate' || id === 18 || id === 161 ? target.meta & 3 : target.meta & 15;
+  const choices = entries.filter((e) => e.id === id);
+  const entry = choices.find((e) => e.meta === meta)
+    ?? choices.find((e) => editVariants(e, version).some((v) => v.meta === meta))
+    ?? choices.find((e) => e.meta === (meta & 3))
+    ?? choices[0];
+  if (!entry) return null;
+  const variants = editVariants(entry, version);
+  return { entry, meta: variants.find((v) => v.meta === meta)?.meta ?? variants[0]?.meta ?? entry.meta };
+}
+
 /** Partner cells are edited together, so removing the top half of a door cannot leave its lower plan behind. */
 export function editCells(
   target: Extract<AimTarget, { kind: 'block' }>,

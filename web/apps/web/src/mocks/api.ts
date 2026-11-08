@@ -26,6 +26,7 @@ import { designer } from './data/designer';
 import { seedStory, storySim } from './data/story';
 
 let mockTls = WebTlsSettings.parse({});
+let mockHumanSkins = false;
 const mockHosting = () => ({
   running: WebTlsSettings.parse({}),
   saved: mockTls,
@@ -433,6 +434,7 @@ export const resolvers: Partial<Record<RouteId, Resolver>> = {
     designer.message(num(params.id), body as Parameters<typeof designer.message>[1]),
   'designer.canvas': ({ params, body }) =>
     designer.canvas(num(params.id), body as Parameters<typeof designer.canvas>[1]),
+  'designer.deleteDesign': ({ params, body }) => designer.deleteDesign(num(params.id), (body as { name: string }).name),
   'designer.save': ({ params, body }) => {
     try {
       return designer.save(
@@ -510,6 +512,12 @@ export const resolvers: Partial<Record<RouteId, Resolver>> = {
     return misc.importResult();
   },
   'admin.webHosting': () => mockHosting(),
+  'admin.humanSkins': () => ({ enabled: mockHumanSkins, cached: 0, unavailable: 0 }),
+  'admin.humanSkinsSave': ({ body }) => {
+    mockHumanSkins = (body as { enabled: boolean }).enabled;
+    return { enabled: mockHumanSkins, cached: 0, unavailable: 0 };
+  },
+  'world.humanSkins': () => ({ enabled: mockHumanSkins, epoch: 'mock', revision: 0, skins: [] }),
   'admin.webHostingSave': ({ body }) => {
     mockTls = WebTlsSettings.parse((body as { tls: unknown }).tls);
     return mockHosting();
@@ -772,6 +780,7 @@ export const SAMPLE_CALLS: Partial<Record<RouteId, Ctx>> = {
     body: { rev: 0, ops: [{ kind: 'place', cells: [[1, 0, 1, 4, 0]] }] },
   },
   'designer.save': { params: { id: 1 }, query: {}, body: { name: 'mock hut' } },
+  'designer.deleteDesign': { params: { id: 999 }, query: {}, body: { name: 'mock hut' } },
   'designer.version': { params: { id: 1 }, query: {}, body: { version: '1.12.2' } },
   'bots.now': { params: { bot: 'maid_chan' }, query: {}, body: null },
   'bots.inventory': { params: { bot: 'maid_chan_67' }, query: {}, body: null },
@@ -793,6 +802,7 @@ export const SAMPLE_CALLS: Partial<Record<RouteId, Ctx>> = {
   'auth.stepUp': { params: {}, query: {}, body: { code: '123456' } },
   'admin.settings': { params: { node: 'local' }, query: {}, body: null },
   'admin.webHostingSave': { params: {}, query: {}, body: { tls: WebTlsSettings.parse({}), reason: 'fixture test' } },
+  'admin.humanSkinsSave': { params: {}, query: {}, body: { enabled: false, reason: 'fixture test' } },
   'admin.settingsSave': {
     params: { node: 'local' },
     query: {},

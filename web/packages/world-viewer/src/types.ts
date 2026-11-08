@@ -324,6 +324,9 @@ export interface AtlasResource {
  * the viewer backs off per route. `chunks` must return the raw `application/octet-stream` MCWC body (ask with `light=1`).
  */
 export interface WorldSource {
+  /** Abort pending reads when this runtime has no active views; later calls may fetch again. Cancellable sources belong
+   * to one runtime (its views may share it); create separate source instances for independent runtimes. */
+  cancelPending?(): void;
   index(dim: Dim, x: number, z: number, r: number): Promise<WorldIndex>;
   chunks(dim: Dim, cols: Array<[number, number]>): Promise<ArrayBuffer>;
   entities(since?: number): Promise<EntityDelta>;

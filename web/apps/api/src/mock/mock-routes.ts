@@ -131,6 +131,7 @@ const DESIGNER_OPS: Partial<Record<RouteId, DesignerOp>> = {
   'designer.message': (d, sid, body) => d.message(sid, camel(body) as never),
   'designer.canvas': (d, sid, body) => d.canvas(sid, camel(body) as never),
   'designer.save': (d, sid, body, who) => d.save(sid, camel(body) as never, who),
+  'designer.deleteDesign': (d, id, body) => d.deleteDesign(id, String(camel(body).name)),
 };
 
 /** The Design Studio: the shared fake designer (contracts), replies snake-cased like the bot's. */
@@ -169,7 +170,8 @@ function designsListReply(env: MockEnv, call: MockCall): Reply | null {
     version: d.version ?? null,
     kind: d.kind ?? null,
   }));
-  return { json: { ...base, items: [...saved, ...(base.items ?? [])], total: (base.total ?? 0) + saved.length } };
+  const items = [...saved, ...(base.items ?? [])].filter((d) => !env.designer.hiddenDesignIds.has(Number(d.id)));
+  return { json: { ...base, items, total: items.length } };
 }
 
 // ------------------------------------------------------------------ the special routes

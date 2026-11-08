@@ -6,11 +6,12 @@ import Link from 'next/link';
 import { useApi } from '@/lib/api/query';
 import { errorText } from '@/lib/api/client';
 import { Input } from '@/components/ui/primitives';
+import { DeleteDesign } from '@/features/studio/DeleteDesign';
 
 export const DESIGN_DRAG_TYPE = 'application/x-mineclaw-design';
 
 /** Saved designs share the same placement path as the Designs page. Drag only carries the id, never untrusted cells. */
-export function DesignLibrary({ onPick }: { onPick?: (id: number) => void }) {
+export function DesignLibrary({ onPick, onDeleted }: { onPick?: (id: number) => void; onDeleted?: (id: number) => void }) {
   const [q, setQ] = useState('');
   const [offset, setOffset] = useState(0);
   const designs = useApi('designs.list', { query: { q: q || undefined, limit: 24, offset } });
@@ -68,7 +69,7 @@ export function DesignLibrary({ onPick }: { onPick?: (id: number) => void }) {
                   alt={d.name}
                   loading="lazy"
                   draggable={false}
-                  className="aspect-[8/5] w-full bg-black/20 object-cover"
+                  className="aspect-[8/5] w-full bg-black/20 object-contain"
                 />
               ) : (
                 <span className="flex aspect-[8/5] items-center justify-center gap-2 bg-surface-1 text-xs text-muted">
@@ -88,6 +89,7 @@ export function DesignLibrary({ onPick }: { onPick?: (id: number) => void }) {
             >
               {d.hasPicture ? 'Change picture' : 'Take picture'} · Open designer
             </Link>
+            <DeleteDesign id={d.id} name={d.name} onDeleted={() => { setOffset(0); onDeleted?.(d.id); }} />
           </article>
         ))}
       </div>

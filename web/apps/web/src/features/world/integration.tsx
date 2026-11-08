@@ -15,6 +15,7 @@ import type { WorldSource } from '@mineclaw/world-viewer';
 import type { Me } from '@mineclaw/contracts';
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { qk } from '@/lib/api/query';
+import { api } from '@/lib/api/client';
 import { DotMap } from './DotMap';
 import type * as ViewerModule from './viewer-module';
 import { createWorldSource } from './WorldSource';
@@ -27,7 +28,10 @@ let loading: Promise<WorldViewerModule | null> | null = null;
 
 /** The only place that loads the viewer. Resolves to null when it cannot be loaded (the placeholder stays). */
 export function loadWorldViewer(): Promise<WorldViewerModule | null> {
-  loading ??= import('./viewer-module').catch((e: unknown) => {
+  loading ??= import('./viewer-module').then((mod) => {
+    if (!MOCK) mod.configureHumanSkins((query) => api('world.humanSkins', { query }));
+    return mod;
+  }).catch((e: unknown) => {
     console.warn('[world] viewer failed to load; using the 2D placeholder', e);
     loading = null;
     return null;

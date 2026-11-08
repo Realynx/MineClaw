@@ -7,7 +7,7 @@
 import type { BlockDeltas, Dim, WorldSource } from '../types';
 import type { MeshHost } from '../mesh/host';
 import type { WorldCache } from './cache';
-import type { WorldSync } from './sync';
+import { isAbortError, type WorldSync } from './sync';
 
 export interface DeltaEvents {
   /** Sections to re-mesh in `dim`. */
@@ -75,8 +75,10 @@ export class BlockDeltaFeed {
           this.push(d);
           if (d.more) next = 0;
         } catch (e) {
-          next = Math.min(15_000, Math.max(1000, next * 4));
-          this.ev.onError?.(e);
+          if (!isAbortError(e)) {
+            next = Math.min(15_000, Math.max(1000, next * 4));
+            this.ev.onError?.(e);
+          }
         }
         if (this.running) this.poll(next);
       })();

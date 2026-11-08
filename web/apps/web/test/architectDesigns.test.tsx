@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, cleanup } from '@testing-library/react';
+import { fireEvent, render, screen, cleanup, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ArchitectPanel } from '@/features/story/ArchitectPanel';
@@ -7,8 +7,10 @@ import { PictureControls, pictureDistance, positionPictureCamera } from '@/featu
 import { qk } from '@/lib/api/query';
 import type { WorldViewerEngine } from '@mineclaw/world-viewer';
 import type { StoryArchitectEntry } from '@mineclaw/contracts';
+import { StaticAuthProvider } from '@/lib/auth';
+import { setCsrfToken, setFetch } from '@/lib/api/client';
 
-afterEach(cleanup);
+afterEach(() => { cleanup(); setCsrfToken(null); });
 
 describe('Architect design library', () => {
   it('shows design pictures inside the main panel and carries only the selected id for drag placement', () => {
@@ -23,7 +25,9 @@ describe('Architect design library', () => {
     const onPick = vi.fn();
     const { container } = render(
       <QueryClientProvider client={qc}>
+        <StaticAuthProvider me={{ username: 'builder', player: null, roles: ['design'], totpEnrolled: false, sessionCreatedAt: '', idleExpiresAt: '', absoluteExpiresAt: '' }}>
         <ArchitectPanel tool={{ kind: 'select' }} onTool={vi.fn()} onDesignPick={onPick} />
+        </StaticAuthProvider>
       </QueryClientProvider>,
     );
     fireEvent.click(screen.getByRole('button', { name: 'Designs' }));
@@ -65,6 +69,38 @@ describe('Architect design library', () => {
     const architect = container.querySelector('[data-testid="architect"]');
     expect(architect?.contains(screen.getByRole('button', { name: /Test block/ }))).toBe(true);
     expect(container.children).toHaveLength(1);
+  });
+
+  it.each([25, 1])('returns to existing designs after deleting the last page and clears only a matching placement (%s)', async (selectedId) => {
+    let items = Array.from({ length: 25 }, (_, i) => ({
+      id: i + 1, name: `Design ${i + 1}`, status: 'accepted', rev: 1, revisions: 1, hasPicture: false,
+    }));
+    setCsrfToken('test-csrf-token-000000000');
+    setFetch((input, init) => {
+      const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url, 'http://localhost');
+      if (init?.method === 'POST') {
+        expect(url.pathname).toBe('/api/designs/25/delete');
+        items = items.filter((d) => d.id !== 25);
+        return Promise.resolve(new Response(JSON.stringify({ id: 25, text: 'Removed' }), { headers: { 'Content-Type': 'application/json' } }));
+      }
+      const offset = Number(url.searchParams.get('offset') ?? 0);
+      return Promise.resolve(new Response(JSON.stringify({ total: items.length, revisionsTotal: items.length, limit: 24, offset, items: items.slice(offset, offset + 24) }), { headers: { 'Content-Type': 'application/json' } }));
+    });
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+    const onTool = vi.fn();
+    render(<QueryClientProvider client={qc}>
+      <StaticAuthProvider me={{ username: 'builder', player: null, roles: ['design'], totpEnrolled: false, sessionCreatedAt: '', idleExpiresAt: '', absoluteExpiresAt: '' }}>
+        <ArchitectPanel tool={{ kind: 'design', id: selectedId, name: `Design ${selectedId}`, blocks: [] }} onTool={onTool} onDesignPick={vi.fn()} />
+      </StaticAuthProvider>
+    </QueryClientProvider>);
+    fireEvent.click(await screen.findByRole('button', { name: 'Next' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete Design 25 from library' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete from library' }));
+    await screen.findByTitle('Place Design 1 (#1)');
+    await waitFor(() => expect(screen.queryByText('No saved designs found.')).toBeNull());
+    expect(screen.queryByTitle('Place Design 25 (#25)')).toBeNull();
+    if (selectedId === 25) expect(onTool).toHaveBeenCalledExactlyOnceWith({ kind: 'select' });
+    else expect(onTool).not.toHaveBeenCalled();
   });
 });
 

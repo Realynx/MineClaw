@@ -20,6 +20,7 @@
 
 import * as THREE from 'three';
 import type { AssetBundle, Pack } from '../assets/bundle';
+import { humanSkins } from '../assets/humanSkins';
 import { FLAG_GLOWING, FLAG_INVISIBLE, FLAG_ON_FIRE, FLAG_SNEAKING, FLAG_SPRINTING, type EntityDto, type EntityEvent, type EquipRef, type EquipSlot, type Equipment, type ItemRef } from '../types';
 import { stuckArrows, type ArrowSpot } from './entities/arrows';
 import type { GameVersion } from '../world/blocks';
@@ -29,7 +30,7 @@ import { BOX_SLOT, buildModel, type BuiltModel } from './entities/builder';
 import { Lightning, Particles } from './entities/effects';
 import { facingYaw, minecartBlock, motive, paintingSheet } from './entities/hanging';
 import { isHandheld, itemLookById, itemLookByName, itemName, parseHeld, type ItemLook } from './entities/items';
-import { createEntityMaterials, GHOST_FLAG, GHOST_LEVEL, GHOST_PLAYER, GHOST_SELECTED, GLINT_FLAG, defaultWorldUniforms, glintTexture, sheetTexture, type EntityMaterials, type WorldUniforms } from './entities/material';
+import { createEntityMaterials, GHOST_FLAG, GHOST_LEVEL, GHOST_PLAYER, GHOST_SELECTED, GLINT_FLAG, HUMAN_SKIN_FLAG, defaultWorldUniforms, glintTexture, sheetTexture, type EntityMaterials, type WorldUniforms } from './entities/material';
 import { cubeGeometry, InstancedDraw, modelGeometry, ShadowDraw, spriteGeometry, type InstanceData } from './entities/meshes';
 import { attackOffProgress, attackProgress, DEATH_GONE_MS, DEATH_SHRINK_MS, deathAngle, deathScale, eatProgress, hurtAmount, newMotion, stepMotion, wrapDeg, type Motion } from './entities/motion';
 import { identity, invert, mul, partLocal, rootMatrix, ROW_FLOATS, Skeleton, type Affine, type RootParams } from './entities/pose';
@@ -419,6 +420,7 @@ export class EntityLayer {
   private list: Drawn[] = [];
   private readonly world: WorldUniforms;
   private readonly mats: EntityMaterials;
+  private readonly stopHumanSkins: () => void;
   private readonly models = new Map<string, ModelEntry>();
   private readonly boxModel: ModelEntry;
   private readonly sprites: InstancedDraw;
@@ -466,6 +468,7 @@ export class EntityLayer {
     this.group.name = 'entities';
     this.world = world ?? defaultWorldUniforms();
     this.mats = createEntityMaterials(this.world);
+    this.stopHumanSkins = humanSkins.subscribe(() => { this.mats.shared.uHumanSkins.value = humanSkins.texture; });
     this.boxModel = this.entry(MODEL_BY_ID.box);
     this.sprites = new InstancedDraw(this.spriteGeo, this.mats.tile, true, 'item sprites');
     this.cubes = new InstancedDraw(this.cubeGeo, this.mats.tile, true, 'item cubes');
@@ -870,10 +873,10 @@ export class EntityLayer {
   }
 
   private refreshBot(d: Drawn, b: BotView, now: number): void {
-    const sig = `bot|${this.version}|${!!this.bundle}`;
+    const sig = `bot|${this.version}|${!!this.bundle}|${humanSkins.generation}`;
     if (d.sig !== sig) {
       d.sig = sig;
-      this.setLook(d, playerLook(this.version, b.name, true));
+      this.setLook(d, this.playerLook(b.name, true));
       d.colour = botColour(b).getHex();
     }
     const m = d.motion;
@@ -906,7 +909,7 @@ export class EntityLayer {
   }
 
   private refreshEntity(d: Drawn, e: EntityView, now: number): void {
-    const sig = `${this.version}|${!!this.bundle}|${entityKindSig(e)}|${entityExtraSig(e.dto)}`;
+    const sig = `${this.version}|${!!this.bundle}|${entityKindSig(e)}|${entityExtraSig(e.dto)}|${e.kind === 'player' ? humanSkins.generation : 0}`;
     if (d.sig !== sig) {
       d.sig = sig;
       this.applyEntityLook(d, e);
@@ -949,7 +952,7 @@ export class EntityLayer {
 
   /** How each entity kind gets its look; anything else is an object with a model (or a box). */
   private static readonly KIND_LOOKS = new Map<string, (l: EntityLayer, d: Drawn, e: EntityView, kind: string) => void>([
-    ['player', (l, d, e) => l.setLook(d, playerLook(l.version, e.name ?? 'player', false))],
+    ['player', (l, d, e) => l.setLook(d, l.playerLook(e.name ?? 'player', false))],
     ['mob', (l, d, e) => l.setLook(d, mobLook(l.version, e.type, e.name, d.v, e.id))],
     ['item', (l, d, e) => l.setDrop(d, e)],
     ['xp_orb', (l, d) => l.setOrb(d)],
@@ -1913,7 +1916,13 @@ export class EntityLayer {
     return !!sel && (d.key === sel || this.botObjs.get(d.key)?.root.userData.short === sel);
   }
 
+  private playerLook(name: string, bot: boolean): Look {
+    const look = playerLook(this.version, name, bot), skin = humanSkins.get(name);
+    return skin ? { ...look, model: this.beta || skin.height === 32 ? 'player_beta' : skin.slim ? 'player_slim' : 'player', texture: `human:${name.toLowerCase()}` } : look;
+  }
+
   private rect(key: string): [number, number, number, number] | null {
+    if (key.startsWith('human:')) return humanSkins.rect(key.slice(6), this.beta);
     const p = this.bundle?.pack;
     const r = p?.entity.rects[key];
     if (!p || !r) return null;
@@ -1954,6 +1963,7 @@ export class EntityLayer {
   private pushBody(d: Drawn, e: ModelEntry, look: Look, tex: [number, number, number, number]): void {
     const i = this.base(d, 0, 0);
     i.tex = tex;
+    if (look.texture.startsWith('human:')) i.flags |= HUMAN_SKIN_FLAG;
     tint(i, look.tint, d.bright);
     if (!look.translucent) this.ghostFlags(d, i, e.opaque);
     (look.translucent ? this.translucentOf(e) : e.opaque).push(i);
@@ -2387,6 +2397,7 @@ export class EntityLayer {
   }
 
   dispose(): void {
+    this.stopHumanSkins();
     this.disposeLabels();
     this.disposeModelDraws();
     this.sprites.dispose();

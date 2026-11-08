@@ -8,6 +8,7 @@ import {
   editHolograms,
   editPalette,
   editVariants,
+  pickEditMaterial,
   FlyEditQueue,
   type EditReply,
 } from '@/features/story/flyEdit';
@@ -43,6 +44,23 @@ it('offers only supported exact placement families, retaining material variants'
   const palette = ids.map((id) => ({ material: [id, 0], label: `Block ${id}` })) as StoryArchitectEntry[];
   expect(editPalette(palette, '1.12.2').map((e) => e.id)).toEqual([4, 134, 53]);
   expect(editPalette(palette, 'b1.8.1').map((e) => e.id)).toEqual([4, 53]);
+});
+
+it('middle-picks material, axis and half from physical blocks or plan holograms', () => {
+  const palette = editPalette([
+    [134, 0], [17, 0], [17, 1], [126, 0], [126, 3], [35, 0], [35, 14], [61, 0], [107, 0],
+  ].map((material) => ({ material, label: material.join(':') })) as StoryArchitectEntry[], '1.12.2');
+  for (const [id, meta, material] of [[134, 7, 0], [17, 9, 1], [126, 11, 3], [35, 14, 14]]) {
+    expect(pickEditMaterial(target({ id, meta, plan: 'house' }), palette, '1.12.2'))
+      .toMatchObject({ entry: { id, meta: material }, meta });
+  }
+  expect(pickEditMaterial(target({ id: 62, meta: 5 }), palette, '1.12.2'))
+    .toMatchObject({ entry: { id: 61 }, meta: 5 });
+  expect(pickEditMaterial(target({ id: 107, meta: 7 }), palette, '1.12.2'))
+    .toMatchObject({ entry: { id: 107 }, meta: 3 });
+  expect(pickEditMaterial(target({ id: 134, meta: 7 }), palette, 'b1.8.1')?.meta).toBe(0);
+  expect(pickEditMaterial(target({ id: 64 }), palette, '1.12.2')).toBeNull();
+  expect(pickEditMaterial(null, palette, '1.12.2')).toBeNull();
 });
 
 it('removes both cells when an existing upper door half is edited', () => {

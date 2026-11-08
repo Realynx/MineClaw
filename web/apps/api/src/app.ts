@@ -39,6 +39,7 @@ import { buildRouteTableController, DISPATCHER } from './routes/route-table.cont
 import { CloudflareAccess } from './security/cf-access.js';
 import { securityHeaders } from './security/headers.js';
 import { TrustedProxies } from './security/client-ip.js';
+import { HumanSkins } from './skins/human-skins.js';
 import type { JWTVerifyGetKey } from 'jose';
 
 export interface CreateAppOptions {
@@ -65,6 +66,7 @@ export interface ApiApp {
     audit: AuditService;
     bridge: BridgeClient;
     hub: LiveHub;
+    skins: HumanSkins;
     mock?: MockBridge;
   };
   listen(port?: number, host?: string): Promise<string>;
@@ -117,15 +119,17 @@ export async function createApp(config: ApiConfig, opts: CreateAppOptions = {}):
     log,
   );
   const health = new BridgeHealth(bridge, log);
+  const skins = new HumanSkins(config.web.dataDir, bridge);
   const hub = new LiveHub(bridge, health, log, {
     maxClients: config.web.maxSseClients,
     validate: config.web.validateResponses,
     ...opts.hub,
-  });
+  }, (world) => skins.observeWorld(world));
   const trusted = new TrustedProxies(config.web);
   const setup = new SetupService(users, sessions, auth, audit, trusted, config.web.setup, clock, log);
   const dispatcher = new RouteDispatcher({
     hosting: new WebHostingSettings(config),
+    skins,
     auth,
     setup,
     audit,
@@ -244,9 +248,10 @@ export async function createApp(config: ApiConfig, opts: CreateAppOptions = {}):
     server,
     config,
     log,
-    services: { db, users, sessions, auth, setup, audit, bridge, hub, mock },
+    services: { db, users, sessions, auth, setup, audit, bridge, hub, skins, mock },
     async listen(port = config.web.port, host = config.web.bind) {
       await app.listen(port, host);
+      skins.start();
       if (tlsServer)
         await new Promise<void>((resolve, reject) => {
           const failed = (error: Error) => reject(error);
@@ -263,6 +268,7 @@ export async function createApp(config: ApiConfig, opts: CreateAppOptions = {}):
       if (closed) return;
       closed = true;
       clearInterval(gc);
+      skins.close();
       hub.close();
       for (const s of upgraded) s.destroy();
       if (tlsServer) {

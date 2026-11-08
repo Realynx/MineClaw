@@ -17,3 +17,18 @@ it('transports bounded large mine layouts through save while retaining normal ro
   await post(`/api/designer/sessions/${id}/canvas`).send({ rev: 1, unused: mineAuthoring }).expect(413);
   await post(`/api/designer/sessions/${id}/save`).send({ name: 'too large', mineAuthoring: ' '.repeat(2_000_001) }).expect(400);
 });
+
+it('accepts detailed preview bodies and removes a named design from the library without losing its saved revision', async () => {
+  const made = await post('/api/designer/sessions').send({}).expect(200);
+  const id = made.body.id as number;
+  await post(`/api/designer/sessions/${id}/canvas`).send({ rev: 0, ops: [{ kind: 'place', cells: [[30, 0, 30, 4, 0]] }] }).expect(200);
+  const previewPng = 'data:image/png;base64,' + 'a'.repeat(1_000_000);
+  const saved = await post(`/api/designer/sessions/${id}/save`).send({ name: 'Detailed storehouse', previewPng }).expect(200);
+  const designId = saved.body.designId as number;
+  await post(`/api/designs/${designId}/delete`).send({ name: 'Wrong name' }).expect(400);
+  await post(`/api/designs/${designId}/delete`).send({ name: 'Detailed storehouse' }).expect(200);
+  const list = await user.agent.get('/api/designs').expect(200);
+  expect(list.body.items.some((d: { id: number }) => d.id === designId)).toBe(false);
+  await post(`/api/designer/sessions/${id}/save`).send({ name: 'Detailed storehouse' }).expect(400);
+  await post(`/api/designer/sessions/${id}/save`).send({ name: 'Storehouse copy', asNew: true }).expect(200);
+});

@@ -10,6 +10,7 @@ import { Badge, Button, Card, EmptyState, ErrorState, Input, Select, Skeleton, S
 import { apiUrl } from '@/lib/api/client';
 import { useApi } from '@/lib/api/query';
 import { ago, cn, copyText, dateTime } from '@/lib/utils';
+import { DeleteDesign } from '@/features/studio/DeleteDesign';
 
 function Cells({ cells }: { cells: DesignDiffCell[] }) {
   const ref = useRef<HTMLDivElement>(null);
@@ -43,7 +44,7 @@ function Cells({ cells }: { cells: DesignDiffCell[] }) {
   );
 }
 
-function Detail({ id }: { id: number }) {
+function Detail({ id, onDeleted }: { id: number; onDeleted: () => void }) {
   const d = useApi('designs.get', { params: { id } });
   const [a, setA] = useState<string | null>(null);
   const [b, setB] = useState<string | null>(null);
@@ -58,7 +59,7 @@ function Detail({ id }: { id: number }) {
   const des = d.data;
   return (
     <div className="space-y-5 p-5">
-      <DesignHeading des={des} />
+      <DesignHeading des={des} onDeleted={onDeleted} />
       <DesignPicture des={des} id={id} />
       <section>
         <h3 className="mb-2 text-xs font-semibold tracking-wide text-subtle uppercase">Diff</h3>
@@ -114,7 +115,7 @@ type DesignDiff = ReturnType<typeof useApi<'designs.diff'>>;
 const STATUS_TONE: Record<string, 'ok' | 'info'> = { built: 'ok', building: 'info' };
 
 /** Id, name, status and game version, the studio link, revision and provenance line. */
-function DesignHeading({ des }: { des: Design }) {
+function DesignHeading({ des, onDeleted }: { des: Design; onDeleted: () => void }) {
   const d = des.design;
   return (
     <div>
@@ -130,6 +131,7 @@ function DesignHeading({ des }: { des: Design }) {
         >
           <Sparkles className="size-3.5" /> Open in studio
         </Link>
+        <DeleteDesign id={d.id} name={d.name} onDeleted={onDeleted} />
       </div>
       <p className="text-xs text-muted">
         r{d.rev} · {d.revisions} revisions{d.requester ? ` · for ${d.requester}` : ''} · updated {ago(d.updated)}
@@ -144,10 +146,13 @@ function DesignPicture({ des, id }: { des: Design; id: number }) {
     <>
       {des.design.hasPicture ? (
         // eslint-disable-next-line @next/next/no-img-element -- the bot's stored sheet, served as-is
-        <img src={apiUrl('designs.picture', { id })} alt={`Preview sheet of ${des.design.name}`} className="w-full max-w-3xl rounded-lg border border-border bg-canvas" />
+        <img src={`${apiUrl('designs.picture', { id })}?v=${des.design.updated ?? des.design.rev}`} alt={`Preview sheet of ${des.design.name}`} className="w-full max-w-3xl rounded-lg border border-border bg-canvas object-contain" />
       ) : (
         <div className="grid h-40 max-w-3xl place-items-center rounded-lg border border-dashed border-border text-sm text-muted">No preview picture</div>
       )}
+      <Link href={`/designs/studio?id=${id}&picture=1`} className="inline-block text-xs text-accent hover:underline">
+        {des.design.hasPicture ? 'Update picture in designer' : 'Take picture in designer'}
+      </Link>
       {des.world ? (
         <p className="flex items-start gap-2 rounded-lg bg-info-soft px-3 py-2 text-sm text-info">
           <Eye className="mt-0.5 size-4 shrink-0" /> {des.world.text}
@@ -261,7 +266,7 @@ function DesignsInner() {
       </aside>
       <section className="min-h-0 min-w-0 flex-1 overflow-auto bg-surface">
         {id ? (
-          <Detail id={id} />
+          <Detail key={id} id={id} onDeleted={() => router.replace('/designs', { scroll: false })} />
         ) : (
           <Card className="m-6">
             <EmptyState icon={<Boxes className="size-5" />} title="Pick a design" />

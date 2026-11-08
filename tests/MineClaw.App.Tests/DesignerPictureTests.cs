@@ -50,10 +50,23 @@ public class DesignerPictureTests
     {
         var (server, _, _) = Server(new ScriptedModel());
         long session = J(await server.HandleAsync(Req("POST", "/api/designer/sessions", new { }))).GetProperty("id").GetInt64();
-        var png = Png.Encode(new uint[385], 385, 1);
+        var png = Png.Encode(new uint[1281], 1281, 1);
         Assert.Equal(400, (await server.HandleAsync(Req("POST", $"/api/designer/sessions/{session}/save",
             new { name = "Nope", preview_png = "data:image/png;base64," + Convert.ToBase64String(png) }))).Status);
         Assert.Equal(400, (await server.HandleAsync(Req("POST", $"/api/designer/sessions/{session}/save",
             new { name = "Nope", preview_only = true, preview_png = Picture() }))).Status);
+    }
+
+    [Fact]
+    public async Task Full_size_preview_is_saved_without_reducing_its_dimensions()
+    {
+        var (server, _, svc) = Server(new ScriptedModel());
+        long session = J(await server.HandleAsync(Req("POST", "/api/designer/sessions", new { }))).GetProperty("id").GetInt64();
+        J(await server.HandleAsync(Req("POST", $"/api/designer/sessions/{session}/canvas",
+            new { rev = 0, ops = new[] { new { kind = "place", cells = new[] { new[] { 32, 0, 32, 4, 0 } } } } })));
+        var png = Png.Encode(new uint[1280 * 960], 1280, 960);
+        var saved = J(await server.HandleAsync(Req("POST", $"/api/designer/sessions/{session}/save",
+            new { name = "Detailed", preview_png = "data:image/png;base64," + Convert.ToBase64String(png) })));
+        Assert.Equal(png, svc.Store.Picture(saved.GetProperty("design_id").GetInt64()));
     }
 }

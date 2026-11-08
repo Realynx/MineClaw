@@ -260,8 +260,8 @@ export const DesignerSaveRequest = z
     name: z.string().trim().min(1).max(48),
     summary: z.string().max(120).optional().describe('the revision message'),
     asNew: z.boolean().optional().describe('save as a new design instead of a new revision of the loaded one'),
-    previewPng: z.string().max(190_000).regex(/^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/).optional()
-      .describe('PNG of the designer camera, at most 384 by 256 pixels'),
+    previewPng: z.string().max(2_000_000).regex(/^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/).optional()
+      .describe('PNG of the designer camera, at most 1280 by 960 pixels'),
     previewOnly: z.boolean().optional().describe('update the loaded design picture without saving a revision'),
     mineAuthoring: z.string().max(2_000_000).optional(),
   })
@@ -277,6 +277,9 @@ export const DesignerSaveResponse = z.object({
   text: z.string(),
 });
 export type DesignerSaveResponse = z.infer<typeof DesignerSaveResponse>;
+
+export const DesignerDeleteRequest = z.object({ name: z.string().min(1).max(48) }).strict();
+export const DesignerDeleteResponse = z.object({ id: z.number().int(), text: z.string() });
 
 // ---------------------------------------------------------------------------------------------------------- mock model
 
@@ -888,9 +891,10 @@ export function createDesignerMock(
 ) {
   const sessions = new Map<number, MockSession>();
   const saved: MockSavedDesign[] = [];
+  const hiddenDesignIds = new Set<number>();
   let nextSession = 1;
   let nextDesign = firstDesignId;
-  type Stored = { sessions: Array<MockSession & { cellList: DesignerCell[]; holeList: string[] }>; saved: MockSavedDesign[]; nextSession: number; nextDesign: number };
+  type Stored = { sessions: Array<MockSession & { cellList: DesignerCell[]; holeList: string[] }>; saved: MockSavedDesign[]; hiddenDesignIds?: number[]; nextSession: number; nextDesign: number };
   try {
     const raw = persist?.load();
     if (raw) {
@@ -900,6 +904,7 @@ export function createDesignerMock(
         sessions.set(s.id, { ...rest, cells: new Map(cellList.map((c) => [`${c[0]},${c[1]},${c[2]}`, c] as const)), holes: new Set(holeList) });
       }
       saved.push(...st.saved);
+      for (const id of st.hiddenDesignIds ?? []) hiddenDesignIds.add(id);
       nextSession = st.nextSession;
       nextDesign = st.nextDesign;
     }
@@ -912,6 +917,7 @@ export function createDesignerMock(
       const st: Stored = {
         sessions: [...sessions.values()].map((s) => ({ ...s, cells: undefined as never, holes: undefined as never, cellList: [...s.cells.values()], holeList: [...s.holes] })),
         saved,
+        hiddenDesignIds: [...hiddenDesignIds],
         nextSession,
         nextDesign,
       };
@@ -984,6 +990,15 @@ export function createDesignerMock(
   const get = (id: number): MockSession => sessions.get(id) ?? make({}, 'poofimafox', id);
   const api = {
     saved,
+    hiddenDesignIds,
+    deleteDesign: (id: number, name: string) => {
+      if (hiddenDesignIds.has(id)) throw new Error('no such saved design');
+      const d = saved.find((x) => x.id === id);
+      if (d && d.name !== name) throw new Error('the design name changed; reload it and confirm again');
+      hiddenDesignIds.add(id);
+      store();
+      return { id, text: `Removed ${name} from the saved library. Existing builds are unchanged.` };
+    },
     models: (): DesignerModelsResponse => ({
       models: MOCK_DESIGNER_MODELS,
       default: 'main',
@@ -1017,6 +1032,7 @@ export function createDesignerMock(
       body: { model?: string; designId?: number; version?: string; convertTo?: string; rev?: number; kind?: DesignerKind; seed?: string },
       owner: string,
     ): DesignerSession => {
+      if (body.designId && hiddenDesignIds.has(body.designId)) throw new Error('this design was removed from the library');
       if (body.designId && !saved.some((x) => x.id === body.designId)) {
         // A design the mock didn't make: a small stand-in so "Open in studio" works for every listed design.
         const blocks = fakeDesignerTurn('build a house', []).ops.flatMap((o) => o.cells);
@@ -1087,6 +1103,7 @@ export function createDesignerMock(
       owner: string,
     ): DesignerSaveResponse => {
       const s = get(id);
+      if (!body.asNew && s.designId && hiddenDesignIds.has(s.designId)) throw new Error('this design was removed from the library; use Save as new');
       if (body.previewOnly) {
         const d = saved.find((design) => design.id === s.designId);
         if (!d || !body.previewPng || body.asNew) throw new Error('updating a picture requires an existing design and a PNG');

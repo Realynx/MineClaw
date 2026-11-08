@@ -70,6 +70,7 @@ public sealed class DesignerStore
                     at INTEGER NOT NULL, model TEXT, cost_usd REAL NOT NULL DEFAULT 0, ops TEXT NOT NULL DEFAULT '', PRIMARY KEY(session_id, seq));
                 CREATE TABLE IF NOT EXISTS designer_mine_authoring(design_id INTEGER NOT NULL, rev INTEGER NOT NULL, data TEXT NOT NULL,
                     PRIMARY KEY(design_id, rev));
+                CREATE TABLE IF NOT EXISTS designer_library_deleted(design_id INTEGER PRIMARY KEY, deleted INTEGER NOT NULL, deleted_by TEXT NOT NULL);
                 """);
         // The canvas's game version (added 2026-11-03). A session from before has none: it is the server's (its blocks are).
         lock (_db.Gate)
@@ -81,6 +82,18 @@ public sealed class DesignerStore
     }
 
     private const string Cols = "id,owner,model,design_id,name,rev,blocks,ox,oy,oz,ax,ay,az,cost_usd,calls,pending,created,updated,version,kind,seed,preferred_for,mine_authoring,design_revision";
+
+    /// <summary>Library deletion is independent of the design's world status: existing builds and repairs retain their records.</summary>
+    public bool IsLibraryDeleted(long designId)
+    {
+        lock (_db.Gate) return _db.ScalarLong("SELECT count(*) FROM designer_library_deleted WHERE design_id=$id", ("$id", designId)) != 0;
+    }
+
+    public void DeleteFromLibrary(long designId, string who)
+    {
+        lock (_db.Gate) _db.Exec("INSERT OR IGNORE INTO designer_library_deleted(design_id,deleted,deleted_by) VALUES($id,$at,$who)",
+            ("$id", designId), ("$at", AgentDb.ToUnixMs(_time.GetUtcNow())), ("$who", who));
+    }
 
     public DesignerSessionRecord Insert(DesignerSessionRecord s)
     {

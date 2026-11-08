@@ -153,6 +153,7 @@ export function designList(q?: string): { total: number; revisionsTotal: number;
     hasPicture: i !== 4,
   }));
   items = [...savedDesigns().filter((d) => !items.some((x) => x.id === d.id)), ...items];
+  items = items.filter((d) => !designer.hiddenDesignIds.has(d.id));
   if (q) items = items.filter((d) => `${d.id} ${d.name} ${d.status} ${d.requester ?? ''}`.toLowerCase().includes(q.toLowerCase()));
   return { total: items.length, revisionsTotal: items.reduce((s, d) => s + d.revisions, 0), offset: 0, limit: 100, items };
 }

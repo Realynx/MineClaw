@@ -486,7 +486,7 @@ export class WorldRuntime {
       const context = image.getContext('2d');
       if (!context) throw new Error('Pictures are unavailable in this browser.');
       // Keep the full camera view and fit the JSON body cap, even with a detailed scene.
-      let scale = Math.min(1, 384 / w, 256 / h);
+      let scale = Math.min(1, 1280 / w, 960 / h);
       let png: string;
       do {
         image.width = Math.max(1, Math.round(w * scale));
@@ -494,13 +494,14 @@ export class WorldRuntime {
         context.drawImage(this.canvas, 0, this.canvas.height - h, w, h, 0, 0, image.width, image.height);
         png = image.toDataURL('image/png');
         scale *= 0.8;
-      } while (png.length > 190_000 && image.width > 64);
-      if (png.length > 190_000) throw new Error('The picture is too large.');
+      } while (png.length > 2_000_000 && image.width > 64);
+      if (png.length > 2_000_000) throw new Error('The picture is too large.');
       pending.resolve(png);
     } catch (e) { pending.reject(e instanceof Error ? e : new Error(String(e))); }
   }
 
-  removeView(v: RuntimeView): void {
+  /** Temporarily hide a view without dropping its holograms, badges or camera-owned state. */
+  suspendView(v: RuntimeView): void {
     const pending = this.captures.get(v.id);
     if (pending) {
       clearTimeout(pending.timer);
@@ -508,19 +509,22 @@ export class WorldRuntime {
       this.captures.delete(v.id);
     }
     this.views.delete(v.id);
+    if (!this.views.size) this.pause();
+    if (this.primary?.view === v) {
+      this.canvas.remove();
+      this.primary = null;
+    }
+  }
+
+  removeView(v: RuntimeView): void {
+    this.suspendView(v);
     this.holoViews.get(v.id)?.dispose();
     this.holoViews.delete(v.id);
     this.badgeViews.get(v.id)?.dispose();
     this.badgeViews.delete(v.id);
     this.ghostViews.delete(v.id);
-    // No views left (e.g. between pages, persistent runtime): stop the network loops, keep the world.
-    if (!this.views.size) this.pause();
     this.renderedAt.delete(v.id);
     this.bubbles.forgetView(v.id);
-    if (this.primary?.view === v) {
-      this.canvas.remove();
-      this.primary = null;
-    }
   }
 
   /** Makes `v` the view drawn straight into the runtime canvas, placed in `container`. False when another view has it. */
@@ -550,6 +554,7 @@ export class WorldRuntime {
     this.deltas.stop();
     this.entityPoller.stop();
     this.overlayPoller.stop();
+    this.source.cancelPending?.();
   }
 
   private resume(): void {
@@ -570,6 +575,7 @@ export class WorldRuntime {
     if (src === this.source || this.disposed) return;
     this.sync.stop();
     this.deltas.stop();
+    this.source.cancelPending?.();
     this.source = src;
     this.listenChat();
     this.blockEntities.setSource(src);
@@ -589,6 +595,7 @@ export class WorldRuntime {
     this.deltas.stop();
     this.entityPoller.stop();
     this.overlayPoller.stop();
+    this.source.cancelPending?.();
     this.source = src;
     this.listenChat();
     this.bubbles.clear();
@@ -623,6 +630,7 @@ export class WorldRuntime {
     this.deltas.stop();
     this.entityPoller.stop();
     this.overlayPoller.stop();
+    this.source.cancelPending?.();
     this.views.clear();
     for (const h of this.holoViews.values()) h.dispose();
     this.holoViews.clear();
@@ -936,6 +944,7 @@ export class WorldRuntime {
   private readonly tick = (now: number): void => {
     if (this.disposed) return;
     this.raf = requestAnimationFrame(this.tick);
+    if (this.paused || this.hidden) { this.last = 0; return; }
     this.applyQuality();
     // The fps cap skips whole frames (upkeep included); the next drawn frame's dt spans the skipped ones.
     if (!this.limiter.due(now, this.q.fpsCap)) return;
@@ -946,6 +955,7 @@ export class WorldRuntime {
 
   /** One frame: shared upkeep, then every due view (the primary last, so its picture is what the canvas shows). */
   step(now: number, dt: number): void {
+    if (this.disposed || this.paused || this.hidden) return;
     this.applyQuality();
     this.updateBodies(now);
     this.blockEntities.tick(now);
@@ -1222,6 +1232,12 @@ export class WorldRuntime {
     const cover = setup.cover ?? 0;
     const plainDistance = primary ? this.quality.drawDistance(setup.drawDistance) : setup.drawDistance;
     const s = { ...setup, drawDistance: Math.max(cover, plainDistance) };
+    // Render a saved picture at its own resolution, even if adaptive quality has reduced the live canvas.
+    if (primary && s.viewId !== undefined && this.captures.has(s.viewId)) {
+      const scale = Math.min(1280 / Math.max(1, s.width), 960 / Math.max(1, s.height));
+      s.width = Math.max(1, Math.round(s.width * scale));
+      s.height = Math.max(1, Math.round(s.height * scale));
+    }
     // Entities (viewer settings): as far as the ground by default, measured across it from the look-at point in top-down /
     // iso views (far ones are cheap instanced boxes, frustum-culled and capped in number); or the user's own distance.
     const reach = entityReach(this.q, cover, s.drawDistance);

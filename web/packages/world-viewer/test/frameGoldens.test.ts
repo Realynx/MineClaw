@@ -180,6 +180,15 @@ const flush = async () => {
   for (let i = 0; i < 40; i++) await Promise.resolve();
 };
 
+/** Manual frame harness: stop network timers without hiding the views whose rendering this fixture exercises. */
+function stopNetwork(rt: InstanceType<typeof WorldRuntime>): void {
+  rt.sync.stop();
+  rt.deltas.stop();
+  const polls = rt as unknown as { entityPoller: { stop(): void }; overlayPoller: { stop(): void } };
+  polls.entityPoller.stop();
+  polls.overlayPoller.stop();
+}
+
 function bots(t: number) {
   return [
     { name: 'Alice', short: 'main', main: true, dim: 0 as const, x: 4 + t * 0.5, y: 70, z: 2 + t * 0.25, yaw: 30 * t, pitch: 10, hp: 20, food: 20 },
@@ -200,7 +209,7 @@ async function run(): Promise<string> {
   rt.addView(thumb);
   // The network loops stop before they ever run (their timers would interleave with the column inflation, which is a real
   // stream); the world is fetched by hand below.
-  (rt as unknown as { pause(): void }).pause();
+  stopNetwork(rt);
 
   rt.store.apply({ rev: 1, full: true, bots: bots(0), entities: [
     { kind: 'mob', id: 1, dim: 0, x: 6, y: 70, z: 4, type: 54 },
@@ -370,8 +379,9 @@ describe('frame golden', () => {
     const frames = log.filter((l) => l.startsWith('---- frame')).length;
     expect(frames).toBe(25);
     expect(log.filter((l) => l.startsWith('render.camera')).length).toBeGreaterThan(40);
-    // Includes badge-era label cache keys and speech-bubble ordering; matches the isolated 21cf234 baseline trace.
-    expect(a).toBe('4409f6464d20b00f2f7f430c32397317');
+    // Human skins add only cache signatures, shader/uniform fields and their unsubscribe callback to displayMobs.
+    // Full semantic comparison with the previous 4409f646 trace found no camera, geometry or frame-order differences.
+    expect(a).toBe('d714f1f501a2c0fc5e58996d3d4e6d11');
   }, 30000);
 
   it('pans before the world frame and projects the overlay after that same camera is rendered', () => {
@@ -388,7 +398,7 @@ describe('frame golden', () => {
         expect(rt.canvas.style.visibility).toBe('visible');
       },
     });
-    (rt as unknown as { pause(): void }).pause();
+    stopNetwork(rt);
     hooks.render = (_scene, cam) => {
       if (cam !== engine.camera) return;
       events.push('world');
@@ -402,5 +412,31 @@ describe('frame golden', () => {
       expect(events).toContain('world');
       expect(engine.camera.position.x).toBeCloseTo(40);
     } finally { hooks.render = undefined; engine.dispose(); }
+  });
+
+  it('retains a suspended engine camera and holograms while releasing its active view and input', () => {
+    const cancelPending = vi.fn();
+    const src = { ...createFixtureSource({ mobs: 0 }), cancelPending };
+    const rt = new WorldRuntime(src, { inlineMesher: true, textures: false });
+    const engine = new WorldViewerEngine(container(800, 500), { source: src, runtime: rt, cameraMode: 'fly' });
+    stopNetwork(rt);
+    engine.rig.flyPos.set(233, 71, 407);
+    engine.rig.flyYaw = 81;
+    engine.setHolograms([{ x: 230, y: 64, z: 403, id: 4, meta: 0, state: 'todo', build: 'one' }], 'one');
+    const holograms = rt.hologramsOf(engine.id);
+    engine.suspend();
+    expect(rt.viewCount).toBe(0);
+    expect(cancelPending).toHaveBeenCalledOnce();
+    expect(engine.frame(rt, clock, 0)).toBeNull();
+    expect(rt.hologramsOf(engine.id)).toBe(holograms);
+    engine.resume();
+    stopNetwork(rt);
+    expect(rt.viewCount).toBe(1);
+    expect(rt.isPrimary(engine)).toBe(true);
+    expect(engine.rig.flyPos.toArray()).toEqual([233, 71, 407]);
+    expect(engine.rig.flyYaw).toBe(81);
+    expect(rt.hologramsOf(engine.id)).toBe(holograms);
+    engine.dispose();
+    expect(rt.isDisposed).toBe(true);
   });
 });

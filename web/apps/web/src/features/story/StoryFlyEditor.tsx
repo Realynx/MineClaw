@@ -16,6 +16,7 @@ import {
   editHolograms,
   editPalette,
   editVariants,
+  pickEditMaterial,
   FlyEditQueue,
   type EditSend,
   type PlanOwner,
@@ -108,6 +109,15 @@ export function useStoryFlyEditor(
     return id ? { id: String(id), token: String(id) } : undefined;
   };
   const click = (target: AimTarget | null, button: number) => {
+    if (enabled && button === 1) {
+      const picked = pickEditMaterial(target, entries, version);
+      if (picked) {
+        setChosen(picked.entry);
+        setVariant(picked.meta);
+        pushRecent(version, picked.entry);
+      }
+      return;
+    }
     if (!enabled || !entry || target?.kind !== 'block' || ![0, 2].includes(button)) return;
     const cells = editCells(target, button, entry, meta);
     const height = version === '1.12.2' ? 256 : 128;
@@ -278,7 +288,7 @@ export function StoryFlyEditor({
           </div>
           {e.enabled ? (
             <>
-              <p>Left removes · Right places · R rotates · E opens blocks · Hold Q for tools. Pawns build these holograms.</p>
+              <p>Left removes · Right places · Middle picks a block · R rotates · E opens blocks · Hold Q for tools. Pawns build these holograms.</p>
               <p className="text-muted">Doors, beds, signs and rails use the Architect tools.</p>
               <button
                 className="w-full rounded border border-border bg-surface-2 px-2 py-1 text-left"

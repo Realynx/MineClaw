@@ -329,12 +329,15 @@ Notes on specific routes:
 | `admin.shardImport` | `POST /api/admin/shard/import` | admin | multipart `ShardImportOptions` | `ShardImportResult` | `POST /v1/sup/admin/shard/import` | /api/admin/shard/import (bridge sends JSON {shard: base64, …options, who}) | shard_import |
 | `groom.preview` | `POST /api/groom/preview` | admin | body `GroomPreviewRequest` | `GroomPreviewResponse` | `POST /v1/groom/preview` | bridge-native | admin_other |
 | `admin.webHosting` | `GET /api/admin/hosting` | admin | – | `WebHostingResponse` | Nest-native | – | – |
+| `admin.humanSkins` | `GET /api/admin/human-skins` | admin | – | `HumanSkinSettings` | Nest-native | – | – |
+| `admin.humanSkinsSave` | `POST /api/admin/human-skins` | admin + step-up | body `HumanSkinSave` | `HumanSkinSettings` | Nest-native | – | admin_settings |
 | `admin.webHostingSave` | `POST /api/admin/hosting` | admin + step-up | body `WebHostingSaveRequest` | `WebHostingResponse` | Nest-native | – | admin_settings |
 
 ### Live hive (supervisor pass-through)
 
 | Route id | Public route | Role | Request | Response | Bridge `/v1` | Supervisor | Audit |
 |---|---|---|---|---|---|---|---|
+| `world.humanSkins` | `GET /api/human-skins` | viewer | query `HumanSkinQuery` | `HumanSkinFeed` | Nest-native | – | – |
 | `bots.list` | `GET /api/bots` | viewer | – | `BotsResponse` | `GET /v1/sup/bots` | /api/bots | – |
 | `hive.tree` | `GET /api/hive/tree` | viewer | – | `HiveTreeNode` | `GET /v1/sup/hive/tree` | /api/hive/tree | – |
 | `status` | `GET /api/status` | viewer | query `StatusQuery` | `StatusResponse` | `GET /v1/sup/status` | /api/status | – |
@@ -418,6 +421,7 @@ Notes on specific routes:
 | `designer.get` | `GET /api/designer/sessions/:id` | viewer | params `DesignerSessionParams` | `DesignerSession` | `GET /v1/sup/designer/sessions/{id}` | /api/designer/sessions/{id} | – |
 | `designer.message` | `POST /api/designer/sessions/:id/messages` | design | params `DesignerSessionParams`<br>body `DesignerMessageRequest` | `DesignerMessageResponse` | `POST /v1/sup/designer/sessions/{id}/messages` | /api/designer/sessions/{id}/messages | design |
 | `designer.canvas` | `POST /api/designer/sessions/:id/canvas` | design | params `DesignerSessionParams`<br>body `DesignerCanvasRequest` | `DesignerCanvasResponse` | `POST /v1/sup/designer/sessions/{id}/canvas` | /api/designer/sessions/{id}/canvas | – |
+| `designer.deleteDesign` | `POST /api/designs/:id/delete` | design | params `DesignerSessionParams`<br>body `DesignerDeleteRequest` | `DesignerDeleteResponse` | `POST /v1/sup/designer/designs/{id}/delete` | /api/designer/designs/{id}/delete | design |
 | `designer.save` | `POST /api/designer/sessions/:id/save` | design | params `DesignerSessionParams`<br>body `DesignerSaveRequest` | `DesignerSaveResponse` | `POST /v1/sup/designer/sessions/{id}/save` | /api/designer/sessions/{id}/save | design |
 | `designer.version` | `POST /api/designer/sessions/:id/version` | design | params `DesignerSessionParams`<br>body `DesignerVersionRequest` | `DesignerVersionResponse` | `POST /v1/sup/designer/sessions/{id}/version` | /api/designer/sessions/{id}/version | design |
 
@@ -790,7 +794,7 @@ and tools in src/MineClaw.Bot/Blueprints/Designer*.cs). Never the live world. Be
   fails is a 502.
 - **`POST sessions/{id}/canvas {rev, ops:[{kind, label, cells}], anchor?, clear_anchor?}`** → `{rev, applied, stale}`: the
   user's own edits (manual tools, undo of AI ops), and the anchor ("move origin").
-- **`POST sessions/{id}/save {name, summary?, as_new?}`** → `{design_id, rev, name, blocks, created, text}`. The canvas is
+- **`POST sessions/{id}/save {name, summary?, as_new?, preview_png?, preview_only?, mine_authoring?}`** → `{design_id, rev, name, blocks, created, text}`. The canvas is
   drawn as DSL exactly like a capture (`DesignHistory.Draw`, interior air between each column's lowest and highest block),
   saved as an accepted design with no site (the bot builds a copy where asked); dug cells are drawn as forced air '.', undug
   ground under y 0 as '_' (left as it is), and when anything is below y 0 the DSL says `ground N` (the layers under the
@@ -798,8 +802,17 @@ and tools in src/MineClaw.Bot/Blueprints/Designer*.cs). Never the live world. Be
   the terrain). Its revision is added through
   `DesignHistory.Sync` with the signed-in player as author: a new design, or the next revision of the loaded one (Git-style,
   never locked). Over 32 a side is refused.
+  `preview_png` is a PNG data URL of at most 2,000,000 characters and 1280×960 pixels. `preview_only` replaces the stored
+  picture without adding a design revision; it updates the design's `updated` timestamp, used by the library and detail
+  picture URLs as their cache version. Mine pictures retain the visible excavation and ore wireframes.
+- **`POST /api/designs/{id}/delete {name}`** removes that exact named design from the saved library and placement palette.
+  It records a `designer_library_deleted` tombstone, leaving world blocks, active build and repair plans, and revision
+  history intact. The designer cannot reopen or overwrite the hidden entry; an already open session may use Save as new.
 - **Bridge.** `/v1/sup/designer/*` passes reads for any signed role; every POST needs `design` or `admin`, and the bridge
   writes `player` (the linked player) and `who` ("user (web)") into the body, refusing a body that sets them.
+  The exact `/v1/sup/designer/sessions/{positive integer id}/save` path accepts up to 8 MiB of signed JSON for the picture
+  and mine-component metadata, matching the gateway and supervisor save limits. Other designer routes retain the normal
+  256 KiB bridge JSON limit; invalid save paths do not receive the exception. Shard upload limits are separate.
 - **Persistence.** `designer_sessions` and `designer_messages` in the agent db (a session's `kind`, `seed` and `preferred_for`
   columns were added for mine designs; older rows are builds).
 

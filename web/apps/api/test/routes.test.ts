@@ -20,6 +20,7 @@ const OWN_FLOW: ReadonlySet<RouteId> = new Set([
   'auth.totpVerify',
   'auth.stepUp',
   'live.stream',
+  'designer.deleteDesign',
 ]);
 
 const OVERRIDES: Partial<

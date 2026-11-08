@@ -121,6 +121,7 @@ export class LiveHub {
     private readonly health: BridgeHealth,
     private readonly log: Logger,
     opts: Partial<LiveHubOptions> = {},
+    private readonly observeWorld?: (world: unknown) => void,
   ) {
     this.opts = { ...DEFAULT_HUB_OPTIONS, ...opts };
   }
@@ -364,6 +365,7 @@ export class LiveHub {
     let payload: unknown;
     try {
       payload = toCamel(parseBridgeJson(data));
+      if (event === 'entities') this.observeWorld?.(payload);
     } catch {
       this.log.warn({ event }, 'bridge sent an unparseable SSE frame');
       return;

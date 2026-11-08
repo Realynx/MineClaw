@@ -30,6 +30,8 @@ public sealed class DesignViews(AgentDb db, string serverVersion)
 {
     public bool Available => db.TableExists("blueprints");
     private bool Revs => db.TableExists("blueprint_revisions");
+    private string LibraryFilter => db.TableExists("designer_library_deleted")
+        ? " AND NOT EXISTS (SELECT 1 FROM designer_library_deleted dl WHERE dl.design_id=b.id)" : "";
 
     private string SummarySql => Revs
         ? """
@@ -59,11 +61,11 @@ public sealed class DesignViews(AgentDb db, string serverVersion)
     public DesignListResponse List(string? q, int offset, int limit)
     {
         if (!Available) return new DesignListResponse(0, 0, offset, limit, []);
-        var filter = "";
+        var filter = LibraryFilter;
         var args = new List<(string, object?)>();
         if (!string.IsNullOrWhiteSpace(q))
         {
-            filter = " AND instr(lower(CAST(b.id AS TEXT) || ' ' || b.name || ' ' || b.status || ' ' || coalesce(b.requester, '')), $q) > 0";
+            filter += " AND instr(lower(CAST(b.id AS TEXT) || ' ' || b.name || ' ' || b.status || ' ' || coalesce(b.requester, '')), $q) > 0";
             args.Add(("$q", q.Trim().ToLowerInvariant()));
         }
         long total = db.ScalarLong("SELECT count(*) FROM blueprints b WHERE b.status <> 'deleted'" + filter, args.ToArray());

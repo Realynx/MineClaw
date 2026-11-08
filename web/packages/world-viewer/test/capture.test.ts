@@ -24,19 +24,19 @@ describe('rendered-frame camera pictures', () => {
     expect(drawImage).not.toHaveBeenCalled();
     r.finishCapture(7, 1200, 600);
     await expect(capture).resolves.toBe('data:image/png;base64,YQ==');
-    expect([image.width, image.height]).toEqual([384, 192]);
-    expect(drawImage).toHaveBeenCalledWith(r.canvas, 0, 300, 1200, 600, 0, 0, 384, 192);
+    expect([image.width, image.height]).toEqual([1200, 600]);
+    expect(drawImage).toHaveBeenCalledWith(r.canvas, 0, 300, 1200, 600, 0, 0, 1200, 600);
     expect(r.captures.size).toBe(0);
   });
 
   it('shrinks detailed frames to fit the bounded request instead of sending an oversized PNG', async () => {
-    const image = { width: 0, height: 0, getContext: () => ({ drawImage: vi.fn() }), toDataURL: () => 'data:image/png;base64,' + 'a'.repeat(image.width > 307 ? 200_000 : 100) };
+    const image = { width: 0, height: 0, getContext: () => ({ drawImage: vi.fn() }), toDataURL: () => 'data:image/png;base64,' + 'a'.repeat(image.width > 960 ? 2_000_000 : 100) };
     vi.stubGlobal('document', { createElement: () => image });
     const r = runtime();
     const capture = r.capturePng(7);
     r.finishCapture(7, 1200, 600);
-    expect((await capture).length).toBeLessThan(190_000);
-    expect(image.width).toBe(307);
+    expect((await capture).length).toBeLessThan(2_000_000);
+    expect(image.width).toBe(960);
   });
 
   it('rejects a missing view or duplicate picture and times out when no frame arrives', async () => {

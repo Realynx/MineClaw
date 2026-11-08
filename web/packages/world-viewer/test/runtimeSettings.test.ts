@@ -90,6 +90,24 @@ function topView(rt: InstanceType<typeof WorldRuntime>): RuntimeView & { setup: 
 }
 
 describe('WorldRuntime under the viewer settings', () => {
+  it('cancels reads and skips all frame upkeep after its last view leaves, resuming on return', () => {
+    const cancelPending = vi.fn();
+    const rt = new WorldRuntime({ ...createFixtureSource({ mobs: 0 }), cancelPending }, { inlineMesher: true, textures: false });
+    const view = topView(rt);
+    const entityUpdates = vi.spyOn(rt.entities, 'update');
+    const blockFetch = vi.spyOn(rt.blockEntities, 'tick');
+    rt.removeView(view);
+    expect(cancelPending).toHaveBeenCalledOnce();
+    rt.step(1000, 0.016);
+    expect(entityUpdates).not.toHaveBeenCalled();
+    expect(blockFetch).not.toHaveBeenCalled();
+    topView(rt);
+    rt.step(1016, 0.016);
+    expect(entityUpdates).toHaveBeenCalledOnce();
+    expect(blockFetch).toHaveBeenCalledOnce();
+    rt.dispose();
+  });
+
   it('applies a change on its next frame: profile levers, AO, fog, entity reach, drops and the status report', () => {
     const rt = new WorldRuntime(createFixtureSource({ mobs: 0 }), { inlineMesher: true, quality: 'software', textures: false });
     const view = topView(rt);

@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useImperativeHandle, useRef, useState, useSyncExternalStore, type CSSProperties } from 'react';
+import { forwardRef, useEffect, useLayoutEffect, useImperativeHandle, useRef, useState, useSyncExternalStore, type CSSProperties } from 'react';
 import { WorldViewerEngine, type EngineOptions } from '../render/engine';
 import type { CameraMode, Dim, LayerToggles, PickedBlock, ViewerStats, WorldSource, XRayMode } from '../types';
 import type { BotView } from '../world/entities';
@@ -90,9 +90,16 @@ export const WorldViewer = forwardRef<WorldViewerHandle, WorldViewerProps>(funct
   // Inside a WorldViewerProvider: draw from the shared runtime (wait while it mounts); otherwise own a private one.
   const shared = useWorldRuntime();
 
-  useEffect(() => {
+  // Suspense hides layout effects while a destination route loads. Suspend the live view immediately, but retain the
+  // engine until real unmount so revealing that page restores its imperative camera, selection and holograms.
+  useLayoutEffect(() => {
     if (!host.current || shared === null) return;
-    const e = new WorldViewerEngine(host.current, {
+    if (engine.current && shared && engine.current.runtime !== shared) {
+      engine.current.dispose();
+      engine.current = null;
+    }
+    const existing = engine.current;
+    const e = existing ?? new WorldViewerEngine(host.current, {
       ...props.options,
       runtime: shared ?? undefined,
       source: props.source,
@@ -118,14 +125,24 @@ export const WorldViewer = forwardRef<WorldViewerHandle, WorldViewerProps>(funct
       onBeforeFrame: (e, now, dt) => cbs.current.onBeforeFrame?.(e, now, dt),
       onAfterFrame: (e, now, dt) => cbs.current.onAfterFrame?.(e, now, dt),
     });
-    if (!props.onAimClick) e.setCallbacks({ onAimClick: undefined });
+    if (existing) e.resume();
+    else {
+      if (!props.onAimClick) e.setCallbacks({ onAimClick: undefined });
+      e.setMarker(props.marker ?? null);
+      e.setHighlighted(props.highlighted ?? []);
+    }
     engine.current = e;
-    return () => {
-      engine.current = null;
-      e.dispose();
-    };
+    return () => e.suspend();
     // The engine is created once per mount (and runtime); prop changes are pushed below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shared]);
+
+  useEffect(() => {
+    const e = engine.current;
+    return () => {
+      if (engine.current === e) engine.current = null;
+      e?.dispose();
+    };
   }, [shared]);
 
   useEffect(() => engine.current?.setSource(props.source), [props.source]);

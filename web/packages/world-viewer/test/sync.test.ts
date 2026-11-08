@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { WorldCache, indexRect, planBatches } from '../src/world/cache';
-import { sharedInterests, WorldSync, type WorldSyncEvents } from '../src/world/sync';
+import { Poller, sharedInterests, WorldSync, type WorldSyncEvents } from '../src/world/sync';
 import { InlineMeshHost } from '../src/mesh/host';
 import { createFixtureSource, PLAN } from '../src/fixtures/world';
 import type { WorldIndexColumn, WorldSource } from '../src/types';
@@ -287,6 +287,20 @@ describe('WorldSync index-then-fetch', () => {
     await sync.tick(Date.now() + 20_000);
     expect(host.engine.store.cols.size).toBeGreaterThan(0);
   });
+
+  it.each(['index', 'chunks'] as const)('does not report or back off %s reads cancelled while leaving the view', async (route) => {
+    const src = createFixtureSource({ radius: 1, now: () => 0 });
+    vi.spyOn(src, route).mockRejectedValueOnce(new DOMException('View closed', 'AbortError'));
+    const onError = vi.fn();
+    const { sync, cache } = rig(src, onError);
+    sync.setInterest({ dim: 0, x: 0, z: 0, r: 16 });
+    await sync.tick(Date.now());
+    expect(onError).not.toHaveBeenCalled();
+    expect(sync.indexBackoff.until).toBe(0);
+    expect(sync.chunkBackoff.until).toBe(0);
+    await sync.tick(Date.now());
+    expect(cache.count()).toBeGreaterThan(0);
+  });
 });
 
 describe('fixture world', () => {
@@ -302,5 +316,52 @@ describe('fixture world', () => {
     const idx = await src.index(0, 0, 0, 16);
     expect(idx.version).toBe(version);
     expect(idx.columns.length).toBeGreaterThan(0);
+  });
+});
+
+describe('stop and resume during a pending read', () => {
+  it('waits for the previous poll before starting again, with one timer and no stale error', async () => {
+    vi.useFakeTimers();
+    let reject!: (e: Error) => void;
+    const fn = vi.fn().mockImplementationOnce(() => new Promise<void>((_, r) => { reject = r; })).mockResolvedValue(undefined);
+    const onError = vi.fn();
+    const poller = new Poller(fn, 1000, onError);
+    try {
+      poller.start();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fn).toHaveBeenCalledOnce();
+      poller.stop(); poller.start();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fn).toHaveBeenCalledOnce();
+      reject(new Error('Old source failed after navigation'));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fn).toHaveBeenCalledTimes(2);
+      expect(onError).not.toHaveBeenCalled();
+      expect(vi.getTimerCount()).toBe(1);
+      poller.stop();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { poller.stop(); vi.useRealTimers(); }
+  });
+
+  it('keeps exactly one index loop after an aborted read settles across stop/start', async () => {
+    vi.useFakeTimers();
+    let reject!: (e: Error) => void;
+    const source = createFixtureSource({ radius: 0, mobs: 0, now: () => 0 });
+    const index = vi.spyOn(source, 'index').mockImplementationOnce(() => new Promise((_, r) => { reject = r; }));
+    const host = new InlineMeshHost();
+    const noop = () => undefined;
+    const sync = new WorldSync(source, host, new WorldCache(), { onApplied: noop, onDropped: noop, onTouched: noop, onInfo: noop, onError: noop });
+    try {
+      sync.setInterest({ dim: 0, x: 0, z: 0, r: 16 });
+      sync.start();
+      await vi.advanceTimersByTimeAsync(150);
+      expect(index).toHaveBeenCalledOnce();
+      sync.stop(); sync.start();
+      reject(new DOMException('View hidden', 'AbortError'));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(vi.getTimerCount()).toBe(1);
+      sync.stop();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { sync.stop(); host.dispose(); vi.useRealTimers(); }
   });
 });

@@ -25,3 +25,4 @@ export type { BotView, EntityView } from './world/entities';
 export { HologramLayer, boxLines, type HologramStats } from './render/holograms';
 export { BOT_DETAIL_MIN } from './render/entityLayer';
 export type { HoloMesh, HoloRequest, HoloResult, HoloMode } from './mesh/holo';
+export { configureHumanSkins } from './assets/humanSkins';

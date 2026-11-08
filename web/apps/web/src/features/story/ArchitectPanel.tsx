@@ -239,7 +239,9 @@ export function ArchitectPanel({
       <div className="max-h-[min(56vh,36rem)] min-w-0 flex-1 overflow-y-auto pr-1">
         <h3 className="mb-2 text-sm font-semibold">{ARCH_CATS.find(([id]) => id === cat)?.[1]}</h3>
         {cat === 'designs' ? (
-          <DesignLibrary onPick={onDesignPick} />
+          <DesignLibrary onPick={onDesignPick} onDeleted={(id) => {
+            if (tool.kind === 'design' && tool.id === id) onTool({ kind: 'select' });
+          }} />
         ) : (
           <>
             <div className="mb-2 flex flex-wrap content-start gap-1.5">

@@ -7,6 +7,7 @@ import type { BlockEntityColumn, BlockEntityDto, Dim, WorldSource } from '../typ
 import type { MeshHost } from '../mesh/host';
 import { hashKey } from '../wire/hash';
 import { normalizeBlockEntities } from '../wire/normalize';
+import { isAbortError } from './sync';
 
 const key = (dim: Dim, cx: number, cz: number) => `${dim},${cx},${cz}`;
 
@@ -84,8 +85,10 @@ export class BlockEntityStore {
         }
       } catch (e) {
         for (const [cx, cz] of cols) this.queue.add(key(dim, cx, cz)); // retried on a later tick
-        this.last = now + 2000;
-        this.onError?.(e);
+        if (!isAbortError(e)) {
+          this.last = now + 2000;
+          this.onError?.(e);
+        }
       } finally {
         this.busy = false;
       }

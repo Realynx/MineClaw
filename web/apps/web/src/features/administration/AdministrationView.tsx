@@ -30,6 +30,7 @@ import { ReviewBar } from './ReviewBar';
 import { SettingField } from './SettingField';
 import { StepUpCancelled, useStepUp } from './useStepUp';
 import { WebHostingCard } from './WebHostingCard';
+import { HumanSkinsCard } from './HumanSkinsCard';
 
 function groupSections(list: readonly AdminSetting[]): Array<[string, AdminSetting[]]> {
   const m = new Map<string, AdminSetting[]>();
@@ -133,6 +134,7 @@ export function AdministrationView() {
         actions={<NodePicker node={node} setNode={setNode} nodeList={nodeList} />}
       />
       <WebHostingCard />
+      <HumanSkinsCard />
       {q.isPending ? (
         <Card className="p-5">
           <SkeletonLines lines={8} />

@@ -8,6 +8,9 @@ import { normalizeIndex } from '../wire/normalize';
 import { type WorldCache, indexRect, planBatches } from './cache';
 import { FairQueue } from './fairQueue';
 
+/** Leaving a view cancels its reads; this is not a server failure and must not delay its next visit. */
+export const isAbortError = (e: unknown): boolean => e instanceof Error && e.name === 'AbortError';
+
 export class Backoff {
   private delay = 0;
   until = 0;
@@ -33,15 +36,19 @@ export class Poller {
   private running = false;
   private inFlight = false;
   private again = false;
+  private generation = 0;
   readonly backoff = new Backoff();
   constructor(private readonly fn: () => Promise<void>, public periodMs: number, private readonly onError?: (e: unknown) => void) {}
   start(): void {
     if (this.running) return;
     this.running = true;
-    this.schedule(0);
+    this.generation++;
+    if (this.inFlight) this.again = true;
+    else this.schedule(0);
   }
   stop(): void {
     this.running = false;
+    this.generation++;
     this.again = false;
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
@@ -62,14 +69,17 @@ export class Poller {
         this.timer = null;
         if (!this.running) return;
         let next = this.periodMs;
+        const generation = this.generation;
         this.inFlight = true;
         try {
           await this.fn();
-          this.backoff.ok();
+          if (generation === this.generation) this.backoff.ok();
         } catch (e) {
-          next = Math.max(next, this.backoff.fail(Date.now()));
-          this.again = false;
-          this.onError?.(e);
+          if (generation === this.generation && !isAbortError(e)) {
+            next = Math.max(next, this.backoff.fail(Date.now()));
+            this.again = false;
+            this.onError?.(e);
+          }
         } finally {
           this.inFlight = false;
         }
@@ -131,6 +141,7 @@ export class WorldSync {
   private timer: ReturnType<typeof setTimeout> | null = null;
   private running = false;
   private busy = false;
+  private generation = 0;
   private rr = 0;
   private priorityTurn = false;
   readonly indexBackoff = new Backoff();
@@ -188,24 +199,25 @@ export class WorldSync {
   start(): void {
     if (this.running) return;
     this.running = true;
-    this.loop();
+    this.loop(++this.generation);
   }
 
   stop(): void {
     this.running = false;
+    this.generation++;
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
   }
 
-  private loop(): void {
+  private loop(generation: number): void {
     this.timer = setTimeout(() => {
       void (async () => {
         this.timer = null;
-        if (!this.running) return;
+        if (!this.running || generation !== this.generation) return;
         try {
           await this.tick(Date.now());
         } finally {
-          if (this.running) this.loop();
+          if (this.running && generation === this.generation) this.loop(generation);
         }
       })();
     }, 150);
@@ -273,8 +285,10 @@ export class WorldSync {
       raw = await this.source.index(it.dim, Math.floor(it.x), Math.floor(it.z), it.r);
       this.indexBackoff.ok();
     } catch (e) {
-      this.indexBackoff.fail(Date.now());
-      this.ev.onError('index', e);
+      if (!isAbortError(e)) {
+        this.indexBackoff.fail(Date.now());
+        this.ev.onError('index', e);
+      }
       return null;
     }
     return normalizeIndex(raw);
@@ -333,8 +347,10 @@ export class WorldSync {
       this.chunkBackoff.ok();
       return buf;
     } catch (e) {
-      this.chunkBackoff.fail(Date.now());
-      this.ev.onError('chunks', e);
+      if (!isAbortError(e)) {
+        this.chunkBackoff.fail(Date.now());
+        this.ev.onError('chunks', e);
+      }
       return null;
     }
   }

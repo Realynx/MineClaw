@@ -177,6 +177,19 @@ describe('Controller immersive input', () => {
 });
 
 describe('editor cursor picking and framing', () => {
+  it('delivers middle-clicks to the Controller creative crosshair and suppresses browser autoscroll', async () => {
+    const { engine, event, rig } = setup('controller');
+    const target: AimTarget = { kind: 'block', x: 20, y: 12, z: 20, id: 134, meta: 7, face: 1, distance: 20, name: 'Stairs' };
+    const onAimClick = vi.fn();
+    engine.setCallbacks({ onAimClick });
+    vi.spyOn(engine, 'aimNow').mockResolvedValue(target);
+    rig.mode = 'fly'; engine.lock();
+    expect(event('pointerdown', { button: 1 }).defaultPrevented).toBe(true);
+    event('pointerup', { button: 1 });
+    expect(event('auxclick', { button: 1 }).defaultPrevented).toBe(true);
+    await vi.waitFor(() => expect(onAimClick).toHaveBeenCalledWith(target, expect.objectContaining({ button: 1 })));
+  });
+
   it('updates hover without pointer lock and discards an in-flight hover after the cursor leaves', async () => {
     const { engine, internal, event, onAim, pick, resolveAim } = setup();
     const target: AimTarget = { kind: 'block', x: 20, y: 12, z: 20, id: 1, meta: 0, face: 1, distance: 20, name: 'Stone' };

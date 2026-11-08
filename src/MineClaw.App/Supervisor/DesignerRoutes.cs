@@ -106,6 +106,9 @@ public sealed class DesignerRoutes
         {
             if (rest.Equals("/models", StringComparison.OrdinalIgnoreCase)) return get ? Models() : NotAllowed("GET, HEAD");
             if (rest.Equals("/sessions", StringComparison.OrdinalIgnoreCase)) return post ? Create(r) : NotAllowed("POST");
+            var parts = rest.Split('/', StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length == 3 && parts[0] == "designs" && parts[2] == "delete" && long.TryParse(parts[1], NumberStyles.None, CultureInfo.InvariantCulture, out var designId))
+                return post ? DeleteFromLibrary(designId, r) : NotAllowed("POST");
             return await SessionRouteAsync(r, rest, get, post, ct).ConfigureAwait(false);
         }
         catch (JsonException) { return Reply(400, new { error = "body must be JSON (see docs/web/api.md, Design Studio)" }); }
@@ -208,6 +211,19 @@ public sealed class DesignerRoutes
     private static string Requester(string? player, string? who) =>
         !string.IsNullOrWhiteSpace(player) ? player.Trim() : !string.IsNullOrWhiteSpace(who) ? who.Trim() : "a player";
 
+    private sealed record DeleteDesignBody(string? Name, string? Player, string? Who);
+
+    private SupervisorReply DeleteFromLibrary(long id, SupervisorRequest r)
+    {
+        if (_service() is not { } svc) return Reply(503, new { error = "designs are unavailable (Bot:Blueprints off)" });
+        if (svc.Store.Get(id) is not { } design || design.Status == DesignStatus.Deleted || _store.IsLibraryDeleted(id))
+            return Reply(404, new { error = "no such saved design" });
+        var body = Parse<DeleteDesignBody>(r.Body);
+        if (body?.Name != design.Name) return Reply(400, new { error = "the design name changed; reload and confirm the design to delete" });
+        _store.DeleteFromLibrary(id, Requester(body.Player, body.Who));
+        return Reply(200, new { id, text = $"Removed {design.Name} (#{id}) from the saved design library. Existing builds are unchanged." });
+    }
+
     private SupervisorReply Create(SupervisorRequest r)
     {
         var b = Parse<CreateBody>(r.Body) ?? new CreateBody(null, null, null, null, null, null, null, null, null);
@@ -218,6 +234,7 @@ public sealed class DesignerRoutes
         if (b.Rev is < 1) return Reply(400, new { error = "rev must be 1 or more" });
         if (b.DesignId is { } did)
         {
+            if (_store.IsLibraryDeleted(did)) return Reply(404, new { error = "this design was removed from the library" });
             if (_service() is not { } svc) return Reply(503, new { error = "designs are unavailable (Bot:Blueprints off)" });
             if (OpenDesign(svc, s, did, b.Rev, convertTo, out note, out compat) is { } missing) return missing;
         }
@@ -607,9 +624,11 @@ public sealed class DesignerRoutes
         if (_service() is not { } svc) return Reply(503, new { error = "designs are unavailable (Bot:Blueprints off)" });
         var b = Parse<SaveBody>(r.Body);
         if (b == null || string.IsNullOrWhiteSpace(b.Name)) return Reply(400, new { error = "body must be JSON {name, summary?, as_new?}" });
+        if (b.AsNew != true && s.DesignId is { } hiddenId && _store.IsLibraryDeleted(hiddenId))
+            return Reply(400, new { error = "this design was removed from the library; use Save as new to keep these edits" });
         if (b.Summary is { Length: > 120 }) return Reply(400, new { error = "summary over 120 chars" });
         if (!DesignerMineAuthoring.Valid(b.MineAuthoring)) return Reply(400, new { error = "mine_authoring must be a valid layout envelope up to 2000000 characters" });
-        if (!TryPicture(b.PreviewPng, out var picture)) return Reply(400, new { error = "preview_png must be a PNG up to 384 by 256 pixels and 190000 base64 characters" });
+        if (!TryPicture(b.PreviewPng, out var picture)) return Reply(400, new { error = "preview_png must be a PNG up to 1280 by 960 pixels and 2000000 base64 characters" });
         if (b.PreviewOnly == true)
         {
             if (picture == null || b.AsNew == true) return Reply(400, new { error = "updating a picture requires preview_png and an existing design" });
@@ -633,12 +652,12 @@ public sealed class DesignerRoutes
         bytes = null;
         if (source == null) return true;
         const string prefix = "data:image/png;base64,";
-        if (source.Length > 190000 || !source.StartsWith(prefix, StringComparison.Ordinal)) return false;
+        if (source.Length > 2000000 || !source.StartsWith(prefix, StringComparison.Ordinal)) return false;
         try
         {
             var decoded = System.Convert.FromBase64String(source[prefix.Length..]);
             // Bound dimensions before decoding compressed pixels.
-            if (MineClaw.Render.Png.Header(decoded) is not { Width: > 0 and <= 384, Height: > 0 and <= 256 }) return false;
+            if (MineClaw.Render.Png.Header(decoded) is not { Width: > 0 and <= 1280, Height: > 0 and <= 960 }) return false;
             _ = MineClaw.Render.Png.Decode(decoded);
             bytes = decoded;
             return true;

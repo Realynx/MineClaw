@@ -68,8 +68,15 @@ export interface WorldSourceOptions {
 }
 
 export function createWorldSource(qc?: QueryClient, opts: WorldSourceOptions = {}): WorldSource {
-  // Each cached entity frame gets a number (the dispatcher replaces the cached object per stream frame): a runtime that already
-  // applied that number keeps its glides (several runtimes may share this source, so the store decides, not the source).
+  const pending = new Set<AbortController>();
+  const read = async <T>(fetch: (signal: AbortSignal) => Promise<T>): Promise<T> => {
+    const controller = new AbortController();
+    pending.add(controller);
+    try { return await fetch(controller.signal); }
+    finally { pending.delete(controller); }
+  };
+  // WorldHost owns this cancellable source for its shared runtime. Each cached entity frame gets a number (the dispatcher
+  // replaces the object per stream frame), so rereading it preserves the runtime's current movement interpolation.
   const frames = new WeakMap<WorldEntities, number>();
   let frameSeq = 0;
   const frameOf = (c: WorldEntities): number => {
@@ -78,8 +85,12 @@ export function createWorldSource(qc?: QueryClient, opts: WorldSourceOptions = {
     return n;
   };
   return {
+    cancelPending: () => {
+      for (const controller of pending) controller.abort();
+      pending.clear();
+    },
     index: async (dim, x, z, r) => {
-      const i = await api('world.index', { query: { dim, x: Math.round(x), z: Math.round(z), r: Math.max(16, Math.min(256, Math.round(r))), light: true } });
+      const i = await read((signal) => api('world.index', { signal, query: { dim, x: Math.round(x), z: Math.round(z), r: Math.max(16, Math.min(256, Math.round(r))), light: true } }));
       // weather doubles may arrive as named literals ("NaN"); the viewer wants plain numbers
       return { ...i, rain: finite(toNumber(i.rain)), thunder: finite(toNumber(i.thunder)) };
     },
@@ -95,7 +106,7 @@ export function createWorldSource(qc?: QueryClient, opts: WorldSourceOptions = {
         );
       }
       if (batches.length === 0) return mergeMcwc([new Uint8Array([...MAGIC, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]).buffer]);
-      const parts = await Promise.all(batches.map(async (b) => (await apiBlob('world.chunks', { query: { dim, cols: b, light: true } })).blob.arrayBuffer()));
+      const parts = await read((signal) => Promise.all(batches.map(async (b) => (await apiBlob('world.chunks', { signal, query: { dim, cols: b, light: true } })).blob.arrayBuffer())));
       return mergeMcwc(parts);
     },
 
@@ -106,20 +117,20 @@ export function createWorldSource(qc?: QueryClient, opts: WorldSourceOptions = {
         if (since === undefined || since === 0 || (cached.rev ?? 0) > since) return { ...toDelta(cached, true), frame };
         return { ...toDelta({ ...cached, entities: [], removed: [] }, false), frame };
       }
-      return toDelta(await api('world.entities', { query: since ? { since } : {} }), !since);
+      return toDelta(await read((signal) => api('world.entities', { signal, query: since ? { since } : {} })), !since);
     },
 
     onEntities: qc ? (onFrame) => subscribeEntityFrames(onFrame) : undefined,
 
-    overlays: (dim) => api('world.overlays', { query: { dim } }),
+    overlays: (dim) => read((signal) => api('world.overlays', { signal, query: { dim } })),
 
-    // No atlas(): the viewer ships the Minecraft textures and builds its atlas itself (bundled with the package).
+    // No atlas(): the viewer builds it from this browser's imported local game assets.
 
     // Sign text, bed colours, banners, skulls, flower pots, spawners; the viewer batches ≤ 48 columns, the route takes 64.
     blockEntities: async (dim, cols) =>
-      api('world.blockEntities', { query: { dim, cols: cols.map(([cx, cz]) => `${cx},${cz}`).join(';') } }) as unknown as Promise<BlockEntities>,
+      read((signal) => api('world.blockEntities', { signal, query: { dim, cols: cols.map(([cx, cz]) => `${cx},${cz}`).join(';') } })) as unknown as Promise<BlockEntities>,
 
-    blocks: (since) => api('world.blocks', { query: { since: since ?? 0 } }),
+    blocks: (since) => read((signal) => api('world.blocks', { signal, query: { since: since ?? 0 } })),
 
     subscribe: (onBlocks, onReconnect) => subscribeBlocks((d) => onBlocks(d), onReconnect),
 

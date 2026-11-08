@@ -64,8 +64,8 @@ export class WorldViewerEngine implements RuntimeView {
   readonly camera = new THREE.PerspectiveCamera(70, 1, 0.05, 2000);
   readonly rig = new CameraRig();
   /** The element input binds to: the runtime canvas (primary) or this view's own 2D canvas (copy mode). */
-  readonly surface: HTMLCanvasElement;
-  private readonly ctx2d: CanvasRenderingContext2D | null = null;
+  surface!: HTMLCanvasElement;
+  private ctx2d: CanvasRenderingContext2D | null = null;
   private readonly ownsRuntime: boolean;
   private opts: EngineOptions;
   private dim: Dim;
@@ -91,6 +91,7 @@ export class WorldViewerEngine implements RuntimeView {
   private precip: 'rain' | 'snow' | 'none' = 'rain';
   private overlaysSeen: Overlays | null = null;
   private disposed = false;
+  private suspended = false;
   private resize: ResizeObserver | null = null;
   private readonly cleanups: Array<() => void> = [];
   private size: [number, number] = [1, 1];
@@ -121,7 +122,12 @@ export class WorldViewerEngine implements RuntimeView {
     if (opts.controls === 'editor') this.rig.mode = 'follow';
     this.ownsRuntime = !opts.runtime;
     this.runtime = (opts.runtime ?? new WorldRuntime(opts.source, opts)).retain();
-    if (this.runtime.attachPrimary(this, container)) this.surface = this.runtime.canvas;
+    this.mountSurface();
+  }
+
+  private mountSurface(): void {
+    this.ctx2d = null;
+    if (this.runtime.attachPrimary(this, this.container)) this.surface = this.runtime.canvas;
     else {
       // Another interactive view owns the shared canvas: draw into our own 2D canvas (same world, same meshes).
       this.surface = document.createElement('canvas');
@@ -133,14 +139,36 @@ export class WorldViewerEngine implements RuntimeView {
         outline: 'none',
         touchAction: 'none',
       });
-      container.appendChild(this.surface);
+      this.container.appendChild(this.surface);
       this.ctx2d = this.surface.getContext('2d');
     }
     this.runtime.addView(this);
     this.bindInput();
     this.resize = new ResizeObserver(() => this.onResize());
-    this.resize.observe(container);
+    this.resize.observe(this.container);
     this.onResize();
+  }
+
+  /** A temporarily hidden React page keeps its camera and per-view layers, but releases input, rendering and downloads. */
+  suspend(): void {
+    if (this.disposed || this.suspended) return;
+    this.suspended = true;
+    for (const cleanup of this.cleanups.splice(0)) cleanup();
+    this.resize?.disconnect();
+    this.resize = null;
+    this.keys.clear();
+    this.drag = null;
+    this.editorDrag = null;
+    this.aimRequest++;
+    if (document.pointerLockElement === this.surface) document.exitPointerLock();
+    this.runtime.suspendView(this);
+    if (this.ctx2d) this.surface.remove();
+  }
+
+  resume(): void {
+    if (this.disposed || !this.suspended) return;
+    this.suspended = false;
+    this.mountSurface();
   }
 
   // ------------------------------------------------------------------------------------------------------------ public
@@ -412,12 +440,9 @@ export class WorldViewerEngine implements RuntimeView {
 
   dispose(): void {
     if (this.disposed) return;
+    this.suspend();
     this.disposed = true;
-    for (const c of this.cleanups) c();
-    this.resize?.disconnect();
-    if (document.pointerLockElement === this.surface) document.exitPointerLock();
     this.runtime.removeView(this);
-    if (this.ctx2d) this.surface.remove();
     this.runtime.release();
   }
 
@@ -460,7 +485,7 @@ export class WorldViewerEngine implements RuntimeView {
   }
 
   frame(rt: WorldRuntime, now: number, dt: number): ViewSetup | null {
-    if (this.disposed) return null;
+    if (this.disposed || this.suspended) return null;
     this.frameNow = now;
     this.frameDt = dt;
     this.opts.onBeforeFrame?.(this, now, dt);
@@ -733,8 +758,12 @@ export class WorldViewerEngine implements RuntimeView {
     });
     this.bindEditorNavigation();
     this.listen(c, 'contextmenu', (e: MouseEvent) => e.preventDefault());
+    this.listen(c, 'auxclick', (e: MouseEvent) => {
+      if (e.button === 1 && this.opts.controls === 'controller' && this.rig.mode === 'fly') e.preventDefault();
+    });
     this.listen(c, 'pointerdown', (e: PointerEvent) => {
       if (this.inputPaused) return;
+      if (e.button === 1 && this.opts.controls === 'controller' && this.rig.mode === 'fly') e.preventDefault();
       c.focus();
       // Free cam plays like the game: the first click locks and hides the cursor (Esc releases it); that click picks nothing.
       if (this.opts.controls !== 'editor' && this.rig.mode === 'fly' && e.button === 0 && document.pointerLockElement !== c) {
@@ -885,9 +914,9 @@ export class WorldViewerEngine implements RuntimeView {
 /** How deep below the look-at point a zoomed-out top-down / iso view still draws (ocean floors stay; caves do not). */
 const FLOOR_DEPTH = 32;
 
-/** A press that counts as a click: the left button, not dragged, released within half a second. */
-function isClick(d: { t: number; button: number; moved: boolean } | null, right = false): boolean {
-  return !!d && !d.moved && performance.now() - d.t <= 500 && (d.button === 0 || (right && d.button === 2));
+/** Locked creative input also accepts middle pick and right place; normal picking stays left-button only. */
+function isClick(d: { t: number; button: number; moved: boolean } | null, creative = false): boolean {
+  return !!d && !d.moved && performance.now() - d.t <= 500 && (d.button === 0 || (creative && (d.button === 1 || d.button === 2)));
 }
 
 /** The x-ray's floor: the cut never goes below the lowest subject's feet (0 without subjects). */

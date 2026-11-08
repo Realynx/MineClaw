@@ -15,13 +15,25 @@ public sealed class BridgeAuthMiddleware(RequestDelegate next, BridgeConfig conf
     public const string IdentityKey = "mcx.identity";
     public const string BodyKey = "mcx.body";
     public const long JsonBodyLimit = 256 * 1024;
+    /// <summary>A saved designer camera PNG and bounded mine-component metadata.</summary>
+    public const long DesignerSaveBodyLimit = 8L * 1024 * 1024;
     /// <summary>A 48 MB shard plus multipart framing.</summary>
     public const long UploadBodyLimit = 50L * 1024 * 1024;
 
     private static readonly string[] UploadPaths = ["/v1/shards/import/preview", "/v1/sup/admin/shard/import"];
 
     public static long BodyLimitFor(string path) =>
-        UploadPaths.Any(p => path.Equals(p, StringComparison.OrdinalIgnoreCase)) ? UploadBodyLimit : JsonBodyLimit;
+        UploadPaths.Any(p => path.Equals(p, StringComparison.OrdinalIgnoreCase)) ? UploadBodyLimit :
+        IsDesignerSave(path) ? DesignerSaveBodyLimit : JsonBodyLimit;
+
+    private static bool IsDesignerSave(string path)
+    {
+        const string prefix = "/v1/sup/designer/sessions/", suffix = "/save";
+        return path.Length > prefix.Length + suffix.Length && path.StartsWith(prefix, StringComparison.Ordinal) &&
+               path.EndsWith(suffix, StringComparison.Ordinal) &&
+               long.TryParse(path.AsSpan(prefix.Length, path.Length - prefix.Length - suffix.Length), NumberStyles.None,
+                   CultureInfo.InvariantCulture, out long id) && id > 0;
+    }
 
     public static bool IsLoopback(IPAddress? ip)
     {

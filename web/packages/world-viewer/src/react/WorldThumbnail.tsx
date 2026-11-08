@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { WorldRuntime, type RuntimeOptions } from '../render/runtime';
 import { registerThumbnail, type ThumbnailHandle, type ThumbnailViewOptions } from '../render/thumbnails';
 import type { WorldSource } from '../types';
@@ -77,7 +77,7 @@ export function WorldThumbnail({ follow, className, style, onClick, title, angle
   const rt = useWorldRuntime();
   const canvas = useRef<HTMLCanvasElement | null>(null);
   const handle = useRef<ThumbnailHandle | null>(null);
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!rt || !canvas.current) return;
     const h = registerThumbnail(rt, canvas.current, follow, { angle, distance, pitch, fps, drawDistance, xray, bubbles });
     handle.current = h;

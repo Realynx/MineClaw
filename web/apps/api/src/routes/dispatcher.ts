@@ -20,6 +20,7 @@ import {
   type RouteId,
   type WebAuditKind,
   type WebHostingSaveRequest,
+  type HumanSkinSave,
 } from '@mineclaw/contracts';
 import type { z } from 'zod';
 import type { AuditService } from '../audit/audit.service.js';
@@ -37,6 +38,7 @@ import { contextOf, header, parseQuery, readBody, type RequestContext } from '..
 import type { Logger } from '../common/logger.js';
 import type { LiveHub } from '../live/live-hub.js';
 import type { WebHostingSettings } from '../config/web-hosting.js';
+import type { HumanSkins } from '../skins/human-skins.js';
 import { VERSION } from '../version.js';
 import { encodeShardUpload, parseShardUpload, type ShardUpload } from './multipart.js';
 
@@ -44,6 +46,7 @@ export type RoutedRequest = IncomingMessage & { params?: Record<string, string |
 
 export interface DispatcherDeps {
   hosting: WebHostingSettings;
+  skins: HumanSkins;
   auth: AuthService;
   setup: SetupService;
   audit: AuditService;
@@ -117,6 +120,21 @@ export class RouteDispatcher {
     this.origins = new Set(d.allowedOrigins.map(normOrigin));
     const signed = (state: AuthState): Signed => state as Signed;
     this.native = {
+      'admin.humanSkins': () => Promise.resolve(d.skins.settings()),
+      'world.humanSkins': (_req, _res, _ctx, _state, input) => Promise.resolve(d.skins.feed(input.query)),
+      'admin.humanSkinsSave': (_req, _res, ctx, state, input) => {
+        const body = input.body as HumanSkinSave;
+        let ok = false;
+        try {
+          const result = d.skins.save(body.enabled);
+          ok = true;
+          return Promise.resolve(result);
+        } finally {
+          d.audit.record({ kind: 'admin_settings', ok, ip: ctx.ip, username: state.user?.username,
+            route: '/api/admin/human-skins', method: 'POST', target: 'human-skins', requestId: ctx.requestId,
+            summary: `Human browser skins ${body.enabled ? 'enabled' : 'disabled'}: ${clip(body.reason, 300)}` });
+        }
+      },
       'admin.webHosting': () => Promise.resolve(d.hosting.read()),
       'admin.webHostingSave': (_req, _res, ctx, state, input) => {
         const body = input.body as WebHostingSaveRequest;
@@ -405,6 +423,7 @@ export class RouteDispatcher {
     const data = await readUpstreamJson(upstream);
     this.validate(id, route.responseKind === 'json' ? route.response : ALT_JSON[id], data);
     if (id === 'bots.list') this.d.hub.learn(data);
+    if (id === 'world.entities') this.d.skins.observeWorld(data);
     const outStatus = route.status ?? status;
     if (route.method === 'GET' && upstream.headers.etag) res.setHeader('ETag', upstream.headers.etag);
     sendJson(res, outStatus, data, cacheControl(id, false, upstream.headers.etag));

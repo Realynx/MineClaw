@@ -67,4 +67,20 @@ describe('Design Studio contract', () => {
       ),
     ).toBe(true);
   });
+
+  it('deletes only the library entry, persists that choice, and requires Save as new for an open session', () => {
+    let stored: string | null = null;
+    const persistence = { load: () => stored, save: (json: string) => { stored = json; } };
+    const m = C.createDesignerMock(100, persistence);
+    const s = m.create({}, 'builder');
+    m.canvas(s.id, { ops: [{ kind: 'place', cells: [[1, 0, 1, 4, 0]] }] });
+    m.save(s.id, { name: 'Storehouse' }, 'builder');
+    expect(() => m.deleteDesign(100, 'Other')).toThrow('name changed');
+    expect(C.DesignerDeleteResponse.parse(m.deleteDesign(100, 'Storehouse')).id).toBe(100);
+    expect(m.saved[0]?.revisions.length).toBe(1);
+    expect(() => m.create({ designId: 100 }, 'builder')).toThrow('removed');
+    expect(() => m.save(s.id, { name: 'Storehouse' }, 'builder')).toThrow('Save as new');
+    expect(C.createDesignerMock(100, persistence).hiddenDesignIds.has(100)).toBe(true);
+    expect(m.save(s.id, { name: 'Copy', asNew: true }, 'builder').designId).toBe(101);
+  });
 });

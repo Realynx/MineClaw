@@ -8,6 +8,7 @@
  */
 import type { z } from 'zod';
 import { WebHostingResponse, WebHostingSaveRequest } from './webHosting.js';
+import { HumanSkinSettings, HumanSkinSave, HumanSkinQuery, HumanSkinFeed } from './humanSkins.js';
 import {
   ActivityCompactionReport,
   AdminAuditQuery,
@@ -70,6 +71,8 @@ import {
   DesignerModelsResponse,
   DesignerSaveRequest,
   DesignerSaveResponse,
+  DesignerDeleteRequest,
+  DesignerDeleteResponse,
   DesignerSession,
   DesignerSessionParams,
   DesignerVersionRequest,
@@ -776,6 +779,18 @@ export const ROUTES = {
     supervisor: null,
     audit: null,
     summary: 'Gateway HTTPS settings, with saved and running values; certificate contents never leave the server.',
+  }),
+  'admin.humanSkins': get('/api/admin/human-skins', {
+    access: 'admin', response: HumanSkinSettings, responseKind: 'json', bridge: null, supervisor: null, audit: null,
+    summary: 'Human browser skin setting and memory-cache counts. AI vision never uses these resources.',
+  }),
+  'admin.humanSkinsSave': post('/api/admin/human-skins', {
+    access: 'admin', stepUp: true, body: HumanSkinSave, response: HumanSkinSettings, responseKind: 'json', bridge: null, supervisor: null, audit: 'admin_settings',
+    summary: 'Enable official player skins in human world views only; applies immediately.',
+  }),
+  'world.humanSkins': get('/api/human-skins', {
+    access: 'viewer', query: HumanSkinQuery, response: HumanSkinFeed, responseKind: 'json', bridge: null, supervisor: null, audit: null,
+    summary: 'Human-only skin atlas updates. Memory cache resets at web API initialization; not part of AI vision.',
   }),
   'admin.webHostingSave': post('/api/admin/hosting', {
     access: 'admin',
@@ -1619,6 +1634,17 @@ export const ROUTES = {
     supervisor: '/api/designer/sessions/{id}/canvas',
     audit: null,
     summary: "The user's own edits (and the anchor), so the model sees them on its next turn.",
+  }),
+  'designer.deleteDesign': post('/api/designs/:id/delete', {
+    access: 'design',
+    params: DesignerSessionParams,
+    body: DesignerDeleteRequest,
+    response: DesignerDeleteResponse,
+    responseKind: 'json',
+    bridge: b('/v1/sup/designer/designs/{id}/delete', 'POST'),
+    supervisor: '/api/designer/designs/{id}/delete',
+    audit: 'design',
+    summary: 'Removes one design from the saved library, preserving placed builds and their repair plans.',
   }),
   'designer.save': post('/api/designer/sessions/:id/save', {
     access: 'design',

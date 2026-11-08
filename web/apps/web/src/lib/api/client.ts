@@ -184,6 +184,7 @@ async function send<K extends RouteId>(id: K, opts: CallOptions<K>): Promise<Res
   const attempt = async (): Promise<Response> => {
     checkOnline();
     const init = buildInit(route, opts);
+    if (id === 'world.humanSkins') init.cache = 'no-store';
     if (route.method !== 'GET') {
       const token = await ensureCsrf();
       (init.headers as Record<string, string>)['X-CSRF-Token'] = token;

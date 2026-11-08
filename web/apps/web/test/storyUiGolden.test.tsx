@@ -16,6 +16,7 @@ import { WorkPanel } from '@/features/story/roles/WorkPanel';
 import { barBodies, ColonistBar, ControlCluster, OptionsBar } from '@/features/story/StoryHud';
 import type { MapTool } from '@/features/story/StoryMap';
 import { ArchitectPanel, ColonyPanel, QueuePanel } from '@/features/story/StoryPanels';
+import { StaticAuthProvider } from '@/lib/auth';
 import type { BuildOpts, BuildToolId } from '@/features/story/tools';
 import { storyUiStates, type StoryUiStates } from './storyUiFixture';
 
@@ -229,14 +230,14 @@ describe('ArchitectPanel', () => {
       items: [{ id: 8, name: 'Storehouse', status: 'accepted', rev: 2, revisions: 2, hasPicture: true, updated: 100 }],
     });
     return (
-      <QueryClientProvider client={queryClient}><ArchitectPanel
+      <QueryClientProvider client={queryClient}><StaticAuthProvider me={{ username: 'builder', player: null, roles: ['design'], totpEnrolled: false, sessionCreatedAt: '', idleExpiresAt: '', absoluteExpiresAt: '' }}><ArchitectPanel
         tool={into}
         onTool={vi.fn()}
         palette={withPalette ? { ...S.architect, entries } : undefined}
         onPick={withPalette ? vi.fn() : undefined}
         plants={S.ordered.plants}
         zones={S.ordered.zones}
-      /></QueryClientProvider>
+      /></StaticAuthProvider></QueryClientProvider>
     );
   };
 

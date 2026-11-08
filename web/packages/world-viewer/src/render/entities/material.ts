@@ -156,6 +156,7 @@ void main() {
 const fragment = /* glsl */ `
 ${common}
 uniform sampler2D uTex;
+uniform sampler2D uHumanSkins;
 uniform sampler2D uItems;
 uniform sampler2D uBlocks;
 uniform float uAlphaTest;
@@ -198,7 +199,7 @@ void main() {
     float atlas = mod(floor(vFlags / 4.0), 4.0);
     c = atlas < 0.5 ? texture2D(uItems, uv) : atlas < 1.5 ? texture2D(uBlocks, uv) : texture2D(uTex, uv);
 #else
-    c = texture2D(uTex, uv);
+    c = flag(vFlags, 65536.0) ? texture2D(uHumanSkins, uv) : texture2D(uTex, uv);
 #endif
   }
   if (c.a < uAlphaTest) discard;
@@ -285,6 +286,7 @@ export interface EntityMaterials {
   shared: {
     uBones: THREE.IUniform<THREE.Texture | null>;
     uTex: THREE.IUniform<THREE.Texture | null>;
+    uHumanSkins: THREE.IUniform<THREE.Texture | null>;
     uItems: THREE.IUniform<THREE.Texture | null>;
     uBlocks: THREE.IUniform<THREE.Texture | null>;
     uBlocksGrid: THREE.IUniform<THREE.Vector2>;
@@ -299,6 +301,7 @@ export function createEntityMaterials(world: WorldUniforms): EntityMaterials {
   const shared = {
     uBones: { value: null as THREE.Texture | null },
     uTex: { value: null as THREE.Texture | null },
+    uHumanSkins: { value: null as THREE.Texture | null },
     uItems: { value: null as THREE.Texture | null },
     uBlocks: { value: null as THREE.Texture | null },
     uBlocksGrid: { value: new THREE.Vector2(16, 16) },
@@ -349,6 +352,8 @@ export function createEntityMaterials(world: WorldUniforms): EntityMaterials {
 export const GHOST_FLAG = 256, GHOST_SELECTED = 512, GHOST_PLAYER = 1024, GHOST_LEVEL = 2048;
 /** Instance flag bit of the glint pass (above the ghost strength bits). */
 export const GLINT_FLAG = 32768;
+/** Browser-only atlas; above the ghost strength and glint bits, still exactly representable in a float. */
+export const HUMAN_SKIN_FLAG = 65536;
 
 /** The glint pass's render state: over the instance's own surface (depth LEQUAL, nudged toward the camera, no depth write),
  * added on top (the shader squares each pass's colour: vanilla's GL_SRC_COLOR, GL_ONE). Drawn after the opaque entities. */
