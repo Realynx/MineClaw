@@ -541,10 +541,19 @@
     return stopped ? { ok: false, cancelled: true, msg: 'dig batch interrupted' }
       : { ok: true, msg: 'batch: ' + n + '/' + total + ' dug' + (pending.size ? '; inventory full' : '') };
   };
-  // ready(job): a job up high (a tall tree) starts with blocks to pillar with: the job's pillar stack from storage when short.
+  // Match the director's quarry-exit decision: any carried cheap pillar blocks satisfy this optional preparation, regardless of
+  // which material its supply hint names. Repeating ready after the approach must not retry a failed chest trip for the same job.
+  const PILLAR_STOCK = ['dirt', 'cobblestone', 'netherrack', 'stone', 'sandstone'];
+  let lastReadyAttempt;
   const ready = j => {
     const g = globalThis;
-    if (j && j.pillar && g.inv(j.pillar.item) < 4) g.take(j.pillar.item, j.pillar.n, j.pillar.from);
+    if (j && j.pillar && PILLAR_STOCK.reduce((n, item) => n + g.inv(item), 0) < 4) {
+      const key = j.id == null ? j : String(j.id);
+      if (key !== lastReadyAttempt) {
+        lastReadyAttempt = key;
+        g.take(j.pillar.item, j.pillar.n, j.pillar.from);
+      }
+    }
     return { ok: true };
   };
   // The director's existing quarry stairs: exit before fetching, approach after supplies. Every leg is walk-only.

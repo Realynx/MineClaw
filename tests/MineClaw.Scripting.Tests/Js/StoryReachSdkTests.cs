@@ -399,4 +399,67 @@ public sealed class StoryReachSdkTests
         Assert.Equal(fetch ? 24 : 4, Count(rig, Blocks.Dirt));
         Assert.Empty(colony.Temps);
     }
+
+    [Theory]
+    [InlineData(3, 24, 0, 0)]
+    [InlineData(3, 2, 4, 2)]
+    [InlineData(1, 2, 24, 2)]
+    [InlineData(87, 4, 0, 0)]
+    public async Task Quarry_preparation_counts_all_usable_blocks_and_does_not_leave_its_route_for_another_material(
+        int first, int firstCount, int second, int secondCount)
+    {
+        using var rig = Make();
+        rig.Give(36, first, firstCount);
+        if (secondCount > 0) rig.Give(37, second, secondCount);
+        var s = await rig.Run("""
+            const j = {id:'q1',pillar:{from:'0,64,9',item:'cobblestone',n:16},quarry_approach:['1,65,0']};
+            const r = story.route(j, true);
+            story.ready({...j});
+            return JSON.stringify(r);
+            """);
+        Assert.Contains("\"ok\":true", s.Outcome);
+        Assert.DoesNotContain(rig.Norm(), c => c.StartsWith("withdraw "));
+        Assert.Single(rig.Norm(), c => c.StartsWith("goto ") && c.Contains("1,65,0"));
+        Assert.Equal(1.5, rig.World.Player.Position.X);
+    }
+
+    [Fact]
+    public async Task A_failed_optional_supply_trip_is_not_repeated_after_approaching_even_with_a_fresh_job_object()
+    {
+        using var rig = Make();
+        rig.On["withdraw"] = (_, _) => Task.FromResult(ActResult.Fail("chest unreachable"));
+        var s = await rig.Run("""
+            const hint = {from:'0,64,9',item:'cobblestone',n:16};
+            const j = {id:'q1',pillar:hint,quarry_approach:['1,65,0']};
+            story.route(j, true);
+            story.ready(j);
+            story.ready({id:'q1',pillar:hint});
+            return 'prepared';
+            """);
+        Assert.True(s.Ok, s.Outcome);
+        var calls = rig.Norm();
+        int take = calls.FindIndex(c => c.StartsWith("withdraw "));
+        int approach = calls.FindIndex(c => c.StartsWith("goto "));
+        Assert.Single(calls, c => c.StartsWith("withdraw "));
+        Assert.True(take >= 0 && approach > take, string.Join(" | ", calls));
+        Assert.Equal(1.5, rig.World.Player.Position.X);
+    }
+
+    [Fact]
+    public async Task Optional_supply_preparation_retries_for_a_new_job_and_does_not_count_reserved_planks()
+    {
+        using var rig = Make();
+        rig.Give(36, Blocks.Planks, 64);
+        rig.On["withdraw"] = (_, _) => Task.FromResult(ActResult.Fail("chest unreachable"));
+        var s = await rig.Run("""
+            const hint = {from:'0,64,9',item:'cobblestone',n:16};
+            story.ready({id:'q1',pillar:hint});
+            story.ready({id:'q1',pillar:hint});
+            story.ready({id:'q2',pillar:hint});
+            return 'prepared';
+            """);
+        Assert.True(s.Ok, s.Outcome);
+        Assert.Equal(2, rig.Norm().Count(c => c.StartsWith("withdraw ")));
+        Assert.Equal(64, Count(rig, Blocks.Planks));
+    }
 }
