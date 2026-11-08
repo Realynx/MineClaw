@@ -12,12 +12,13 @@ import { useMemo, useState, type ReactNode } from 'react';
 import { Button, Input } from '@/components/ui/primitives';
 import { cn } from '@/lib/utils';
 import { levelOres, mineStats, oreColour, seenPer100 } from './mine/mineStats';
-import { room, spiral, STRIP_DEFAULTS, strip, type MineCells } from './mine/mineTemplates';
+import type { MineCells } from './mine/mineTemplates';
+import { ModulePalette, type ModulePaletteProps } from './mine/ModulePalette';
 import type { MineTerrain } from './mine/mineTerrain';
 import { presetCells, presetsFor, type MinePreset } from './mine/presets';
 import type { V3 } from './canvas';
 
-export interface MinePanelProps {
+export interface MinePanelProps extends ModulePaletteProps {
   terrain: MineTerrain;
   version: string;
   seed: string;
@@ -41,46 +42,12 @@ export interface MinePanelProps {
   onPreset: (p: MinePreset, cells: MineCells) => void;
 }
 
-const num = (v: string, lo: number, hi: number, d: number): number => {
-  const n = Math.trunc(Number(v));
-  return Number.isFinite(n) && v.trim() !== '' ? Math.max(lo, Math.min(hi, n)) : d;
-};
-
 function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
     <section className="border-b border-border px-3 py-2">
       <h3 className="mb-1.5 text-[11px] font-semibold tracking-wide text-muted uppercase">{title}</h3>
       {children}
     </section>
-  );
-}
-
-function NumField({
-  label,
-  value,
-  onChange,
-  min,
-  max,
-}: {
-  label: string;
-  value: number;
-  onChange: (n: number) => void;
-  min: number;
-  max: number;
-}) {
-  return (
-    <label className="flex items-center justify-between gap-1 text-[11px] text-muted">
-      {label}
-      <input
-        type="number"
-        min={min}
-        max={max}
-        value={value}
-        onChange={(e) => onChange(num(e.target.value, min, max, value))}
-        aria-label={label}
-        className="h-6 w-14 rounded border border-border bg-surface px-1 text-right font-mono text-fg"
-      />
-    </label>
   );
 }
 
@@ -97,7 +64,7 @@ function OreRuler({
   onLevel: (y: number) => void;
 }) {
   const ores = terrain.table.ores.filter((o) => o.veins > 0);
-  const h = 220;
+  const h = 160;
   const y2px = (y: number) => h - (y / top) * h;
   return (
     <div className="flex gap-2">
@@ -111,12 +78,16 @@ function OreRuler({
         aria-valuenow={level ?? undefined}
         data-testid="ore-ruler"
         tabIndex={0}
+        onKeyDown={(e) => {
+          if (e.key === 'ArrowUp' || e.key === 'ArrowDown') { e.preventDefault(); onLevel(Math.max(1, Math.min(top, (level ?? 11) + (e.key === 'ArrowUp' ? 1 : -1)))); }
+          if (e.key === 'Home' || e.key === 'End') { e.preventDefault(); onLevel(e.key === 'Home' ? 1 : top); }
+        }}
         onClick={(e) => {
           const r = e.currentTarget.getBoundingClientRect();
           onLevel(Math.max(1, Math.min(top, Math.round(((r.bottom - e.clientY) / r.height) * top))));
         }}
       >
-        {[0, 16, 32, 48, 64].filter((y) => y <= top).map((y) => (
+        {[0, 16, 32, 48, 64, 96, 127].filter((y) => y <= top).map((y) => (
           <div key={y} className="absolute right-0 left-0 border-t border-border/60" style={{ top: y2px(y) }}>
             <span className="absolute -top-2 left-0.5 font-mono text-[9px] text-subtle">{y}</span>
           </div>
@@ -156,299 +127,43 @@ function OreRuler({
 export function MinePanel(p: MinePanelProps) {
   const { terrain, version } = p;
   const range = useMemo(() => terrain.surfaceRange(), [terrain]);
-  // The ruler spans y 0 to 16 over the highest ground (bands above it are cut at its top).
-  const top = Math.min(127, range.max + 16);
+  const top = 127;
   const [seedText, setSeedText] = useState(p.seed);
-  const ores = terrain.table.ores.filter((o) => o.veins > 0);
-  const at: V3 = p.at ?? [30, 0, 30];
-  // Spiral shaft.
-  const [size, setSize] = useState(4);
-  const [core, setCore] = useState(2);
-  const [shaftTop, setShaftTop] = useState<number | null>(null);
-  const [bottom, setBottom] = useState(11);
-  const [cw, setCw] = useState(true);
-  const [torches, setTorches] = useState(6);
-  const [landings, setLandings] = useState('11');
-  // Strip mine.
-  const [stripY, setStripY] = useState(11);
-  const [axis, setAxis] = useState<'x' | 'z'>('x');
-  const [length, setLength] = useState(30);
-  const [corridor, setCorridor] = useState<'1x2' | '2x3'>('1x2');
-  // The layout study's best for both versions (docs/design/mine-blueprints.md).
-  const [spacing, setSpacing] = useState<number>(STRIP_DEFAULTS.spacing);
-  const [branch, setBranch] = useState(12);
-  const [sides, setSides] = useState<'both' | 'left' | 'right' | 'none'>('both');
-  const [stripTorches, setStripTorches] = useState(8);
-  // Room.
-  const [roomW, setRoomW] = useState(5);
-  const [roomD, setRoomD] = useState(5);
-  const [roomH, setRoomH] = useState(3);
-  const [roomY, setRoomY] = useState(11);
-  const surfaceTop = terrain.surfaceOver(at[0], at[2], at[0] + size - 1, at[2] + size - 1);
-  const level = p.level;
-  const readout = useMemo(() => (level === null ? null : levelOres(terrain, level)), [terrain, level]);
+  const readout = useMemo(() => p.level === null ? null : levelOres(terrain, p.level), [terrain, p.level]);
   const stats = useMemo(() => mineStats(terrain, p.dug()), [terrain, p.rev]); // eslint-disable-line react-hooks/exhaustive-deps
-  const presets = presetsFor(version);
   const disabled = !p.canWrite || p.busy;
-
-  const atBand = (set: (y: number) => void) => (
-    <div className="mt-1 flex flex-wrap gap-1" aria-label="At ore band">
-      {ores.map((o) => (
-        <button
-          key={o.id}
-          type="button"
-          className="rounded border border-border px-1.5 py-0.5 text-[10px] text-muted hover:bg-surface-2"
-          title={`${o.name}: best at y ${o.best}`}
-          onClick={() => {
-            set(o.best);
-            p.onLevel(o.best);
-          }}
-        >
-          <span className="mr-1 inline-block size-2 rounded-full" style={{ background: o.color ?? '#888' }} />
-          {o.id} {o.best}
-        </button>
-      ))}
-    </div>
-  );
-
-  return (
-    <aside
-      className="flex w-full shrink-0 flex-col overflow-y-auto border-l border-border bg-surface text-xs lg:w-72"
-      aria-label="Mine designer"
-      data-testid="mine-panel"
-    >
-      <Section title="Terrain">
-        <p className="mb-1 text-[11px] text-muted">
-          Generated for {version} (MineClaw&apos;s own generator): ground y {range.min}–{range.max}, bedrock y 0–
-          {terrain.table.bedrockTop}. The design keeps its absolute y.
-        </p>
-        <form
-          className="flex items-center gap-1"
-          onSubmit={(e) => {
-            e.preventDefault();
-            if (seedText.trim() && seedText.trim() !== p.seed) p.onSeed(seedText.trim());
-          }}
-        >
-          <Input
-            value={seedText}
-            onChange={(e) => setSeedText(e.target.value)}
-            aria-label="Seed"
-            maxLength={32}
-            className="h-7 font-mono text-[11px]"
-            data-testid="mine-seed"
-          />
-          <Button size="sm" variant="secondary" type="submit" disabled={disabled} title="Use this seed">
-            Set
-          </Button>
-          <button
-            type="button"
-            aria-label="Random seed"
-            title="Random seed"
-            disabled={disabled}
-            className="grid size-7 place-items-center rounded border border-border hover:bg-surface-2"
-            onClick={() => {
-              const s = String(Math.floor(Math.random() * 9e15) + 1);
-              setSeedText(s);
-              p.onSeed(s);
-            }}
-          >
-            <Dices className="size-3.5" />
-          </button>
-          {p.serverSeed ? (
-            <button
-              type="button"
-              aria-label="Use the server's seed"
-              title="Use the server's seed (our generator still makes its own world from it)"
-              disabled={disabled}
-              className="grid size-7 place-items-center rounded border border-border hover:bg-surface-2"
-              onClick={() => {
-                setSeedText(p.serverSeed!);
-                p.onSeed(p.serverSeed!);
-              }}
-            >
-              <Server className="size-3.5" />
-            </button>
-          ) : null}
-        </form>
-      </Section>
-      <Section title="Ore heights">
-        <OreHeights terrain={terrain} top={top} level={level} readout={readout} xray={p.xray} onLevel={p.onLevel} onXray={p.onXray} />
-      </Section>
-      <Section title="Spiral shaft">
-        <div className="grid grid-cols-2 gap-x-2 gap-y-1">
-          <NumField label="Size" value={size} onChange={setSize} min={3} max={6} />
-          <NumField label="Core" value={core} onChange={setCore} min={1} max={2} />
-          <NumField label="Top y" value={shaftTop ?? surfaceTop} onChange={setShaftTop} min={2} max={127} />
-          <NumField label="Bottom y" value={bottom} onChange={setBottom} min={1} max={126} />
-          <NumField label="Torch every" value={torches} onChange={setTorches} min={0} max={32} />
-          <label className="flex items-center justify-between gap-1 text-[11px] text-muted">
-            Turn
-            <select
-              value={cw ? 'cw' : 'ccw'}
-              onChange={(e) => setCw(e.target.value === 'cw')}
-              aria-label="Turn"
-              className="h-6 rounded border border-border bg-surface px-1 text-fg"
-            >
-              <option value="cw">cw</option>
-              <option value="ccw">ccw</option>
-            </select>
-          </label>
-        </div>
-        <label className="mt-1 flex items-center justify-between gap-1 text-[11px] text-muted">
-          Landings (y)
-          <input
-            value={landings}
-            onChange={(e) => setLandings(e.target.value)}
-            aria-label="Landings"
-            className="h-6 w-28 rounded border border-border bg-surface px-1 font-mono text-fg"
-          />
-        </label>
-        {atBand(setBottom)}
-        <Button
-          size="sm"
-          className="mt-1.5 w-full"
-          disabled={disabled}
-          data-testid="insert-spiral"
-          onClick={() =>
-            p.onInsert(
-              spiral({
-                x: at[0],
-                z: at[2],
-                top: shaftTop ?? surfaceTop,
-                bottom,
-                size,
-                core,
-                cw,
-                torchEvery: torches,
-                landings: landings
-                  .split(/[\s,]+/)
-                  .map(Number)
-                  .filter((n) => Number.isInteger(n) && n > 0),
-              }),
-            )
-          }
-        >
-          Insert spiral shaft at {at[0]}, {at[2]}
-        </Button>
-      </Section>
-      <Section title="Strip mine">
-        <div className="grid grid-cols-2 gap-x-2 gap-y-1">
-          <NumField label="Feet y" value={stripY} onChange={setStripY} min={1} max={126} />
-          <NumField label="Length" value={length} onChange={setLength} min={1} max={64} />
-          <NumField label="Spacing" value={spacing} onChange={setSpacing} min={1} max={8} />
-          <NumField label="Branch" value={branch} onChange={setBranch} min={0} max={64} />
-          <NumField label="Torch every" value={stripTorches} onChange={setStripTorches} min={0} max={32} />
-          <label className="flex items-center justify-between gap-1 text-[11px] text-muted">
-            Along
-            <select
-              value={axis}
-              onChange={(e) => setAxis(e.target.value as 'x' | 'z')}
-              aria-label="Along"
-              className="h-6 rounded border border-border bg-surface px-1 text-fg"
-            >
-              <option value="x">x</option>
-              <option value="z">z</option>
-            </select>
-          </label>
-          <label className="flex items-center justify-between gap-1 text-[11px] text-muted">
-            Corridor
-            <select
-              value={corridor}
-              onChange={(e) => setCorridor(e.target.value as '1x2' | '2x3')}
-              aria-label="Corridor"
-              className="h-6 rounded border border-border bg-surface px-1 text-fg"
-            >
-              <option value="1x2">1×2</option>
-              <option value="2x3">2×3</option>
-            </select>
-          </label>
-          <label className="flex items-center justify-between gap-1 text-[11px] text-muted">
-            Sides
-            <select
-              value={sides}
-              onChange={(e) => setSides(e.target.value as typeof sides)}
-              aria-label="Sides"
-              className="h-6 rounded border border-border bg-surface px-1 text-fg"
-            >
-              {['both', 'left', 'right', 'none'].map((s) => (
-                <option key={s} value={s}>
-                  {s}
-                </option>
-              ))}
-            </select>
-          </label>
-        </div>
-        {atBand(setStripY)}
-        <Button
-          size="sm"
-          className="mt-1.5 w-full"
-          disabled={disabled}
-          data-testid="insert-strip"
-          onClick={() =>
-            p.onInsert(
-              strip({
-                x: at[0],
-                y: stripY,
-                z: at[2],
-                axis,
-                length,
-                width: corridor === '2x3' ? 2 : 1,
-                height: corridor === '2x3' ? 3 : 2,
-                spacing,
-                branchLength: branch,
-                sides,
-                torchEvery: stripTorches,
-              }),
-            )
-          }
-        >
-          Insert strip mine at {at[0]}, {stripY}, {at[2]}
-        </Button>
-      </Section>
-      <Section title="Room">
-        <div className="grid grid-cols-2 gap-x-2 gap-y-1">
-          <NumField label="Width" value={roomW} onChange={setRoomW} min={1} max={32} />
-          <NumField label="Depth" value={roomD} onChange={setRoomD} min={1} max={32} />
-          <NumField label="Height" value={roomH} onChange={setRoomH} min={2} max={8} />
-          <NumField label="Floor y" value={roomY} onChange={setRoomY} min={1} max={126} />
-        </div>
-        <Button
-          size="sm"
-          variant="secondary"
-          className="mt-1.5 w-full"
-          disabled={disabled}
-          onClick={() => p.onInsert(room(at[0], roomY, at[2], roomW, roomD, roomH))}
-        >
-          Dig a room at {at[0]}, {roomY}, {at[2]}
-        </Button>
-      </Section>
-      <Section title={`Preferred for ${version}`}>
-        <ul className="space-y-1.5">
-          {presets.map((pr) => (
-            <li key={pr.id}>
-              <div className="flex items-center gap-1">
-                <span className="flex-1 font-medium text-fg">{pr.name}</span>
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  disabled={disabled}
-                  data-testid={`preset-${pr.id}`}
-                  onClick={() => p.onPreset(pr, presetCells(pr, terrain))}
-                >
-                  Use
-                </Button>
-              </div>
-              <p className="text-[10px] text-subtle">{pr.notes}</p>
-            </li>
-          ))}
-        </ul>
-        <PreferredNote preferredFor={p.preferredFor} />
-      </Section>
-      <Section title="Dig estimate">
-        <DigEstimate stats={stats} />
-      </Section>
-    </aside>
-  );
+  return <aside className="flex w-full shrink-0 flex-col overflow-y-auto border-l border-border bg-surface text-xs lg:w-72" aria-label="Mine designer" data-testid="mine-panel">
+    <section className="border-b border-border p-3"><ModulePalette {...p} disabled={disabled} /></section>
+    <Section title={`Ore levels · ${version}`}>
+      <p className="mb-2 text-[10px] text-subtle">Choose an entrance height. The cutaway below controls only the view.</p>
+      <div className="mb-2 grid grid-cols-3 gap-1">
+        {terrain.table.ores.filter((o) => o.veins > 0).map((o) => <button key={o.id} type="button" title={`${o.name}: preferred feet Y ${o.best}`} disabled={disabled}
+          onClick={() => p.onPlacementY?.(o.best)} className={cn('rounded border px-1.5 py-1 text-left', (p.placementY ?? 11) === o.best ? 'border-accent bg-accent/10' : 'border-border hover:bg-surface-2')}>
+          <span className="block text-[10px] capitalize"><span className="mr-1 inline-block size-1.5 rounded-full" style={{ background: o.color ?? '#888' }} />{o.id}</span><span className="font-mono text-xs">Y{o.best}</span>
+        </button>)}
+      </div>
+      <p className="mb-2 text-[10px] text-subtle">Y11: diamond, redstone and gold above lava lakes. Y16: lapis and iron. Preferred levels are practical targets, not a density peak for every ore.</p>
+      <details open><summary className="cursor-pointer text-[11px] text-muted">Ore bands &amp; cutaway</summary><div className="mt-2">
+        <OreHeights terrain={terrain} top={top} level={p.level} readout={readout} xray={p.xray} onLevel={p.onLevel} onXray={p.onXray} />
+      </div></details>
+    </Section>
+    <Section title="Dig estimate"><DigEstimate stats={stats} /></Section>
+    <section className="border-b border-border px-3 py-2"><details><summary className="cursor-pointer text-[11px] font-medium text-muted">Version presets · {version}</summary>
+      <p className="mt-2 text-[10px] text-subtle">Complete reference mines. These add ordinary excavation cells; use the layouts above for movable pieces.</p>
+      <ul className="mt-2 space-y-2">{presetsFor(version).map((pr) => <li key={pr.id}><div className="flex items-center gap-2"><span className="flex-1 text-[11px]">{pr.name}</span>
+        <Button size="sm" variant="secondary" disabled={disabled} data-testid={`preset-${pr.id}`} onClick={() => p.onPreset(pr, presetCells(pr, terrain))}>Use</Button></div><p className="mt-0.5 text-[10px] text-subtle">{pr.notes}</p></li>)}</ul>
+      <PreferredNote preferredFor={p.preferredFor} />
+    </details></section>
+    <section className="px-3 py-2"><details><summary className="cursor-pointer text-[11px] font-medium text-muted">Terrain &amp; seed</summary>
+      <p className="my-2 text-[10px] text-subtle">Simulated {version} terrain, ground Y{range.min}–{range.max}. Real-world ore locations differ; mine plans keep absolute heights.</p>
+      <form className="flex items-center gap-1" onSubmit={(e) => { e.preventDefault(); if (seedText.trim() && seedText.trim() !== p.seed) p.onSeed(seedText.trim()); }}>
+        <Input value={seedText} onChange={(e) => setSeedText(e.target.value)} aria-label="Seed" maxLength={32} className="h-7 min-w-0 font-mono text-[11px]" data-testid="mine-seed" />
+        <Button size="sm" variant="secondary" type="submit" disabled={disabled} title="Use this seed">Set</Button>
+        <button type="button" aria-label="Random seed" disabled={disabled} className="rounded border border-border p-1.5" onClick={() => { const seed = String(Math.floor(Math.random() * 9e15) + 1); setSeedText(seed); p.onSeed(seed); }}><Dices className="size-3.5" /></button>
+        {p.serverSeed ? <button type="button" aria-label="Use the server's seed" disabled={disabled} className="rounded border border-border p-1.5" onClick={() => { setSeedText(p.serverSeed!); p.onSeed(p.serverSeed!); }}><Server className="size-3.5" /></button> : null}
+      </form>
+    </details></section>
+  </aside>;
 }
 
 /** The ore ruler, the level slider, X-ray, and the ores at the level (band density, count here). */
@@ -490,11 +205,12 @@ function OreHeights(p: {
           'flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px]',
           p.xray ? 'bg-accent text-white' : 'border border-border text-muted hover:bg-surface-2',
         )}
-        title="X-ray: show the generated ores through the stone"
+        title="Show planned excavation and exposed veins through the terrain"
       >
-        <Eye className="size-3" /> X-ray
+        <Eye className="size-3" /> Plan X-ray
       </button>
     </div>
+    <p className="mt-2 flex flex-wrap gap-2 text-[10px]" aria-label="Mine preview legend"><span className="text-sky-400">■ Planned excavation</span><span className="text-amber-400">■ Exposed veins</span></p>
     {readout ? (
       <ul className="mt-1 space-y-0.5" data-testid="level-readout">
         {readout.map((r) => (

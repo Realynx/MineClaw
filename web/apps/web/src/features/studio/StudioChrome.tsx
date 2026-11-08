@@ -353,7 +353,7 @@ export function StudioHud(p: {
   pasting: boolean;
 }) {
   return (
-    <div className="pointer-events-none absolute top-3 left-14 space-y-1 font-mono text-[11px] text-white" data-testid="studio-hud">
+    <div className="pointer-events-none absolute bottom-36 left-14 max-w-[calc(100%-4.5rem)] space-y-1 font-mono text-[11px] text-white" data-testid="studio-hud">
       <div className="rounded bg-black/55 px-2 py-0.5">
         {p.aim} · facing {p.facing} · {p.toolLabel}
       </div>
@@ -483,27 +483,31 @@ export function UnderSlider({ under, setUnder }: { under: number; setUnder: (y: 
 }
 
 export function ToolSettingsBar(p: ToolSettings & {
+  mine?: boolean;
   setBoxMode: (v: BoxMode) => void;
   setBrushMode: (v: BrushMode) => void;
   setBrushShape: (v: BrushShape) => void;
   setBrushSize: (v: number) => void;
   setExtrudeN: (v: number) => void;
 }) {
+  if (p.tool === 'box' && p.mine) return <span className="rounded bg-black/55 px-2 py-1">Drag to excavate a box · PgUp / PgDn adjusts height</span>;
   if (p.tool === 'box')
     return (
       <Seg label="Box" value={p.boxMode} options={['fill', 'hollow', 'walls', 'outline']} onChange={(v) => p.setBoxMode(v as BoxMode)} />
     );
   if (p.tool === 'brush')
     return (
-      <div className="flex flex-wrap items-center justify-end gap-1.5">
+      <div className="flex max-w-full items-center gap-1.5 overflow-x-auto whitespace-nowrap" aria-label="Brush settings">
+        {!p.mine ? (
         <Seg
           label="Brush"
           value={p.brushMode}
           options={['add', 'remove', 'paint', 'replace', 'smooth']}
           onChange={(v) => p.setBrushMode(v as BrushMode)}
         />
+        ) : <span className="shrink-0 rounded bg-black/55 px-2 py-1">Excavate</span>}
         <Seg label="Shape" value={p.brushShape} options={['sphere', 'cube']} onChange={(v) => p.setBrushShape(v as BrushShape)} />
-        <label className="flex items-center gap-1 rounded bg-black/55 px-2 py-1">
+        <label className="flex shrink-0 items-center gap-1 rounded bg-black/55 px-2 py-1">
           Size
           <input
             type="range"
@@ -749,7 +753,7 @@ export function Seg({
   onChange: (v: string) => void;
 }) {
   return (
-    <div className="flex items-center gap-0.5 rounded bg-black/55 p-0.5" role="radiogroup" aria-label={label}>
+    <div className="flex shrink-0 items-center gap-0.5 rounded bg-black/55 p-0.5" role="radiogroup" aria-label={label}>
       <span className="px-1 text-white/70">{label}</span>
       {options.map((o) => (
         <button

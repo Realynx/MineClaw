@@ -37,7 +37,7 @@ import { ErrorState, Spinner } from '@/components/ui/primitives';
 import { api, errorText } from '@/lib/api/client';
 import { useApi } from '@/lib/api/query';
 import { useAuth } from '@/lib/auth';
-import { cn, newRequestId } from '@/lib/utils';
+import { newRequestId } from '@/lib/utils';
 import { useNavigationGuard } from '@/lib/navGuard';
 import { Crosshair } from '@/features/world/InWorld';
 import { Hotbar, PaletteDrawer, type IconOf, type IconSheet } from './BlockBar';
@@ -45,7 +45,8 @@ import { EARTH, plotMode, type Selection, selectAll, sizeOf, type V3, type Cell 
 import { PictureControls } from './PictureControls';
 import { ChatPanel, type ChatPanelHandle } from './ChatPanel';
 import { MinePanel } from './MinePanel';
-import { xrayCells } from './mine/mineStats';
+import { minePreview } from './mine/minePreview';
+import { useMinePlacement } from './useMinePlacement';
 import type { MineCells } from './mine/mineTemplates';
 import type { MinePreset } from './mine/presets';
 import { dirOfMcYaw, type Dir, hasFacing, placeMeta, turn, type Version } from './facing';
@@ -109,6 +110,11 @@ const TOOLS: ToolDef[] = [
     icon: <Anchor className="size-4" />,
   },
 ];
+
+const MINE_TOOLS: ToolDef[] = TOOLS.filter((t) => ['build', 'select', 'box', 'brush'].includes(t.id)).map((t) => ({
+  ...t,
+  label: t.id === 'build' ? 'Dig / fill back (left digs, right fills)' : t.id === 'box' ? 'Excavate box (left-drag digs)' : t.id === 'brush' ? 'Excavate brush' : t.label,
+}));
 
 const LAYERS = {
   bots: false,
@@ -273,10 +279,13 @@ function StudioBody({
   const [aim, setAim] = useState<AimTarget | null>(null);
   const [locked, setLocked] = useState(false);
   const [tool, setTool] = useState<Tool>('build');
+  const chooseTool = useCallback((next: Tool) => {
+    if (!mine || MINE_TOOLS.some((t) => t.id === next)) setTool(next);
+  }, [mine]);
   const [boxMode, setBoxMode] = useState<BoxMode>('fill');
   const [brushShape, setBrushShape] = useState<BrushShape>('sphere');
   const [brushSize, setBrushSize] = useState(3);
-  const [brushMode, setBrushMode] = useState<BrushMode>('add');
+  const [brushMode, setBrushMode] = useState<BrushMode>(mine ? 'remove' : 'add');
   const [extrudeN, setExtrudeN] = useState(1);
   const [slots, setSlots] = useState<Array<PaletteEntry | null>>(() =>
     session.kind === 'mine' ? [GROUND, ...defaultHotbar(session.palette).slice(0, 8)] : defaultHotbar(session.palette),
@@ -305,9 +314,13 @@ function StudioBody({
   );
   const [revisions, setRevisions] = useState<DesignRevision[]>(session.revisions);
   const [notice, setNotice] = useState<string | null>(null);
+  const [canvasTick, setCanvasTick] = useState(0);
+  const minePlacement = useMinePlacement({ studio, mod, viewer, overlay, ready, canEdit: canWrite && !snap.busy && !saving,
+    selecting: tool === 'select', notice: setNotice });
+  const { moveSelected: moveMineSelection, rememberDesign } = minePlacement;
   /** Underground's first level: a mine's highest ground, a build's grass layer. */
   const underFirst = useRef(firstUnderLevel(surface));
-  const [xray, setXray] = useState(false);
+  const [xray, setXray] = useState(mine);
   const [preferred, setPreferred] = useState<string | null>(() => session.preferredFor ?? null);
   /** A kind switch of a full canvas waits for the user's word (the canvas is cleared). */
   const [kindAsk, setKindAsk] = useState<'build' | 'mine' | null>(null);
@@ -319,26 +332,18 @@ function StudioBody({
   const [sheet, setSheet] = useState<IconSheet | null>(null);
   useEffect(() => {
     let live = true;
-    let timer: ReturnType<typeof setTimeout> | null = null;
     void mod
       .loadBundle(version)
-      .then((b) => {
+      .then(async (b) => {
         if (!live) return;
         bundle.current = b;
         setIconTick((n) => n + 1);
-        timer = setTimeout(() => {
-          if (!live) return;
-          try {
-            setSheet(mod.blockIconAtlas(b, session.palette, 32));
-          } catch {
-            /* no 2D canvas: the cells show placeholders */
-          }
-        }, 50);
+        const atlas = await mod.blockIconAtlasAsync(b, session.palette, 32);
+        if (live) setSheet(atlas);
       })
       .catch(() => undefined);
     return () => {
       live = false;
-      if (timer) clearTimeout(timer);
     };
   }, [mod, version, session.palette]);
   const hints = useMemo(() => new Map(session.palette.map((e) => [entryKey(e), e.icon ?? null] as const)), [session.palette]);
@@ -483,6 +488,7 @@ function StudioBody({
     () =>
       studio.onCells((cells, by) => {
         world.push(cells);
+        setCanvasTick((tick) => tick + 1);
         if (by === 'ai') overlay.flashCells(cells, performance.now());
       }),
     [studio, world, overlay],
@@ -513,11 +519,18 @@ function StudioBody({
   }, [overlay, surface]);
 
   useEffect(() => overlay.setSelection(snap.selection), [overlay, snap.selection]);
-  // The X-ray: a mine's ores through the stone (the window above the cut level, else every ore but coal).
+  // Only authored excavations and veins exposed by those routes; seed caves never create outlines.
   useEffect(() => {
-    if (!studio.terrain || !xray) return overlay.setXray(null);
-    overlay.setXray(xrayCells(studio.terrain, under !== null ? { lo: under - 12, hi: under } : null));
-  }, [overlay, studio, xray, under]);
+    if (!studio.terrain || !xray) { overlay.setMinePreview(null); return; }
+    let frame = 0;
+    const update = () => {
+      frame = 0;
+      overlay.setMinePreview(minePreview(studio.terrain!, studio.canvas.holes(), studio.canvas.cells()));
+    };
+    update();
+    const stop = studio.onCells(() => { if (!frame) frame = requestAnimationFrame(update); });
+    return () => { stop(); if (frame) cancelAnimationFrame(frame); };
+  }, [overlay, studio, xray]);
   useEffect(() => overlay.setAnchor(snap.anchor), [overlay, snap.anchor]);
   useEffect(() => overlay.setGrid(grid), [overlay, grid]);
   // Underground: the view cuts away every layer above the chosen one (the pick looks through the cut too).
@@ -570,8 +583,11 @@ function StudioBody({
   );
 
   const moveSel = useCallback(
-    (d: V3, group?: string) => applyTransform(`move ${d.join(',')}`, (s) => move(studio.canvas, s, d), group),
-    [applyTransform, studio],
+    (d: V3, group?: string) => {
+      if (moveMineSelection(d, group)) return;
+      applyTransform(`move ${d.join(',')}`, (s) => move(studio.canvas, s, d), group);
+    },
+    [applyTransform, studio, moveMineSelection],
   );
 
   const placeAt = useCallback(
@@ -841,7 +857,7 @@ function StudioBody({
         openChat,
         toggleHud: () => setHud((v) => !v),
         applyTransform,
-        setTool,
+        setTool: chooseTool,
         turnFacing: (by) => setFacing((f) => turn(f ?? dirOfMcYaw(viewer.current?.engine()?.rig.flyYaw ?? 0), by)),
         togglePalette: () => {
           if (document.pointerLockElement) document.exitPointerLock();
@@ -852,7 +868,7 @@ function StudioBody({
       });
     window.addEventListener('keydown', onKey, true);
     return () => window.removeEventListener('keydown', onKey, true);
-  }, [studio, moveSel, applyTransform, openChat, doCopy]);
+  }, [studio, moveSel, applyTransform, openChat, doCopy, chooseTool]);
 
   // ------------------------------------------------------------------ chat, save, build
 
@@ -880,6 +896,7 @@ function StudioBody({
       try {
         const previewPng = await capturePicture();
         const r = await studio.save(saveName, saveSummary, asNew, previewPng);
+        rememberDesign(r.designId, r.rev);
         setSaved({ designId: r.designId, rev: r.rev, text: r.text });
         setSaveSummary('');
         invalidate();
@@ -893,7 +910,7 @@ function StudioBody({
         setSaving(false);
       }
     },
-    [studio, saveName, saveSummary, invalidate, capturePicture],
+    [studio, saveName, saveSummary, invalidate, capturePicture, rememberDesign],
   );
   useEffect(() => {
     saveRef.current = () => (canWrite ? doSave(false) : Promise.resolve(false));
@@ -917,23 +934,29 @@ function StudioBody({
     }
   }, [saved, mainBot, snap.name]);
 
+  const choosePaletteEntry = useCallback((entry: PaletteEntry) => {
+    pushRecent(version, entry);
+    setSlots((cur) => { const next = [...cur]; next[active] = entry; return next; });
+  }, [active, version]);
+  const closePalette = useCallback(() => { setPaletteOpen(false); backToWorld(); }, [backToWorld]);
+
   // ------------------------------------------------------------------ render
 
   const h = hitOf(aim, studio.canvas, under !== null);
   const selBlocks = useMemo(
     () => (sel ? studio.canvas.cells().filter((c) => inBox(c, sel)).length : 0),
-    // The canvas mutates in place; its revision/count invalidate the derived selection.
+    // The canvas mutates in place; local edits invalidate derived data before the server acknowledges them.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [sel, studio, snap.rev, snap.blocks],
+    [sel, studio, canvasTick],
   );
-  const bounds = useMemo(() => studio.canvas.bounds(), [studio, snap.blocks, snap.rev]); // eslint-disable-line react-hooks/exhaustive-deps
+  const bounds = useMemo(() => studio.canvas.bounds(), [studio, canvasTick]); // eslint-disable-line react-hooks/exhaustive-deps
   const selMaterials = useMemo(() => {
     const ids = new Map<number, string>();
     if (sel)
       for (const c of studio.canvas.cells())
         if (inBox(c, sel)) ids.set(c[3], session.palette.find((p) => p.id === c[3])?.name ?? `#${c[3]}`);
     return [...ids];
-  }, [sel, studio, session.palette, snap.rev]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [sel, studio, session.palette, canvasTick]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const toolSettings = { tool, boxMode, brushMode, brushShape, brushSize, extrudeN };
   const busy = snap.busy || versionBusy;
@@ -989,7 +1012,8 @@ function StudioBody({
           invalidate();
         }} />
       <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
-        <div ref={stage} className="relative min-h-[420px] min-w-0 flex-1 bg-black" data-testid="studio-stage">
+        <div ref={stage} className="relative min-h-[420px] min-w-0 flex-1 bg-black" data-testid="studio-stage"
+          onDragOver={minePlacement.dragOver} onDrop={minePlacement.drop}>
           <mod.WorldViewer
             ref={viewer}
             source={world.source}
@@ -1007,6 +1031,10 @@ function StudioBody({
             className="absolute inset-0"
           />
           <StageHints locked={locked} ready={ready} />
+          {minePlacement.placing ? <div className="absolute top-3 left-14 rounded border border-purple-400/50 bg-black/80 px-3 py-2 text-xs text-white">
+            {minePlacement.hover ? `Place at ${minePlacement.hover.join(', ')}` : `Point inside the plot at Y ${minePlacement.placementY}`}
+            <button type="button" onClick={minePlacement.cancel} className="ml-3 underline">Cancel</button>
+          </div> : null}
           {hud ? (
             <StudioHud
               aim={aimText(h, mine)}
@@ -1022,9 +1050,9 @@ function StudioBody({
           ) : null}
           {/* Tools */}
           <ToolRail
-            tools={TOOLS}
+            tools={mine ? MINE_TOOLS : TOOLS}
             tool={tool}
-            setTool={setTool}
+            setTool={chooseTool}
             studio={studio}
             snap={snap}
             grid={grid}
@@ -1036,6 +1064,7 @@ function StudioBody({
           {/* Tool options and the selection's actions */}
           <ToolColumn
             mine={mine}
+            moduleSelected={minePlacement.selectedId !== null}
             under={under}
             setUnder={setUnder}
             settings={toolSettings}
@@ -1061,18 +1090,8 @@ function StudioBody({
               version={version}
               current={current}
               sheet={sheet}
-              onChoose={(e) => {
-                pushRecent(version, e);
-                setSlots((cur) => {
-                  const next = [...cur];
-                  next[active] = e;
-                  return next;
-                });
-              }}
-              onClose={() => {
-                setPaletteOpen(false);
-                backToWorld();
-              }}
+              onChoose={choosePaletteEntry}
+              onClose={closePalette}
             />
           ) : null}
           <ViewOnlyNote canWrite={canWrite} />
@@ -1085,7 +1104,7 @@ function StudioBody({
             serverSeed={serverSeed}
             preferredFor={preferred}
             dug={() => studio.canvas.holes()}
-            rev={snap}
+            rev={canvasTick}
             level={under}
             onLevel={(y) => setUnder(y)}
             xray={xray}
@@ -1096,10 +1115,22 @@ function StudioBody({
             onSeed={(seed) => void changeSeed(seed)}
             onInsert={(m) => insertMine(m)}
             onPreset={(p, m) => void applyPreset(p, m)}
+            modules={minePlacement.modules}
+            selectedModule={minePlacement.selectedId}
+            placingModule={minePlacement.placing}
+            placementY={minePlacement.placementY}
+            onPlacementY={minePlacement.setPlacementY}
+            onPickModule={(spec, options) => { chooseTool('select'); minePlacement.arm(spec, null, options); }}
+            onUpdatePlacement={minePlacement.updatePlacing}
+            onSelectModule={(id) => { chooseTool('select'); minePlacement.select(id); viewer.current?.engine()?.surface.focus(); }}
+            onUpdateModule={minePlacement.update}
+            onMoveModule={minePlacement.move}
+            onRemoveModule={minePlacement.remove}
           />
         ) : null}
         <ChatPanel
           ref={chat}
+          kind={mine ? 'mine' : 'build'}
           messages={snap.messages}
           models={models}
           model={model}
@@ -1178,6 +1209,7 @@ const toolLabelOf = (t: ToolSettings) => `${TOOLS.find((x) => x.id === t.tool)?.
 /** The column right of the stage: the underground slider, the tool's settings, transforms, selection edits, the anchor. */
 function ToolColumn(p: {
   mine: boolean;
+  moduleSelected: boolean;
   under: number | null;
   setUnder: (y: number) => void;
   settings: ToolSettings;
@@ -1201,16 +1233,12 @@ function ToolColumn(p: {
 }) {
   const { studio, sel, mine } = p;
   return (
-    // A mine's stage sits between two panels: its options start under the HUD (its level slider is in the mine panel).
     <div
-      className={cn(
-        'absolute right-3 flex flex-col items-end gap-1.5 text-[11px] text-white',
-        mine ? 'top-20 max-w-[calc(100%-4.5rem)]' : 'top-3 max-w-[52%]',
-      )}
+      className="absolute top-3 right-3 flex max-w-[calc(100%-4.5rem)] flex-col items-end gap-1.5 text-[11px] text-white"
     >
       {p.under !== null && !mine ? <UnderSlider under={p.under} setUnder={p.setUnder} /> : null}
-      <ToolSettingsBar {...p.settings} {...p.setters} />
-      <TransformBar
+      <ToolSettingsBar {...p.settings} {...p.setters} mine={mine} />
+      {!p.moduleSelected ? <TransformBar
         studio={studio}
         sel={sel}
         version={p.version}
@@ -1219,8 +1247,8 @@ function ToolColumn(p: {
         moveSel={(d) => p.moveSel(d)}
         doCopy={p.doCopy}
         startPaste={p.startPaste}
-      />
-      {sel ? (
+      /> : <span className="rounded bg-black/55 px-2 py-1">Drag an axis · Arrow keys move · PgUp / PgDn changes Y</span>}
+      {sel && !mine ? (
         <SelectionEdits
           studio={studio}
           sel={sel}
@@ -1229,9 +1257,9 @@ function ToolColumn(p: {
           replaceFrom={p.replaceFrom}
           setReplaceFrom={p.setReplaceFrom}
         />
-      ) : (
+      ) : !sel ? (
         <SelectAllBar studio={studio} />
-      )}
+      ) : <button type="button" onClick={() => studio.setSelection(null)} className="rounded bg-black/55 px-2 py-1 hover:bg-black/75">Deselect</button>}
       {p.anchor ? <AnchorNote studio={studio} anchor={p.anchor} /> : null}
     </div>
   );

@@ -6,8 +6,8 @@
  * Enter sends, Enter on an empty line or Esc closes it and hands the keys back to the world.
  */
 import type { DesignerMessage, DesignerModel } from '@mineclaw/contracts';
-import { Bot, Send, Sparkles, User } from 'lucide-react';
-import { forwardRef, useEffect, useImperativeHandle, useRef, useState, type KeyboardEvent } from 'react';
+import { Bot, ChevronLeft, ChevronRight, Send, Sparkles, User } from 'lucide-react';
+import { forwardRef, useEffect, useId, useImperativeHandle, useRef, useState, type KeyboardEvent } from 'react';
 import { Button, Select, Spinner } from '@/components/ui/primitives';
 import { cn, usd } from '@/lib/utils';
 import { chatBarKey } from '@/features/world/directives';
@@ -20,6 +20,7 @@ export const ChatPanel = forwardRef<
   ChatPanelHandle,
   {
     messages: DesignerMessage[];
+    kind?: 'build' | 'mine';
     models: DesignerModel[];
     model: string;
     onModel: (id: string) => void;
@@ -36,12 +37,26 @@ export const ChatPanel = forwardRef<
   }
 >(function ChatPanel(p, ref) {
   const [text, setText] = useState('');
+  const [collapsed, setCollapsed] = useState(p.kind === 'mine');
+  const panelId = useId();
+  const focusWhenOpen = useRef(false);
   const input = useRef<HTMLTextAreaElement>(null);
   const list = useRef<HTMLOListElement>(null);
-  useImperativeHandle(ref, () => ({ focus: () => input.current?.focus() }), []);
+  useImperativeHandle(ref, () => ({ focus: () => {
+    if (collapsed) {
+      focusWhenOpen.current = true;
+      setCollapsed(false);
+    } else input.current?.focus();
+  } }), [collapsed]);
   useEffect(() => {
-    list.current?.scrollTo({ top: list.current.scrollHeight });
-  }, [p.messages.length, p.busy]);
+    if (!collapsed && focusWhenOpen.current) {
+      focusWhenOpen.current = false;
+      input.current?.focus();
+    }
+  }, [collapsed]);
+  useEffect(() => {
+    if (!collapsed) list.current?.scrollTo({ top: list.current.scrollHeight });
+  }, [p.messages.length, p.busy, collapsed]);
   const onKey = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     e.stopPropagation(); // the world's shortcuts never see what is typed here
     if (e.nativeEvent.isComposing || (e.key === 'Enter' && e.shiftKey)) return;
@@ -58,9 +73,17 @@ export const ChatPanel = forwardRef<
   };
   return (
     <aside
-      className="flex min-h-0 w-full flex-col border-l border-border bg-surface lg:w-[360px]"
+      className={cn('flex min-h-0 w-full shrink-0 flex-col border-l border-border bg-surface', collapsed ? 'lg:w-11' : 'lg:w-[360px]')}
       aria-label="Design chat"
     >
+      <button type="button" aria-label={collapsed ? 'Expand designer chat' : 'Collapse designer chat'}
+        aria-expanded={!collapsed} aria-controls={panelId} onClick={() => setCollapsed((v) => !v)}
+        className={cn('flex shrink-0 items-center gap-2 border-b border-border p-3 text-xs text-muted hover:bg-surface-2 hover:text-fg', collapsed && 'lg:flex-col lg:px-2')}>
+        <Sparkles className="size-4 shrink-0 text-accent" />
+        <span className={cn(collapsed && 'lg:[writing-mode:vertical-rl]')}>{p.kind === 'mine' ? 'Mine assistant' : 'Design assistant'}</span>
+        {p.busy ? <Spinner className="size-3.5" /> : collapsed ? <ChevronLeft className="size-3.5" /> : <ChevronRight className="ml-auto size-3.5" />}
+      </button>
+      <div id={panelId} hidden={collapsed} className={cn('min-h-0 flex-1 flex-col', collapsed ? 'hidden' : 'flex')}>
       <div className="space-y-2 border-b border-border p-3">
         <div className="flex items-center gap-2">
           <Sparkles className="size-4 text-accent" />
@@ -96,8 +119,7 @@ export const ChatPanel = forwardRef<
       >
         {p.messages.length === 0 ? (
           <li className="rounded-lg border border-dashed border-border p-3 text-sm text-muted">
-            Tell the AI what to build (“a small cobblestone watchtower with a ladder”), or build by hand and ask it to
-            finish. Your edits and the selection reach it with your next message.
+            {p.kind === 'mine' ? 'Ask the AI to plan a mine, extend a tunnel, or connect your selected sections.' : 'Tell the AI what to build (“a small cobblestone watchtower with a ladder”), or build by hand and ask it to finish.'} Your edits and the selection reach it with your next message.
           </li>
         ) : null}
         {p.messages.map((m) => (
@@ -154,6 +176,7 @@ export const ChatPanel = forwardRef<
             <Send className="size-3.5" />
           </Button>
         </div>
+      </div>
       </div>
     </aside>
   );

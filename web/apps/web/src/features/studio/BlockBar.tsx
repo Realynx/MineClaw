@@ -8,6 +8,7 @@
 import { Search, Star, X } from 'lucide-react';
 import { memo, useMemo, useState, type CSSProperties } from 'react';
 import { cn } from '@/lib/utils';
+import { PaletteGrid, type PaletteCellLayout } from './PaletteGrid';
 import {
   categoryCounts,
   entriesOf,
@@ -47,7 +48,8 @@ function SheetIcon({ entry, sheet, size = 32 }: { entry: PaletteEntry; sheet: Ic
   const style: CSSProperties = {
     width: size,
     height: size,
-    backgroundImage: `url(${sheet.url})`,
+    // The potentially large data URL is stored once on the drawer, never copied into every cell's style.
+    backgroundImage: 'var(--palette-atlas)',
     backgroundSize: `${sheet.cols * sheet.size * k}px ${sheet.rows * sheet.size * k}px`,
     backgroundPosition: `-${(i % sheet.cols) * size}px -${Math.floor(i / sheet.cols) * size}px`,
     imageRendering: 'pixelated',
@@ -104,6 +106,7 @@ function Cell({
   fav,
   onChoose,
   onStar,
+  layout,
 }: {
   e: PaletteEntry;
   current: PaletteEntry | null;
@@ -111,14 +114,22 @@ function Cell({
   fav: boolean;
   onChoose: (e: PaletteEntry) => void;
   onStar: (e: PaletteEntry) => void;
+  layout?: PaletteCellLayout;
 }) {
   return (
-    <li className="group relative">
+    <li
+      className="group relative shrink-0"
+      style={layout?.style}
+      aria-posinset={layout ? layout.index + 1 : undefined}
+      aria-setsize={layout?.size}
+    >
       <button
         type="button"
         title={`${e.name} — ${e.spec ?? e.id} (${e.id}${e.meta ? `:${e.meta}` : ''})`}
         aria-label={e.name}
         data-spec={e.spec ?? undefined}
+        data-palette-index={layout?.index}
+        tabIndex={layout?.tabIndex}
         onClick={() => onChoose(e)}
         onContextMenu={(ev) => {
           ev.preventDefault();
@@ -137,9 +148,10 @@ function Cell({
         type="button"
         aria-label={fav ? `Unstar ${e.name}` : `Star ${e.name}`}
         aria-pressed={fav}
+        tabIndex={layout?.tabIndex}
         onClick={() => onStar(e)}
         className={cn(
-          'absolute top-0 right-0 hidden rounded-sm p-px text-amber-400 group-hover:block',
+          'absolute top-0 right-0 hidden rounded-sm p-px text-amber-400 group-hover:block group-focus-within:block',
           fav && 'block',
         )}
       >
@@ -172,15 +184,17 @@ export const PaletteDrawer = memo(function PaletteDrawer({
   const counts = useMemo(() => categoryCounts(palette), [palette]);
   const shown = useMemo(() => searchPalette(inCategory(palette, q ? null : cat), q), [palette, q, cat]);
   const star = (e: PaletteEntry) => setFavs(toggleFavourite(version, e));
-  const cell = (e: PaletteEntry, row = '') => (
+  const favSet = useMemo(() => new Set(favs), [favs]);
+  const cell = (e: PaletteEntry, row = '', layout?: PaletteCellLayout) => (
     <Cell
       key={`${row}${entryKey(e)}`}
       e={e}
       current={current}
       sheet={sheet}
-      fav={favs.includes(entryKey(e))}
+      fav={favSet.has(entryKey(e))}
       onChoose={onChoose}
       onStar={star}
+      layout={layout}
     />
   );
   return (
@@ -188,15 +202,16 @@ export const PaletteDrawer = memo(function PaletteDrawer({
       className="pointer-events-auto absolute top-12 left-1/2 z-10 flex max-h-[76%] w-[min(640px,94%)] -translate-x-1/2 flex-col rounded-lg border border-border bg-surface/95 shadow-card"
       role="dialog"
       aria-label="Block palette"
+      style={sheet ? ({ '--palette-atlas': `url(${sheet.url})` } as CSSProperties) : undefined}
       onKeyDown={(e) => {
         e.stopPropagation();
-        if (e.key === 'Escape' || (e.key === 'Enter' && shown[0])) {
+        if (e.key === 'Escape' || (e.key === 'Enter' && e.target instanceof HTMLInputElement && shown[0])) {
           if (e.key === 'Enter') onChoose(shown[0]!);
           onClose();
         }
       }}
     >
-      <div className="flex items-center gap-2 border-b border-border p-2">
+      <div className="flex shrink-0 items-center gap-2 border-b border-border p-2">
         <Search className="size-4 text-subtle" />
         <input
           autoFocus
@@ -214,7 +229,11 @@ export const PaletteDrawer = memo(function PaletteDrawer({
           <X className="size-4" />
         </button>
       </div>
-      <div className="flex flex-wrap gap-1 border-b border-border px-2 py-1.5" role="tablist" aria-label="Categories">
+      <div
+        className="flex shrink-0 flex-wrap gap-1 border-b border-border px-2 py-1.5"
+        role="tablist"
+        aria-label="Categories"
+      >
         {[['All', palette.length] as [string, number], ...counts].map(([c, n]) => {
           const on = (c === 'All' ? null : c) === cat && !q;
           return (
@@ -238,11 +257,11 @@ export const PaletteDrawer = memo(function PaletteDrawer({
         })}
       </div>
       {!q && (favourites.length > 0 || recent.length > 0) ? (
-        <div className="flex flex-col gap-1 border-b border-border px-2 py-1.5">
+        <div className="flex shrink-0 flex-col gap-1 border-b border-border px-2 py-1.5">
           {favourites.length > 0 ? (
             <div className="flex items-center gap-2">
               <span className="w-16 shrink-0 text-[11px] text-subtle">Favourites</span>
-              <ul className="flex flex-wrap gap-1" aria-label="Favourite blocks">
+              <ul className="flex min-w-0 flex-1 gap-1 overflow-x-auto" aria-label="Favourite blocks">
                 {favourites.map((e) => cell(e, 'f'))}
               </ul>
             </div>
@@ -250,17 +269,19 @@ export const PaletteDrawer = memo(function PaletteDrawer({
           {recent.length > 0 ? (
             <div className="flex items-center gap-2">
               <span className="w-16 shrink-0 text-[11px] text-subtle">Recent</span>
-              <ul className="flex flex-wrap gap-1" aria-label="Recent blocks">
+              <ul className="flex min-w-0 flex-1 gap-1 overflow-x-auto" aria-label="Recent blocks">
                 {recent.map((e) => cell(e, 'r'))}
               </ul>
             </div>
           ) : null}
         </div>
       ) : null}
-      <ul className="grid grid-cols-[repeat(auto-fill,minmax(44px,1fr))] gap-1 overflow-y-auto p-2" aria-label="Blocks">
-        {shown.map((e) => cell(e))}
-      </ul>
-      {shown.length === 0 ? <p className="px-3 pb-3 text-xs text-muted">No {version} block matches “{q}”.</p> : null}
+      <PaletteGrid entries={shown} cell={(entry, layout) => cell(entry, '', layout)} />
+      {shown.length === 0 ? (
+        <p className="px-3 pb-3 text-xs text-muted">
+          No {version} block matches “{q}”.
+        </p>
+      ) : null}
     </div>
   );
 });

@@ -129,11 +129,14 @@ class DigTally {
     const v = this.terrain.state(x, y, z);
     const id = v >> 4,
       meta = v & 15;
-    if (id === 0 || id === 7) return;
-    this.toMine++;
-    bump(this.materials, terrainName(version, id, meta));
-    const ore = oreOf(version, id, meta);
-    if (ore) bump(this.mined, ore.id);
+    if (id === 7) return;
+    if (id !== 0) {
+      this.toMine++;
+      bump(this.materials, terrainName(version, id, meta));
+      const ore = oreOf(version, id, meta);
+      if (ore) bump(this.mined, ore.id);
+    }
+    // An authored tunnel still reveals its walls where it crosses a naturally empty seed cave.
     for (const [dx, dy, dz] of N6) this.expose(x + dx, y + dy, z + dz);
   }
 

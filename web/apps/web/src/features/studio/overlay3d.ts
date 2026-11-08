@@ -2,11 +2,12 @@
  * The Design Studio's own 3D layer, added to the (private) world runtime's scene: the plot border and grid, the selection box,
  * the drag / brush preview, the move gizmo, the anchor marker and instanced ghost cubes (the paste ghost, and the brief flash of
  * the AI's ops as they land). Cheap on software WebGL: a handful of line objects and two instanced meshes, rebuilt only when
- * their data changes; nothing here touches the section meshes. A mine plot adds the X-ray layer: its terrain's ores as
- * coloured cubes drawn through the stone (one instanced mesh, depth test off).
+ * their data changes; nothing here touches the section meshes. Mine excavation and discoverable veins use separate exterior
+ * wireframes drawn through terrain, with reusable buffers and no per-block objects.
  */
 import * as THREE from 'three';
 import { plotMode, type Cell, type V3 } from './canvas';
+import { MINE_PREVIEW_COLORS, volumeOutline, type MinePreview } from './mine/minePreview';
 
 const MAX_GHOSTS = 4096;
 /** X-ray cubes at most (the rest of a crowded window is left out). */
@@ -31,6 +32,45 @@ function placeBox(o: THREE.Object3D, min: V3, max: V3, pad = 0.02): void {
   o.visible = true;
 }
 
+function mineLines(name: string, color: number, order: number): THREE.LineSegments {
+  const lines = new THREE.LineSegments(
+    new THREE.BufferGeometry(),
+    new THREE.LineBasicMaterial({
+      color,
+      depthTest: false,
+      depthWrite: false,
+      toneMapped: false,
+    }),
+  );
+  lines.name = name;
+  lines.renderOrder = order;
+  lines.visible = false;
+  lines.frustumCulled = false;
+  return lines;
+}
+
+/** Reuse GPU capacity across edits; when it grows, dispose the old geometry and its buffer together. */
+function setMineLines(lines: THREE.LineSegments, cells: Iterable<readonly [number, number, number]> | null): void {
+  const positions = cells ? volumeOutline(cells) : new Float32Array();
+  lines.visible = positions.length > 0;
+  lines.position.y = base();
+  if (positions.length === 0) {
+    lines.geometry.setDrawRange(0, 0);
+    return;
+  }
+  let attribute = lines.geometry.getAttribute('position') as THREE.BufferAttribute | undefined;
+  if (!attribute || attribute.array.length < positions.length) {
+    lines.geometry.dispose();
+    lines.geometry = new THREE.BufferGeometry();
+    const capacity = 3 * 2 ** Math.ceil(Math.log2(positions.length / 3));
+    attribute = new THREE.BufferAttribute(new Float32Array(capacity), 3).setUsage(THREE.DynamicDrawUsage);
+    lines.geometry.setAttribute('position', attribute);
+  }
+  (attribute.array as Float32Array).set(positions);
+  attribute.needsUpdate = true;
+  lines.geometry.setDrawRange(0, positions.length / 3);
+}
+
 export type Axis = 'x' | 'y' | 'z';
 
 export class Overlay3D {
@@ -42,6 +82,9 @@ export class Overlay3D {
   private readonly ghosts: THREE.InstancedMesh;
   private readonly flash: THREE.InstancedMesh;
   private readonly xray: THREE.InstancedMesh;
+  private readonly planned = mineLines('mine-planned', MINE_PREVIEW_COLORS.planned, 12);
+  private readonly veins = mineLines('mine-veins', MINE_PREVIEW_COLORS.veins, 13);
+  private readonly placement = mineLines('mine-placement', MINE_PREVIEW_COLORS.placement, 14);
   private flashUntil = 0;
   private flashStart = 0;
   readonly gizmo = new THREE.Group();
@@ -63,7 +106,13 @@ export class Overlay3D {
     );
     this.xray = new THREE.InstancedMesh(
       new THREE.BoxGeometry(0.7, 0.7, 0.7),
-      new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.85, depthTest: false, depthWrite: false }),
+      new THREE.MeshBasicMaterial({
+        color: 0xffffff,
+        transparent: true,
+        opacity: 0.85,
+        depthTest: false,
+        depthWrite: false,
+      }),
       MAX_XRAY,
     );
     this.xray.name = 'xray';
@@ -122,6 +171,9 @@ export class Overlay3D {
       this.ghosts,
       this.flash,
       this.xray,
+      this.planned,
+      this.veins,
+      this.placement,
       this.gizmo,
     );
   }
@@ -130,8 +182,11 @@ export class Overlay3D {
   async withoutGuides<T>(capture: () => Promise<T>): Promise<T> {
     const visible = this.group.visible;
     this.group.visible = false;
-    try { return await capture(); }
-    finally { this.group.visible = visible; }
+    try {
+      return await capture();
+    } finally {
+      this.group.visible = visible;
+    }
   }
 
   setGrid(on: boolean): void {
@@ -195,6 +250,17 @@ export class Overlay3D {
     if (this.xray.instanceColor) this.xray.instanceColor.needsUpdate = true;
   }
 
+  /** Authored excavation and discoverable veins, visible through terrain (call only when the canvas changes). */
+  setMinePreview(preview: MinePreview | null): void {
+    setMineLines(this.planned, preview?.planned ?? null);
+    setMineLines(this.veins, preview?.veins ?? null);
+  }
+
+  /** A violet module footprint at its proposed placement, distinct from committed cyan digs and amber veins. */
+  setMinePlacement(cells: Iterable<readonly [number, number, number]> | null): void {
+    setMineLines(this.placement, cells);
+  }
+
   /** X-ray cubes shown now. */
   get xrayCount(): number {
     return this.xray.count;
@@ -244,12 +310,16 @@ export class Overlay3D {
 
   dispose(): void {
     this.group.removeFromParent();
+    const geometries = new Set<THREE.BufferGeometry>();
+    const materials = new Set<THREE.Material>();
     this.group.traverse((o) => {
       const m = o as THREE.Mesh;
-      m.geometry?.dispose();
+      if (m.geometry) geometries.add(m.geometry);
       const mat = m.material as THREE.Material | THREE.Material[] | undefined;
-      if (Array.isArray(mat)) mat.forEach((x) => x.dispose());
-      else mat?.dispose();
+      if (Array.isArray(mat)) mat.forEach((x) => materials.add(x));
+      else if (mat) materials.add(mat);
     });
+    geometries.forEach((g) => g.dispose());
+    materials.forEach((m) => m.dispose());
   }
 }

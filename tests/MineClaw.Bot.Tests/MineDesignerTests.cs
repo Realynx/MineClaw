@@ -17,6 +17,31 @@ public class MineDesignerTests
     [Theory]
     [InlineData("b1.8.1")]
     [InlineData("1.12.2")]
+    public void Authored_cave_air_exposes_neighbor_ore_without_counting_air_as_mined(string version)
+    {
+        var terrain = MineTerrain.For("4242", version);
+        bool BesideOre(BlockPos p) => OreIdentity.Neighbors.Any(d =>
+        {
+            var (id, meta) = terrain.Block(p.X + d.Dx, p.Y + d.Dy, p.Z + d.Dz);
+            return OreTable.OreOf(version, id, meta) != null;
+        });
+        var cave = (from x in Enumerable.Range(0, 64)
+                    from z in Enumerable.Range(0, 64)
+                    from y in Enumerable.Range(10, 40)
+                    let p = new BlockPos(x, y, z)
+                    where !terrain.Solid(x, y, z) && BesideOre(p)
+                    select p).First();
+        Assert.Equal(0, MineStats.Of(terrain, []).Seen);
+        var stats = MineStats.Of(terrain, [cave]);
+        Assert.Equal(0, stats.ToMine);
+        Assert.Empty(stats.Materials);
+        Assert.All(stats.Ores, ore => Assert.Equal(0, ore.Mined));
+        Assert.True(stats.Seen > 0);
+    }
+
+    [Theory]
+    [InlineData("b1.8.1")]
+    [InlineData("1.12.2")]
     public void Lit_redstone_uses_the_same_ore_band_as_unlit_redstone(string version)
     {
         var unlit = OreTable.OreOf(version, 73, 0);

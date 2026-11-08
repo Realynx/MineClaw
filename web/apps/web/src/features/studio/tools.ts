@@ -40,7 +40,8 @@ export function boxCells(a: V3, b: V3, id: number, meta: number, mode: BoxMode =
   for (let y = min[1]; y <= max[1]; y++)
     for (let z = min[2]; z <= max[2]; z++)
       for (let x = min[0]; x <= max[0]; x++) {
-        if (on(onEdge(x, min[0], max[0]), onEdge(y, min[1], max[1]), onEdge(z, min[2], max[2]))) out.push([x, y, z, id, meta]);
+        if (on(onEdge(x, min[0], max[0]), onEdge(y, min[1], max[1]), onEdge(z, min[2], max[2])))
+          out.push([x, y, z, id, meta]);
         else if (keepAir) out.push([x, y, z, 0, 0]);
       }
   return out;
@@ -275,12 +276,23 @@ export interface Transformed {
 /**
  * The old places cleared, then the cells at their new places. A box selection moves its dug cells too (`holes`): what it
  * leaves below ground is filled back with earth; a block moved out of a hand-picked selection leaves air (dug, below ground).
- * Moved dug cells that land above ground are just air there (dropped).
+ * Mine air is authored excavation, even over natural caves; build digs moved above ground are dropped.
  */
-function relocate(blocks: Cell[], s: Selection, map: (b: Cell) => Cell, holes = !s.mask): Transformed {
+function relocate(
+  blocks: Cell[],
+  s: Selection,
+  map: (b: Cell) => Cell,
+  holes = plotMode().kind === 'mine' || !s.mask,
+): Transformed {
   if (blocks.length === 0) return { cells: [], selection: s };
-  const moved = blocks.map(map).filter((m) => m[3] !== 0 || below(m[0], m[1], m[2]));
-  const cells: Cell[] = blocks.map((b): Cell => [b[0], b[1], b[2], holes && below(b[0], b[1], b[2]) ? EARTH : 0, 0]);
+  const moved = blocks.map(map).filter((m) => m[3] !== 0 || plotMode().kind === 'mine' || below(m[0], m[1], m[2]));
+  const cells: Cell[] = blocks.map((b): Cell => [
+    b[0],
+    b[1],
+    b[2],
+    holes && (plotMode().kind === 'mine' || below(b[0], b[1], b[2])) ? EARTH : 0,
+    0,
+  ]);
   for (const m of moved) cells.push(m);
   const corners = [s.min, s.max, [s.min[0], s.min[1], s.max[2]] as V3, [s.max[0], s.min[1], s.min[2]] as V3].map(
     (p) => {
@@ -304,7 +316,13 @@ function relocate(blocks: Cell[], s: Selection, map: (b: Cell) => Cell, holes = 
 
 /** Move the selected blocks by d (the selection follows). */
 export function move(c: Canvas, s: Selection, d: V3): Transformed {
-  return relocate(selected(c, s, !s.mask), s, (b) => [b[0] + d[0], b[1] + d[1], b[2] + d[2], b[3], b[4]]);
+  return relocate(selected(c, s, plotMode().kind === 'mine' || !s.mask), s, (b) => [
+    b[0] + d[0],
+    b[1] + d[1],
+    b[2] + d[2],
+    b[3],
+    b[4],
+  ]);
 }
 
 /**
@@ -315,7 +333,7 @@ export function rotate(c: Canvas, s: Selection, quarters: number, version: Versi
   const q = ((quarters % 4) + 4) % 4;
   const px = Math.floor((s.min[0] + s.max[0]) / 2),
     pz = Math.floor((s.min[2] + s.max[2]) / 2);
-  return relocate(selected(c, s, !s.mask), s, (b) => {
+  return relocate(selected(c, s, plotMode().kind === 'mine' || !s.mask), s, (b) => {
     let dx = b[0] - px,
       dz = b[2] - pz;
     for (let i = 0; i < q; i++) [dx, dz] = [-dz, dx];
@@ -325,7 +343,7 @@ export function rotate(c: Canvas, s: Selection, quarters: number, version: Versi
 
 /** Mirror the selected blocks across x (east ↔ west) or z (north ↔ south), in place. */
 export function mirrorSel(c: Canvas, s: Selection, axis: 'x' | 'z'): Transformed {
-  return relocate(selected(c, s, !s.mask), s, (b) =>
+  return relocate(selected(c, s, plotMode().kind === 'mine' || !s.mask), s, (b) =>
     axis === 'x'
       ? [s.min[0] + s.max[0] - b[0], b[1], b[2], b[3], mirrorMeta(b[3], b[4], 'x')]
       : [b[0], b[1], s.min[2] + s.max[2] - b[2], b[3], mirrorMeta(b[3], b[4], 'z')],
@@ -339,7 +357,7 @@ export interface Clip {
 }
 
 export function copy(c: Canvas, s: Selection): Clip | null {
-  const blocks = selected(c, s, !s.mask);
+  const blocks = selected(c, s, plotMode().kind === 'mine' || !s.mask);
   if (!blocks.length) return null;
   const min: V3 = [
     Math.min(...blocks.map((b) => b[0])),
@@ -361,7 +379,7 @@ export function copy(c: Canvas, s: Selection): Clip | null {
 export function pasteCells(clip: Clip, at: V3): Cell[] {
   return clip.cells
     .map((b): Cell => [b[0] + at[0], b[1] + at[1], b[2] + at[2], b[3], b[4]])
-    .filter((b) => inside(b[0], b[1], b[2]) && (b[3] !== 0 || below(b[0], b[1], b[2])));
+    .filter((b) => inside(b[0], b[1], b[2]) && (b[3] !== 0 || plotMode().kind === 'mine' || below(b[0], b[1], b[2])));
 }
 
 /** Delete the selected blocks; with `dig` (underground mode) a box selection's earth is dug out too. */
@@ -370,7 +388,8 @@ export function erase(c: Canvas, s: Selection, dig = false): Cell[] {
   if (dig && !s.mask)
     for (let y = s.min[1]; y <= (plotMode().kind === 'mine' ? s.max[1] : Math.min(-1, s.max[1])); y++)
       for (let z = s.min[2]; z <= s.max[2]; z++)
-        for (let x = s.min[0]; x <= s.max[0]; x++) if (c.earth(x, y, z)) out.push([x, y, z, 0, 0]);
+        for (let x = s.min[0]; x <= s.max[0]; x++)
+          if (plotMode().kind === 'mine' || c.earth(x, y, z)) out.push([x, y, z, 0, 0]);
   return out;
 }
 

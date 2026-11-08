@@ -41,10 +41,14 @@ public sealed record MineStats(int ToMine, IReadOnlyList<(string Name, int Count
             lo = Math.Min(lo, p.Y);
             hi = Math.Max(hi, p.Y);
             var (id, meta) = terrain.Block(p.X, p.Y, p.Z);
-            if (id is 0 or MineTerrain.Bedrock) continue;
-            toMine++;
-            Bump(materials, NameOf(terrain, id, meta));
-            if (OreTable.OreOf(terrain.Version, id, meta) is { } ore) Bump(mined, ore.Id);
+            if (id == MineTerrain.Bedrock) continue;
+            if (id != 0)
+            {
+                toMine++;
+                Bump(materials, NameOf(terrain, id, meta));
+                if (OreTable.OreOf(terrain.Version, id, meta) is { } ore) Bump(mined, ore.Id);
+            }
+            // Authored excavation reveals walls even where it crosses a naturally empty seed cave.
             foreach (var (dx, dy, dz) in N6)
             {
                 var n = new BlockPos(p.X + dx, p.Y + dy, p.Z + dz);

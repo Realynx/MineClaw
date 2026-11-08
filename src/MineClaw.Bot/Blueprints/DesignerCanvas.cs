@@ -103,8 +103,9 @@ public sealed class DesignerCanvas
     public string? RefusalOf(int id, int meta) => id is 0 or Earth ? null : Palette.Refusal(id, meta);
 
     /// <summary>
-    /// Applies cell states in order (later wins) and returns the cells that really changed, with door halves kept paired. Air
-    /// below ground digs the cell out; <see cref="Earth"/> fills it back (above ground it is air). Cells outside the plot or not
+    /// Applies cell states in order (later wins) and returns the cells that really changed, with door halves kept paired. Mine
+    /// air records planned excavation even over natural caves; <see cref="Earth"/> restores untouched terrain. Build air only
+    /// records digs below ground. Cells outside the plot or not
     /// in the design palette are skipped and counted in <paramref name="rejected"/>.
     /// </summary>
     public List<CanvasCell> Apply(IEnumerable<CanvasCell> cells, out int rejected)
@@ -140,8 +141,8 @@ public sealed class DesignerCanvas
         return c.Id > 0 && Pair(c) is { } paired ? paired : c;
     }
 
-    /// <summary>Air or earth: earth only where there is ground (above it, air).</summary>
-    private CanvasCell Grounded(CanvasCell c) => c with { Id = c.Id == Earth && Ground(c.X, c.Y, c.Z) ? Earth : 0, Meta = 0 };
+    /// <summary>Earth restores untouched terrain. On mines this also removes authored air over a natural cave or the sky.</summary>
+    private CanvasCell Grounded(CanvasCell c) => c with { Id = c.Id == Earth && (Mine || Ground(c.X, c.Y, c.Z)) ? Earth : 0, Meta = 0 };
 
     /// <summary>The cells and their neighbours (above and the four sides): where an attached block may have lost or gained its wall.</summary>
     private static HashSet<BlockPos> Near(IEnumerable<BlockPos> cells)
@@ -238,9 +239,9 @@ public sealed class DesignerCanvas
         return string.Join(", ", parts);
     }
 
-    /// <summary>A cell's state as a wire id: a block, air (0) or, below ground, undisturbed earth.</summary>
+    /// <summary>Authored state: a block, planned air (0), or undisturbed mine terrain / build ground (Earth).</summary>
     private (int Id, int Meta) State(BlockPos p) =>
-        _blocks.TryGetValue(p, out var o) ? o : Ground(p.X, p.Y, p.Z) && !_dug.Contains(p) ? (Earth, 0) : (0, 0);
+        _blocks.TryGetValue(p, out var o) ? o : (Mine || Ground(p.X, p.Y, p.Z)) && !_dug.Contains(p) ? (Earth, 0) : (0, 0);
 
     /// <summary>
     /// A chest placed beside a single chest of the same kind takes its facing when theirs is across the pair (the game pairs them
@@ -292,8 +293,8 @@ public sealed class DesignerCanvas
         changed[o] = new CanvasCell(o.X, o.Y, o.Z, 0, 0);
     }
 
-    /// <summary>Ground that air there digs out (never a mine's bedrock).</summary>
-    private bool Diggable(BlockPos p) => Ground(p.X, p.Y, p.Z) && !Bedrock(p.X, p.Y, p.Z);
+    /// <summary>Cells that can record excavation intent, including natural mine air (never a mine's bedrock).</summary>
+    private bool Diggable(BlockPos p) => (Mine || Ground(p.X, p.Y, p.Z)) && !Bedrock(p.X, p.Y, p.Z);
 
     /// <summary>Blocks and dug cells set as they are (a converted canvas: already whole, never re-paired or re-checked).</summary>
     public void Load(IEnumerable<KeyValuePair<BlockPos, (int Id, int Meta)>> blocks, IEnumerable<BlockPos> dug)
@@ -308,7 +309,7 @@ public sealed class DesignerCanvas
     /// <summary>Every block removed and every dug cell filled back (the canvas cleared: a flat grassland again).</summary>
     public List<CanvasCell> Clear()
     {
-        var changed = Apply(_blocks.Keys.Concat(_dug).ToList().Select(p => new CanvasCell(p.X, p.Y, p.Z, Ground(p.X, p.Y, p.Z) ? Earth : 0, 0)));
+        var changed = Apply(_blocks.Keys.Concat(_dug).ToList().Select(p => new CanvasCell(p.X, p.Y, p.Z, Mine || Ground(p.X, p.Y, p.Z) ? Earth : 0, 0)));
         // A mine's dug cells kept over what is no longer ground (another seed) go too.
         if (_dug.Count > 0)
         {

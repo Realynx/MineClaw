@@ -17,7 +17,7 @@ export const SIZE = DESIGNER_PLOT.size;
 export const HEIGHT = DESIGNER_PLOT.height;
 /** Layers of ground under the grass (y -DEPTH..-1). */
 export const DEPTH = DESIGNER_PLOT.depth;
-/** Undisturbed ground (below y 0 only). */
+/** Restores the generated terrain / removes mine intent; on build plots, undisturbed ground below y 0. */
 export const EARTH = DESIGNER_EARTH;
 
 /** What a mine canvas's ground is made of: the generated terrain (./mine/mineTerrain). */
@@ -47,7 +47,13 @@ let plot: PlotMode = BUILD_MODE;
 export function setPlotMode(m: { kind: 'build' } | { kind: 'mine'; terrain: PlotTerrain }): void {
   plot =
     m.kind === 'mine'
-      ? { kind: 'mine', minY: 0 - DESIGNER_MINE_PLOT.depth, maxY: DESIGNER_MINE_PLOT.height - 1, baseY: 0, terrain: m.terrain }
+      ? {
+          kind: 'mine',
+          minY: 0 - DESIGNER_MINE_PLOT.depth,
+          maxY: DESIGNER_MINE_PLOT.height - 1,
+          baseY: 0,
+          terrain: m.terrain,
+        }
       : BUILD_MODE;
 }
 
@@ -60,9 +66,10 @@ export const keyOf = (x: number, y: number, z: number): number => x + SIZE * (z 
 export const posOf = (k: number): V3 => [k % SIZE, Math.floor(k / (SIZE * SIZE)) - DEPTH, Math.floor(k / SIZE) % SIZE];
 /** The ground (undisturbed unless dug): below the grass's top on a build plot, any solid generated cell on a mine. */
 export const below = (x: number, y: number, z: number): boolean =>
-  plot.terrain ? (plot.terrain.state(x, y, z) >> 4) !== 0 : y < 0;
+  plot.terrain ? plot.terrain.state(x, y, z) >> 4 !== 0 : y < 0;
 /** Ground that never digs (a mine's bedrock). */
-export const bedrock = (x: number, y: number, z: number): boolean => !!plot.terrain && plot.terrain.state(x, y, z) >> 4 === 7;
+export const bedrock = (x: number, y: number, z: number): boolean =>
+  !!plot.terrain && plot.terrain.state(x, y, z) >> 4 === 7;
 
 /** An applied change set: the cells as they became (`forward`) and as they were (`backward`). */
 export interface Change {
@@ -84,18 +91,20 @@ function remember(run: ApplyRun, k: number, was: number) {
 }
 
 /**
- * The state a set makes: a block; air below ground digs; earth (or a removed block on a mine's bedrock, which never digs)
- * below ground is ground again (-1); above ground both are plain air.
+ * On a mine, air always records planned excavation and earth removes that intent, restoring the generated terrain (which
+ * may already be air). A mine's bedrock never digs. On builds, air only records digs below ground.
  */
 function nextState(x: number, y: number, z: number, id: number, meta: number): number {
   if (id > 0) return id * 16 + (meta & 15);
-  return (id === EARTH || bedrock(x, y, z)) && below(x, y, z) ? -1 : 0;
+  return (id === EARTH && plot.kind === 'mine') || ((id === EARTH || bedrock(x, y, z)) && below(x, y, z)) ? -1 : 0;
 }
 
-const stateCell = (x: number, y: number, z: number, v: number): Cell => (v < 0 ? [x, y, z, EARTH, 0] : [x, y, z, v >> 4, v & 15]);
+const stateCell = (x: number, y: number, z: number, v: number): Cell =>
+  v < 0 ? [x, y, z, EARTH, 0] : [x, y, z, v >> 4, v & 15];
 
 /** A neighbour chest facing `f` on side dx (else dz) faces across the pair (so the new chest takes its facing). */
-const acrossPair = (dx: number, f: string): boolean => (dx !== 0 ? f === 'north' || f === 'south' : f === 'east' || f === 'west');
+const acrossPair = (dx: number, f: string): boolean =>
+  dx !== 0 ? f === 'north' || f === 'south' : f === 'east' || f === 'west';
 
 /** The four sides a chest pairs across. */
 const CHEST_SIDES: ReadonlyArray<readonly [number, number]> = [
@@ -108,7 +117,7 @@ const CHEST_SIDES: ReadonlyArray<readonly [number, number]> = [
 export class Canvas {
   /** key → id * 16 + meta. */
   readonly blocks = new Map<number, number>();
-  /** Keys of the cells below ground dug out to air (never a block's key). */
+  /** Authored air cells (all mine excavation intent, even over natural caves; build digs below ground). */
   readonly dug = new Set<number>();
 
   get size(): number {
@@ -155,16 +164,20 @@ export class Canvas {
       if (inside(c[0], c[1], c[2]) && c[3] > 0) this.blocks.set(keyOf(c[0], c[1], c[2]), c[3] * 16 + (c[4] & 15));
     for (const p of dug)
       // A mine keeps every dug cell it loads (a design keeps its digs whatever the terrain); a build only those below ground.
-      if (inside(p[0], p[1], p[2]) && (plot.kind === 'mine' || below(p[0], p[1], p[2])) && !this.blocks.has(keyOf(p[0], p[1], p[2])))
+      if (
+        inside(p[0], p[1], p[2]) &&
+        (plot.kind === 'mine' || below(p[0], p[1], p[2])) &&
+        !this.blocks.has(keyOf(p[0], p[1], p[2]))
+      )
         this.dug.add(keyOf(p[0], p[1], p[2]));
   }
 
-  /** A cell's state as one number: id * 16 + meta, 0 = air, -1 = earth. */
-  private state(k: number): number {
+  /** Authored state for history/saving: block state, 0 = planned air, -1 = untouched terrain on mines. */
+  authoredState(k: number): number {
     const v = this.blocks.get(k);
     if (v !== undefined) return v;
     const [x, y, z] = posOf(k);
-    return below(x, y, z) && !this.dug.has(k) ? -1 : 0;
+    return (plot.kind === 'mine' || below(x, y, z)) && !this.dug.has(k) ? -1 : 0;
   }
 
   /**
@@ -207,7 +220,7 @@ export class Canvas {
   private setCell(run: ApplyRun, x: number, y: number, z: number, id: number, meta: number) {
     if (!inside(x, y, z)) return;
     const k = keyOf(x, y, z);
-    const old = this.state(k);
+    const old = this.authoredState(k);
     const next = nextState(x, y, z, id, meta);
     if (old === next) return;
     remember(run, k, old);
@@ -233,7 +246,7 @@ export class Canvas {
     this.blocks.delete(k);
     this.dug.delete(k);
     if (next > 0) this.blocks.set(k, next);
-    else if (next === 0 && below(x, y, z)) this.dug.add(k);
+    else if (next === 0 && (plot.kind === 'mine' || below(x, y, z))) this.dug.add(k);
   }
 
   /** What the run really changed (cells as they became) and its inverse (as they were). */
@@ -242,7 +255,7 @@ export class Canvas {
     const backward: Cell[] = [];
     for (const k of run.touched) {
       const [x, y, z] = posOf(k);
-      const now = this.state(k);
+      const now = this.authoredState(k);
       const was = run.before.get(k)!;
       if (now === was) continue;
       forward.push(stateCell(x, y, z, now));
@@ -274,6 +287,8 @@ export interface OpGroup {
   by: 'ai' | 'user';
   forward: Cell[];
   backward: Cell[];
+  /** Metadata changed with the cells (for example, the position of a mine module). */
+  effect?: { undo(): void; redo(): void };
 }
 
 /** Undo/redo over AI and user ops alike. `undo()` returns the cells to apply (the group's inverse). */
@@ -283,7 +298,7 @@ export class History {
   constructor(readonly limit = 200) {}
 
   push(g: OpGroup): void {
-    if (g.forward.length === 0) return;
+    if (g.forward.length === 0 && !g.effect) return;
     this.past.push(g);
     if (this.past.length > this.limit) this.past.shift();
     this.future = [];

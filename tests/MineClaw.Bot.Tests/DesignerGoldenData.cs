@@ -1,6 +1,6 @@
 namespace MineClaw.Bot.Tests;
 
-/// <summary>The golden dump of <see cref="DesignerGoldenTests"/> (generated from the pre-refactor code).</summary>
+/// <summary>The golden dump of <see cref="DesignerGoldenTests"/> (pre-refactor baseline, updated for explicit mine air and feet-level entrances).</summary>
 internal static class DesignerGoldenData
 {
     public const string Expected = """"""
@@ -470,8 +470,8 @@ wire cbf29ce484222325 dug cbf29ce484222325 enc af63b64c8601abfa rev 35
 system You are the Design Studio builder: you co-design an underground MINE for Minecraft b1.8.1 with PoofImaFox on a sandbox canvas over generated terrain (not the world). Plot x,z 0..63 (+x east, +z south), ABSOLUTE world y 1..127; the surface is y 63..73 here, bedrock y 0-4. The design is the cells to mine out: remove digs a box (never bedrock), "earth" fills dug cells back; blocks you place (torches, ladders, rails, chests) go in after their cell is dug. Prefer the templates: spiral_shaft (a walkable spiral staircase around a core, from the surface down), strip_mine (main corridor + 1x2 branches, spacing solid blocks apart), remove for rooms; tunnels 2 high, steps at most 1. Connect everything to the shaft. Measured on this terrain (ore found per block dug): 1x2 branches 4 solid blocks apart are best (2 apart digs 70% more for 30% more ore: only to strip a plot clean); keep the main corridor 1x2 (2x3 digs over 10% more for under 5% more ore); taller or wider tunnels, poke holes and a second level 3 above all find less per block; diamond, redstone and gold: feet y 11 (y 7-11 is as good, y 13+ falls off fast; y 11 keeps clear of lava lakes); lapis and iron: y 14-16. Check a level with ore_levels and the result with mine_stats. Ore heights: coal y0-127 best 48, iron y0-63 best 16, gold y0-31 best 11, redstone y0-15 best 11, diamond y0-15 best 11, lapis y0-30 peak 16 best 16; lava lakes y≤10; bedrock y0-4. Presets (mine_preset): b1.8.1-diamond-y11, b1.8.1-diamond-y11-thorough, b1.8.1-lapis-gold-y16. Blocks by minecraft name (torch:wall=<side of the supporting block>, ladder:wall=<side>, rail, chest:<front>); unsure: find_blocks. Keep each reply to a few calls; one place takes at most about 100 cells (use box, line or replace for runs): a reply that hits the output limit loses the call it was writing. A tool error says what was wrong and the usage: fix that, don't repeat the call. Reply after the edits with ONE or two short sentences on what changed, in plain words (no coordinates unless asked).
 run describe {} => r0 empty mine (plot x,z 0..63, absolute y 1..127 over generated terrain: surface y63..73, bedrock y0-4)
 run spiral_shaft {"at":[30,30],"bottom":11,"size":4,"core":2,"torch_every":6,"landings":[11,20,"x"]} => ERR error: $.landings[2]: expected integer (usage: spiral_shaft {at, size?, core?, top?, bottom, dir?, torch_every?, landings?})
-run spiral_shaft {"at":[5,5],"bottom":30,"size":9,"core":1,"dir":"ccw","top":60} => ok, 158 cells changed (r1); entry 5,60,5 | op spiral_shaft 'spiral shaft 6×6 (core 1×1) y60→30 ccw' ai 158 cells d32a64aa49838e1c first [5,60,5=0:0 5,61,5=0:0 5,62,5=0:0]
-run spiral_shaft {"at":[5,5],"bottom":30,"size":1} => ok, 91 cells changed (r2); entry 5,68,5 | op spiral_shaft 'spiral shaft 3×3 (core 1×1) y68→30' ai 91 cells 9673a1dde569cfd3 first [5,68,5=0:0 6,67,5=0:0 6,68,5=0:0]
+run spiral_shaft {"at":[5,5],"bottom":30,"size":9,"core":1,"dir":"ccw","top":60} => ok, 162 cells changed (r1); entry 5,60,5 | op spiral_shaft 'spiral shaft 6×6 (core 1×1) y60→30 ccw' ai 162 cells 94fa12d6339a24e2 first [5,60,5=0:0 5,61,5=0:0 5,62,5=0:0]
+run spiral_shaft {"at":[5,5],"bottom":30,"size":1} => ok, 101 cells changed (r2); entry 5,68,5 | op spiral_shaft 'spiral shaft 3×3 (core 1×1) y68→30' ai 101 cells 3dc5e1ab39e373d4 first [5,68,5=0:0 5,69,5=0:0 5,70,5=0:0]
 run spiral_shaft {"at":[5],"bottom":30} => ERR error: at: [x,z] (usage: spiral_shaft {at, size?, core?, top?, bottom, dir?, torch_every?, landings?})
 run spiral_shaft {"bottom":30} => ERR error: $.at: required (usage: spiral_shaft {at, size?, core?, top?, bottom, dir?, torch_every?, landings?})
 run strip_mine {"at":[34,11,31],"length":20,"corridor":"2x3","spacing":3,"branch_length":6} => ok, 240 cells changed (r3); entry 34,11,31 | op strip_mine 'strip mine at y11 along x: 2×3 × 20, 5 branch rows 3 apart (6 long, both)' ai 240 cells c4a36e6bcdb3c151 first [34,11,31=0:0 34,12,31=0:0 34,13,31=0:0]
@@ -544,14 +544,14 @@ run describe {"y":11} => y11, rows z5..61, cols x0..53:
 ######################################################
 ######################################################
 #=ground .=dug
-run mine_preset {"id":"1.12.2-diamond-y11"} => ok, 584 cells changed (r1); entry 30,65,30 | op mine_preset '1.12.2 diamond strip mine at y 11' ai 584 cells 3faf393b28d1fe33 first [31,64,30=0:0 31,65,30=0:0 32,63,30=0:0]
-run mine_preset {"id":"1.12.2-diamond-y11-thorough"} => ok, 808 cells changed (r1); entry 30,65,30 | op mine_preset '1.12.2 diamond strip mine at y 11, thorough' ai 808 cells 5ea3dceb770baa6d first [31,64,30=0:0 31,65,30=0:0 32,63,30=0:0]
-run mine_preset {"id":"1.12.2-lapis-iron-y16"} => ok, 555 cells changed (r1); entry 30,65,30 | op mine_preset '1.12.2 lapis and iron strip mine at y 16' ai 555 cells 5e7f189e08185b59 first [30,64,31=0:0 30,63,32=0:0 30,64,32=0:0]
-run mine_preset {"id":"b1.8.1-diamond-y11"} => ok, 584 cells changed (r1); entry 30,65,30 | op mine_preset 'b1.8.1 diamond strip mine at y 11' ai 584 cells 3faf393b28d1fe33 first [31,64,30=0:0 31,65,30=0:0 32,63,30=0:0]
-run mine_preset {"id":"b1.8.1-diamond-y11-thorough"} => ok, 808 cells changed (r1); entry 30,65,30 | op mine_preset 'b1.8.1 diamond strip mine at y 11, thorough' ai 808 cells 5ea3dceb770baa6d first [31,64,30=0:0 31,65,30=0:0 32,63,30=0:0]
-run mine_preset {"id":"b1.8.1-lapis-gold-y16"} => ok, 555 cells changed (r1); entry 30,65,30 | op mine_preset 'b1.8.1 lapis and gold strip mine at y 16' ai 555 cells 5e7f189e08185b59 first [30,64,31=0:0 30,63,32=0:0 30,64,32=0:0]
-describe16 r10 4 blocks, box x0..53 y2..68 z5..61 (54×67×57); torch 4; dug 609 to mine out (y2..68); y2 2 dug · y3 1 dug · y4-10 0 · y11 99 dug · y12 1 torch, 99 dug · y13 40 dug · y14 32 dug · y15 3 torch, 29 dug · y16-19 0 · y20-21 25 dug · y22-29 0 · y30 2 dug · y31 5 dug · y32 9 dug · y33 10 dug · y34-36 4 dug · y37-38 9 dug · y39 6 dug · y40 9 dug · y41 11 dug · y42-43 6 dug · y44-46 7 dug · y47 9 dug · y48 10 dug · y49 9 dug · y50-51 7 dug · y52 9 dug · y53 10 dug · y54 9 dug · y55-56 7 dug · y57 9 dug · y58 10 dug · y59 9 dug · y60 6 dug · y61-68 3 dug
-describe3 r10 4 blocks, box x0..53 y2..68 z5..61 (54×67×57); torch 4; dug 609 to mine out (y2..68); y2 2 dug · y3 1 dug · y4-10 0 · y11 99 dug · y12 1 torch, 99 dug · y13 40 dug · y14 32 dug · y15 3 torch, 29 dug · y16-19 0 · y20-21 25 dug · y22-29 0 · y30 2 dug · y31 5 dug · y32 9 dug · y33 10 dug · y34-36 4 dug · y37-38 9 dug · y39 6 dug · y40 9 dug · y41 11 dug · y42-43 6 dug · y44-46 7 dug · y47 9 dug · y48 10 dug · y49 9 dug · y50-51 7 dug · y52 9 dug · y53 10 dug · y54 9 dug · y55-56 7 dug · y57 9 dug · y58 10 dug · y59 9 dug · y60 6 dug · y61-68 3 dug
+run mine_preset {"id":"1.12.2-diamond-y11"} => ok, 590 cells changed (r1); entry 30,65,30 | op mine_preset '1.12.2 diamond strip mine at y 11' ai 590 cells 8a997cd8066a8177 first [30,65,30=0:0 30,66,30=0:0 30,67,30=0:0]
+run mine_preset {"id":"1.12.2-diamond-y11-thorough"} => ok, 814 cells changed (r1); entry 30,65,30 | op mine_preset '1.12.2 diamond strip mine at y 11, thorough' ai 814 cells 89652098702dce81 first [30,65,30=0:0 30,66,30=0:0 30,67,30=0:0]
+run mine_preset {"id":"1.12.2-lapis-iron-y16"} => ok, 563 cells changed (r1); entry 30,65,30 | op mine_preset '1.12.2 lapis and iron strip mine at y 16' ai 563 cells 66d599caa72e2fd0 first [30,65,30=0:0 30,66,30=0:0 30,67,30=0:0]
+run mine_preset {"id":"b1.8.1-diamond-y11"} => ok, 590 cells changed (r1); entry 30,65,30 | op mine_preset 'b1.8.1 diamond strip mine at y 11' ai 590 cells 8a997cd8066a8177 first [30,65,30=0:0 30,66,30=0:0 30,67,30=0:0]
+run mine_preset {"id":"b1.8.1-diamond-y11-thorough"} => ok, 814 cells changed (r1); entry 30,65,30 | op mine_preset 'b1.8.1 diamond strip mine at y 11, thorough' ai 814 cells 89652098702dce81 first [30,65,30=0:0 30,66,30=0:0 30,67,30=0:0]
+run mine_preset {"id":"b1.8.1-lapis-gold-y16"} => ok, 563 cells changed (r1); entry 30,65,30 | op mine_preset 'b1.8.1 lapis and gold strip mine at y 16' ai 563 cells 66d599caa72e2fd0 first [30,65,30=0:0 30,66,30=0:0 30,67,30=0:0]
+describe16 r10 4 blocks, box x0..53 y2..70 z5..61 (54×69×57); torch 4; dug 623 to mine out (y2..70); y2 2 dug · y3 1 dug · y4-10 0 · y11 99 dug · y12 1 torch, 99 dug · y13 40 dug · y14 32 dug · y15 3 torch, 29 dug · y16-19 0 · y20-21 25 dug · y22-29 0 · y30 2 dug · y31 5 dug · y32 9 dug · y33 10 dug · y34 9 dug · y35-36 7 dug · y37-38 9 dug · y39 6 dug · y40 9 dug · y41 11 dug · y42-43 6 dug · y44-46 7 dug · y47 9 dug · … 2 more layer groups (describe y for one) … · y50-51 7 dug · y52 9 dug · y53 10 dug · y54 9 dug · y55-56 7 dug · y57 9 dug · y58 10 dug · y59 9 dug · y60 6 dug · y61-68 3 dug · y69 2 dug · y70 1 dug
+describe3 r10 4 blocks, box x0..53 y2..70 z5..61 (54×69×57); torch 4; dug 623 to mine out (y2..70); y2 2 dug · y3 1 dug · y4-10 0 · y11 99 dug · y12 1 torch, 99 dug · y13 40 dug · y14 32 dug · y15 3 torch, 29 dug · y16-19 0 · y20-21 25 dug · y22-29 0 · y30 2 dug · y31 5 dug · y32 9 dug · y33 10 dug · y34 9 dug · y35-36 7 dug · y37-38 9 dug · y39 6 dug · y40 9 dug · y41 11 dug · y42-43 6 dug · y44-46 7 dug · y47 9 dug · … 2 more layer groups (describe y for one) … · y50-51 7 dug · y52 9 dug · y53 10 dug · y54 9 dug · y55-56 7 dug · y57 9 dug · y58 10 dug · y59 9 dug · y60 6 dug · y61-68 3 dug · y69 2 dug · y70 1 dug
 layer 11
 y11, rows z5..61, cols x0..53:
 ######################################################
@@ -672,8 +672,8 @@ y12, rows z5..61, cols x0..53:
 ######################################################
 ######################################################
 A=torch:4 #=ground .=dug
-wire 350a6cf91d2e27f9 dug 9cadb23b04e5d3c8 enc bdfa4c53f4a1820c rev 10
-run clear {} => ok, 613 cells changed (r11) | op clear 'cleared the canvas' ai 613 cells a5d9f53e513a3f5d first [10,15,53=-1:0 10,15,57=-1:0 10,15,61=-1:0]
+wire 350a6cf91d2e27f9 dug 00b4b1357932610f enc c50fe4333db54ac1 rev 10
+run clear {} => ok, 627 cells changed (r11) | op clear 'cleared the canvas' ai 627 cells 3ce408bdfc8652be first [10,15,53=-1:0 10,15,57=-1:0 10,15,61=-1:0]
 describe16 r11 empty mine (plot x,z 0..63, absolute y 1..127 over generated terrain: surface y63..73, bedrock y0-4)
 describe3 r11 empty mine (plot x,z 0..63, absolute y 1..127 over generated terrain: surface y63..73, bedrock y0-4)
 wire cbf29ce484222325 dug cbf29ce484222325 enc af63b64c8601abfa rev 11
@@ -1171,8 +1171,8 @@ wire cbf29ce484222325 dug cbf29ce484222325 enc af63b64c8601abfa rev 36
 system You are the Design Studio builder: you co-design an underground MINE for Minecraft 1.12.2 with PoofImaFox on a sandbox canvas over generated terrain (not the world). Plot x,z 0..63 (+x east, +z south), ABSOLUTE world y 1..127; the surface is y 63..73 here, bedrock y 0-4. The design is the cells to mine out: remove digs a box (never bedrock), "earth" fills dug cells back; blocks you place (torches, ladders, rails, chests) go in after their cell is dug. Prefer the templates: spiral_shaft (a walkable spiral staircase around a core, from the surface down), strip_mine (main corridor + 1x2 branches, spacing solid blocks apart), remove for rooms; tunnels 2 high, steps at most 1. Connect everything to the shaft. Measured on this terrain (ore found per block dug): 1x2 branches 4 solid blocks apart are best (2 apart digs 70% more for 30% more ore: only to strip a plot clean); keep the main corridor 1x2 (2x3 digs over 10% more for under 5% more ore); taller or wider tunnels, poke holes and a second level 3 above all find less per block; diamond, redstone and gold: feet y 11 (y 7-11 is as good, y 13+ falls off fast; y 11 keeps clear of lava lakes); lapis and iron: y 14-16. Check a level with ore_levels and the result with mine_stats. Ore heights: coal y0-127 best 48, iron y0-63 best 16, gold y0-31 best 11, redstone y0-15 best 11, diamond y0-15 best 11, lapis y0-30 peak 16 best 16; lava lakes y≤10; bedrock y0-4. Presets (mine_preset): 1.12.2-diamond-y11, 1.12.2-diamond-y11-thorough, 1.12.2-lapis-iron-y16. Blocks by minecraft name (torch:wall=<side of the supporting block>, ladder:wall=<side>, rail, chest:<front>); unsure: find_blocks. Keep each reply to a few calls; one place takes at most about 100 cells (use box, line or replace for runs): a reply that hits the output limit loses the call it was writing. A tool error says what was wrong and the usage: fix that, don't repeat the call. Reply after the edits with ONE or two short sentences on what changed, in plain words (no coordinates unless asked).
 run describe {} => r0 empty mine (plot x,z 0..63, absolute y 1..127 over generated terrain: surface y63..73, bedrock y0-4)
 run spiral_shaft {"at":[30,30],"bottom":11,"size":4,"core":2,"torch_every":6,"landings":[11,20,"x"]} => ERR error: $.landings[2]: expected integer (usage: spiral_shaft {at, size?, core?, top?, bottom, dir?, torch_every?, landings?})
-run spiral_shaft {"at":[5,5],"bottom":30,"size":9,"core":1,"dir":"ccw","top":60} => ok, 158 cells changed (r1); entry 5,60,5 | op spiral_shaft 'spiral shaft 6×6 (core 1×1) y60→30 ccw' ai 158 cells d32a64aa49838e1c first [5,60,5=0:0 5,61,5=0:0 5,62,5=0:0]
-run spiral_shaft {"at":[5,5],"bottom":30,"size":1} => ok, 91 cells changed (r2); entry 5,68,5 | op spiral_shaft 'spiral shaft 3×3 (core 1×1) y68→30' ai 91 cells 9673a1dde569cfd3 first [5,68,5=0:0 6,67,5=0:0 6,68,5=0:0]
+run spiral_shaft {"at":[5,5],"bottom":30,"size":9,"core":1,"dir":"ccw","top":60} => ok, 162 cells changed (r1); entry 5,60,5 | op spiral_shaft 'spiral shaft 6×6 (core 1×1) y60→30 ccw' ai 162 cells 94fa12d6339a24e2 first [5,60,5=0:0 5,61,5=0:0 5,62,5=0:0]
+run spiral_shaft {"at":[5,5],"bottom":30,"size":1} => ok, 101 cells changed (r2); entry 5,68,5 | op spiral_shaft 'spiral shaft 3×3 (core 1×1) y68→30' ai 101 cells 3dc5e1ab39e373d4 first [5,68,5=0:0 5,69,5=0:0 5,70,5=0:0]
 run spiral_shaft {"at":[5],"bottom":30} => ERR error: at: [x,z] (usage: spiral_shaft {at, size?, core?, top?, bottom, dir?, torch_every?, landings?})
 run spiral_shaft {"bottom":30} => ERR error: $.at: required (usage: spiral_shaft {at, size?, core?, top?, bottom, dir?, torch_every?, landings?})
 run strip_mine {"at":[34,11,31],"length":20,"corridor":"2x3","spacing":3,"branch_length":6} => ok, 240 cells changed (r3); entry 34,11,31 | op strip_mine 'strip mine at y11 along x: 2×3 × 20, 5 branch rows 3 apart (6 long, both)' ai 240 cells c4a36e6bcdb3c151 first [34,11,31=0:0 34,12,31=0:0 34,13,31=0:0]
@@ -1245,14 +1245,14 @@ run describe {"y":11} => y11, rows z5..61, cols x0..53:
 ######################################################
 ######################################################
 #=ground .=dug
-run mine_preset {"id":"1.12.2-diamond-y11"} => ok, 584 cells changed (r1); entry 30,65,30 | op mine_preset '1.12.2 diamond strip mine at y 11' ai 584 cells 3faf393b28d1fe33 first [31,64,30=0:0 31,65,30=0:0 32,63,30=0:0]
-run mine_preset {"id":"1.12.2-diamond-y11-thorough"} => ok, 808 cells changed (r1); entry 30,65,30 | op mine_preset '1.12.2 diamond strip mine at y 11, thorough' ai 808 cells 5ea3dceb770baa6d first [31,64,30=0:0 31,65,30=0:0 32,63,30=0:0]
-run mine_preset {"id":"1.12.2-lapis-iron-y16"} => ok, 555 cells changed (r1); entry 30,65,30 | op mine_preset '1.12.2 lapis and iron strip mine at y 16' ai 555 cells 5e7f189e08185b59 first [30,64,31=0:0 30,63,32=0:0 30,64,32=0:0]
-run mine_preset {"id":"b1.8.1-diamond-y11"} => ok, 584 cells changed (r1); entry 30,65,30 | op mine_preset 'b1.8.1 diamond strip mine at y 11' ai 584 cells 3faf393b28d1fe33 first [31,64,30=0:0 31,65,30=0:0 32,63,30=0:0]
-run mine_preset {"id":"b1.8.1-diamond-y11-thorough"} => ok, 808 cells changed (r1); entry 30,65,30 | op mine_preset 'b1.8.1 diamond strip mine at y 11, thorough' ai 808 cells 5ea3dceb770baa6d first [31,64,30=0:0 31,65,30=0:0 32,63,30=0:0]
-run mine_preset {"id":"b1.8.1-lapis-gold-y16"} => ok, 555 cells changed (r1); entry 30,65,30 | op mine_preset 'b1.8.1 lapis and gold strip mine at y 16' ai 555 cells 5e7f189e08185b59 first [30,64,31=0:0 30,63,32=0:0 30,64,32=0:0]
-describe16 r10 4 blocks, box x0..53 y2..68 z5..61 (54×67×57); torch 4; dug 609 to mine out (y2..68); y2 2 dug · y3 1 dug · y4-10 0 · y11 99 dug · y12 1 torch, 99 dug · y13 40 dug · y14 32 dug · y15 3 torch, 29 dug · y16-19 0 · y20-21 25 dug · y22-29 0 · y30 2 dug · y31 5 dug · y32 9 dug · y33 10 dug · y34-36 4 dug · y37-38 9 dug · y39 6 dug · y40 9 dug · y41 11 dug · y42-43 6 dug · y44-46 7 dug · y47 9 dug · y48 10 dug · y49 9 dug · y50-51 7 dug · y52 9 dug · y53 10 dug · y54 9 dug · y55-56 7 dug · y57 9 dug · y58 10 dug · y59 9 dug · y60 6 dug · y61-68 3 dug
-describe3 r10 4 blocks, box x0..53 y2..68 z5..61 (54×67×57); torch 4; dug 609 to mine out (y2..68); y2 2 dug · y3 1 dug · y4-10 0 · y11 99 dug · y12 1 torch, 99 dug · y13 40 dug · y14 32 dug · y15 3 torch, 29 dug · y16-19 0 · y20-21 25 dug · y22-29 0 · y30 2 dug · y31 5 dug · y32 9 dug · y33 10 dug · y34-36 4 dug · y37-38 9 dug · y39 6 dug · y40 9 dug · y41 11 dug · y42-43 6 dug · y44-46 7 dug · y47 9 dug · y48 10 dug · y49 9 dug · y50-51 7 dug · y52 9 dug · y53 10 dug · y54 9 dug · y55-56 7 dug · y57 9 dug · y58 10 dug · y59 9 dug · y60 6 dug · y61-68 3 dug
+run mine_preset {"id":"1.12.2-diamond-y11"} => ok, 590 cells changed (r1); entry 30,65,30 | op mine_preset '1.12.2 diamond strip mine at y 11' ai 590 cells 8a997cd8066a8177 first [30,65,30=0:0 30,66,30=0:0 30,67,30=0:0]
+run mine_preset {"id":"1.12.2-diamond-y11-thorough"} => ok, 814 cells changed (r1); entry 30,65,30 | op mine_preset '1.12.2 diamond strip mine at y 11, thorough' ai 814 cells 89652098702dce81 first [30,65,30=0:0 30,66,30=0:0 30,67,30=0:0]
+run mine_preset {"id":"1.12.2-lapis-iron-y16"} => ok, 563 cells changed (r1); entry 30,65,30 | op mine_preset '1.12.2 lapis and iron strip mine at y 16' ai 563 cells 66d599caa72e2fd0 first [30,65,30=0:0 30,66,30=0:0 30,67,30=0:0]
+run mine_preset {"id":"b1.8.1-diamond-y11"} => ok, 590 cells changed (r1); entry 30,65,30 | op mine_preset 'b1.8.1 diamond strip mine at y 11' ai 590 cells 8a997cd8066a8177 first [30,65,30=0:0 30,66,30=0:0 30,67,30=0:0]
+run mine_preset {"id":"b1.8.1-diamond-y11-thorough"} => ok, 814 cells changed (r1); entry 30,65,30 | op mine_preset 'b1.8.1 diamond strip mine at y 11, thorough' ai 814 cells 89652098702dce81 first [30,65,30=0:0 30,66,30=0:0 30,67,30=0:0]
+run mine_preset {"id":"b1.8.1-lapis-gold-y16"} => ok, 563 cells changed (r1); entry 30,65,30 | op mine_preset 'b1.8.1 lapis and gold strip mine at y 16' ai 563 cells 66d599caa72e2fd0 first [30,65,30=0:0 30,66,30=0:0 30,67,30=0:0]
+describe16 r10 4 blocks, box x0..53 y2..70 z5..61 (54×69×57); torch 4; dug 623 to mine out (y2..70); y2 2 dug · y3 1 dug · y4-10 0 · y11 99 dug · y12 1 torch, 99 dug · y13 40 dug · y14 32 dug · y15 3 torch, 29 dug · y16-19 0 · y20-21 25 dug · y22-29 0 · y30 2 dug · y31 5 dug · y32 9 dug · y33 10 dug · y34 9 dug · y35-36 7 dug · y37-38 9 dug · y39 6 dug · y40 9 dug · y41 11 dug · y42-43 6 dug · y44-46 7 dug · y47 9 dug · … 2 more layer groups (describe y for one) … · y50-51 7 dug · y52 9 dug · y53 10 dug · y54 9 dug · y55-56 7 dug · y57 9 dug · y58 10 dug · y59 9 dug · y60 6 dug · y61-68 3 dug · y69 2 dug · y70 1 dug
+describe3 r10 4 blocks, box x0..53 y2..70 z5..61 (54×69×57); torch 4; dug 623 to mine out (y2..70); y2 2 dug · y3 1 dug · y4-10 0 · y11 99 dug · y12 1 torch, 99 dug · y13 40 dug · y14 32 dug · y15 3 torch, 29 dug · y16-19 0 · y20-21 25 dug · y22-29 0 · y30 2 dug · y31 5 dug · y32 9 dug · y33 10 dug · y34 9 dug · y35-36 7 dug · y37-38 9 dug · y39 6 dug · y40 9 dug · y41 11 dug · y42-43 6 dug · y44-46 7 dug · y47 9 dug · … 2 more layer groups (describe y for one) … · y50-51 7 dug · y52 9 dug · y53 10 dug · y54 9 dug · y55-56 7 dug · y57 9 dug · y58 10 dug · y59 9 dug · y60 6 dug · y61-68 3 dug · y69 2 dug · y70 1 dug
 layer 11
 y11, rows z5..61, cols x0..53:
 ######################################################
@@ -1373,8 +1373,8 @@ y12, rows z5..61, cols x0..53:
 ######################################################
 ######################################################
 A=torch:4 #=ground .=dug
-wire 350a6cf91d2e27f9 dug 9cadb23b04e5d3c8 enc bdfa4c53f4a1820c rev 10
-run clear {} => ok, 613 cells changed (r11) | op clear 'cleared the canvas' ai 613 cells a5d9f53e513a3f5d first [10,15,53=-1:0 10,15,57=-1:0 10,15,61=-1:0]
+wire 350a6cf91d2e27f9 dug 00b4b1357932610f enc c50fe4333db54ac1 rev 10
+run clear {} => ok, 627 cells changed (r11) | op clear 'cleared the canvas' ai 627 cells 3ce408bdfc8652be first [10,15,53=-1:0 10,15,57=-1:0 10,15,61=-1:0]
 describe16 r11 empty mine (plot x,z 0..63, absolute y 1..127 over generated terrain: surface y63..73, bedrock y0-4)
 describe3 r11 empty mine (plot x,z 0..63, absolute y 1..127 over generated terrain: surface y63..73, bedrock y0-4)
 wire cbf29ce484222325 dug cbf29ce484222325 enc af63b64c8601abfa rev 11
@@ -1900,18 +1900,18 @@ SSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSS
   r1 poofimafox player 'saved from the Design Studio by poofimafox' tag - origin - hash 5ad9229abd860044 blocks 41 dsl 16432ee7a9952189 snap 41 0 524ec0da8f4719e3
 save 'deep strip' new=False => ok False #0 r0 blocks 0 created False: the canvas is empty: dig the mine first
   session # '' off (0, 0, 0)
-save 'deep strip' new=False => ok True #4 r1 blocks 9 created True: saved as design #4 r1 (b1.8.1, anchor absolute y 11): deep strip mine 24×14×56 (y 11..66): 425 cells to dig, 9 torch, preferred for b1.8.1
+save 'deep strip' new=False => ok True #4 r1 blocks 9 created True: saved as design #4 r1 (b1.8.1, anchor absolute y 11): deep strip mine 24×14×58 (y 11..68): 428 cells to dig, 9 torch, preferred for b1.8.1
   session #4 'deep strip' off (0, 0, 0)
   rec #4 'deep strip' status accepted origin - by poofimafox/poofimafox cost 0
   desc the first cut
   anchor a mine designed in the Design Studio: absolute y, no site yet (place it in Story Mode)
-  summary deep strip mine 24×14×56 (y 11..66): 425 cells to dig, 9 torch, preferred for b1.8.1
+  summary deep strip mine 24×14×58 (y 11..68): 428 cells to dig, 9 torch, preferred for b1.8.1
   eval drawn exactly
   bill torch 9/0/0/9 
   dsl
 # a mine drawn in the Design Studio: dig the clear boxes, then place the blocks
 blueprint deep strip
-size 24x56x14
+size 24x58x14
 version b1.8.1
 kind mine
 anchor absolute 30,11,25
@@ -2125,15 +2125,15 @@ clear 3,50,7 3,52,7
 clear 3,51,6 3,53,6
 clear 3,52,5 3,54,5
 clear 2,53,5 2,55,5
-clear 1,54,5 1,55,5
-clear 0,55,5 0,55,5
+clear 1,54,5 1,56,5
+clear 0,55,5 0,57,5
 
   /dsl
-  r1 poofimafox player 'the first cut' tag - origin - hash 82828d3fa8002d8a blocks 9 dsl ae5b7fe6aa7254a9 snap 9 425 458befaf4c9ffccd
+  r1 poofimafox player 'the first cut' tag - origin - hash beacf4b6a2a166e1 blocks 9 dsl 2f7743487b605bfc snap 9 428 5457ad309971a74e
 load #4 r- => why - off (30, 0, 30) anchor (30, 66, 30) pref b1.8.1 rev 1 design 4
   mine b1.8.1 4242
-describe16 r0 9 blocks, box x30..53 y11..66 z25..38 (24×56×14); torch 9; dug 425 to mine out (y11..66); y11-12 116 dug · y13 43 dug · y14 1 torch, 2 dug · y15-19 3 dug · y20 1 torch, 2 dug · y21-25 3 dug · y26 1 torch, 2 dug · y27-31 3 dug · y32 1 torch, 2 dug · y33-37 3 dug · y38 1 torch, 2 dug · y39-43 3 dug · y44 1 torch, 2 dug · y45-49 3 dug · y50 1 torch, 2 dug · y51-55 3 dug · y56 1 torch, 2 dug · y57-61 3 dug · y62 1 torch, 2 dug · y63-66 3 dug
-describe3 r0 9 blocks, box x30..53 y11..66 z25..38 (24×56×14); torch 9; dug 425 to mine out (y11..66); y11-12 116 dug · y13 43 dug · y14 1 torch, 2 dug · y15-19 3 dug · y20 1 torch, 2 dug · y21-25 3 dug · y26 1 torch, 2 dug · y27-31 3 dug · y32 1 torch, 2 dug · y33-37 3 dug · y38 1 torch, 2 dug · y39-43 3 dug · y44 1 torch, 2 dug · y45-49 3 dug · y50 1 torch, 2 dug · y51-55 3 dug · y56 1 torch, 2 dug · y57-61 3 dug · y62 1 torch, 2 dug · y63-66 3 dug
+describe16 r0 9 blocks, box x30..53 y11..68 z25..38 (24×58×14); torch 9; dug 428 to mine out (y11..68); y11-12 116 dug · y13 43 dug · y14 1 torch, 2 dug · y15-19 3 dug · y20 1 torch, 2 dug · y21-25 3 dug · y26 1 torch, 2 dug · y27-31 3 dug · y32 1 torch, 2 dug · y33-37 3 dug · y38 1 torch, 2 dug · y39-43 3 dug · y44 1 torch, 2 dug · y45-49 3 dug · y50 1 torch, 2 dug · y51-55 3 dug · y56 1 torch, 2 dug · y57-61 3 dug · y62 1 torch, 2 dug · y63-66 3 dug · y67 2 dug · y68 1 dug
+describe3 r0 9 blocks, box x30..53 y11..68 z25..38 (24×58×14); torch 9; dug 428 to mine out (y11..68); y11-12 116 dug · y13 43 dug · y14 1 torch, 2 dug · y15-19 3 dug · y20 1 torch, 2 dug · y21-25 3 dug · y26 1 torch, 2 dug · y27-31 3 dug · y32 1 torch, 2 dug · y33-37 3 dug · y38 1 torch, 2 dug · y39-43 3 dug · y44 1 torch, 2 dug · y45-49 3 dug · y50 1 torch, 2 dug · y51-55 3 dug · y56 1 torch, 2 dug · y57-61 3 dug · y62 1 torch, 2 dug · y63-66 3 dug · y67 2 dug · y68 1 dug
 layer 0
 y0, rows z25..38, cols x30..53:
 ########################
@@ -2168,19 +2168,19 @@ y-1, rows z25..38, cols x30..53:
 ########################
 ########################
 #=ground .=dug
-wire 81cb71a6224d8c6e dug f8fbe03b9a783012 enc 2e313f0634ca3ca8 rev 0
-save 'deep strip' new=False => ok True #4 r2 blocks 9 created False: saved #4 r2 (b1.8.1, anchor absolute y 11): deep strip mine 4×4×56 (y 11..66): 185 cells to dig, 9 torch, preferred for b1.8.1
+wire 81cb71a6224d8c6e dug e905de2daabd2812 enc 0ecc296dc42cadf2 rev 0
+save 'deep strip' new=False => ok True #4 r2 blocks 9 created False: saved #4 r2 (b1.8.1, anchor absolute y 11): deep strip mine 4×4×58 (y 11..68): 188 cells to dig, 9 torch, preferred for b1.8.1
   session #4 'deep strip' off (0, 0, 0)
   rec #4 'deep strip' status accepted origin - by poofimafox/poofimafox cost 0
   desc the first cut
   anchor a mine designed in the Design Studio: absolute y, no site yet (place it in Story Mode)
-  summary deep strip mine 4×4×56 (y 11..66): 185 cells to dig, 9 torch, preferred for b1.8.1
+  summary deep strip mine 4×4×58 (y 11..68): 188 cells to dig, 9 torch, preferred for b1.8.1
   eval drawn exactly
   bill torch 9/0/0/9 
   dsl
 # a mine drawn in the Design Studio: dig the clear boxes, then place the blocks
 blueprint deep strip
-size 4x56x4
+size 4x58x4
 version b1.8.1
 kind mine
 anchor absolute 30,11,30
@@ -2289,16 +2289,16 @@ clear 3,50,2 3,52,2
 clear 3,51,1 3,53,1
 clear 3,52,0 3,54,0
 clear 2,53,0 2,55,0
-clear 1,54,0 1,55,0
-clear 0,55,0 0,55,0
+clear 1,54,0 1,56,0
+clear 0,55,0 0,57,0
 
   /dsl
-  r2 kiwi player 'shaft only' tag - origin - hash 210bd44e5d290faa blocks 9 dsl 9fb3e2efc63dcac6 snap 9 185 d4a3b6ed14b99e66
-  r1 poofimafox player 'the first cut' tag - origin - hash 82828d3fa8002d8a blocks 9 dsl ae5b7fe6aa7254a9 snap 9 425 458befaf4c9ffccd
+  r2 kiwi player 'shaft only' tag - origin - hash 5f8a9302460f90cb blocks 9 dsl 910c5281dc73e9af snap 9 188 ff468bd5f21704a8
+  r1 poofimafox player 'the first cut' tag - origin - hash beacf4b6a2a166e1 blocks 9 dsl 2f7743487b605bfc snap 9 428 5457ad309971a74e
 load #4 r1 => why - off (30, 0, 30) anchor (30, 66, 30) pref b1.8.1 rev 1 design 4
   mine b1.8.1 4242
-describe16 r0 9 blocks, box x30..53 y11..66 z25..38 (24×56×14); torch 9; dug 425 to mine out (y11..66); y11-12 116 dug · y13 43 dug · y14 1 torch, 2 dug · y15-19 3 dug · y20 1 torch, 2 dug · y21-25 3 dug · y26 1 torch, 2 dug · y27-31 3 dug · y32 1 torch, 2 dug · y33-37 3 dug · y38 1 torch, 2 dug · y39-43 3 dug · y44 1 torch, 2 dug · y45-49 3 dug · y50 1 torch, 2 dug · y51-55 3 dug · y56 1 torch, 2 dug · y57-61 3 dug · y62 1 torch, 2 dug · y63-66 3 dug
-describe3 r0 9 blocks, box x30..53 y11..66 z25..38 (24×56×14); torch 9; dug 425 to mine out (y11..66); y11-12 116 dug · y13 43 dug · y14 1 torch, 2 dug · y15-19 3 dug · y20 1 torch, 2 dug · y21-25 3 dug · y26 1 torch, 2 dug · y27-31 3 dug · y32 1 torch, 2 dug · y33-37 3 dug · y38 1 torch, 2 dug · y39-43 3 dug · y44 1 torch, 2 dug · y45-49 3 dug · y50 1 torch, 2 dug · y51-55 3 dug · y56 1 torch, 2 dug · y57-61 3 dug · y62 1 torch, 2 dug · y63-66 3 dug
+describe16 r0 9 blocks, box x30..53 y11..68 z25..38 (24×58×14); torch 9; dug 428 to mine out (y11..68); y11-12 116 dug · y13 43 dug · y14 1 torch, 2 dug · y15-19 3 dug · y20 1 torch, 2 dug · y21-25 3 dug · y26 1 torch, 2 dug · y27-31 3 dug · y32 1 torch, 2 dug · y33-37 3 dug · y38 1 torch, 2 dug · y39-43 3 dug · y44 1 torch, 2 dug · y45-49 3 dug · y50 1 torch, 2 dug · y51-55 3 dug · y56 1 torch, 2 dug · y57-61 3 dug · y62 1 torch, 2 dug · y63-66 3 dug · y67 2 dug · y68 1 dug
+describe3 r0 9 blocks, box x30..53 y11..68 z25..38 (24×58×14); torch 9; dug 428 to mine out (y11..68); y11-12 116 dug · y13 43 dug · y14 1 torch, 2 dug · y15-19 3 dug · y20 1 torch, 2 dug · y21-25 3 dug · y26 1 torch, 2 dug · y27-31 3 dug · y32 1 torch, 2 dug · y33-37 3 dug · y38 1 torch, 2 dug · y39-43 3 dug · y44 1 torch, 2 dug · y45-49 3 dug · y50 1 torch, 2 dug · y51-55 3 dug · y56 1 torch, 2 dug · y57-61 3 dug · y62 1 torch, 2 dug · y63-66 3 dug · y67 2 dug · y68 1 dug
 layer 0
 y0, rows z25..38, cols x30..53:
 ########################
@@ -2333,7 +2333,7 @@ y-1, rows z25..38, cols x30..53:
 ########################
 ########################
 #=ground .=dug
-wire 81cb71a6224d8c6e dug f8fbe03b9a783012 enc 2e313f0634ca3ca8 rev 0
+wire 81cb71a6224d8c6e dug e905de2daabd2812 enc 0ecc296dc42cadf2 rev 0
 save 'pocket' new=False => ok True #5 r1 blocks 0 created True: saved as design #5 r1 (b1.8.1, anchor absolute y 20): pocket mine 3×3×2 (y 20..21): 18 cells to dig
   session #5 'pocket' off (0, 0, 0)
   rec #5 'pocket' status accepted origin - by poofimafox/poofimafox cost 0
@@ -2349,13 +2349,13 @@ size 3x2x3
 version b1.8.1
 kind mine
 anchor absolute 10,20,10
-entry 0,1,0
+entry 0,0,0
 seed 9
 facing south
 clear 0,0,0 2,1,2
 
   /dsl
-  r1 poofimafox player 'saved from the Design Studio by poofimafox' tag - origin - hash c464692c87940d1d blocks 0 dsl ab260cdbe621d392 snap 0 18 e7bb178f29ccef20
+  r1 poofimafox player 'saved from the Design Studio by poofimafox' tag - origin - hash c464692c87940d1d blocks 0 dsl 2d980360f1eb63ed snap 0 18 e7bb178f29ccef20
 == saves 1.12.2
 save '  ' new=False => ok False #0 r0 blocks 0 created False: a design needs a name
   session # '' off (0, 0, 0)
@@ -2863,18 +2863,18 @@ SSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSS
   r1 poofimafox player 'saved from the Design Studio by poofimafox' tag - origin - hash 5ad9229abd860044 blocks 41 dsl 5bcca53445e7cdcb snap 41 0 524ec0da8f4719e3
 save 'deep strip' new=False => ok False #0 r0 blocks 0 created False: the canvas is empty: dig the mine first
   session # '' off (0, 0, 0)
-save 'deep strip' new=False => ok True #4 r1 blocks 9 created True: saved as design #4 r1 (1.12.2, anchor absolute y 11): deep strip mine 24×14×56 (y 11..66): 425 cells to dig, 9 torch, preferred for 1.12.2
+save 'deep strip' new=False => ok True #4 r1 blocks 9 created True: saved as design #4 r1 (1.12.2, anchor absolute y 11): deep strip mine 24×14×58 (y 11..68): 428 cells to dig, 9 torch, preferred for 1.12.2
   session #4 'deep strip' off (0, 0, 0)
   rec #4 'deep strip' status accepted origin - by poofimafox/poofimafox cost 0
   desc the first cut
   anchor a mine designed in the Design Studio: absolute y, no site yet (place it in Story Mode)
-  summary deep strip mine 24×14×56 (y 11..66): 425 cells to dig, 9 torch, preferred for 1.12.2
+  summary deep strip mine 24×14×58 (y 11..68): 428 cells to dig, 9 torch, preferred for 1.12.2
   eval drawn exactly
   bill torch 9/0/0/9 
   dsl
 # a mine drawn in the Design Studio: dig the clear boxes, then place the blocks
 blueprint deep strip
-size 24x56x14
+size 24x58x14
 version 1.12.2
 kind mine
 anchor absolute 30,11,25
@@ -3088,15 +3088,15 @@ clear 3,50,7 3,52,7
 clear 3,51,6 3,53,6
 clear 3,52,5 3,54,5
 clear 2,53,5 2,55,5
-clear 1,54,5 1,55,5
-clear 0,55,5 0,55,5
+clear 1,54,5 1,56,5
+clear 0,55,5 0,57,5
 
   /dsl
-  r1 poofimafox player 'the first cut' tag - origin - hash 82828d3fa8002d8a blocks 9 dsl 9e2d6a73c68bd2a1 snap 9 425 458befaf4c9ffccd
+  r1 poofimafox player 'the first cut' tag - origin - hash beacf4b6a2a166e1 blocks 9 dsl 5cbf17c9a8bec3b4 snap 9 428 5457ad309971a74e
 load #4 r- => why - off (30, 0, 30) anchor (30, 66, 30) pref 1.12.2 rev 1 design 4
   mine 1.12.2 4242
-describe16 r0 9 blocks, box x30..53 y11..66 z25..38 (24×56×14); torch 9; dug 425 to mine out (y11..66); y11-12 116 dug · y13 43 dug · y14 1 torch, 2 dug · y15-19 3 dug · y20 1 torch, 2 dug · y21-25 3 dug · y26 1 torch, 2 dug · y27-31 3 dug · y32 1 torch, 2 dug · y33-37 3 dug · y38 1 torch, 2 dug · y39-43 3 dug · y44 1 torch, 2 dug · y45-49 3 dug · y50 1 torch, 2 dug · y51-55 3 dug · y56 1 torch, 2 dug · y57-61 3 dug · y62 1 torch, 2 dug · y63-66 3 dug
-describe3 r0 9 blocks, box x30..53 y11..66 z25..38 (24×56×14); torch 9; dug 425 to mine out (y11..66); y11-12 116 dug · y13 43 dug · y14 1 torch, 2 dug · y15-19 3 dug · y20 1 torch, 2 dug · y21-25 3 dug · y26 1 torch, 2 dug · y27-31 3 dug · y32 1 torch, 2 dug · y33-37 3 dug · y38 1 torch, 2 dug · y39-43 3 dug · y44 1 torch, 2 dug · y45-49 3 dug · y50 1 torch, 2 dug · y51-55 3 dug · y56 1 torch, 2 dug · y57-61 3 dug · y62 1 torch, 2 dug · y63-66 3 dug
+describe16 r0 9 blocks, box x30..53 y11..68 z25..38 (24×58×14); torch 9; dug 428 to mine out (y11..68); y11-12 116 dug · y13 43 dug · y14 1 torch, 2 dug · y15-19 3 dug · y20 1 torch, 2 dug · y21-25 3 dug · y26 1 torch, 2 dug · y27-31 3 dug · y32 1 torch, 2 dug · y33-37 3 dug · y38 1 torch, 2 dug · y39-43 3 dug · y44 1 torch, 2 dug · y45-49 3 dug · y50 1 torch, 2 dug · y51-55 3 dug · y56 1 torch, 2 dug · y57-61 3 dug · y62 1 torch, 2 dug · y63-66 3 dug · y67 2 dug · y68 1 dug
+describe3 r0 9 blocks, box x30..53 y11..68 z25..38 (24×58×14); torch 9; dug 428 to mine out (y11..68); y11-12 116 dug · y13 43 dug · y14 1 torch, 2 dug · y15-19 3 dug · y20 1 torch, 2 dug · y21-25 3 dug · y26 1 torch, 2 dug · y27-31 3 dug · y32 1 torch, 2 dug · y33-37 3 dug · y38 1 torch, 2 dug · y39-43 3 dug · y44 1 torch, 2 dug · y45-49 3 dug · y50 1 torch, 2 dug · y51-55 3 dug · y56 1 torch, 2 dug · y57-61 3 dug · y62 1 torch, 2 dug · y63-66 3 dug · y67 2 dug · y68 1 dug
 layer 0
 y0, rows z25..38, cols x30..53:
 ########################
@@ -3131,19 +3131,19 @@ y-1, rows z25..38, cols x30..53:
 ########################
 ########################
 #=ground .=dug
-wire 81cb71a6224d8c6e dug f8fbe03b9a783012 enc 2e313f0634ca3ca8 rev 0
-save 'deep strip' new=False => ok True #4 r2 blocks 9 created False: saved #4 r2 (1.12.2, anchor absolute y 11): deep strip mine 4×4×56 (y 11..66): 185 cells to dig, 9 torch, preferred for 1.12.2
+wire 81cb71a6224d8c6e dug e905de2daabd2812 enc 0ecc296dc42cadf2 rev 0
+save 'deep strip' new=False => ok True #4 r2 blocks 9 created False: saved #4 r2 (1.12.2, anchor absolute y 11): deep strip mine 4×4×58 (y 11..68): 188 cells to dig, 9 torch, preferred for 1.12.2
   session #4 'deep strip' off (0, 0, 0)
   rec #4 'deep strip' status accepted origin - by poofimafox/poofimafox cost 0
   desc the first cut
   anchor a mine designed in the Design Studio: absolute y, no site yet (place it in Story Mode)
-  summary deep strip mine 4×4×56 (y 11..66): 185 cells to dig, 9 torch, preferred for 1.12.2
+  summary deep strip mine 4×4×58 (y 11..68): 188 cells to dig, 9 torch, preferred for 1.12.2
   eval drawn exactly
   bill torch 9/0/0/9 
   dsl
 # a mine drawn in the Design Studio: dig the clear boxes, then place the blocks
 blueprint deep strip
-size 4x56x4
+size 4x58x4
 version 1.12.2
 kind mine
 anchor absolute 30,11,30
@@ -3252,16 +3252,16 @@ clear 3,50,2 3,52,2
 clear 3,51,1 3,53,1
 clear 3,52,0 3,54,0
 clear 2,53,0 2,55,0
-clear 1,54,0 1,55,0
-clear 0,55,0 0,55,0
+clear 1,54,0 1,56,0
+clear 0,55,0 0,57,0
 
   /dsl
-  r2 kiwi player 'shaft only' tag - origin - hash 210bd44e5d290faa blocks 9 dsl 17531f24e6d352f2 snap 9 185 d4a3b6ed14b99e66
-  r1 poofimafox player 'the first cut' tag - origin - hash 82828d3fa8002d8a blocks 9 dsl 9e2d6a73c68bd2a1 snap 9 425 458befaf4c9ffccd
+  r2 kiwi player 'shaft only' tag - origin - hash 5f8a9302460f90cb blocks 9 dsl a442b78b824b683b snap 9 188 ff468bd5f21704a8
+  r1 poofimafox player 'the first cut' tag - origin - hash beacf4b6a2a166e1 blocks 9 dsl 5cbf17c9a8bec3b4 snap 9 428 5457ad309971a74e
 load #4 r1 => why - off (30, 0, 30) anchor (30, 66, 30) pref 1.12.2 rev 1 design 4
   mine 1.12.2 4242
-describe16 r0 9 blocks, box x30..53 y11..66 z25..38 (24×56×14); torch 9; dug 425 to mine out (y11..66); y11-12 116 dug · y13 43 dug · y14 1 torch, 2 dug · y15-19 3 dug · y20 1 torch, 2 dug · y21-25 3 dug · y26 1 torch, 2 dug · y27-31 3 dug · y32 1 torch, 2 dug · y33-37 3 dug · y38 1 torch, 2 dug · y39-43 3 dug · y44 1 torch, 2 dug · y45-49 3 dug · y50 1 torch, 2 dug · y51-55 3 dug · y56 1 torch, 2 dug · y57-61 3 dug · y62 1 torch, 2 dug · y63-66 3 dug
-describe3 r0 9 blocks, box x30..53 y11..66 z25..38 (24×56×14); torch 9; dug 425 to mine out (y11..66); y11-12 116 dug · y13 43 dug · y14 1 torch, 2 dug · y15-19 3 dug · y20 1 torch, 2 dug · y21-25 3 dug · y26 1 torch, 2 dug · y27-31 3 dug · y32 1 torch, 2 dug · y33-37 3 dug · y38 1 torch, 2 dug · y39-43 3 dug · y44 1 torch, 2 dug · y45-49 3 dug · y50 1 torch, 2 dug · y51-55 3 dug · y56 1 torch, 2 dug · y57-61 3 dug · y62 1 torch, 2 dug · y63-66 3 dug
+describe16 r0 9 blocks, box x30..53 y11..68 z25..38 (24×58×14); torch 9; dug 428 to mine out (y11..68); y11-12 116 dug · y13 43 dug · y14 1 torch, 2 dug · y15-19 3 dug · y20 1 torch, 2 dug · y21-25 3 dug · y26 1 torch, 2 dug · y27-31 3 dug · y32 1 torch, 2 dug · y33-37 3 dug · y38 1 torch, 2 dug · y39-43 3 dug · y44 1 torch, 2 dug · y45-49 3 dug · y50 1 torch, 2 dug · y51-55 3 dug · y56 1 torch, 2 dug · y57-61 3 dug · y62 1 torch, 2 dug · y63-66 3 dug · y67 2 dug · y68 1 dug
+describe3 r0 9 blocks, box x30..53 y11..68 z25..38 (24×58×14); torch 9; dug 428 to mine out (y11..68); y11-12 116 dug · y13 43 dug · y14 1 torch, 2 dug · y15-19 3 dug · y20 1 torch, 2 dug · y21-25 3 dug · y26 1 torch, 2 dug · y27-31 3 dug · y32 1 torch, 2 dug · y33-37 3 dug · y38 1 torch, 2 dug · y39-43 3 dug · y44 1 torch, 2 dug · y45-49 3 dug · y50 1 torch, 2 dug · y51-55 3 dug · y56 1 torch, 2 dug · y57-61 3 dug · y62 1 torch, 2 dug · y63-66 3 dug · y67 2 dug · y68 1 dug
 layer 0
 y0, rows z25..38, cols x30..53:
 ########################
@@ -3296,7 +3296,7 @@ y-1, rows z25..38, cols x30..53:
 ########################
 ########################
 #=ground .=dug
-wire 81cb71a6224d8c6e dug f8fbe03b9a783012 enc 2e313f0634ca3ca8 rev 0
+wire 81cb71a6224d8c6e dug e905de2daabd2812 enc 0ecc296dc42cadf2 rev 0
 save 'pocket' new=False => ok True #5 r1 blocks 0 created True: saved as design #5 r1 (1.12.2, anchor absolute y 20): pocket mine 3×3×2 (y 20..21): 18 cells to dig
   session #5 'pocket' off (0, 0, 0)
   rec #5 'pocket' status accepted origin - by poofimafox/poofimafox cost 0
@@ -3312,13 +3312,13 @@ size 3x2x3
 version 1.12.2
 kind mine
 anchor absolute 10,20,10
-entry 0,1,0
+entry 0,0,0
 seed 9
 facing south
 clear 0,0,0 2,1,2
 
   /dsl
-  r1 poofimafox player 'saved from the Design Studio by poofimafox' tag - origin - hash c464692c87940d1d blocks 0 dsl 3016d1abb92510bc snap 0 18 e7bb178f29ccef20
+  r1 poofimafox player 'saved from the Design Studio by poofimafox' tag - origin - hash c464692c87940d1d blocks 0 dsl c82b9fe9621fcd4f snap 0 18 e7bb178f29ccef20
 == history
 capture captured 'stairs' as design #1: 3×3×3, 12 blocks (palette: planks, cobblestone, oak stairs); bill to rebuild: 9 planks (short 9), 2 cobblestone (short 2), 1 oak stairs (short 1); rebuild elsewhere: design build{id=1,at}
   rec #1 'stairs' status captured origin (0, 64, 0) by PoofImaFox/PoofImaFox cost 0

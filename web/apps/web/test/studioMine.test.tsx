@@ -48,7 +48,7 @@ const api: StudioApi = {
 };
 
 describe('a mine canvas', () => {
-  it('is generated terrain at absolute y: solid cells dig, air does nothing, bedrock never digs, ground fills back', () => {
+  it('keeps authored excavation at absolute y, including air, without digging bedrock', () => {
     setPlotMode({ kind: 'mine', terrain });
     expect(inside(0, 0, 0)).toBe(true);
     expect(inside(0, 127, 0)).toBe(true);
@@ -61,10 +61,10 @@ describe('a mine canvas', () => {
     expect(c.get(10, top + 1, 10)).toEqual([0, 0]);
     const dig = c.apply([
       [10, 20, 10, 0, 0],
-      [10, top + 3, 10, 0, 0], // air over the surface: nothing to dig
+      [10, top + 3, 10, 0, 0], // air over the surface: retained as intended excavation
       [10, 0, 10, 0, 0], // the bedrock floor: never
     ]);
-    expect(dig.forward).toEqual([[10, 20, 10, 0, 0]]);
+    expect(dig.forward).toEqual([[10, 20, 10, 0, 0], [10, top + 3, 10, 0, 0]]);
     expect(c.dug.has(keyOf(10, 20, 10))).toBe(true);
     // A torch in the tunnel, then removed: dug again; on bedrock a removed block is ground again.
     c.apply([[10, 20, 10, 50, 5]]);
@@ -140,50 +140,34 @@ describe('the ore guide and the dig estimate', () => {
 });
 
 describe('the mine panel', () => {
-  it('shows the ruler and the level, sets a level from an ore band and inserts templates and presets', () => {
-    const onInsert = vi.fn(),
-      onLevel = vi.fn(),
-      onPreset = vi.fn(),
-      onSeed = vi.fn();
-    render(
-      <MinePanel
-        terrain={terrain}
-        version="1.12.2"
-        seed="12345"
-        serverSeed={null}
-        preferredFor={null}
-        dug={() => []}
-        rev={0}
-        level={11}
-        onLevel={onLevel}
-        xray={false}
-        onXray={() => undefined}
-        at={null}
-        canWrite
-        busy={false}
-        onSeed={onSeed}
-        onInsert={onInsert}
-        onPreset={onPreset}
-      />,
-    );
+  it('offers six draggable layouts, separate placement heights, the ore chart and version presets', () => {
+    const onPickModule = vi.fn(), onPlacementY = vi.fn(), onLevel = vi.fn(), onPreset = vi.fn();
+    render(<MinePanel terrain={terrain} version="1.12.2" seed="12345" serverSeed={null} preferredFor={null}
+      dug={() => []} rev={0} level={11} onLevel={onLevel} xray={false} onXray={() => undefined}
+      at={null} canWrite busy={false} onSeed={() => undefined} onInsert={() => undefined} onPreset={onPreset}
+      placementY={11} onPlacementY={onPlacementY} onPickModule={onPickModule} />);
     expect(screen.getByTestId('ore-ruler')).toBeTruthy();
     expect(screen.getByTestId('level-readout').textContent).toContain('Diamond ore ★');
-    expect(screen.queryByLabelText("Use the server's seed")).toBeNull();
-    fireEvent.click(screen.getAllByTitle('Diamond ore: best at y 11')[0]!);
-    expect(onLevel).toHaveBeenCalledWith(11);
-    fireEvent.click(screen.getByTestId('insert-spiral'));
-    expect(onInsert).toHaveBeenCalledTimes(1);
-    const shaft = onInsert.mock.calls[0]![0] as { label: string; entry: number[] };
-    expect(shaft.label).toMatch(/^spiral shaft 4×4/);
-    expect(shaft.entry[1]).toBe(terrain.surfaceOver(30, 30, 33, 33));
-    fireEvent.click(screen.getByTestId('insert-strip'));
-    expect((onInsert.mock.calls[1]![0] as { label: string }).label).toContain('strip mine at y11');
+    fireEvent.click(screen.getByTitle('Diamond ore: preferred feet Y 11'));
+    expect(onPlacementY).toHaveBeenCalledWith(11);
+    expect(onLevel).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Place Spiral shaft' }));
+    expect(onPickModule).toHaveBeenCalledWith(expect.objectContaining({ kind: 'spiral', depth: 6 }));
+    fireEvent.click(screen.getByRole('button', { name: 'Place Branch mine' }));
+    expect(onPickModule).toHaveBeenCalledWith(expect.objectContaining({ kind: 'branches', spacing: 4 }));
+    expect(screen.getAllByRole('button', { name: /^Place / })).toHaveLength(6);
+    const setData = vi.fn();
+    fireEvent.dragStart(screen.getByRole('button', { name: 'Place Tunnel' }), { dataTransfer: { setData, effectAllowed: '' } });
+    expect(setData).toHaveBeenCalledWith('application/x-mineclaw-mine-module', expect.stringContaining('tunnel'));
+    expect(onPickModule).toHaveBeenLastCalledWith(expect.objectContaining({ kind: 'tunnel' }), { drag: true });
+    fireEvent.click(screen.getByText('Version presets · 1.12.2'));
     fireEvent.click(screen.getByTestId('preset-1.12.2-diamond-y11'));
     expect(onPreset).toHaveBeenCalledTimes(1);
     expect(screen.queryByTestId('preset-b1.8.1-diamond-y11')).toBeNull();
     expect(screen.getByTestId('mine-stats').textContent).toContain('0 blocks to mine');
     expect(screen.getByTestId('mine-vein-follow')).toHaveTextContent('follow connected exposed ore beyond the plan');
-    expect(screen.getByTestId('mine-vein-follow')).toHaveTextContent('planned tunnels and their walls');
+    fireEvent.keyDown(screen.getByTestId('ore-ruler'), { key: 'ArrowUp' });
+    expect(onLevel).toHaveBeenCalledWith(12);
   });
 });
 

@@ -25,7 +25,6 @@ import {
   History,
   keyOf,
   type OpGroup,
-  posOf,
   type Selection,
   setPlotMode,
   type V3,
@@ -187,9 +186,7 @@ export class Studio {
   }
 
   private stateAt(k: number): number {
-    const [x, y, z] = posOf(k);
-    const [id, meta] = this.canvas.get(x, y, z);
-    return id === EARTH ? -1 : id * 16 + meta;
+    return this.canvas.authoredState(k);
   }
 
   /** The canvas as it is now counts as saved. */
@@ -213,11 +210,25 @@ export class Studio {
 
   /** A user edit: applied, recorded for undo, sent to the bot. Returns the cells that changed. */
   edit(cells: readonly Cell[], kind: string, label: string, group?: string): Cell[] {
+    return this.recordEdit(cells, kind, label, group);
+  }
+
+  /** Layout metadata travels with its canvas operation, including a fully overlapping layout with no changed cells. */
+  editWithHistory(cells: readonly Cell[], kind: string, label: string, effect: NonNullable<OpGroup['effect']>, group?: string): Cell[] {
+    return this.recordEdit(cells, kind, label, group, effect);
+  }
+
+  private recordEdit(cells: readonly Cell[], kind: string, label: string, group?: string, effect?: OpGroup['effect']): Cell[] {
     const ch = this.canvas.apply(cells);
-    if (ch.forward.length === 0) return [];
+    if (ch.forward.length === 0 && !effect) return [];
     this.track(ch);
-    const g: OpGroup = { label, by: 'user', forward: ch.forward, backward: ch.backward };
-    if (group && group === this.lastGroup) this.history.merge(g);
+    const g: OpGroup = { label, by: 'user', forward: ch.forward, backward: ch.backward, ...(effect ? { effect } : {}) };
+    if (group && group === this.lastGroup) {
+      const oldEffect = this.history.peekUndo()?.effect;
+      this.history.merge(g);
+      const merged = this.history.peekUndo();
+      if (merged && effect) merged.effect = { undo: () => oldEffect ? oldEffect.undo() : effect.undo(), redo: () => effect.redo() };
+    }
     else this.history.push(g);
     this.lastGroup = group ?? null;
     this.emit(ch.forward, 'user');
@@ -267,6 +278,8 @@ export class Studio {
     this.lastGroup = null;
     const ch = this.canvas.apply(g[dir], false);
     this.track(ch);
+    if (dir === 'backward') g.effect?.undo();
+    else g.effect?.redo();
     if (ch.forward.length) {
       this.emit(ch.forward, 'user');
       this.queue(word, `${word} ${g.label}`, ch.forward);

@@ -1,7 +1,8 @@
 import { MOCK_DESIGNER_MODELS } from '@mineclaw/contracts';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
+import { createRef } from 'react';
 import { describe, expect, it, vi } from 'vitest';
-import { ChatPanel } from '@/features/studio/ChatPanel';
+import { ChatPanel, type ChatPanelHandle } from '@/features/studio/ChatPanel';
 
 const base = {
   messages: [],
@@ -17,6 +18,25 @@ const base = {
 };
 
 describe('studio chat panel', () => {
+  it('starts mine chat collapsed, opens with the world shortcut, and retains its draft when collapsed', () => {
+    const ref = createRef<ChatPanelHandle>();
+    render(<ChatPanel {...base} kind="mine" ref={ref} onModel={() => undefined} onSend={() => undefined} onClose={() => undefined} />);
+    expect(screen.getByRole('button', { name: 'Expand designer chat' }).getAttribute('aria-expanded')).toBe('false');
+    expect(screen.queryByRole('textbox', { name: 'Message the designer' })).toBeNull();
+    act(() => ref.current?.focus());
+    const input = screen.getByRole('textbox', { name: 'Message the designer' });
+    expect(document.activeElement).toBe(input);
+    fireEvent.change(input, { target: { value: 'Connect the two tunnels' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse designer chat' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Expand designer chat' }));
+    expect(screen.getByRole<HTMLTextAreaElement>('textbox', { name: 'Message the designer' }).value).toBe('Connect the two tunnels');
+  });
+
+  it('starts build chat open and can collapse it', () => {
+    render(<ChatPanel {...base} kind="build" onModel={() => undefined} onSend={() => undefined} onClose={() => undefined} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse designer chat' }));
+    expect(screen.queryByRole('textbox', { name: 'Message the designer' })).toBeNull();
+  });
   it('lists the configured models and picks one', () => {
     const onModel = vi.fn();
     render(<ChatPanel {...base} onModel={onModel} onSend={() => undefined} onClose={() => undefined} />);

@@ -74,7 +74,7 @@ public class DesignerMineTests
         new() { Kind = DesignerCanvas.KindMine, Seed = seed, Version = version };
 
     [Fact]
-    public void A_mine_canvas_spans_bedrock_to_the_sky_and_digs_only_the_ground()
+    public void A_mine_canvas_keeps_authored_excavation_from_ground_to_sky_but_never_digs_bedrock()
     {
         var c = MineCanvas();
         Assert.True(c.Contains(0, 0, 0));
@@ -87,12 +87,13 @@ public class DesignerMineTests
         int top = t.Surface(10, 10);
         Assert.True(c.IsEarth(10, top, 10));
         Assert.False(c.IsEarth(10, top + 1, 10));
-        // Dig stone deep down, nothing above the surface, never bedrock.
+        // Preserve the intended excavation even over seed air; never dig bedrock.
         var dug = c.Apply([new CanvasCell(10, 6, 10, 0, 0), new CanvasCell(10, top + 3, 10, 0, 0), new CanvasCell(10, 0, 10, 0, 0)], out var rejected);
-        Assert.Single(dug);
+        Assert.Equal(2, dug.Count);
         Assert.Equal(1, rejected);
         Assert.Contains(new BlockPos(10, 6, 10), c.Dug);
-        Assert.Contains("dug 1 to mine out (y6..6)", c.Describe());
+        Assert.Contains(new BlockPos(10, top + 3, 10), c.Dug);
+        Assert.Contains($"dug 2 to mine out (y6..{top + 3})", c.Describe());
         Assert.Contains("dug 1", DesignerCanvas.Summarize(dug, on: c));
         // A torch in the tunnel, earth fills the cell back; persistence keeps the kind's cells.
         c.Apply([new CanvasCell(10, 6, 10, Blocks.Torch, 5)]);
@@ -107,6 +108,54 @@ public class DesignerMineTests
         Assert.Empty(c.Dug);
         Assert.Contains("empty mine", c.Describe());
         Assert.Contains("surface y", c.Describe());
+    }
+
+    [Fact]
+    public void Mine_authored_air_survives_caves_persistence_and_undo_without_adopting_unrelated_caves()
+    {
+        var c = MineCanvas();
+        var t = c.Terrain!;
+        var cave = (from x in Enumerable.Range(0, 64)
+                    from z in Enumerable.Range(0, 64)
+                    from y in Enumerable.Range(10, 40)
+                    where !t.Solid(x, y, z)
+                    select new BlockPos(x, y, z)).First();
+        var dig = new CanvasCell(cave.X, cave.Y, cave.Z, 0, 0);
+        Assert.Single(c.Apply([dig]));
+        Assert.Single(c.Dug);
+        Assert.Contains(cave, c.Dug);
+        Assert.False(c.IsEarth(cave.X, cave.Y, cave.Z));
+        Assert.Empty(c.Apply([dig]));
+        var loaded = DesignerCanvas.Decode(c.Encode(), c.Rev, DesignerCanvas.KindMine, c.Seed, c.Version);
+        Assert.Equal(c.Dug.ToHashSet(), loaded.Dug.ToHashSet());
+        Assert.Contains(cave, loaded.ToSnapshot().Air);
+        Assert.Single(loaded.Apply([dig with { Id = DesignerCanvas.Earth }]));
+        Assert.Empty(loaded.Dug);
+        Assert.False(loaded.IsEarth(cave.X, cave.Y, cave.Z));
+        Assert.Single(loaded.Apply([dig]));
+        Assert.Single(loaded.Clear());
+        Assert.Empty(loaded.Dug);
+    }
+
+    [Theory]
+    [InlineData("b1.8.1")]
+    [InlineData("1.12.2")]
+    public void Saving_a_mine_infers_the_entrance_at_feet_level_instead_of_the_authored_headroom(string version)
+    {
+        using var db = AgentDb.Open(null);
+        var svc = Designs(db);
+        var canvas = MineCanvas(version: version);
+        var (text, _, error) = DesignerTools.Run(canvas, "spiral_shaft", E(new { at = new[] { 30, 30 }, bottom = 11, size = 4, core = 2 }));
+        Assert.False(error, text);
+        int feetY = canvas.Terrain!.SurfaceOver(30, 30, 33, 33);
+        Assert.Contains(new BlockPos(30, feetY + 2, 30), canvas.Dug);
+        var session = new DesignerSessionRecord { Canvas = canvas, Owner = "poofimafox" };
+        var saved = DesignerSave.Save(svc, session, "entrance headroom", null, "poofimafox", false);
+        Assert.True(saved.Ok, saved.Text);
+        var loaded = DesignerSave.LoadDesign(svc, saved.DesignId);
+        Assert.Null(loaded.Why);
+        Assert.Equal(new BlockPos(30, feetY, 30), loaded.Anchor);
+        Assert.Equal(canvas.Dug.ToHashSet(), loaded.Canvas!.Dug.ToHashSet());
     }
 
     [Fact]
@@ -216,7 +265,7 @@ public class DesignerMineTests
         Assert.True(v.GetProperty("changed").GetBoolean());
         Assert.Equal("778", v.GetProperty("session").GetProperty("seed").GetString());
         Assert.Equal("1.12.2", v.GetProperty("session").GetProperty("preferred_for").GetString());
-        Assert.Equal(1, v.GetProperty("session").GetProperty("dug").GetArrayLength());
+        Assert.Equal(2, v.GetProperty("session").GetProperty("dug").GetArrayLength());
         Assert.Equal(top, v.GetProperty("session").GetProperty("anchor")[1].GetInt32());
         // Back to a build plot: the full canvas asks first, then clears.
         var ask = J(await server.HandleAsync(Req("POST", $"/api/designer/sessions/{id}/version", new { version = "1.12.2", kind = "build" })));

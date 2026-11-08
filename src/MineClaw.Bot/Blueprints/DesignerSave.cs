@@ -266,7 +266,7 @@ public static partial class DesignerSave
 
     /// <summary>
     /// A mine canvas saved as a mine design (<see cref="MineDesign"/>): its dug cells (the cells to mine out) and its blocks at
-    /// absolute y, where they sit on the plot; the entry is the anchor ("move origin"), else the highest dug cell.
+    /// absolute y, where they sit on the plot; the entry is the anchor ("move origin"), else the highest walkable feet cell.
     /// </summary>
     private static DesignerSaveResult SaveMine(BlueprintService s, DesignerSessionRecord session, SaveRequest req, bool asNew)
     {
@@ -274,7 +274,7 @@ public static partial class DesignerSave
         if (canvas.Count == 0 && canvas.Dug.Count == 0) return Fail("the canvas is empty: dig the mine first");
         var existing = Existing(s, session, asNew);
         var snap = canvas.ToSnapshot();
-        BlockPos? entry = session.Anchor ?? (canvas.Dug.Count > 0 ? canvas.Dug.OrderByDescending(p => p.Y).ThenBy(p => p.Z).ThenBy(p => p.X).First() : null);
+        BlockPos? entry = session.Anchor ?? MineEntry(canvas);
         var (dsl, min, bad, why) = MineDesign.Draw(req.Name, snap, entry, canvas.Seed, session.PreferredFor, session.Version);
         if (dsl == null) return Fail($"can't save it as a design: {why}");
         var line = req.Name + " " + MineDesign.Summary(snap) + (session.PreferredFor is { } pf ? $", preferred for {pf}" : "");
@@ -282,6 +282,18 @@ public static partial class DesignerSave
             $", anchor absolute y {min.Y}");
         session.Offset = default;
         return res;
+    }
+
+    /// <summary>Headroom belongs to the design too, but a default entrance belongs at feet level above a solid floor.</summary>
+    private static BlockPos? MineEntry(DesignerCanvas canvas)
+    {
+        var ordered = canvas.Dug.OrderByDescending(p => p.Y).ThenBy(p => p.Z).ThenBy(p => p.X).ToList();
+        foreach (var p in ordered)
+            if (canvas.Contains(p.X, p.Y + 1, p.Z) && canvas.Holds(p.X, p.Y - 1, p.Z)
+                && !canvas.IsEarth(p.X, p.Y + 1, p.Z) && canvas.Get(p.X, p.Y + 1, p.Z).Id == 0)
+                return p;
+        // An unfinished shaft may not have a walkable entrance yet; preserve the existing fallback for that case.
+        return ordered.Count > 0 ? ordered[0] : null;
     }
 
     private static string Clean(string? name)
