@@ -618,6 +618,7 @@ public sealed partial class StoryColony
 
     private void Done(PawnState p, ActiveJob j, string? note)
     {
+        DeferredCraftStorage(p, j, note);
         SettleStock(j);
         GearTakesEnded(j, done: true);
         ChestsReached(p, j);

@@ -447,6 +447,9 @@ so the other pawns stood idle in front of a field of work. Fox also saw pawns st
   A blocked job does not stop the priority search. Even a miner waiting briefly for another pawn to finish a quarry layer tries
   every other enabled work type before waiting. Idle holds and alerts name the blockage when known; a concrete supply or bench
   wait takes precedence over generic designation cooldowns. New work can wake these holds just like an empty-work hold.
+  Crafting batches shrink to the ingredients in the pawn's pockets and accessible storage, combining both sources. A completed
+  craft remains completed if its delivery fails: its output stays with the pawn, no fictitious deposit is recorded, and the bench
+  remains available for other work.
 
   A bill whose count is met, or whose stock is there, is no work. A furnace that is still smelting is no work either. A pawn with
   nothing else is simply idle. The colony's state carries `blocked_work`: idle pawns grouped by reason, most first. The web shows it

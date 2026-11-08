@@ -354,6 +354,14 @@ public sealed partial class StoryColony
             // Whatever variants are stocked, several stacks if need be (vanilla's wildcard recipes take mixed planks; a family bill
             // takes any log): the most plentiful first, then the nearest. Live 11-04: "no oak wood planks" with birch in the chest.
             int left = need;
+            if (bench.Kind != "furnace")
+                foreach (var own in live.Inventory.Where(Ok))
+                {
+                    int n = Math.Min(left, own.Count);
+                    if (n <= 0) break;
+                    got.Add((null, own with { Count = n }));
+                    left -= n;
+                }
             foreach (var (store, stack) in Storages.Where(s => s.Chest.Dist(bench.Pos) <= b.Radius && ChestOpen(s.Chest))
                          .SelectMany(s => s.Contents.Where(Ok).Select(c => (Store: s, Stack: c)))
                          .OrderByDescending(x => x.Stack.Count).ThenBy(x => x.Store.Chest.Dist(bench.Pos)))
@@ -486,7 +494,7 @@ public sealed partial class StoryColony
     /// waits on a missing one, the fetches, then the fuel (a furnace) or where the product goes.</summary>
     private ActiveJob? CraftBillJob(PawnState p, PawnLive live, string work, WorkbenchState bench, BillState bill, StoryRecipe r, string key)
     {
-        var batch = new BillBatch { Crafts = BatchSize(bill, r, bench) };
+        var batch = new BillBatch { Crafts = AvailableCraftBatch(bill, r, bench, live, BatchSize(bill, r, bench)) };
         (batch.Got, batch.Missing) = Ingredients(bill, r, batch.Crafts, bench, live);
         bool auto = bill.ForBuild != null;
         // An auto bill whose ingredient isn't there yet waits quietly (an earlier step makes it; a raw shortfall is the build's alert).
@@ -507,6 +515,31 @@ public sealed partial class StoryColony
     {
         int left = bill.Mode == "count" ? bill.Target - bill.Done : bill.Mode == "until" ? bill.Target - StockOf(r) : 64;
         return Math.Clamp((int)Math.Ceiling(Math.Max(1, left) / (double)Math.Max(1, r.Output.Count)), 1, bench.Kind == "furnace" ? 8 : 16);
+    }
+
+    // A large tool request must not strand pawns that can make a smaller batch from their pockets and storage.
+    private int AvailableCraftBatch(BillState bill, StoryRecipe recipe, WorkbenchState bench, PawnLive live, int wanted)
+    {
+        if (bench.Kind == "furnace") return wanted;
+        foreach (var input in recipe.Inputs)
+        {
+            bool Fits(Stack s) => input.Options.Any(o => o.Matches(s.Id, s.Meta)) && Cats!.Accepts(bill.Ingredients, s.Id, s.Meta);
+            int available = live.Inventory.Where(Fits).Sum(s => s.Count)
+                + Storages.Where(s => s.Chest.Dist(bench.Pos) <= bill.Radius && ChestOpen(s.Chest)).Sum(s => s.Contents.Where(Fits).Sum(x => x.Count));
+            wanted = Math.Min(wanted, available / Math.Max(1, input.Count));
+        }
+        return Math.Max(1, wanted); // An empty batch still runs the ingredient check to explain what is missing.
+    }
+
+    private void DeferredCraftStorage(PawnState p, ActiveJob job, string? note)
+    {
+        const string prefix = "crafted; storage pending: ";
+        if (job.Source != "bill" || job.Kind != "craft" || note?.StartsWith(prefix, StringComparison.Ordinal) != true) return;
+        var why = note[prefix.Length..];
+        MarkFullChests(job, why);
+        MissingContainer(p, why);
+        ContainerUnreachable(p, why);
+        job.Puts.Clear(); // Count the craft and consumed ingredients, never a deposit that did not happen.
     }
 
     /// <summary>

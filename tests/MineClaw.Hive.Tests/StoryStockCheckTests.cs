@@ -43,6 +43,36 @@ public class StoryStockCheckTests
     private static string Kind(JsonObject j) => j["kind"]!.GetValue<string>();
 
     [Fact]
+    public void Tool_batches_fit_the_supplies_and_combine_pocket_and_chest_ingredients()
+    {
+        var (c, h, _) = Rig(new Stack(4, 0, 2), new Stack(280, 0, 64));
+        h.Lives[c.P()] = FakeStoryHost.Bare(0, 64, 0, new Stack(4, 0, 4));
+        Bill(c, "craft:stone_pickaxe", 16);
+        var job = c.Next();
+        Assert.Equal("craft", Kind(job));
+        Assert.Equal(2, job["n"]!.GetValue<int>());
+        var fetch = job["fetch"]!.AsArray();
+        Assert.Contains(fetch, f => f!["item"]!.GetValue<string>() == "cobblestone" && f["n"]!.GetValue<int>() == 2);
+        Assert.Contains(fetch, f => f!["item"]!.GetValue<string>() == "stick" && f["n"]!.GetValue<int>() == 4);
+    }
+
+    [Fact]
+    public void A_completed_craft_with_failed_storage_counts_once_and_leaves_the_bench_available()
+    {
+        var (c, h, _) = Rig(new Stack(5, 0, 8));
+        Bill(c, "craft:stick", 4);
+        var job = c.Next();
+        Assert.NotNull(job["stash"]);
+        h.Lives[c.P()] = FakeStoryHost.Bare(0, 64, 0, new Stack(280, 0, 4));
+        Assert.True(c.Report(c.P(), job["id"]!.GetValue<string>(), "done", "crafted; storage pending: no known chest has room", null));
+        Assert.Equal(4, c.Benches.Single().Bills.Single().Done);
+        Assert.DoesNotContain(c.StorageAt(Chest)!.Contents, s => s.Id == 280);
+        Assert.Equal(6, c.StorageAt(Chest)!.Contents.Single(s => s.Id == 5).Count);
+        Bill(c, "craft:stick", 4);
+        Assert.Equal("craft", Kind(c.Next()));
+    }
+
+    [Fact]
     public void Spruce_planks_beside_the_bench_make_sticks()
     {
         var (c, h, t) = Rig(new Stack(5, 1, 6));

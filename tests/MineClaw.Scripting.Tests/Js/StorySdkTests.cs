@@ -8,6 +8,26 @@ namespace MineClaw.Scripting.Tests.Js;
 public sealed class StorySdkTests
 {
     [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task A_full_chest_does_not_undo_a_completed_craft(bool crafted)
+    {
+        var port = new FakeDirector(J("j1", "craft", j =>
+        {
+            j["item"] = "stick"; j["n"] = 4;
+            j["stash"] = new JsonArray(new JsonObject { ["to"] = "2,64,2", ["items"] = new JsonArray("stick") });
+        }), J("j2", "end"));
+        using var rig = Rig.Js();
+        rig.Host.Story = port;
+        if (!crafted) rig.On["craft"] = (_, _) => Task.FromResult(ActResult.Fail("missing planks"));
+        rig.On["deposit"] = (_, _) => Task.FromResult(ActResult.Fail("no known chest has room"));
+        var result = await rig.Run(MineClaw.Hive.Story.StoryColonies.PawnCode(), "story_pawn");
+        Assert.True(result.Ok, result.Outcome);
+        Assert.Equal(crafted ? "maid_chan j1 done crafted; storage pending: no known chest has room" : "maid_chan j1 failed missing planks", port.Reports.First());
+        Assert.Equal(crafted ? 1 : 0, rig.Norm().Count(call => call.StartsWith("deposit ")));
+    }
+
+    [Theory]
     [InlineData("nothing solid on any side to place against", "waiting")]
     [InlineData("server undid placement", "failed")]
     public async Task A_failed_support_stops_the_batch_before_its_dependents_are_attempted(string why, string status)

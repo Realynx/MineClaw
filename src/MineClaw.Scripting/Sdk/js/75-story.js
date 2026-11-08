@@ -533,7 +533,15 @@
     const g = globalThis;
     return typeof g.clear_temporary === 'function' ? g.clear_temporary() : { ok: true, msg: 'temporary blocks: none' };
   };
-  /** story.next(s)|report(job, status, note?)|during|idle|work|fetch|go|dig|escape|sweep - the job loop */
+  // Crafting has already succeeded when stash runs. A failed delivery leaves its output carried, not an undone craft.
+  const stash = j => {
+    for (const s of j.stash || []) {
+      const r = call('deposit', s.to, s.items);
+      if (!good(r)) return j.kind === 'craft' ? { ok: true, msg: 'crafted; storage pending: ' + why(r) } : r;
+    }
+    return { ok: true };
+  };
+  /** story.next(s)|report(job, status, note?)|during|idle|work|fetch|stash|go|dig|escape|sweep - the job loop */
   def('story', Object.freeze({
     next: s => H.storyNext(s == null ? 0 : s),
     report,
@@ -547,6 +555,7 @@
     work,
     till,
     fetch,
+    stash,
     place,
     pour,
     sweep,
