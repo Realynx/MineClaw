@@ -41,6 +41,15 @@ export interface StripSpec {
   torchEvery?: number;
 }
 
+/** The defaults every reader of a spiral step falls back on (the bot's SpiralSpec.Default). */
+export const SPIRAL_DEFAULTS = { x: 30, z: 30, top: 64, bottom: 11, size: 4, core: 2, torchEvery: 0 } as const;
+
+/**
+ * The defaults every reader of a strip step falls back on (the bot's StripSpec.Default): the layout study's best
+ * (docs/design/mine-blueprints.md): feet at y 11, a 1×2 corridor, branches 4 solid blocks apart.
+ */
+export const STRIP_DEFAULTS = { x: 0, y: 11, z: 0, length: 30, width: 1, height: 2, spacing: 4, branchLength: 12, torchEvery: 0 } as const;
+
 export interface MineCells {
   cells: MineCell[];
   entry: P3;
@@ -109,8 +118,8 @@ function outSide(lx: number, lz: number, n: number): [number, number] {
 
 /** The spiral shaft (see MineTemplates.Spiral): step k digs ring place k mod 4(n−1) three high, feet at top − k. */
 export function spiral(s: SpiralSpec): MineCells {
-  const n = clamp(s.size ?? 4, MIN_SIZE, MAX_SIZE),
-    c = clamp(s.core ?? 2, 1, n - 2),
+  const n = clamp(s.size ?? SPIRAL_DEFAULTS.size, MIN_SIZE, MAX_SIZE),
+    c = clamp(s.core ?? SPIRAL_DEFAULTS.core, 1, n - 2),
     ring = 4 * (n - 1);
   const cw = s.cw ?? true;
   const byPlace = ringPlaces(n, c);
@@ -197,11 +206,11 @@ interface StripFrame {
 function stripFrame(s: StripSpec): StripFrame {
   return {
     s,
-    len: clamp(s.length ?? 30, 1, 64),
-    w: clamp(s.width ?? 1, 1, 2),
-    h: clamp(s.height ?? 2, 2, 3),
-    sp: clamp(s.spacing ?? 3, 1, 8),
-    bl: clamp(s.branchLength ?? 12, 0, 64),
+    len: clamp(s.length ?? STRIP_DEFAULTS.length, 1, 64),
+    w: clamp(s.width ?? STRIP_DEFAULTS.width, 1, 2),
+    h: clamp(s.height ?? STRIP_DEFAULTS.height, 2, 3),
+    sp: clamp(s.spacing ?? STRIP_DEFAULTS.spacing, 1, 8),
+    bl: clamp(s.branchLength ?? STRIP_DEFAULTS.branchLength, 0, 64),
     alongX: (s.axis ?? 'x') !== 'z',
     cells: [],
   };
@@ -280,39 +289,41 @@ export function fromStep(step: Step, terrain: MineTerrain | null): MineCells {
 }
 
 function spiralStep(step: Step, terrain: MineTerrain | null): SpiralSpec {
-  const x = int(step, 30, 'x'),
-    z = int(step, 30, 'z'),
-    size = int(step, 4, 'size');
-  const top = num(step, 'top') ?? terrain?.surfaceOver(x, z, x + size - 1, z + size - 1) ?? 64;
+  const d = SPIRAL_DEFAULTS;
+  const x = int(step, d.x, 'x'),
+    z = int(step, d.z, 'z'),
+    size = int(step, d.size, 'size');
+  const top = num(step, 'top') ?? terrain?.surfaceOver(x, z, x + size - 1, z + size - 1) ?? d.top;
   const dir = (str(step, 'dir') ?? 'cw').toLowerCase();
   const landings = Array.isArray(step.landings) ? (step.landings as unknown[]).filter((v): v is number => typeof v === 'number') : undefined;
   return {
     x,
     z,
     top,
-    bottom: int(step, 11, 'bottom'),
+    bottom: int(step, d.bottom, 'bottom'),
     size,
-    core: int(step, 2, 'core'),
+    core: int(step, d.core, 'core'),
     cw: !(dir === 'ccw' || dir === 'counterclockwise'),
-    torchEvery: int(step, 0, 'torchEvery', 'torch_every'),
+    torchEvery: int(step, d.torchEvery, 'torchEvery', 'torch_every'),
     ...(landings ? { landings } : {}),
   };
 }
 
 function stripStep(step: Step): StripSpec {
+  const d = STRIP_DEFAULTS;
   const axis = (str(step, 'axis') ?? 'x').trim().toLowerCase();
   return {
-    x: int(step, 0, 'x'),
-    y: int(step, 11, 'y'),
-    z: int(step, 0, 'z'),
+    x: int(step, d.x, 'x'),
+    y: int(step, d.y, 'y'),
+    z: int(step, d.z, 'z'),
     axis: axis.startsWith('z') ? 'z' : 'x',
-    length: int(step, 30, 'length'),
-    width: int(step, 1, 'width'),
-    height: int(step, 2, 'height'),
-    spacing: int(step, 3, 'spacing'),
-    branchLength: int(step, 12, 'branchLength', 'branch_length'),
+    length: int(step, d.length, 'length'),
+    width: int(step, d.width, 'width'),
+    height: int(step, d.height, 'height'),
+    spacing: int(step, d.spacing, 'spacing'),
+    branchLength: int(step, d.branchLength, 'branchLength', 'branch_length'),
     sides: (str(step, 'sides') ?? 'both') as StripSpec['sides'],
-    torchEvery: int(step, 0, 'torchEvery', 'torch_every'),
+    torchEvery: int(step, d.torchEvery, 'torchEvery', 'torch_every'),
   };
 }
 

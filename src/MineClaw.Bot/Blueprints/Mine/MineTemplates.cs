@@ -14,16 +14,28 @@ namespace MineClaw.Bot.Blueprints.Mine;
 /// <param name="TorchEvery">A wall torch every N steps (0 = none), on the outer wall above the head.</param>
 /// <param name="Landings">Feet levels where the whole square (core too) is dug 2 high: rooms and tunnels branch off there.</param>
 public sealed record SpiralSpec(int X, int Z, int Top, int Bottom, int Size = 4, int Core = 2, bool Clockwise = true, int TorchEvery = 0,
-    IReadOnlyList<int>? Landings = null);
+    IReadOnlyList<int>? Landings = null)
+{
+    /// <summary>The defaults every reader of a spiral step falls back on (presets, the AI's tool, the panel's port).</summary>
+    public static readonly SpiralSpec Default = new(30, 30, 64, 11);
+}
 
-/// <summary>A strip mine: a main corridor along x or z with 1×2 branches off both sides, <see cref="Spacing"/> solid blocks apart.</summary>
+/// <summary>
+/// A strip mine: a main corridor along x or z with 1×2 branches off both sides, <see cref="Spacing"/> solid blocks apart. The
+/// defaults are the layout study's best (docs/design/mine-blueprints.md): feet at y 11, a 1×2 corridor, branches 4 apart, which
+/// shows the most diamonds per block dug in both versions.
+/// </summary>
 /// <param name="X">The corridor's first cell (its west / north side).</param>
 /// <param name="Y">The feet level.</param>
 /// <param name="Width">The main corridor's width (1 or 2) …</param>
 /// <param name="Height">… and height (2 or 3): "1x2" or "2x3".</param>
 /// <param name="Sides">both | left (−z for an x corridor, −x for a z one) | right | none.</param>
-public sealed record StripSpec(int X, int Y, int Z, char Axis = 'x', int Length = 30, int Width = 1, int Height = 2, int Spacing = 3, int BranchLength = 12,
-    string Sides = "both", int TorchEvery = 0);
+public sealed record StripSpec(int X, int Y, int Z, char Axis = 'x', int Length = 30, int Width = 1, int Height = 2, int Spacing = 4, int BranchLength = 12,
+    string Sides = "both", int TorchEvery = 0)
+{
+    /// <summary>The defaults every reader of a strip step falls back on (presets, the AI's tool, the panel's port).</summary>
+    public static readonly StripSpec Default = new(0, 11, 0);
+}
 
 /// <summary>A template's cells (id 0 = dig, else a block placed after its cell is dug), its entry (the top step) and the walk path.</summary>
 public sealed record MineCells(List<CanvasCell> Cells, BlockPos Entry, List<BlockPos> Path, string Label);
@@ -240,20 +252,22 @@ public static class MineTemplates
 
     private static MineCells SpiralStep(JsonElement step, MineTerrain? terrain)
     {
-        int x = IntOr(step, "x", 30), z = IntOr(step, "z", 30), size = IntOr(step, "size", 4);
-        int top = Int(step, "top") ?? (terrain?.SurfaceOver(x, z, x + size - 1, z + size - 1) ?? 64);
+        var d = SpiralSpec.Default;
+        int x = IntOr(step, "x", d.X), z = IntOr(step, "z", d.Z), size = IntOr(step, "size", d.Size);
+        int top = Int(step, "top") ?? (terrain?.SurfaceOver(x, z, x + size - 1, z + size - 1) ?? d.Top);
         var dir = (Str(step, "dir") ?? "cw").ToLowerInvariant();
         var landings = Ints(step, "landings");
-        return Spiral(new SpiralSpec(x, z, top, IntOr(step, "bottom", 11), size, IntOr(step, "core", 2), dir is not ("ccw" or "counterclockwise"),
-            Int(step, "torchEvery", "torch_every") ?? 0, landings));
+        return Spiral(new SpiralSpec(x, z, top, IntOr(step, "bottom", d.Bottom), size, IntOr(step, "core", d.Core), dir is not ("ccw" or "counterclockwise"),
+            Int(step, "torchEvery", "torch_every") ?? d.TorchEvery, landings));
     }
 
     private static MineCells StripStep(JsonElement step)
     {
+        var d = StripSpec.Default;
         var axis = (Str(step, "axis") ?? "x").Trim();
-        return Strip(new StripSpec(IntOr(step, "x", 0), IntOr(step, "y", 11), IntOr(step, "z", 0), axis.Length > 0 ? axis[0] : 'x',
-            IntOr(step, "length", 30), IntOr(step, "width", 1), IntOr(step, "height", 2), IntOr(step, "spacing", 3),
-            Int(step, "branchLength", "branch_length") ?? 12, Str(step, "sides") ?? "both", Int(step, "torchEvery", "torch_every") ?? 0));
+        return Strip(new StripSpec(IntOr(step, "x", d.X), IntOr(step, "y", d.Y), IntOr(step, "z", d.Z), axis.Length > 0 ? axis[0] : d.Axis,
+            IntOr(step, "length", d.Length), IntOr(step, "width", d.Width), IntOr(step, "height", d.Height), IntOr(step, "spacing", d.Spacing),
+            Int(step, "branchLength", "branch_length") ?? d.BranchLength, Str(step, "sides") ?? d.Sides, Int(step, "torchEvery", "torch_every") ?? d.TorchEvery));
     }
 
     private static string? Str(JsonElement e, string k) => e.ValueKind == JsonValueKind.Object && e.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;

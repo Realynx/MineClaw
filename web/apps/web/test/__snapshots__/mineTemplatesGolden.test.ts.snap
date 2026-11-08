@@ -50,8 +50,8 @@ exports[`mine templates (golden, pinned before the step reader and templates wer
     "177:1534829339 entry 30,69,30 path 59:2807133498 | spiral shaft 3×3 (core 1×1) y69→11",
   ],
   [
-    "396:746303979 entry 0,11,0 path 30:667172068 | strip mine at y11 along x: 1×2 × 30, 7 branch rows 3 apart (12 long, both)",
-    "396:746303979 entry 0,11,0 path 30:667172068 | strip mine at y11 along x: 1×2 × 30, 7 branch rows 3 apart (12 long, both)",
+    "348:1584627491 entry 0,11,0 path 30:667172068 | strip mine at y11 along x: 1×2 × 30, 6 branch rows 4 apart (12 long, both)",
+    "348:1584627491 entry 0,11,0 path 30:667172068 | strip mine at y11 along x: 1×2 × 30, 6 branch rows 4 apart (12 long, both)",
   ],
   [
     "106:1683860717 entry 3,20,-2 path 12:2815554685 | strip mine at y20 along z: 2×3 × 12, 4 branch rows 2 apart (4 long, left)",
@@ -66,8 +66,8 @@ exports[`mine templates (golden, pinned before the step reader and templates wer
     "12:4084072508 entry 0,11,0 path 5:291000600 | strip mine at y11 along x: 1×2 × 5, 2 branch rows 1 apart (12 long, none)",
   ],
   [
-    "286:1811926699 entry 0,11,0 path 20:2980247877 | strip mine at y11 along x: 1×2 × 20, 5 branch rows 3 apart (12 long, both)",
-    "286:1811926699 entry 0,11,0 path 20:2980247877 | strip mine at y11 along x: 1×2 × 20, 5 branch rows 3 apart (12 long, both)",
+    "238:688539035 entry 0,11,0 path 20:2980247877 | strip mine at y11 along x: 1×2 × 20, 4 branch rows 4 apart (12 long, both)",
+    "238:688539035 entry 0,11,0 path 20:2980247877 | strip mine at y11 along x: 1×2 × 20, 4 branch rows 4 apart (12 long, both)",
   ],
   [
     "throws no mine template 'room' (spiral, strip)",
