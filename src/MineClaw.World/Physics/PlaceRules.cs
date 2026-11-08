@@ -69,25 +69,35 @@ public static class PlaceRules
         return $"{F(target)} has no sand under it for a cactus ({F(below)} is {underName})";
     }
 
-    /// <summary>A neighbour the server lets us click to put a block into the cell beside it (solid, not a container/door).</summary>
-    public static bool IsSupport(IBlockAccess w, BlockPos p)
+    /// <summary>A neighbour that takes a placement click. Container/station faces require an explicit sneak-placement
+    /// context on 1.12.2; normal interaction, attachment and beta callers keep excluding blocks that open.</summary>
+    public static bool IsSupport(IBlockAccess w, BlockPos p, bool allowSneakInteraction = false)
     {
         int id = w.GetBlock(p.X, p.Y, p.Z);
-        return id != 0 && !BlockShapes.IsLiquid(id) && !w.Info(id).Interactable && BlockShapes.HasCollision(w, p.X, p.Y, p.Z);
+        return id != 0 && !BlockShapes.IsLiquid(id)
+            && (!w.Info(id).Interactable || allowSneakInteraction && CanSneakPlaceAgainst(w, id))
+            && BlockShapes.HasCollision(w, p.X, p.Y, p.Z);
     }
+
+    /// <summary>1.12.2 PlayerInteractionManager skips block activation while sneaking with a held item. Limit this
+    /// opt-in to containers/stations; doors, beds and other interactive shapes retain their existing rules.</summary>
+    public static bool CanSneakPlaceAgainst(IBlockAccess w, int id) => w.Physics is Versioning.Release1122PhysicsRules
+        && (id is Blocks.Dispenser or Blocks.Chest or Blocks.CraftingTable or Blocks.Furnace or Blocks.LitFurnace
+            or 130 or 146 or 154 or 158 // ender chest, trapped chest, hopper, dropper
+            or >= 219 and <= 234); // shulker boxes
 
     /// <summary>
     /// "7,62,9 has nothing solid on any side to place against (below 7,61,9 air, above 7,63,9 air, ...)" when no neighbour can
     /// be clicked at all, else null.
     /// </summary>
-    public static string? NoSupportProblem(IBlockAccess w, BlockPos target)
+    public static string? NoSupportProblem(IBlockAccess w, BlockPos target, bool allowSneakInteraction = false)
     {
         var sides = new List<string>();
         foreach (var face in BlockFaceExtensions.All)
         {
             var n = face.Normal();
             var against = new BlockPos(target.X - n.X, target.Y - n.Y, target.Z - n.Z);
-            if (IsSupport(w, against)) return null;
+            if (IsSupport(w, against, allowSneakInteraction)) return null;
             sides.Add(Name(w, against));
         }
         var kinds = sides.GroupBy(s => s).OrderByDescending(g => g.Count()).Select(g => g.Count() == 6 ? $"all {g.Key}" : $"{g.Count()} {g.Key}");
@@ -99,14 +109,14 @@ public static class PlaceRules
     /// nearest solid neighbour whose shared face centre is within <paramref name="reach"/> of the eye. Null = none in reach.
     /// The caller still checks the player box (vanilla refuses a block inside an entity).
     /// </summary>
-    public static PlaceAim? BlindAim(IBlockAccess w, Vec3d eye, BlockPos target, double reach)
+    public static PlaceAim? BlindAim(IBlockAccess w, Vec3d eye, BlockPos target, double reach, bool allowSneakInteraction = false)
     {
         PlaceAim? best = null;
         foreach (var face in BlockFaceExtensions.All)
         {
             var n = face.Normal();
             var against = new BlockPos(target.X - n.X, target.Y - n.Y, target.Z - n.Z);
-            if (!IsSupport(w, against)) continue;
+            if (!IsSupport(w, against, allowSneakInteraction)) continue;
             // Centre of the face shared by `against` and the target.
             var p = new Vec3d(target.X + 0.5 - n.X * 0.5, target.Y + 0.5 - n.Y * 0.5, target.Z + 0.5 - n.Z * 0.5);
             double d = eye.DistanceTo(p);
@@ -118,8 +128,8 @@ public static class PlaceRules
     }
 
     /// <summary>Distance from the eye to the nearest support face centre (null = no support at all).</summary>
-    public static double? NearestSupportDistance(IBlockAccess w, Vec3d eye, BlockPos target) =>
-        BlindAim(w, eye, target, double.MaxValue)?.Distance;
+    public static double? NearestSupportDistance(IBlockAccess w, Vec3d eye, BlockPos target, bool allowSneakInteraction = false) =>
+        BlindAim(w, eye, target, double.MaxValue, allowSneakInteraction)?.Distance;
 
     /// <summary>
     /// Nearest free soil for <paramref name="itemId"/> (a cell whose rules pass and that is empty), within <paramref name="radius"/>

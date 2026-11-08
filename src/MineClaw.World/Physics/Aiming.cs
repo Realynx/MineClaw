@@ -62,10 +62,10 @@ public static class Aiming
     /// Finds a solid neighbour of <paramref name="target"/> whose face toward the target is visible within reach.
     /// Returns null when the target cell is occupied, nothing can be clicked, or the new block would overlap
     /// <paramref name="playerBox"/> (the server refuses to place inside an entity). Interactable blocks (chests,
-    /// furnaces...) are never used as the clicked block, since clicking them opens them instead.
+    /// furnaces...) require the caller's explicit 1.12.2 sneak-placement context to avoid opening them.
     /// </summary>
     public static PlaceAim? FindPlaceAim(IBlockAccess w, Vec3d eye, BlockPos target, double reach = DefaultReach,
-        AABB? playerBox = null)
+        AABB? playerBox = null, bool allowSneakInteraction = false)
     {
         if (!IsReplaceable(w, w.GetBlock(target.X, target.Y, target.Z))) return null;
         if (playerBox is { } pb && pb.Intersects(AABB.Block(target.X, target.Y, target.Z))) return null;
@@ -77,7 +77,7 @@ public static class Aiming
             // Neighbour N is at target - normal(face); clicking N on `face` puts the block at target.
             var n = face.Normal();
             var against = new BlockPos(target.X - n.X, target.Y - n.Y, target.Z - n.Z);
-            if (!PlaceRules.IsSupport(w, against)) continue;
+            if (!PlaceRules.IsSupport(w, against, allowSneakInteraction)) continue;
             boxes.Clear();
             BlockShapes.AddSelectionBoxes(w, against.X, against.Y, against.Z, boxes);
             foreach (var box in boxes)

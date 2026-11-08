@@ -1438,8 +1438,10 @@ ghost's id/meta is the block expected there, read from the world view when it wa
 
 Execution:
 - A pawn with Build on gets a batch of ghosts as one job (see "Building fast" below), by the picker and lease rules.
-- Order: the first unpaused build in queue order gives out its jobs, only from its lowest unfinished level (support first).
-  Blocks touching something solid go first, then the nearest. When all of those are leased, the next build's jobs go out.
+- Order: builds are tried in queue order, with ready lower placements preferred. A higher cell can proceed when it already has
+  a real support face: chests on a completed upper floor do not wait for unrelated lower cells that are blocked, leased or short
+  of materials. Unsupported cells still wait for support (or the lowest unfinished level's scaffold). When no cell is ready,
+  the next build's jobs go out.
   A build that only digs goes top-down instead (a buried cell opens once the one above it is gone). A build of a `group`
   waits while an earlier build of that group still has cells to dig (a dig that keeps failing doesn't hold it).
 - Never a block where a player stands.
@@ -2689,7 +2691,8 @@ The design grew while it was built. The wire forms are in `docs/web/api.md` §6 
 
 ## Construction (added 2026-11-03)
 
-Building is queued, colony-sim style. Pawns with Build enabled fill queued builds in queue order, bottom-up.
+Building is queued, colony-sim style. Pawns with Build enabled try queued builds in order, preferring lower ready cells while
+allowing independently supported upper-floor furnishings to proceed.
 - **Architect palette:** wall (height 1–12), floor, door, window, stairs, fence, roof (flat, slab, gable or none, with an
   optional overhang), single block, and deconstruct. Each takes a material.
 - **Placement:** drag on the map to place, and Q/E rotates. Queued blueprints draw as block holograms in the world (see

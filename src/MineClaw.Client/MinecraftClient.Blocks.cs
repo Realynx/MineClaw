@@ -268,7 +268,7 @@ public sealed partial class MinecraftClient
         // 15,65,1, whose real problem was air under it) instead of walking around looking for a face.
         if (PlaceRules.SoilProblem(World, pos, itemId) is { } soil)
             return ActionResult.Fail(soil + (PlaceRules.NearestSoil(World, pos, itemId) is { } a2 ? $"; nearest free spot: {Fmt(a2)}" : ""));
-        if (face is null && PlaceRules.NoSupportProblem(World, pos) is { } none) return ActionResult.Fail(none);
+        if (face is null && PlaceRules.NoSupportProblem(World, pos, allowSneakInteraction: true) is { } none) return ActionResult.Fail(none);
         if (PlaceAimFor(pos, face) is { } seen) return await PlaceWithAimAsync(pos, itemId, damage, seen, hiddenFace: false, ct).ConfigureAwait(false);
         var (aim, hiddenFace, fail) = await ApproachPlaceAimAsync(pos, face, allowPathing, ct).ConfigureAwait(false);
         if (fail is not null) return fail;
@@ -278,7 +278,7 @@ public sealed partial class MinecraftClient
     /// <summary>A visible support face for <paramref name="pos"/> from here: the given face of its neighbour, else any.</summary>
     private PlaceAim? PlaceAimFor(BlockPos pos, BlockFace? face) => face is { } f
         ? FacePlaceAim(pos, f)
-        : Aiming.FindPlaceAim(World, World.Player.EyePosition, pos, Options.Reach, AABB.ForPlayer(World.Player.Position));
+        : Aiming.FindPlaceAim(World, World.Player.EyePosition, pos, Options.Reach, AABB.ForPlayer(World.Player.Position), allowSneakInteraction: true);
 
     /// <summary>A wall-mounted placement on a given face: the neighbour behind it must be solid and must not open instead.</summary>
     private string? FaceSupportProblem(BlockPos pos, BlockFace wf)
@@ -288,7 +288,8 @@ public sealed partial class MinecraftClient
         int aid = World.GetBlock(against);
         if (aid == 0 || BlockShapes.IsLiquid(aid) || !BlockShapes.HasCollision(World, against.X, against.Y, against.Z))
             return $"nothing solid at {Fmt(against)} to place against ({wf.ToString().ToLowerInvariant()} face)";
-        if (Blocks.Get(aid).Interactable) return $"{BlockName(aid, 0)} at {Fmt(against)} would open instead of taking the block";
+        if (!PlaceRules.IsSupport(World, against, allowSneakInteraction: true))
+            return $"{BlockName(aid, 0)} at {Fmt(against)} would open instead of taking the block";
         return null;
     }
 
@@ -310,7 +311,7 @@ public sealed partial class MinecraftClient
         // b1.8.1's server never raytraces 0x0F (distance only), so a support face hidden from every reachable spot (live
         // 10-27 15:56: refilling 7,62,9 under the floor from inside its own hole, the only support the south face of
         // 7,62,8) is still a valid click: aim at it unseen, the same last resort as BlindUseAim for containers.
-        if (face is null && PlaceRules.BlindAim(World, World.Player.EyePosition, pos, Options.Reach) is { } blind)
+        if (face is null && PlaceRules.BlindAim(World, World.Player.EyePosition, pos, Options.Reach, allowSneakInteraction: true) is { } blind)
         {
             Log($"place: no visible support face for {Fmt(pos)}; clicking {BlockName(World.GetBlock(blind.Against), World.GetMeta(blind.Against))} at {Fmt(blind.Against)} ({blind.Face.ToString().ToLowerInvariant()} face) unseen");
             return (blind, true, null);
@@ -321,7 +322,7 @@ public sealed partial class MinecraftClient
     private string NoPlaceAimReason(BlockPos pos, BlockFace? face)
     {
         if (face is { } f2) return $"can't place at {Fmt(pos)} on the {f2.ToString().ToLowerInvariant()} face: not visible/in reach";
-        var d = PlaceRules.NearestSupportDistance(World, World.Player.EyePosition, pos);
+        var d = PlaceRules.NearestSupportDistance(World, World.Player.EyePosition, pos, allowSneakInteraction: true);
         return $"can't place at {Fmt(pos)}: its nearest support face is {d:0.0} blocks from my eyes at {Fmt(World.Player.Position)} " +
                $"(reach {Options.Reach:0.#}) and I couldn't get closer";
     }
@@ -336,7 +337,7 @@ public sealed partial class MinecraftClient
         if (AABB.ForPlayer(World.Player.Position).Intersects(AABB.Block(pos.X, pos.Y, pos.Z)) || FallingIntoCell(pos))
             return ActionResult.Fail(InTheWay + Fmt(pos));
         int heldBefore = World.Inventory.CountItem(itemId);
-        Send(new PlayerBlockPlacementPacket
+        SendPlaceClick(new PlayerBlockPlacementPacket
         {
             X = a.Against.X, Y = a.Against.Y, Z = a.Against.Z, Direction = (byte)a.Face, HeldItem = HeldStack(),
         });
@@ -355,6 +356,36 @@ public sealed partial class MinecraftClient
         return ActionResult.Success($"placed {ItemName(itemId)} at {Fmt(pos)}");
     }
 
+
+    /// <summary>A placement against a modern container must reach the server while sneaking. The normal action already
+    /// sneaks, but a water hover or reflex can own the tick input. Bracket only this click in that case, without changing
+    /// movement or leaving sneak held. Serialize with tick sneak packets so a stop cannot arrive between start and click.</summary>
+    private void SendPlaceClick(PlayerBlockPlacementPacket packet)
+    {
+        int support = World.GetBlock(packet.X, packet.Y, packet.Z);
+        if (!World.Info(support).Interactable)
+        {
+            Send(packet);
+            return;
+        }
+        if (!PlaceRules.CanSneakPlaceAgainst(World, support))
+            throw new ActionAbortedException($"{BlockName(support, 0)} at {packet.X},{packet.Y},{packet.Z} would open instead of taking the block");
+        var session = _session;
+        if (session is null || session.Ended) throw new ActionAbortedException("not connected");
+        lock (_sneakWireSync)
+        {
+            bool alreadySneaking = _lastSneak;
+            try
+            {
+                if (!alreadySneaking) Send(session, new EntityActionPacket { EntityId = World.Player.EntityId, Action = 1 });
+                Send(session, packet);
+            }
+            finally
+            {
+                if (!alreadySneaking) Send(session, new EntityActionPacket { EntityId = World.Player.EntityId, Action = 2 });
+            }
+        }
+    }
 
     /// <summary>
     /// After a placement's block change, waits (≤ 6 ticks) for the server's slot update that takes the block from the held stack,
@@ -403,7 +434,7 @@ public sealed partial class MinecraftClient
             await DriveAsync(phys =>
             {
                 ticks++;
-                seen = phys.OnGround && Aiming.FindPlaceAim(World, phys.EyePosition, pos, Options.Reach, phys.BoundingBox) is not null;
+                seen = phys.OnGround && Aiming.FindPlaceAim(World, phys.EyePosition, pos, Options.Reach, phys.BoundingBox, allowSneakInteraction: true) is not null;
                 float yaw = PlayerPhysics.YawPitchTo(phys.Position, toward).Yaw;
                 return seen || ticks > 40
                     ? new DriverStep(new MoveInput(Sneak: true, Yaw: yaw, Pitch: 75), Done: true)

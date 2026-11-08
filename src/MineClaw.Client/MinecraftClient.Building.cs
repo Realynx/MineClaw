@@ -77,7 +77,7 @@ public sealed partial class MinecraftClient
                 // of the arch bridge faced east and north instead of north and south). Say this yaw right before the click; the
                 // server handles them in order.
                 if (yaw is { } want) SendLookNow(want, aimPitch);
-                Send(new PlayerBlockPlacementPacket
+                SendPlaceClick(new PlayerBlockPlacementPacket
                 {
                     X = against.X, Y = against.Y, Z = against.Z, Direction = (byte)face, HeldItem = HeldStack(),
                     Cursor = PlacementCursor(itemId, against, face, point, half, cursor),
@@ -123,7 +123,8 @@ public sealed partial class MinecraftClient
         int aid = World.GetBlock(against);
         if (aid == 0 || BlockShapes.IsLiquid(aid) || !BlockShapes.HasCollision(World, against.X, against.Y, against.Z))
             return $"nothing solid at {Fmt(against)} to place against";
-        return Blocks.Get(aid).Interactable ? $"{BlockName(aid, 0)} at {Fmt(against)} would open instead of taking the block" : null;
+        return PlaceRules.IsSupport(World, against, allowSneakInteraction: true) ? null
+            : $"{BlockName(aid, 0)} at {Fmt(against)} would open instead of taking the block";
     }
 
     /// <summary>Where and how to look to click <paramref name="face"/> of <paramref name="against"/>: the seen point, or (when

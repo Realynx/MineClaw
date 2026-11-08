@@ -42,7 +42,6 @@ public partial class FakeServer
             case PlayerPositionLookPacket pl: _feet = (pl.X, pl.Y, pl.Z); _yaw = pl.Yaw; _pitch = pl.Pitch; return false;
             case PlayerPositionPacket pp: _feet = (pp.X, pp.Y, pp.Z); return false;
             case PlayerLookPacket l: _yaw = l.Yaw; _pitch = l.Pitch; return false;
-            case EntityActionPacket { Action: 1 or 2 } a: _sneaking = a.Action == 1; return false;
             case PlayerBlockPlacementPacket u when IsBucket(u.HeldItem.Id): return UseBucket(u);
             default:
                 return false;

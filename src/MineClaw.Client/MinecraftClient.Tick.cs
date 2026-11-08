@@ -34,6 +34,7 @@ public sealed partial class MinecraftClient
     private float _lastYaw, _lastPitch;
     private int _ticksSincePos;
     private bool _lastSprint, _lastSneak;
+    private readonly object _sneakWireSync = new();
 
     // Danger latches (tick thread only).
     private bool _voidAlerted, _lavaAlerted;
@@ -327,9 +328,12 @@ public sealed partial class MinecraftClient
             Send(s, new EntityActionPacket { EntityId = eid, Action = (sbyte)(phys.Sprinting ? 4 : 5) });
             _lastSprint = phys.Sprinting;
         }
-        if (phys.Sneaking == _lastSneak) return;
-        Send(s, new EntityActionPacket { EntityId = eid, Action = (sbyte)(phys.Sneaking ? 1 : 2) });
-        _lastSneak = phys.Sneaking;
+        lock (_sneakWireSync)
+        {
+            if (phys.Sneaking == _lastSneak) return;
+            Send(s, new EntityActionPacket { EntityId = eid, Action = (sbyte)(phys.Sneaking ? 1 : 2) });
+            _lastSneak = phys.Sneaking;
+        }
     }
 
     /// <summary>Exactly one of 0x0D (moved + rotated), 0x0B (moved), 0x0C (rotated) or 0x0A (neither).</summary>

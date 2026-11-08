@@ -193,8 +193,7 @@ public sealed partial class MinecraftClient
         if (AABB.ForPlayer(World.Player.Position).Intersects(AABB.Block(target.X, target.Y, target.Z))) return null;
         var n = face.Normal();
         var against = new BlockPos(target.X - n.X, target.Y - n.Y, target.Z - n.Z);
-        int id = World.GetBlock(against);
-        if (id == 0 || BlockShapes.IsLiquid(id) || Blocks.Get(id).Interactable) return null;
+        if (!PlaceRules.IsSupport(World, against, allowSneakInteraction: true)) return null;
         var a = FaceAim.Find(World, World.Player.EyePosition, against, face, Options.Reach);
         return a is { } v ? new PlaceAim(target, against, face, v.Point, v.Yaw, v.Pitch, v.Distance) : null;
     }

@@ -73,9 +73,9 @@ public static class ReachScan
         int block = BlockOrientation.BlockOf(item);
         bool modern = data.VersionId != "b1.8.1";
         if (meta is not { } turn || !BlockOrientation.Turns(block, turn, modern))
-            return Aiming.FindPlaceAim(w, eye, target, Reach, AABB.ForPlayer(feet)) is not null;
+            return Aiming.FindPlaceAim(w, eye, target, Reach, AABB.ForPlayer(feet), allowSneakInteraction: true) is not null;
         return BlockOrientation.Solve(block, turn, target, feet, modern,
-                face => PlaceRules.IsSupport(w, target - face.Normal()), sneaking: true)
+                face => PlaceRules.IsSupport(w, target - face.Normal(), allowSneakInteraction: true), sneaking: true)
             .Any(t => Client.FaceAim.Find(w, eye, target - t.Face.Normal(), t.Face, Reach) is not null);
     }
 

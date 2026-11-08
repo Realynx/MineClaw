@@ -261,9 +261,9 @@ public sealed partial class StoryColony
     }
 
     /// <summary>
-    /// The cells open now. Support first: a level waits for the one below, blocked blocks included (it never builds over a gap).
-    /// Digging goes the other way: top-down (a buried cell opens once the one above it is gone). A mine goes in reachable order: a
-    /// cell opens once a neighbour is open (from the entry at the surface outward and down).
+    /// The cells open now. The lowest unfinished level may need a scaffold; higher placements are independent once they already
+    /// have a real support face. An unreachable or material-starved cell must not hold another completed floor's furnishings.
+    /// Pure demolition stays top-down. A mine opens a cell once a neighbour is open, from its entry outward and down.
     /// </summary>
     private List<GhostState> OpenCells(BuildState b, List<GhostState> todo, bool mine)
     {
@@ -271,7 +271,9 @@ public sealed partial class StoryColony
         if (left.Count == 0) return [];
         bool digs = left.All(g => g.Remove);
         int lowest = digs ? left.Max(g => g.At.Y) : left.Min(g => g.At.Y);
-        return mine ? todo.Where(g => g.State == "todo" && Exposed(g.At)).ToList() : todo.Where(g => g.State == "todo" && g.At.Y == lowest).ToList();
+        if (mine) return todo.Where(g => g.State == "todo" && Exposed(g.At)).ToList();
+        if (digs) return todo.Where(g => g.State == "todo" && g.At.Y == lowest).ToList();
+        return todo.Where(g => g.State == "todo" && (g.At.Y == lowest || !g.Remove && HasSupport(g.At))).ToList();
     }
 
     /// <summary>The open cells no higher than <paramref name="cap"/> (a pawn down in a quarry pit); the ones left out are said.</summary>
@@ -499,11 +501,12 @@ public sealed partial class StoryColony
         _buildBlockSaid[b.Id] = reason;
     }
 
-    /// <summary>The seeds of a level in order: only cells with something to click against beside them (<see cref="SeedReady"/>), away
-    /// from other pawns' batches, then nearest.</summary>
+    /// <summary>Only cells with something to click against beside them (<see cref="SeedReady"/>), lower levels first, then away
+    /// from other pawns' batches and nearest. A held lower seed does not hide ready cells on another floor.</summary>
     private IEnumerable<GhostState> Seeds(List<GhostState> open, List<P3> busy, P3 from) =>
         open.Where(SeedReady)
-            .OrderBy(t => t.At.Dist(from) + (busy.Any(o => Math.Abs(o.X - t.At.X) <= StandRadius + 1 && Math.Abs(o.Z - t.At.Z) <= StandRadius + 1) ? 12 : 0));
+            .OrderBy(t => t.At.Y)
+            .ThenBy(t => t.At.Dist(from) + (busy.Any(o => Math.Abs(o.X - t.At.X) <= StandRadius + 1 && Math.Abs(o.Z - t.At.Z) <= StandRadius + 1) ? 12 : 0));
 
     /// <summary>A cell holds what the ghost wants: the same block and variant, turned the same way where the placement decides it (a
     /// furnace's front, a stair's rise and half, a log's axis: <see cref="MineClaw.World.BlockOrientation.Same"/>); runtime bits

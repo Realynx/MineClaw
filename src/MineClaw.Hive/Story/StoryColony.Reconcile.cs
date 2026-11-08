@@ -209,8 +209,8 @@ public sealed partial class StoryColony
     // ------------------------------------------------------------------ support: the client's own rule
 
     /// <summary>A block a placement can click against, by the pawn client's rule (<see cref="PlaceRules.IsSupport"/>: anything with a
-    /// collision box that doesn't open when clicked: stairs, slabs, fences, panes, glass and leaves too), in the colony's view.</summary>
-    private bool Clickable(P3 p) => World is { } w && PlaceRules.IsSupport(AccessOf(w), new BlockPos(p.X, p.Y, p.Z));
+    /// collision box that doesn't open when clicked, or a 1.12.2 container the pawn sneak-clicks), in the colony's view.</summary>
+    private bool Clickable(P3 p) => World is { } w && PlaceRules.IsSupport(AccessOf(w), new BlockPos(p.X, p.Y, p.Z), allowSneakInteraction: true);
 
     /// <summary>Something beside the cell can be clicked now (the client won't say "nothing solid on any side").</summary>
     private bool HasSupport(P3 p) => StoryConstruction.Supported(p, Clickable);

@@ -2,6 +2,7 @@ using MineClaw.Data;
 using MineClaw.Data.Versioning;
 using MineClaw.Scripting.Story;
 using MineClaw.World;
+using MineClaw.World.Versioning;
 
 namespace MineClaw.Scripting.Tests;
 
@@ -20,6 +21,53 @@ public sealed class ReachScanTests
     {
         var xyz = scan["stand"]!.GetValue<string>().Split(',').Select(int.Parse).ToArray();
         return new BlockPos(xyz[0], xyz[1], xyz[2]);
+    }
+
+    private static WorldState ChestSupportWorld(IGameData data, bool modern)
+    {
+        var w = new WorldState(data.Block, physics: modern ? Release1122PhysicsRules.Instance : Beta181PhysicsRules.Instance);
+        w.ApplyChunkRegion(-16, 0, -16, 32, 128, 32, new byte[32 * 128 * 32], null, null, null);
+        for (int x = -8; x <= 8; x++)
+            for (int z = -8; z <= 8; z++) w.SetBlock(x, 64, z, Blocks.Stone, 0);
+        w.SetBlock(2, 65, 0, Blocks.Chest, 2);
+        return w;
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public void Placement_reach_accepts_chest_support_only_when_the_version_allows_sneak_placement(bool modern, bool oriented)
+    {
+        IGameData data = modern ? Release1122GameData.Instance : Beta181GameData.Instance;
+        using var w = ChestSupportWorld(data, modern);
+        var target = new BlockPos(2, 66, 0);
+        var feet = new Vec3d(0.5, 65, 0.5);
+
+        Assert.Equal(modern, ReachScan.PlacementWithin(w, data, feet, target, Blocks.Chest, oriented ? 2 : null));
+        // The normal interaction context still excludes the chest: only the construction reach check opts in.
+        Assert.Null(Aiming.FindPlaceAim(w, feet + new Vec3d(0, PlayerPhysics.EyeHeight, 0), target, ReachScan.Reach));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void A_stacked_chest_has_a_walkable_placement_stand_without_building_an_access_pillar(bool oriented)
+    {
+        var data = Release1122GameData.Instance;
+        using var w = ChestSupportWorld(data, modern: true);
+        var target = new BlockPos(2, 66, 0);
+        var from = new Vec3d(-5.5, 65, 0.5);
+        bool CanReach(Vec3d feet, BlockPos at) => ReachScan.PlacementWithin(w, data, feet, at, Blocks.Chest, oriented ? 2 : null);
+
+        var scan = ReachScan.Scan(w, data, from, target, walkable: true, canReach: CanReach);
+
+        Assert.False(scan["within"]!.GetValue<bool>());
+        Assert.Null(scan["why"]);
+        Assert.Equal(0, scan["steps"]!.GetValue<int>());
+        var stand = Stand(scan);
+        Assert.True(CanReach(new Vec3d(stand.X + 0.5, stand.Y, stand.Z + 0.5), target));
     }
 
     [Fact]

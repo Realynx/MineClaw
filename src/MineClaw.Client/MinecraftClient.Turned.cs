@@ -188,13 +188,12 @@ public sealed partial class MinecraftClient
         return best;
     }
 
-    /// <summary>A face of the block behind <paramref name="pos"/> that takes a click: solid, not a liquid, not something that opens.</summary>
+    /// <summary>A face that takes a placement click, including 1.12.2 containers when sneaking.</summary>
     private bool Clickable(BlockPos pos, BlockFace face)
     {
         var a = pos - face.Normal();
         if (!World.IsLoaded(a.X, a.Z)) return false;
-        int id = World.GetBlock(a);
-        return id != 0 && !BlockShapes.IsLiquid(id) && BlockShapes.HasCollision(World, a.X, a.Y, a.Z) && !Blocks.Get(id).Interactable;
+        return PlaceRules.IsSupport(World, a, allowSneakInteraction: true);
     }
 
     /// <summary>Stand cells near <paramref name="pos"/> (feet and head open, ground under, not in the cell) from which a click gives the

@@ -54,9 +54,17 @@ public sealed partial class StoryColony
     private ActiveJob? ImmediateCraftJob(PawnState p, PawnLive live)
     {
         if (!Benches.Any(b => b.Tasks.Any(Immediate))) return null;
-        foreach (var work in new[] { WorkTypes.Craft, WorkTypes.Cook })
-            if (p.Priorities.GetValueOrDefault(work) is >= 1 and <= 4 && BillJob(p, live, work, Immediate) is { } job) return job;
-        return null;
+        // This early probe gives runnable urgent crafts precedence. When they cannot run, the normal work scan records their
+        // reasons at the pawn's crafting priority, so a missing bucket does not mask why its higher-priority building is blocked.
+        var notes = _blockedNotes;
+        _blockedNotes = null;
+        try
+        {
+            foreach (var work in new[] { WorkTypes.Craft, WorkTypes.Cook })
+                if (p.Priorities.GetValueOrDefault(work) is >= 1 and <= 4 && BillJob(p, live, work, Immediate) is { } job) return job;
+            return null;
+        }
+        finally { _blockedNotes = notes; }
     }
 
     /// <summary>

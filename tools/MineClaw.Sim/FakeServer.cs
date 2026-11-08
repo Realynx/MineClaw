@@ -326,10 +326,20 @@ public partial class FakeServer : IDisposable
         CountFlyingPacket(p);
         TrackPlacer(p); // the look and feet a placed block's facing reads (FakeServer.Placement.cs)
         if (Hook?.Invoke(p) == true) return true;
+        if (p is EntityActionPacket { Action: 1 or 2 } sneak) _sneaking = sneak.Action == 1;
         if (TrampleFarmland) TrackTrample(p); // farmland back to dirt under a careless walker / a hard landing (FakeServer.Movement.cs)
         if (MovementChecks && CheckMovement(p)) return true; // vanilla "moved too quickly" / "moved wrongly" (FakeServer.Movement.cs)
         HandleMobs(p); // P4: the bot's melee on mobs (server-side charge and crit), orb pickups
         if (Modern && p is PlayerBlockPlacementPacket { HeldItem.IsEmpty: true } pl) pl.HeldItem = Inventory[36 + _heldSlot]; // the server's own hotbar
+        // 1.12.2 PlayerInteractionManager.processRightClickBlock skips block activation while sneaking with an item.
+        // Run actual block placement directly, before station/container/door handlers. Other items still reach their own
+        // opt-in handlers (notably bucket use); beta keeps its old activation behavior.
+        if (Modern && _sneaking && p is PlayerBlockPlacementPacket
+            { Direction: not PlayerBlockPlacementPacket.NoDirection, HeldItem: { IsEmpty: false, Id: > 0 and < 256 } } placing)
+        {
+            PlaceBlockOrSeed(placing);
+            return true;
+        }
         return HandledByOptIns(p);
     }
 
@@ -508,8 +518,13 @@ public partial class FakeServer : IDisposable
     {
         if (Chests.TryGetValue((place.X, place.Y, place.Z), out var contents)) { if (!LidShut((place.X, place.Y, place.Z))) OpenContainerWindow(0, "Chest", contents, 27); }
         else if (Furnaces.TryGetValue((place.X, place.Y, place.Z), out var fslots)) OpenContainerWindow(2, "Furnace", fslots, 3);
-        else if (PlaceBlocks && !place.HeldItem.IsEmpty && (place.HeldItem.Id < 256 ||
-                 (place.HeldItem.Id == 295 && place.Direction == 1 && Blocks.GetValueOrDefault((place.X, place.Y, place.Z)) == 60)))
+        else PlaceBlockOrSeed(place);
+    }
+
+    private void PlaceBlockOrSeed(PlayerBlockPlacementPacket place)
+    {
+        if (PlaceBlocks && !place.HeldItem.IsEmpty && (place.HeldItem.Id < 256 ||
+            (place.HeldItem.Id == 295 && place.Direction == 1 && Blocks.GetValueOrDefault((place.X, place.Y, place.Z)) == 60)))
             PlaceHeldBlock(place);
     }
 
