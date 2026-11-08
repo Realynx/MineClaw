@@ -14,6 +14,21 @@ namespace MineClaw.App.Tests;
 /// </summary>
 public class HiveBodyListTests
 {
+    [Fact]
+    public void Main_connection_status_changes_even_when_its_last_world_snapshot_stays_healthy()
+    {
+        var online = true;
+        var bodies = new HiveBodyList("maid_chan", () =>
+            [new HiveBotState("maid_chan", 0, 137, 55, 281, null, 20, 20, DateTimeOffset.UtcNow, IsMain: true)])
+        { Ttl = TimeSpan.Zero, MainOnline = () => online };
+        Assert.True(bodies.Find("main")!.Online);
+        online = false;
+        Assert.False(bodies.Find("main")!.Online);
+        Assert.Equal(20, bodies.Find("main")!.Hp);
+        online = true;
+        Assert.True(bodies.Find("main")!.Online);
+    }
+
     internal const string Hive = "maid_chan_109";
 
     internal sealed class FakeHive : IHiveVision

@@ -46,6 +46,9 @@ public sealed class HiveBodyList
 
     public TimeSpan Ttl { get; init; } = TimeSpan.FromMilliseconds(200);
 
+    /// <summary>Main's live connection, independent of its last world snapshot.</summary>
+    public Func<bool> MainOnline { get; init; } = () => true;
+
     /// <summary>A hive clone's telemetry source by login (dynamic accounts have no fixed roster entry); null = none.</summary>
     public Func<string, IBotTelemetrySource?>? Remote { get; init; }
 
@@ -69,6 +72,7 @@ public sealed class HiveBodyList
             () => hive()?.Slots.Select(s => new SlotView(s.Name, s.Connected, s.Snapshot, s.Task?.Text, s.State == CloneState.Starting)) ?? [],
             tree, () => BodyBriefs.Script(ScriptTools.Of(bot.Runtime)?.Controller.Current))
         {
+            MainOnline = () => bot.Client.IsPlaying,
             Remote = name => hive()?.Slot(name) is { } slot ? sources.GetValue(slot, s => new RemoteBotSource(s)) : null,
         };
     }
@@ -170,7 +174,7 @@ public sealed class HiveBodyList
         {
             if (hive.FirstOrDefault(b => b.IsMain) is not { } m || !_seen.Add(m.Name)) return;
             var ms = Try(mainScript, null);
-            List.Add(new BodyRow(m.Name, "main", "main", null, true, true, m.Dim, R(m.X), R(m.Y), R(m.Z), m.Hp, m.Food, m.Job, m.Brain, ms, m.At));
+            List.Add(new BodyRow(m.Name, "main", "main", null, true, Try(owner.MainOnline, false), m.Dim, R(m.X), R(m.Y), R(m.Z), m.Hp, m.Food, m.Job, m.Brain, ms, m.At));
         }
 
         public void AddLocal(IEnumerable<BodyBrief>? local)
