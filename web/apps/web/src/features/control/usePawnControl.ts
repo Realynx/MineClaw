@@ -73,7 +73,9 @@ export function usePawnControl(body: string) {
       busy = true;
       const pending = api('bodies.controlInput', {
         params: { body }, body: { session: current.session, seq: ++seq, ...snapshot },
-        signal: AbortSignal.timeout(1500),
+        // Transport jitter may outlast the movement deadman; leave key safety to the client and allow a reply
+        // within the advertised lease, with a small margin to release before an unresponsive session expires.
+        signal: AbortSignal.timeout(Math.max(1, current.leaseTimeoutMs - 250)),
       }).then((reply) => {
         if (!isCurrent()) return false;
         lease.current = reply; pose.current = reply.state;

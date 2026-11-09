@@ -36,6 +36,40 @@ it('uses immediate mouse look and at most one outstanding movement request', asy
   expect(api).toHaveBeenCalledWith('bodies.controlRelease', expect.objectContaining({ body: { session: session.session } }));
 });
 
+it('allows a slow input reply within the lease but ends control when the transport budget expires', async () => {
+  const timeout = vi.spyOn(AbortSignal, 'timeout').mockImplementation((milliseconds) => {
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), milliseconds);
+    return controller.signal;
+  });
+  let finish: ((reply: PawnControlSession) => void) | undefined;
+  api.mockImplementation((id: string, options: { signal?: AbortSignal }) => id === 'bodies.controlInput'
+    ? new Promise<PawnControlSession>((resolve, reject) => {
+      finish = resolve;
+      options.signal?.addEventListener('abort', () => reject(new Error('Input response timed out.')), { once: true });
+    }) : Promise.resolve(session));
+  const page = renderHook(() => usePawnControl('102'));
+  try {
+    await act(() => vi.advanceTimersByTimeAsync(51));
+    expect(timeout).toHaveBeenLastCalledWith(session.leaseTimeoutMs - 250);
+    page.result.current.input.current.forward = 1;
+    await act(() => vi.advanceTimersByTimeAsync(1700));
+    await act(async () => { finish?.(session); await Promise.resolve(); });
+    expect(page.result.current.status).toBe('active');
+    expect(page.result.current.error).toBe('');
+    expect(api.mock.calls.filter(([id]) => id === 'bodies.controlInput')).toHaveLength(1);
+    await act(() => vi.advanceTimersByTimeAsync(50));
+    expect(api.mock.calls.filter(([id]) => id === 'bodies.controlInput')).toHaveLength(2);
+    await act(() => vi.advanceTimersByTimeAsync(session.leaseTimeoutMs));
+    expect(page.result.current.status).toBe('ended');
+    expect(page.result.current.input.current.forward).toBe(0);
+    expect(page.result.current.error).toBe('Input response timed out.');
+    expect(api).toHaveBeenCalledWith('bodies.controlRelease', expect.objectContaining({ body: { session: session.session } }));
+    await act(async () => { finish?.(session); await Promise.resolve(); });
+    expect(page.result.current.status).toBe('ended');
+  } finally { page.unmount(); timeout.mockRestore(); }
+});
+
 it('releases control when hidden, never automatically reacquires, and ignores late movement', async () => {
   const page = renderHook(() => usePawnControl('102'));
   await act(() => vi.advanceTimersByTimeAsync(1));
