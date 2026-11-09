@@ -133,7 +133,7 @@ public sealed class SupervisorServer : IAsyncDisposable
                 else
                 {
                     using var socket = (await ctx.AcceptWebSocketAsync(null).ConfigureAwait(false)).WebSocket;
-                    await world.SocketAsync(socket, request, ct).ConfigureAwait(false);
+                    await world.SocketAsync(socket, request, ct, Perf).ConfigureAwait(false);
                 }
                 return;
             }
@@ -144,7 +144,7 @@ public sealed class SupervisorServer : IAsyncDisposable
                 else
                 {
                     using var socket = (await ctx.AcceptWebSocketAsync(null).ConfigureAwait(false)).WebSocket;
-                    await control.SocketAsync(socket, request, ct).ConfigureAwait(false);
+                    await control.SocketAsync(socket, request, ct, Perf).ConfigureAwait(false);
                 }
                 return; // A persistent socket never occupies a short-lived HTTP connection slot.
             }

@@ -431,12 +431,25 @@ Notes on specific routes:
 
 <!-- routes:end -->
 
-## 5. SSE: `GET /api/live/stream`
+## 5. Live updates: WebSockets and compatible SSE
 
-Nest holds one upstream `GET /v1/live/stream` (signed, no identity needed beyond Nest's own) and fans it out to every browser.
-The bridge polls the supervisor on loopback and emits typed events when something changed.
+Browsers connect to `/api/live/socket` with subprotocol `mineclaw.live.v1`. Nest holds one signed upstream
+`/v1/live/socket` and fans it out to browsers. The bridge receives entity deltas at 10 Hz and block batches at 5 Hz from
+the supervisor's `/api/world/socket`; slower status/feed topics keep their existing polling cadence. Chunk downloads and
+occasional inspections use REST. Upgrade requests require an allowed Origin and an authenticated viewer session.
 
-**Frame format** (`text/event-stream`). Nest builds frames with `formatSseFrame`:
+WebSocket frames are JSON envelopes `{ "event": "entities", "id": 123, "data": { ... } }`, using the catalogue below.
+The browser resumes with `lastEventId` in the query string. Filtering, replay, bounded queues and explicit resync are shared
+with `GET /api/live/stream`, which remains available for SSE clients. Both transports receive status heartbeats every 15 s.
+
+Pawn takeover uses a separate `/api/bodies/{body}/control/socket` connection with subprotocol `mineclaw.control.v1` and
+`csrf.<token>` offered during upgrade. It requires the story role. Acquire/release remain REST operations; the first socket
+message attaches the acquired lease with `{ "type": "attach", "session": "..." }`. Lease tokens never appear in URLs.
+Inputs stream at 20 Hz independently of replies; state frames also arrive at 20 Hz. Actions carry their own request IDs.
+Disconnect releases control, and replacing an attachment neutralizes its held inputs. Existing deadman and lease expiry
+limits still apply. The browser interpolates confirmed positions and applies mouse look immediately.
+
+**Compatible SSE frame format** (`text/event-stream`). Nest builds frames with `formatSseFrame`:
 
 ```
 event: <name>

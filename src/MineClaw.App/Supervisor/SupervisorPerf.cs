@@ -12,7 +12,7 @@ namespace MineClaw.App.Supervisor;
 /// the thread pool (threads, queued work), the GC (collections, pause time, allocation rate), and the A* gate (searches, busy time,
 /// the longest, time bodies waited for a slot). Thread-safe; recording is a lock and a list append.
 /// </summary>
-public sealed class SupervisorPerf
+public sealed partial class SupervisorPerf
 {
     private readonly object _lock = new();
     private Dictionary<string, List<double>> _routes = new(StringComparer.Ordinal);
@@ -51,10 +51,13 @@ public sealed class SupervisorPerf
     public string Summary()
     {
         Dictionary<string, List<double>> routes;
+        Dictionary<string, PublicationStats> publications;
         lock (_lock)
         {
             routes = _routes;
             _routes = new Dictionary<string, List<double>>(StringComparer.Ordinal);
+            publications = _publications;
+            _publications = new Dictionary<string, PublicationStats>(StringComparer.Ordinal);
         }
         long now = Stopwatch.GetTimestamp();
         double secs = Math.Max(0.001, Stopwatch.GetElapsedTime(_at, now).TotalSeconds);
@@ -81,6 +84,7 @@ public sealed class SupervisorPerf
         var st = MineClaw.Hive.Story.StoryPerf.Take();
         sb.Append(CultureInfo.InvariantCulture, $"story {st.Picks} picks {st.PickTime.TotalMilliseconds:0} ms, {st.Ticks} ticks {st.TickTime.TotalMilliseconds:0} ms");
         if (MineClaw.Hive.Story.StoryPerf.TakeIdle() is { } idle) sb.Append(", ").Append(idle); // pawns idle in work hours with work about, by why
+        AppendPublications(sb, publications);
         foreach (var (route, list) in routes.OrderByDescending(r => r.Value.Sum()).Take(12))
         {
             list.Sort();

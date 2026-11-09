@@ -21,6 +21,7 @@ public sealed class StoryColonies : IDisposable
     private readonly TimeProvider _time;
     private readonly ILogger _log;
     private Timer? _timer;
+    private int _ticking;
 
     public StoryColonies(IStoryHost host, StoryStore? store = null, TimeProvider? time = null, ILogger? log = null)
     {
@@ -53,15 +54,22 @@ public sealed class StoryColonies : IDisposable
 
     public void Tick()
     {
-        foreach (var c in All)
+        // A long reconciliation may outlive the periodic timer. Its state is current when it finishes;
+        // duplicate callbacks must not occupy pool workers waiting for that same colony lock.
+        if (Interlocked.CompareExchange(ref _ticking, 1, 0) != 0) return;
+        try
         {
-            long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
-            try { c.Tick(); }
-            catch (Exception ex) { _log.LogWarning(ex, "story {Colony}: tick failed", c.Id); } // a timer callback never throws
-            finally { StoryPerf.Note(ref StoryPerf.Ticks, ref StoryPerf.TickTicks, t0); }
-            try { RetrySeats(c); }
-            catch (Exception ex) { _log.LogWarning(ex, "story {Colony}: seat retry failed", c.Id); }
+            foreach (var c in All)
+            {
+                long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
+                try { c.Tick(); }
+                catch (Exception ex) { _log.LogWarning(ex, "story {Colony}: tick failed", c.Id); } // a timer callback never throws
+                finally { StoryPerf.Note(ref StoryPerf.Ticks, ref StoryPerf.TickTicks, t0); }
+                try { RetrySeats(c); }
+                catch (Exception ex) { _log.LogWarning(ex, "story {Colony}: seat retry failed", c.Id); }
+            }
         }
+        finally { Volatile.Write(ref _ticking, 0); }
     }
 
     /// <summary>Is the account a pawn of an active colony (spawned or still waiting for a seat)? The startup reconcile keeps those.</summary>

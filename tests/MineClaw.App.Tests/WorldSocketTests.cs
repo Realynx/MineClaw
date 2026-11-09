@@ -50,6 +50,7 @@ public sealed class WorldSocketTests
         int calls = world.EntityCalls;
         await Task.Delay(250, timeout.Token);
         Assert.Equal(calls, world.EntityCalls);
+        Assert.Contains("push world ", server.Perf.Summary());
 
         async Task<JsonDocument> Read()
         {

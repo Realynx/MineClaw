@@ -24,7 +24,7 @@ public sealed partial class SupervisorPawnControlRoutes
         return null;
     }
 
-    internal async Task SocketAsync(WebSocket socket, SupervisorRequest request, CancellationToken shutdown)
+    internal async Task SocketAsync(WebSocket socket, SupervisorRequest request, CancellationToken shutdown, SupervisorPerf? perf = null)
     {
         PawnControlSessions.SocketAttachment? attachment = null;
         using var send = new SemaphoreSlim(1);
@@ -43,7 +43,7 @@ public sealed partial class SupervisorPawnControlRoutes
             bound = CancellationTokenSource.CreateLinkedTokenSource(stop.Token, attachment.Closed.Token);
             // State delivery and receiving input run independently. An acknowledgement cannot serialize movement.
             receive = ReceiveInputs(socket, send, attachment, bound.Token);
-            publish = PublishState(socket, send, attachment, bound.Token);
+            publish = PublishState(socket, send, attachment, bound.Token, perf?.MonitorPublication("control"));
             await await Task.WhenAny(receive, publish).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is PawnControlException or JsonException or ArgumentException)
@@ -124,13 +124,15 @@ public sealed partial class SupervisorPawnControlRoutes
         }
     }
 
-    private async Task PublishState(WebSocket socket, SemaphoreSlim send, PawnControlSessions.SocketAttachment attachment, CancellationToken ct)
+    private async Task PublishState(WebSocket socket, SemaphoreSlim send, PawnControlSessions.SocketAttachment attachment, CancellationToken ct,
+        SupervisorPerf.PublicationMonitor? monitor)
     {
         using var tick = new PeriodicTimer(TimeSpan.FromMilliseconds(50));
         do
         {
             var data = sessions.SocketState(attachment);
             await SendSocketJson(socket, send, new { type = "state", sampled_at_ms = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), data }, ct).ConfigureAwait(false);
+            monitor?.Sent();
         }
         while (await tick.WaitForNextTickAsync(ct).ConfigureAwait(false));
     }

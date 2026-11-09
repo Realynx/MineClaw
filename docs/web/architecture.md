@@ -15,7 +15,7 @@ plan for a separate CT.
 ```
  browser ──HTTP on the LAN (now) / HTTPS via cloudflared (later)──▶ CT 114 (10.1.2.73)
    ├─ apps/api   NestJS 0.0.0.0:8080   the only new port on the network
-   │    ├─ /api/*            REST + SSE (/api/live/stream)
+   │    ├─ /api/*            REST + WebSockets (live viewer and pawn control); compatible SSE
    │    └─ everything else ▶ Next standalone on 127.0.0.1:3000
    ├─ apps/web   Next.js standalone, 127.0.0.1:3000
    ├─ tools/ViewerBridge   ASP.NET Core 127.0.0.1:8766   HMAC-signed requests from Nest only
@@ -48,7 +48,7 @@ points at a bridge URL: a local `dotnet run --project tools/ViewerBridge` with a
 ```
 web/                         npm workspaces + Turborepo (turbo.json); Node 22
   apps/web/                  Next.js (App Router, Turbopack, React, TS, Tailwind v4)
-  apps/api/                  NestJS (TS): auth, sessions, CSRF, RBAC, audit, bridge client, SSE fan-out, prod reverse proxy
+  apps/api/                  NestJS (TS): auth, sessions, CSRF, RBAC, audit, bridge client, live fan-out, prod reverse proxy
   packages/contracts/        Shared TS types + zod schemas for every /api route and SSE event (single source of truth)
   packages/world-viewer/     three.js voxel world renderer (React component), consumes MCWC chunks / entities / overlays
 tools/ViewerBridge/          C# ASP.NET Core minimal API (net10.0), references src/ libs
@@ -188,7 +188,9 @@ Tests for these go in `tests/MineClaw.App.Tests` (or the closest existing test p
   (chunk batches, the index): it never queues behind them.
 - **Perf line (2026-11-04).** The supervisor logs once a minute: process CPU, thread pool (threads, queued items), GC
   (collections, pause, MB/s), the A* gate (searches, busy seconds, longest, time bodies waited), the Story director (picks and
-  ticks with their time) and per route (ids folded) count and p50/p95/max of the time callers waited.
+  ticks with their time) and per route (ids folded) count and p50/p95/max of the time callers waited. World/control push
+  diagnostics count publication gaps over 250 ms, the longest gap and GC pause during it, and the peak queued work observed
+  at a send. These measure supervisor publication, not browser receipt; queued work can drain before the observation.
 
 Nest's public `/api` mirrors these one-to-one under friendlier paths, typed by `packages/contracts`. Examples:
 `/api/memory/:kind`, `/api/live/stream`, `/api/bots/:bot/chat`, `/api/world/chunks`. Nest adds auth, RBAC, CSRF, audit

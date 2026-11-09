@@ -7,11 +7,11 @@ public sealed partial class SupervisorWorldRoutes
 {
     /// <summary>One subscribed bridge connection: merged entities at the delta cache's 10 Hz and block batches at 5 Hz.
     /// Resume cursors retain missed events; the existing full flag covers log gaps/restarts.</summary>
-    internal async Task SocketAsync(WebSocket socket, SupervisorRequest request, CancellationToken shutdown)
+    internal async Task SocketAsync(WebSocket socket, SupervisorRequest request, CancellationToken shutdown, SupervisorPerf? perf = null)
     {
         long Cursor(string name) => long.TryParse(Q(request, name), NumberStyles.None, CultureInfo.InvariantCulture, out var value) ? value : 0;
         using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(shutdown);
-        var send = SendWorld(socket, Cursor("entities_since"), Cursor("blocks_since"), lifetime.Token);
+        var send = SendWorld(socket, Cursor("entities_since"), Cursor("blocks_since"), lifetime.Token, perf?.MonitorPublication("world"));
         var read = ReadUntilClose(socket, lifetime.Token);
         try { await await Task.WhenAny(send, read).ConfigureAwait(false); }
         catch (Exception ex) when (ex is WebSocketException or OperationCanceledException or IOException) { }
@@ -29,7 +29,7 @@ public sealed partial class SupervisorWorldRoutes
         }
     }
 
-    private async Task SendWorld(WebSocket socket, long entities, long blocks, CancellationToken ct)
+    private async Task SendWorld(WebSocket socket, long entities, long blocks, CancellationToken ct, SupervisorPerf.PublicationMonitor? monitor)
     {
         using var tick = new PeriodicTimer(TimeSpan.FromMilliseconds(100));
         long lastBlocks = long.MinValue / 2;
@@ -43,6 +43,7 @@ public sealed partial class SupervisorWorldRoutes
             }, ct).ConfigureAwait(false);
             if (frame.Status != 200) throw new IOException("World snapshot unavailable");
             await socket.SendAsync(frame.Body.AsMemory(), WebSocketMessageType.Text, true, ct).ConfigureAwait(false);
+            monitor?.Sent();
             long now = Environment.TickCount64;
             if (now - lastBlocks < 200 || (Blocks ?? BlockDeltaLog.Process) is not { } log) continue;
             lastBlocks = now;

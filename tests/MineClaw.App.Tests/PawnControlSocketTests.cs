@@ -86,6 +86,7 @@ public sealed partial class PawnControlTests
         Assert.Equal(1, body.Actions);
         await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "leaving", timeout.Token);
         Assert.Equal(1, body.Ends);
+        Assert.Contains("push control ", server.Perf.Summary());
 
         Task Send(object frame) => socket.SendAsync(SupervisorJson.Bytes(frame).AsMemory(), WebSocketMessageType.Text, true, timeout.Token).AsTask();
         async Task<JsonDocument> Receive()
