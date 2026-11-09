@@ -302,12 +302,21 @@ $contractsOut = Join-Path $scope 'contracts'
 New-Item -ItemType Directory -Force $contractsOut | Out-Null
 Copy-Item (Join-Path $webDir 'packages/contracts/package.json') $contractsOut
 Copy-Item -Recurse (Join-Path $webDir 'packages/contracts/dist') $contractsOut
+# npm may keep conflicting versions under a workspace instead of hoisting them (e.g. the API's ws vs Vite's ws).
+# Preserve both dependency locations before deleting the scratch workspace.
+$apiLocalModules = Join-Path $deps 'apps/api/node_modules'
+if (Test-Path $apiLocalModules) { Copy-Item -Recurse -LiteralPath $apiLocalModules -Destination (Join-Path $apiOut 'node_modules') }
+$contractLocalModules = Join-Path $deps 'packages/contracts/node_modules'
+if (Test-Path $contractLocalModules) { Copy-Item -Recurse -LiteralPath $contractLocalModules -Destination (Join-Path $contractsOut 'node_modules') }
 # Only the glibc binding: the CT is Ubuntu.
 Get-ChildItem (Join-Path $nm '@node-rs') -Directory -Filter 'argon2-*' | Where-Object Name -ne 'argon2-linux-x64-gnu' | Remove-Item -Recurse -Force
 $argon = Join-Path $nm '@node-rs/argon2-linux-x64-gnu/argon2.linux-x64-gnu.node'
 if (-not (Test-Path $argon) -or -not (Test-Elf $argon)) { throw "no linux-x64-gnu argon2 binding at $argon" }
 Move-Item $nm (Join-Path $stageWeb 'node_modules')
 Remove-Tree $deps
+Invoke-Step 'verify assembled API dependencies' {
+    node (Join-Path $PSScriptRoot 'check-node-deps.mjs') (Join-Path $apiOut 'package.json')
+}
 
 # Next standalone + static + public (the standalone output leaves those two out on purpose).
 $webApp = Join-Path $webDir 'apps/web'
@@ -396,17 +405,18 @@ if ($Smoke) {
     }
     $results = [Collections.Generic.List[string]]::new()
     $failed = $false
+    $backgroundWindow = if ($IsWindows) { @{ WindowStyle = 'Hidden' } } else { @{ NoNewWindow = $true } }
     try {
         $env:NEXT_TELEMETRY_DISABLED = '1'
         $env:NODE_ENV = 'production'; $env:PORT = "$uiPort"; $env:HOSTNAME = '127.0.0.1'
         $uiDir = Join-Path $smokeDir 'apps/web/.next/standalone/apps/web'
-        $procs += Start-Process node -ArgumentList 'server.js' -WorkingDirectory $uiDir -PassThru -NoNewWindow `
+        $procs += Start-Process node -ArgumentList 'server.js' -WorkingDirectory $uiDir -PassThru @backgroundWindow `
             -RedirectStandardOutput (Join-Path $smokeDir 'ui.out.log') -RedirectStandardError (Join-Path $smokeDir 'ui.err.log')
         # Nest refuses --mock-bridge under NODE_ENV=production (the CT units always set it), so the smoke run leaves it unset.
         Remove-Item Env:NODE_ENV, Env:PORT, Env:HOSTNAME -ErrorAction SilentlyContinue
         $env:MINECLAW_WEB_CONFIG = $smokeCfg
         $procs += Start-Process node -ArgumentList '--disable-warning=ExperimentalWarning', 'dist/main.js', '--mock-bridge' `
-            -WorkingDirectory (Join-Path $smokeDir 'apps/api') -PassThru -NoNewWindow `
+            -WorkingDirectory (Join-Path $smokeDir 'apps/api') -PassThru @backgroundWindow `
             -RedirectStandardOutput (Join-Path $smokeDir 'api.out.log') -RedirectStandardError (Join-Path $smokeDir 'api.err.log')
         $base = "http://127.0.0.1:$apiPort"
         $deadline = (Get-Date).AddSeconds(60)
