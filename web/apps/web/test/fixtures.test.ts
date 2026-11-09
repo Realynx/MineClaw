@@ -2,7 +2,7 @@
  * The mock server's fixtures must satisfy the contracts: every JSON route resolver is called (with its sample params, or none)
  * and its body parsed with the route's response schema; every SSE frame the simulation emits is parsed with SSE_EVENTS.
  */
-import { LoginResponse, Me, ROUTES, SetupRequest, SetupStatus, SSE_EVENTS, type RouteDef, type RouteId, type SseEventName } from '@mineclaw/contracts';
+import { LoginResponse, Me, PawnControlSession, ROUTES, SetupRequest, SetupStatus, SSE_EVENTS, type RouteDef, type RouteId, type SseEventName } from '@mineclaw/contracts';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { mockSetupMode, mockSignIn, resolvers, SAMPLE_CALLS, type Ctx } from '@/mocks/api';
 import { tick } from '@/mocks/data/live';
@@ -31,6 +31,18 @@ function bedPos(): { x: number; y: number; z: number } {
 function benchPos(): number[] {
   seedStory();
   return storySim.state('story-1').workbenches?.[0]?.pos ?? [0, 0, 0];
+}
+
+function controlSample(id: RouteId): Ctx | undefined {
+  if (!id.startsWith('bodies.control')) return;
+  const params = { body: 'maid_chan_70' }, query = {};
+  const acquire = { params, query, body: { requestId: 'fixture-control' } };
+  if (id === 'bodies.controlAcquire') return acquire;
+  const { session } = PawnControlSession.parse(resolvers['bodies.controlAcquire']!(acquire));
+  const body = id === 'bodies.controlInput'
+    ? { session, seq: 1, forward: 0, strafe: 0, yaw: 180, pitch: 0, jump: false, sneak: false, sprint: false }
+    : id === 'bodies.controlAction' ? { session, seq: 1, kind: 'inventory' } : { session };
+  return { params, query, body };
 }
 
 /** Story Mode writes against the seeded mock colony (story-1, first pawn maid_s1_dara). */
@@ -82,7 +94,7 @@ describe('mock fixtures satisfy the contracts', () => {
 
   it.each(ids)('%s', (id) => {
     const r: RouteDef = ROUTES[id];
-    const sample: Ctx = WRITES[id] ?? SAMPLE_CALLS[id] ?? { params: {}, query: {}, body: {} };
+    const sample: Ctx = controlSample(id) ?? WRITES[id] ?? SAMPLE_CALLS[id] ?? { params: {}, query: {}, body: {} };
     const ctx: Ctx = {
       params: r.params ? (r.params.parse(sample.params) as Record<string, unknown>) : {},
       query: r.query ? (r.query.parse(sample.query) as Record<string, unknown>) : {},

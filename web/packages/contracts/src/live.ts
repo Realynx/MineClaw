@@ -403,7 +403,7 @@ export type WorldEntity = z.infer<typeof WorldEntity>;
 export const WorldEntityEvent = z.looseObject({
   id: z.number().int().nullish(),
   dim: DimId.nullish(),
-  kind: z.string().describe('swing | swing_off | hurt | death | crit | magic_crit | eat | teleport | lightning | sound'),
+  kind: z.string().describe('swing | swing_off | hurt | death | crit | magic_crit | eat | teleport | lightning | sound | chest_open | chest_close'),
   at: UnixMs,
   x: z.number().nullish(),
   y: z.number().nullish(),
@@ -413,6 +413,12 @@ export const WorldEntityEvent = z.looseObject({
   pitch: z.number().nullish(),
 });
 export type WorldEntityEvent = z.infer<typeof WorldEntityEvent>;
+
+/** Complete sparse snapshot of open chests in every entity frame, including deltas. Omitted cells are closed. */
+export const WorldChestState = z.object({
+  dim: DimId, x: z.number().int(), y: z.number().int(), z: z.number().int(), openCount: z.number().int().positive(),
+});
+export type WorldChestState = z.infer<typeof WorldChestState>;
 
 export const WorldEntitiesQuery = z.object({ dim: QInt.optional(), since: QInt.min(0).optional() });
 
@@ -428,6 +434,7 @@ export const WorldEntities = z.object({
   entities: z.array(WorldEntity),
   removed: z.array(z.tuple([z.number().int(), z.number().int()])).nullish(),
   events: z.array(WorldEntityEvent).nullish().describe('swings, hurts, deaths, crits, eating, teleports, lightning since `since`'),
+  chests: z.array(WorldChestState).nullish().describe('Complete currently-open chest snapshot; absent on older servers.'),
 });
 export type WorldEntities = z.infer<typeof WorldEntities>;
 

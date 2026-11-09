@@ -50,6 +50,14 @@ public sealed class SupervisorClient : IDisposable
         return path is "api/world/entities" or "api/world/blocks" or "api/status";
     }
 
+    /// <summary>Human movement and release must not wait behind chunk downloads or expensive inspections.</summary>
+    internal static bool IsControlInput(HttpMethod method, string relative)
+    {
+        if (method != HttpMethod.Post) return false;
+        var p = relative.TrimStart('/').Split('/');
+        return p.Length == 5 && p[0] == "api" && p[1] == "bodies" && p[2].Length > 0 && p[3] == "control" && p[4] is "input" or "release";
+    }
+
     public string BaseUrl { get; }
     public bool HasToken => !string.IsNullOrEmpty(_token);
     /// <summary>EWMA latency of answered calls (ms), -1 before the first.</summary>
@@ -75,7 +83,7 @@ public sealed class SupervisorClient : IDisposable
         var sw = Stopwatch.StartNew();
         try
         {
-            var http = IsLiveRead(method, relative) ? _live : _http;
+            var http = IsLiveRead(method, relative) || IsControlInput(method, relative) ? _live : _http;
             var res = await http.SendAsync(req, stream ? HttpCompletionOption.ResponseHeadersRead : HttpCompletionOption.ResponseContentRead, cts.Token).ConfigureAwait(false);
             var ms = sw.Elapsed.TotalMilliseconds;
             _latencyMs = _latencyMs < 0 ? ms : _latencyMs * 0.8 + ms * 0.2;

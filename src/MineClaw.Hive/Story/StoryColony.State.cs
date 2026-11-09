@@ -127,8 +127,9 @@ public sealed partial class StoryColony
     }
 
     /// <summary>offline | drafted (no job of its own, or an order or idle one) | its job's state (a "go" at work reads moving) | idle.</summary>
-    private static string PawnStateWord(PawnState p, PawnLive live, ActiveJob? cur)
+    private string PawnStateWord(PawnState p, PawnLive live, ActiveJob? cur)
     {
+        if (live.Online && _humanControlled.Contains(p.Name)) return "controlled";
         string state = !live.Online ? "offline" : p.Drafted && (cur == null || cur.Type is "order" or "idle") ? "drafted" : cur?.State ?? "idle";
         return state == "working" && cur?.Kind == "go" ? "moving" : state;
     }

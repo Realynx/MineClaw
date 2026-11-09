@@ -362,6 +362,10 @@ Notes on specific routes:
 | `bodies.scripts` | `GET /api/bodies/scripts` | viewer | – | `LiveScriptsResponse` | `GET /v1/sup/bodies/scripts` | /api/bodies/scripts | – |
 | `bodies.script` | `GET /api/bodies/:body/script` | viewer | params `BodyParams`<br>query `BodyScriptQuery` | `BodyScriptReply` | `GET /v1/sup/bodies/{body}/script` | /api/bodies/{body}/script | – |
 | `bodies.controller` | `GET /api/bodies/:body/controller` | viewer | params `BodyParams` | `BodyControllerInfo` | `GET /v1/sup/bodies/{body}/controller` | /api/bodies/{body}/controller | – |
+| `bodies.controlAcquire` | `POST /api/bodies/:body/control/acquire` | story | params `BodyParams`<br>body `PawnControlAcquireRequest` | `PawnControlSession` | `GET /v1/sup/bodies/{body}/control/acquire` | /api/bodies/{body}/control/acquire | – |
+| `bodies.controlInput` | `POST /api/bodies/:body/control/input` | story | params `BodyParams`<br>body `PawnControlInputRequest` | `PawnControlSession` | `GET /v1/sup/bodies/{body}/control/input` | /api/bodies/{body}/control/input | – |
+| `bodies.controlAction` | `POST /api/bodies/:body/control/action` | story | params `BodyParams`<br>body `PawnControlActionRequest` | `PawnControlActionResponse` | `GET /v1/sup/bodies/{body}/control/action` | /api/bodies/{body}/control/action | – |
+| `bodies.controlRelease` | `POST /api/bodies/:body/control/release` | story | params `BodyParams`<br>body `PawnControlReleaseRequest` | `PawnControlReleaseResponse` | `GET /v1/sup/bodies/{body}/control/release` | /api/bodies/{body}/control/release | – |
 | `vision.render` | `GET /api/bodies/:body/vision/render` | viewer | params `BodyParams`<br>query `VisionRenderQuery` | png | `GET /v1/sup/bodies/{body}/vision/render` | /api/bodies/{body}/vision/render | – |
 | `vision.png` | `GET /api/bodies/:body/vision/:id/image.png` | viewer | params `VisionSheetParams` | png | `GET /v1/sup/bodies/{body}/vision/{id}.png` | /api/bodies/{body}/vision/{id}.png | – |
 | `vision.sheet` | `GET /api/bodies/:body/vision/:id` | viewer | params `VisionSheetParams` | `VisionSheetInfo` | `GET /v1/sup/bodies/{body}/vision/{id}` | /api/bodies/{body}/vision/{id} | – |

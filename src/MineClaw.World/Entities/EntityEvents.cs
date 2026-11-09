@@ -5,10 +5,10 @@ namespace MineClaw.World;
 /// <summary>
 /// A one-shot thing an entity did that a renderer shows and a snapshot can't (the browser viewer; the bot never reads it):
 /// <see cref="Kind"/> swing | swing_off | hurt | death | crit | magic_crit | eat | teleport | lightning. <see cref="Position"/> is
-/// set for lightning (the bolt's spot).
+/// set for lightning (the bolt's spot), sounds, and chest_open/chest_close (integer block coordinates).
 /// </summary>
 public readonly record struct EntityEvent(int EntityId, string Kind, DateTime At, Vec3d? Position = null,
-    string? Sound = null, float? Volume = null, float? Pitch = null);
+    string? Sound = null, float? Volume = null, float? Pitch = null, int? Dimension = null);
 
 /// <summary>
 /// A short ring of <see cref="EntityEvent"/>s (the last <see cref="Retention"/>, at most <see cref="Capacity"/>): enough for a

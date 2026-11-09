@@ -22,7 +22,7 @@ vi.mock('@/features/world/integration', () => ({
 }));
 afterEach(() => { localStorage.clear(); players.length = 0; });
 
-it('shows volume controls immediately, persists mute and restores the previous level after a refresh', async () => {
+it('keeps sound compact until clicked, persists mute and restores the previous level after a refresh', async () => {
   localStorage.setItem('mineclaw.controller.volume', '0.35');
   const qc = new QueryClient();
   const engine = {
@@ -34,18 +34,26 @@ it('shows volume controls immediately, persists mute and restores the previous l
   const tree = <QueryClientProvider client={qc}><StoryAudio viewer={viewer} view="top" /></QueryClientProvider>;
   const page = render(tree);
   await waitFor(() => expect(players).toHaveLength(1));
+  expect(screen.queryByRole('slider', { name: 'Controller sound volume' })).not.toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Sound settings' })).toHaveAttribute('aria-expanded', 'false');
+  fireEvent.click(screen.getByRole('button', { name: 'Sound settings' }));
   expect(screen.getByRole('slider', { name: 'Controller sound volume' })).toHaveValue('0.35');
   expect(screen.getByLabelText('Sound volume')).toHaveTextContent('35%');
   fireEvent.click(screen.getByRole('button', { name: 'Enable sound' }));
   expect(screen.queryByRole('button', { name: 'Enable sound' })).not.toBeInTheDocument();
   fireEvent.click(screen.getByRole('button', { name: 'Volume up' }));
   expect(screen.getByLabelText('Sound volume')).toHaveTextContent('40%');
+  fireEvent.keyDown(screen.getByRole('slider', { name: 'Controller sound volume' }), { key: 'Escape' });
+  expect(screen.queryByRole('slider', { name: 'Controller sound volume' })).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: 'Sound settings' }));
   fireEvent.click(screen.getByRole('button', { name: 'Mute sound' }));
   expect(localStorage.getItem('mineclaw.controller.volume')).toBe('0');
   page.unmount();
   expect(players[0]!.dispose).toHaveBeenCalledOnce();
   render(tree);
   await waitFor(() => expect(players).toHaveLength(2));
+  expect(screen.queryByRole('slider', { name: 'Controller sound volume' })).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: 'Sound settings' }));
   expect(screen.getByLabelText('Sound volume')).toHaveTextContent('0%');
   expect(players[1]!.setVolume).toHaveBeenLastCalledWith(0);
   expect(players[1]!.enable).not.toHaveBeenCalled();

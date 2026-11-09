@@ -34,10 +34,12 @@ import { HistoryDrawer } from '@/features/live/HistoryDrawer';
 import { InventorySection } from '@/features/live/inventory/InventoryPanel';
 import { ScriptCard } from '@/features/live/ScriptCard';
 import { VisionDrawer } from '@/features/live/VisionDrawer';
+import { TakeControlButton } from '@/features/control/TakeControlButton';
 import { WorldHost } from '@/features/world/integration';
 import { WorldPane } from '@/features/world/WorldPane';
 import { useNow, useStatus } from '@/lib/live/hooks';
 import { usePrefs } from '@/lib/prefs';
+import { useAuth } from '@/lib/auth';
 import { ago, cn, dimName } from '@/lib/utils';
 import { parsePos } from '@mineclaw/contracts';
 
@@ -194,6 +196,7 @@ function BotHeader(p: {
   openDebugger: () => void;
 }) {
   const { n, kind, owner } = p;
+  const { can } = useAuth();
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-border bg-surface px-4 py-3 sm:px-6">
       <Link
@@ -213,6 +216,10 @@ function BotHeader(p: {
       ) : null}
       {n?.brainState ? <span className="text-sm text-muted">{n.brainState}</span> : null}
       <div className="ml-auto flex flex-wrap items-center gap-1.5">
+        {kind === 'script' ? (
+          <TakeControlButton pawn={p.bot} canControl={can('story')} online={p.view?.status === 'online'}
+            returnTo={`/live/${encodeURIComponent(p.bot)}${p.pane === 'world' ? '?pane=world' : ''}`} />
+        ) : null}
         <Segmented<Pane>
           label="Main pane"
           size="sm"

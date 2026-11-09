@@ -21,6 +21,7 @@ import {
   type KeyAction,
 } from '../tools';
 import type { Story } from './commands';
+import { toggleControllerFly } from './camera';
 
 type KeyHandler = (c: Story, arg: string, e: KeyboardEvent) => void;
 
@@ -137,7 +138,7 @@ const KEY_HANDLERS: Record<string, KeyHandler> = {
   escape,
   chat: (c) => c.setChat(true),
   view: (c) => c.setView((v) => (v === 'top' ? 'angled' : 'top')),
-  fly: (c) => c.setView((v) => (v === 'fly' ? 'top' : 'fly')),
+  fly: toggleControllerFly,
   xray: (c) => c.setXray(c.xrayOn ? 'off' : 'on'),
   levelUp: levelKey(1),
   levelDown: levelKey(-1),

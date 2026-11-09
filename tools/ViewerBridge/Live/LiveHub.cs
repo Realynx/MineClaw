@@ -328,7 +328,7 @@ public sealed class LiveHub : IDisposable
     private Func<CancellationToken, Task> PollEntities()
     {
         long rev = 0;
-        string? prevBots = null;
+        string? prevBots = null, prevChests = null;
         return async ct =>
         {
             var node = await GetJson($"api/world/entities?since={rev.ToString(CultureInfo.InvariantCulture)}", TimeSpan.FromSeconds(3), ct);
@@ -340,6 +340,11 @@ public sealed class LiveHub : IDisposable
             var bots = Normalized(o["bots"], "age_seconds", "pose_age", "age");
             changed |= bots != prevBots;
             prevBots = bots;
+            // Current opener counts are a complete snapshot, independent of entity revisions:
+            // unloading the last observer can remove an open chest without producing an event.
+            var chests = Normalized(o["chests"]);
+            changed |= chests != prevChests;
+            prevChests = chests;
             rev = newRev;
             if (changed) Publish("entities", o);
         };

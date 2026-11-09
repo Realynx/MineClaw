@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { bindControllerInput, bindControllerKeyboard, canCaptureController, wheelSelection } from '@/features/story/controllerInput';
+import { bindControllerInput, bindControllerKeyboard, canCaptureController, requestControllerCapture, requestControllerFullscreen, wheelSelection } from '@/features/story/controllerInput';
+import { toggleControllerFly } from '@/features/story/mode/camera';
+import type { Story } from '@/features/story/mode/commands';
 
 const cleanups: Array<() => void> = [];
 afterEach(() => { cleanups.splice(0).forEach((f) => f()); vi.restoreAllMocks(); Reflect.deleteProperty(navigator, 'keyboard'); Reflect.deleteProperty(document, 'fullscreenElement'); document.body.innerHTML = ''; });
@@ -84,6 +86,50 @@ describe('Controller tool wheel', () => {
 });
 
 describe('Controller reserved shortcut capture', () => {
+  it('starts fullscreen in the Fly gesture and waits for it before capturing the mouse', async () => {
+    let finish!: () => void;
+    const host = document.createElement('div'), surface = document.createElement('canvas');
+    host.append(surface); document.body.append(host);
+    const fullscreen = vi.fn(() => new Promise<void>((resolve) => { finish = resolve; }));
+    Object.defineProperty(host, 'requestFullscreen', { value: fullscreen });
+    const lock = vi.fn(), setView = vi.fn();
+    Object.defineProperty(navigator, 'keyboard', { configurable: true, value: { lock: vi.fn() } });
+    toggleControllerFly({ view: 'top', fullscreen: { el: host }, setView } as unknown as Story);
+    expect(fullscreen).toHaveBeenCalledExactlyOnceWith({ navigationUI: 'hide' });
+    expect(setView).toHaveBeenCalledOnce();
+    const capture = requestControllerCapture({ surface, lock }, host);
+    expect(lock).not.toHaveBeenCalled();
+    expect(fullscreen).toHaveBeenCalledOnce();
+    finish();
+    expect(await capture).toBeNull();
+    expect(lock).toHaveBeenCalledOnce();
+  });
+
+  it('leaves GUI editing in place and reports blocked fullscreen without unsafe mouse capture', async () => {
+    const host = document.createElement('div'), surface = document.createElement('canvas'), input = document.createElement('input');
+    host.append(surface, input); document.body.append(host); input.focus();
+    const fullscreen = vi.fn(() => Promise.reject(new Error('denied'))), lock = vi.fn(), setView = vi.fn();
+    Object.defineProperty(host, 'requestFullscreen', { value: fullscreen });
+    toggleControllerFly({ view: 'top', fullscreen: { el: host }, setView } as unknown as Story);
+    expect(fullscreen).not.toHaveBeenCalled();
+    expect(setView).toHaveBeenCalledOnce();
+    input.blur();
+    expect(await requestControllerCapture({ surface, lock }, host)).toMatch(/Full screen was blocked/);
+    expect(lock).not.toHaveBeenCalled();
+  });
+
+  it('does not recapture after leaving fly while fullscreen is pending', async () => {
+    const host = document.createElement('div'), surface = document.createElement('canvas');
+    host.append(surface); document.body.append(host);
+    Object.defineProperty(document, 'fullscreenElement', { configurable: true, get: () => host });
+    expect(await requestControllerFullscreen(host)).toBe(true);
+    const lock = vi.fn();
+    expect(await requestControllerCapture({ surface, lock }, host, () => false)).toBeNull();
+    expect(lock).not.toHaveBeenCalled();
+    expect(await requestControllerCapture({ surface, lock }, host)).toMatch(/Avoid Ctrl\+W/);
+    expect(lock).toHaveBeenCalledOnce();
+  });
+
   it('requests only movement keys while both immersive controls and user fullscreen are active', async () => {
     let fullscreen: Element | null = null, active = false;
     const keyboard = { lock: vi.fn(async () => {}), unlock: vi.fn() };
@@ -115,5 +161,16 @@ describe('Controller reserved shortcut capture', () => {
     active = true; document.dispatchEvent(new Event('pointerlockchange')); await Promise.resolve();
     expect(keyboard.lock).toHaveBeenCalledTimes(2);
     Reflect.deleteProperty(navigator, 'keyboard');
+  });
+
+  it('shows a notice if the browser denies keyboard lock, then clears it on a successful retry', async () => {
+    const notice = vi.fn(), keyboard = { lock: vi.fn().mockRejectedValueOnce(new Error('denied')).mockResolvedValue(undefined), unlock: vi.fn() };
+    Object.defineProperty(navigator, 'keyboard', { configurable: true, value: keyboard });
+    Object.defineProperty(document, 'fullscreenElement', { configurable: true, get: () => document.body });
+    cleanups.push(bindControllerKeyboard(() => true, notice));
+    await Promise.resolve();
+    expect(notice).toHaveBeenLastCalledWith(expect.stringContaining('Avoid Ctrl+W'));
+    window.dispatchEvent(new Event('focus')); await Promise.resolve();
+    expect(notice).toHaveBeenLastCalledWith(null);
   });
 });

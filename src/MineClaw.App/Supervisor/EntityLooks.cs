@@ -100,7 +100,7 @@ public static class EntityLooks
     {
         int dim = w.Dimension;
         foreach (var e in w.Entities.Events.Recent(nowUtc))
-            yield return new WorldEntityEvent(e.EntityId, e.Kind, new DateTimeOffset(DateTime.SpecifyKind(e.At, DateTimeKind.Utc)).ToUnixTimeMilliseconds(), dim,
+            yield return new WorldEntityEvent(e.EntityId, e.Kind, new DateTimeOffset(DateTime.SpecifyKind(e.At, DateTimeKind.Utc)).ToUnixTimeMilliseconds(), e.Dimension ?? dim,
                 e.Position is { } p ? Math.Round(p.X, 2) : null, e.Position is { } q ? Math.Round(q.Y, 2) : null, e.Position is { } r ? Math.Round(r.Z, 2) : null,
                 e.Sound, e.Volume, e.Pitch);
     }

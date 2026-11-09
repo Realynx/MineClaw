@@ -47,6 +47,8 @@ public sealed partial class Release1122ServerConnection
         On<UpdateSignPacket>(t, static (s, p) => s.EncodeSign(p));
         On<BlockEntityMessage>(t, static (s, p) => s.EncodeBlockEntity(p));
         On<BlockBreakAnimationMessage>(t, static (s, p) => s.EncodeBlockBreak(p));
+        On<BlockActionPacket>(t, static (s, p) => s.Emit(WireWriter.ForPacket(Ids1122.BlockAction).WritePosition(p.X, p.Y, p.Z)
+            .WriteUByte(p.Data1).WriteUByte(p.Data2).WriteVarInt(p.BlockId ?? 0), p));
         // windows
         On<OpenWindowPacket>(t, static (s, p) => s.EncodeOpenWindow(p));
         On<CloseWindowPacket>(t, static (s, p) => s.EncodeCloseWindow(p));

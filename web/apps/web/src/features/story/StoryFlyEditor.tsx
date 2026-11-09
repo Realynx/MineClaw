@@ -180,6 +180,8 @@ export function StoryFlyEditor({
   canEdit,
   onStart,
   viewer,
+  onCapture,
+  onCaptureNotice,
 }: {
   editor: StoryFlyEditorState;
   state: StoryColonyState | undefined;
@@ -187,6 +189,8 @@ export function StoryFlyEditor({
   canEdit: boolean;
   onStart?: () => void;
   viewer: RefObject<WorldViewerHandle | null>;
+  onCapture: () => void;
+  onCaptureNotice?: (message: string | null) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [locked, setLocked] = useState(false);
@@ -220,15 +224,16 @@ export function StoryFlyEditor({
       }
     };
     return bindControllerInput({
-      active: () => current.current.canEdit && !!viewer.current?.locked(),
+      active: () => !!viewer.current?.locked(),
       editable: () => current.current.canEdit,
       editing: () => current.current.e.enabled,
       pause: (paused) => viewer.current?.engine()?.setInputPaused(paused),
       wheel: setWheel,
       choose,
       release: () => document.exitPointerLock?.(),
+      notice: onCaptureNotice,
     });
-  }, [flying, viewer]);
+  }, [flying, viewer, onCaptureNotice]);
   if (!flying || !canEdit) return null;
   const unlock = () => document.exitPointerLock?.();
   const title = (id: string) => {
@@ -377,7 +382,7 @@ export function StoryFlyEditor({
           version={e.version}
           current={e.entry}
           sheet={e.sheet}
-          onChoose={(entry) => { e.choose(entry); viewer.current?.lock(); }}
+          onChoose={(entry) => { e.choose(entry); onCapture(); }}
           onClose={e.closePalette}
         />
       ) : null}

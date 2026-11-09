@@ -73,7 +73,7 @@ public sealed partial class MinecraftClient
         if (phys.OnGround && fallBefore > 0 && phys.FallDistance == 0) { _lastLandFall = fallBefore; _lastLandTick = TickCount; }
         if (!under) { if (_breathingSince == long.MinValue) _breathingSince = TickCount; }
         else _breathingSince = long.MinValue;
-        SurfacingTick(phys, under);
+        if (!HumanControlled) SurfacingTick(phys, under);
     }
 
     private void NoteKnockbackForCause() => _lastKnockbackTick = TickCount;

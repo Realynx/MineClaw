@@ -93,7 +93,7 @@ public sealed partial class StoryColony
     /// </summary>
     private bool IdleInWorkHours(PawnState p)
     {
-        if (p.Drafted || _leaving.ContainsKey(p.Name)) return false;
+        if (p.Drafted || _leaving.ContainsKey(p.Name) || _humanControlled.Contains(p.Name)) return false;
         if (!_current.TryGetValue(p.Name, out var cur) || cur.Source is not ("none" or "wander" or "escape")) return false;
         if (ScheduleBlockAt(p, HourNow) is not (ScheduleBlocks.Work or ScheduleBlocks.Anything)) return false;
         return Host.Live(p.Name).Online;
@@ -279,6 +279,7 @@ public sealed partial class StoryColony
     /// <summary>A work search from the tick (not a pick): the per-search caches set up as a pick does (tool plans are per pawn).</summary>
     private ActiveJob? ProbeWork(PawnState p, PawnLive live, long stamp)
     {
+        if (_humanControlled.Contains(p.Name)) return null;
         _toolPlans.Clear();
         _pickPawn = p.Name; _pickClaims = null;
         try

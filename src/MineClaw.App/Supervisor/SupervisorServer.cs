@@ -68,6 +68,7 @@ public sealed class SupervisorServer : IAsyncDisposable
     /// <summary>The read-only controller routes (<c>/api/bodies/{name}/controller</c>, <c>/api/brains/{id}/context|turn/{n}</c>: what drives a
     /// body, its brain's live context and thinking; 403 without the token); null = off.</summary>
     public SupervisorControllerRoutes? Controller { get; set; }
+    public SupervisorPawnControlRoutes? PawnControl { get; set; }
     /// <summary>The web viewer's routes (<c>/api/viewer/*</c>, Supervisor:Viewer:Enabled + token header; the only non-admin POST); null = 404.</summary>
     public SupervisorViewerRoutes? Viewer { get; set; }
     /// <summary>The Design Studio's routes (<c>/api/designer/*</c>: sandbox canvas sessions with an AI, saved as designs); null = 404.</summary>
@@ -164,7 +165,8 @@ public sealed class SupervisorServer : IAsyncDisposable
         ?? await SupervisorAdminRoutes.ReadBodyAsync(request, ct, _o).ConfigureAwait(false)
         ?? await SupervisorViewerRoutes.ReadBodyAsync(request, _o, ct).ConfigureAwait(false)
         ?? await DesignerRoutes.ReadBodyAsync(request, _o, ct).ConfigureAwait(false)
-        ?? await SupervisorStoryRoutes.ReadBodyAsync(request, _o, ct).ConfigureAwait(false);
+        ?? await SupervisorStoryRoutes.ReadBodyAsync(request, _o, ct).ConfigureAwait(false)
+        ?? await SupervisorPawnControlRoutes.ReadBodyAsync(request, _o, ct).ConfigureAwait(false);
 
     /// <summary>The bridge's identity headers (user, roles), or null without them.</summary>
     private static Dictionary<string, string>? IdentityOf(HttpListenerRequest request)
@@ -231,6 +233,7 @@ public sealed class SupervisorServer : IAsyncDisposable
     /// <summary>The route sets with their own gates (any method): settings, admin, viewer, designer, story; null = none of them.</summary>
     private async Task<SupervisorReply?> GatedRoutesAsync(SupervisorRequest r, CancellationToken ct)
     {
+        if (SupervisorPawnControlRoutes.IsControlPath(r.Path)) return await OrNotFound(PawnControl?.TryHandleAsync(r, ct)).ConfigureAwait(false);
         if (AdminSettingsRoutes.IsSettingsPath(r.Path)) // AllowAdminWrites + the token header + the bridge's admin identity
             return Settings != null ? await Settings.HandleAsync(r, ct).ConfigureAwait(false) : NotFound();
         if (SupervisorAdminRoutes.IsAdminPath(r.Path)) return await SupervisorAdminRoutes.HandleAsync(r, _o, Admin, ct).ConfigureAwait(false);
@@ -432,6 +435,7 @@ public sealed class SupervisorServer : IAsyncDisposable
         if (_loop != null) { try { await _loop.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false); } catch (Exception) { } }
         Gate.Dispose();
         (Admin as IDisposable)?.Dispose();
+        PawnControl?.Dispose(); // releases human inputs and resumes each paused pawn before the colony stops
         Story?.Colonies.Dispose(); // the colony tick stops; each colony saves
         Story?.StopTimeControl();
     }

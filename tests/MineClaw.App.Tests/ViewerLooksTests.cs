@@ -17,6 +17,75 @@ namespace MineClaw.App.Tests;
 /// </summary>
 public class ViewerLooksTests
 {
+    [Theory]
+    [InlineData(false, 54)]
+    [InlineData(true, 54)]
+    [InlineData(true, 146)]
+    [InlineData(true, 130)]
+    public async Task Chest_block_actions_reach_the_viewer_as_positioned_open_and_close_events(bool modern, int block)
+    {
+        var (client, server) = await Start(modern, s => s.Blocks[(9, 64, 8)] = block);
+        await using var cc = client;
+        using var ss = server;
+        Assert.True(await Wait(() => client.World.GetBlock(9, 64, 8) == block));
+        server.Send(new BlockActionPacket { X = 9, Y = 64, Z = 8, Data1 = 1, Data2 = 1, BlockId = block });
+        Assert.True(await Wait(() => client.World.Entities.Events.Recent(DateTime.UtcNow).Any(e => e.Kind == "chest_open")));
+        Assert.Equal(new WorldChestState(0, 9, 64, 8, 1), Assert.Single(ChestStateMerge.Merge([client.World])));
+        Assert.DoesNotContain(EntityLooks.EventsOf(client.World, DateTime.UtcNow.AddSeconds(6)), e => e.Kind == "chest_open");
+        Assert.Single(ChestStateMerge.Merge([client.World])); // reconnect does not depend on the short event ring
+        server.Send(new BlockActionPacket { X = 9, Y = 64, Z = 8, Data1 = 1, Data2 = 0, BlockId = block });
+        Assert.True(await Wait(() => client.World.Entities.Events.Recent(DateTime.UtcNow).Any(e => e.Kind == "chest_close")));
+        var events = EntityLooks.EventsOf(client.World, DateTime.UtcNow).Where(e => e.Kind is "chest_open" or "chest_close").ToArray();
+        Assert.Equal(["chest_open", "chest_close"], events.Select(e => e.Kind));
+        Assert.All(events, e => Assert.Equal((9.0, 64.0, 8.0), (e.X, e.Y, e.Z)));
+        Assert.Empty(ChestStateMerge.Merge([client.World]));
+        client.World.Dimension = -1;
+        Assert.All(EntityLooks.EventsOf(client.World, DateTime.UtcNow).Where(e => e.Kind.StartsWith("chest_")), e => Assert.Equal(0, e.Dim));
+        client.World.Dimension = 0;
+        server.Send(new BlockActionPacket { X = 9, Y = 64, Z = 8, Data1 = 1, Data2 = 1, BlockId = block });
+        Assert.True(await Wait(() => ChestStateMerge.Merge([client.World]).Count == 1));
+        await client.DisconnectAsync();
+        Assert.Empty(ChestStateMerge.Merge([client.World]));
+    }
+
+    [Fact]
+    public void Chest_snapshots_merge_latest_close_keep_dimensions_separate_and_forget_unloaded_or_replaced_blocks()
+    {
+        static WorldState World(int dim = 0)
+        {
+            var w = new WorldState { Dimension = dim };
+            w.ApplyChunkRegion(0, 64, 0, 1, 1, 1, [54], null, null, null);
+            return w;
+        }
+        using var a = World(); using var b = World(); using var nether = World(-1);
+        var pos = new BlockPos(0, 64, 0);
+        var at = DateTime.UtcNow;
+        a.ChestStates.Record(pos, 2, at);
+        nether.ChestStates.Record(pos, 1, at);
+        Assert.Equal(2, ChestStateMerge.Merge([a, b, nether]).Count);
+        b.ChestStates.Record(pos, 0, at.AddMilliseconds(20));
+        Assert.Equal(-1, Assert.Single(ChestStateMerge.Merge([a, b, nether])).Dim);
+        nether.SetBlock(0, 64, 0, 0, 0);
+        Assert.Empty(nether.ChestStates.Snapshot());
+        Assert.Empty(ChestStateMerge.Merge([a, b, nether]));
+        a.UnloadColumn(0, 0);
+        Assert.Empty(a.ChestStates.Snapshot());
+        b.Clear();
+        Assert.Empty(b.ChestStates.Snapshot());
+    }
+
+    [Fact]
+    public void Separate_chests_opening_together_are_not_deduplicated()
+    {
+        var log = new EntityDeltaLog { MinInterval = TimeSpan.Zero };
+        long at = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var first = new WorldEntityEvent(0, "chest_open", at, 0, 10, 64, 10);
+        var duplicate = first with { At = at + 20 };
+        var other = first with { X = 11 };
+        var close = first with { Kind = "chest_close", At = at + 30 };
+        Assert.Equal(3, log.Since(0, () => [], () => [first, duplicate, other, close]).Events.Count);
+    }
+
     private static async Task<(MinecraftClient C, FakeServer S)> Start(bool modern, Action<FakeServer>? setup = null)
     {
         var server = new FakeServer(modern);

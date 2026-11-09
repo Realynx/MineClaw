@@ -48,6 +48,7 @@ import {
   stalledCount,
 } from './actions';
 import type { Story } from './commands';
+import { toggleControllerFly } from './camera';
 import { dropDesign } from './designParam';
 import { openContext, pickMenu } from './menu';
 import { releaseTool } from './release';
@@ -127,7 +128,7 @@ function Controls({ c }: Props) {
       onSpeed={c.setSpeed}
       view={c.view}
       onView={() => c.setView((v) => (v === 'top' ? 'angled' : 'top'))}
-      onFly={() => c.setView((v) => (v === 'fly' ? 'top' : 'fly'))}
+      onFly={() => toggleControllerFly(c)}
       level={c.lv}
       ground={c.ground}
       height={c.build.height}

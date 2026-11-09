@@ -197,6 +197,8 @@ export interface EntityEvent {
   z?: number | null;
 }
 
+export interface ChestState { dim: Dim; x: number; y: number; z: number; openCount: number }
+
 /** `GET api/world/entities[?since=rev]`. */
 export interface EntityDelta {
   at?: number;
@@ -210,6 +212,8 @@ export interface EntityDelta {
   removed?: Array<[number, number]> | null;
   /** Swings, hurts, deaths, crits, eating, teleports and lightning since `since` (oldest first). */
   events?: EntityEvent[] | null;
+  /** Complete sparse snapshot even on deltas: any omitted chest is closed. Missing field = legacy event-only source. */
+  chests?: ChestState[] | null;
   /** The number of the stream frame this read reflects (a cache-backed source): a store that already applied this frame leaves
    * every glide alone, so reads between frames never restart them. Absent = always applied. */
   frame?: number;

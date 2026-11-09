@@ -42,7 +42,7 @@ public sealed partial class MinecraftClient
     /// </summary>
     public bool PlayGesture(GesturePlan plan)
     {
-        if (plan.Frames.Count == 0 || !IsPlaying || SafetyEngaged || World.Player.IsDead) return false;
+        if (HumanControlled || plan.Frames.Count == 0 || !IsPlaying || SafetyEngaged || World.Player.IsDead) return false;
         if (plan.UsesBody && BodyHeldForGesture()) return false;
         var prev = Interlocked.Exchange(ref _gesture, new GestureRun(plan));
         if (prev != null) Interlocked.Increment(ref GesturesCancelled);
@@ -119,7 +119,7 @@ public sealed partial class MinecraftClient
     {
         if (_session is not { } s) return;
         var phys = World.Player.Physics;
-        try { s.Conn.Send(new PlayerLookPacket { Yaw = yaw, Pitch = pitch, OnGround = phys.OnGround }); }
+        try { Send(s, new PlayerLookPacket { Yaw = yaw, Pitch = pitch, OnGround = phys.OnGround }); }
         catch (Exception ex) when (ex is IOException or ObjectDisposedException or InvalidOperationException) { return; }
         _lastYaw = yaw;
         _lastPitch = pitch;

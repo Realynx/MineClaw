@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { createRef, forwardRef, useEffect, useImperativeHandle, useState } from 'react';
 import { PerspectiveCamera } from 'three';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
@@ -54,8 +54,10 @@ beforeEach(() => {
   };
   vi.stubGlobal('requestAnimationFrame', () => 1);
   vi.stubGlobal('cancelAnimationFrame', () => undefined);
+  Object.defineProperty(document, 'fullscreenElement', { configurable: true, get: () => document.body });
+  Object.defineProperty(navigator, 'keyboard', { configurable: true, value: { lock: vi.fn(async () => {}), unlock: vi.fn() } });
 });
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => { vi.unstubAllGlobals(); Reflect.deleteProperty(document, 'fullscreenElement'); Reflect.deleteProperty(navigator, 'keyboard'); });
 
 const mapProps = (): StoryMapProps => ({
   state: undefined,
@@ -77,7 +79,7 @@ const mapProps = (): StoryMapProps => ({
   onDropTool: vi.fn(),
 });
 
-it('switches the same mounted viewer to free cam and back, giving mouse control to the viewer only while flying', () => {
+it('switches the same mounted viewer to free cam and back, giving mouse control to the viewer only while flying', async () => {
   const props = mapProps();
   const { rerender } = render(<StoryMap {...props} />);
   const canvas = screen.getByLabelText<HTMLCanvasElement>(/Colony map/);
@@ -87,7 +89,7 @@ it('switches the same mounted viewer to free cam and back, giving mouse control 
   expect(viewer.mode).toBe('fly');
   expect(canvas.style.pointerEvents).toBe('none');
   expect(canvas.tabIndex).toBe(-1);
-  expect(viewer.lock).toHaveBeenCalledOnce();
+  await waitFor(() => expect(viewer.lock).toHaveBeenCalledOnce());
   const rig = (viewer.engine as { rig: { flyPos: { set: ReturnType<typeof vi.fn> }; target: object; isoZoom: number } })
     .rig;
   expect(rig.flyPos.set).toHaveBeenCalledWith(8, 76, 28);
@@ -157,6 +159,30 @@ it('moves free cam to the colony when its first home position arrives after the 
   expect(setBotLabels).toHaveBeenLastCalledWith(false);
 });
 
+it('routes bare-world clicks through fullscreen before the engine can lock and leaves open editor menus alone', async () => {
+  const props = mapProps();
+  const page = render(<StoryMap {...props} />);
+  const surface = screen.getByTestId('fake-viewer');
+  (viewer.engine as { surface: HTMLElement }).surface = surface;
+  page.rerender(<StoryMap {...props} view="fly" />);
+  await waitFor(() => expect(viewer.lock).toHaveBeenCalledOnce());
+  viewer.lock.mockClear();
+  let finish!: () => void;
+  Object.defineProperty(document, 'fullscreenElement', { configurable: true, get: () => null });
+  const fullscreen = vi.fn(() => new Promise<void>((resolve) => { finish = resolve; }));
+  Object.defineProperty(screen.getByTestId('story-map'), 'requestFullscreen', { value: fullscreen });
+  const bypass = vi.fn(); surface.addEventListener('pointerdown', bypass);
+  fireEvent.pointerDown(surface, { button: 0 });
+  expect(fullscreen).toHaveBeenCalledOnce(); expect(bypass).not.toHaveBeenCalled(); expect(viewer.lock).not.toHaveBeenCalled();
+  await act(async () => { finish(); await Promise.resolve(); });
+  expect(viewer.lock).toHaveBeenCalledOnce();
+  viewer.lock.mockClear();
+  const dialog = document.createElement('div'); dialog.setAttribute('role', 'dialog'); document.body.append(dialog);
+  fireEvent.pointerDown(surface, { button: 0 });
+  expect(viewer.lock).not.toHaveBeenCalled(); expect(bypass).not.toHaveBeenCalled();
+  dialog.remove(); surface.removeEventListener('pointerdown', bypass);
+});
+
 it('has an always-available free camera button, and flight keys cannot pause the colony or rotate a held tool', () => {
   const pause = vi.fn(),
     build = vi.fn();
@@ -165,6 +191,7 @@ it('has an always-available free camera button, and flight keys cannot pause the
     const c = {
       view,
       setView,
+      fullscreen: { el: null },
       keys: { current: new Set() },
       tool: { kind: 'build' },
       heightTool: null,

@@ -379,9 +379,12 @@ describe('frame golden', () => {
     const frames = log.filter((l) => l.startsWith('---- frame')).length;
     expect(frames).toBe(25);
     expect(log.filter((l) => l.startsWith('render.camera')).length).toBeGreaterThan(40);
-    // Human skins add only cache signatures, shader/uniform fields and their unsubscribe callback to displayMobs.
-    // Full semantic comparison with the previous 4409f646 trace found no camera, geometry or frame-order differences.
-    expect(a).toBe('d714f1f501a2c0fc5e58996d3d4e6d11');
+    // The internal displayMobs view stores one new null hiddenBot field; normal view setup/layer arguments omit it.
+    // Pin the exact migration so no camera, geometry, frame order or other serialized state can change unnoticed.
+    const beforeTakeover = new Digest();
+    for (const line of log) beforeTakeover.add(line.replaceAll('"hiddenBot":null,', ''));
+    expect(beforeTakeover.hex()).toBe('d714f1f501a2c0fc5e58996d3d4e6d11');
+    expect(a).toBe('a83da944fe55a6248c0585c3ecc2316c');
   }, 30000);
 
   it('pans before the world frame and projects the overlay after that same camera is rendered', () => {
@@ -438,5 +441,24 @@ describe('frame golden', () => {
     expect(rt.hologramsOf(engine.id)).toBe(holograms);
     engine.dispose();
     expect(rt.isDisposed).toBe(true);
+  });
+
+  it('hides the followed pawn only in the takeover view of a shared runtime', () => {
+    const src = createFixtureSource({ mobs: 0 });
+    const rt = new WorldRuntime(src, { inlineMesher: true, textures: false });
+    const normal = new WorldViewerEngine(container(800, 500), { source: src, runtime: rt, follow: 'Alice' });
+    copyCanvasNext = true;
+    const player = new WorldViewerEngine(container(800, 500), { source: src, runtime: rt, follow: 'Alice', controls: 'player', cameraMode: 'fly' });
+    stopNetwork(rt);
+    rt.store.apply({ rev: 1, full: true, bots: bots(0), entities: [] });
+    const show = vi.spyOn(rt.entities, 'showFor');
+    try {
+      expect(normal.frame(rt, clock, 0)).not.toHaveProperty('hiddenBot');
+      expect(player.frame(rt, clock, 0)).toHaveProperty('hiddenBot', 'Alice');
+      rt.step(clock, 0);
+      const options = show.mock.calls.map((call) => call[2]);
+      expect(options.map((o) => o.hiddenBot)).toEqual(['Alice', undefined]); // copies render before the primary surface
+      expect(options[1]).not.toHaveProperty('hiddenBot');
+    } finally { player.dispose(); normal.dispose(); }
   });
 });

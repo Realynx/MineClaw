@@ -7,7 +7,7 @@ import { blockIconUrl, bundleUrls, itemLookById, loadBundle, type GameVersion } 
 
 export { WorldThumbnail, WorldViewer, WorldViewerProvider, useWorldRuntime, disposeWorldRuntimes } from '@mineclaw/world-viewer';
 /** The body inventory panel's item icons (features/live/inventory): the bundled atlases and the item looks per version. */
-export { itemLookById, loadBundle, blockIconAtlas, blockIconAtlasAsync } from '@mineclaw/world-viewer';
+export { itemLookById, itemName, loadBundle, blockIconAtlas, blockIconAtlasAsync } from '@mineclaw/world-viewer';
 export { importGameJar, importSoundFolder, readLocalPack, removeLocalPack, ASSETS_CHANGED } from '@mineclaw/world-viewer';
 export { ControllerAudio } from '@mineclaw/world-viewer';
 export { configureHumanSkins } from '@mineclaw/world-viewer';

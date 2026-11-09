@@ -349,6 +349,7 @@ public sealed partial class StoryColony : IStoryPort
     /// <summary>Drops a pawn's current job (an order, drafted, paused, stop) and cuts its action so it asks again.</summary>
     private void Supersede(PawnState p, string why)
     {
+        if (_humanControlled.Contains(p.Name)) return;
         if (_current.Remove(p.Name, out var cur))
         {
             Release(cur);
@@ -495,7 +496,7 @@ public sealed partial class StoryColony : IStoryPort
         foreach (var p in Pawns.Values)
         {
             var live = Host.Live(p.Name);
-            if (!live.Online || live.ScriptRunning) continue;
+            if (!live.Online || live.ScriptRunning || _humanControlled.Contains(p.Name)) continue;
             if (_leaving.TryGetValue(p.Name, out var lv) && lv.Done) continue; // it ended for good: released below
             if (_started.TryGetValue(p.Name, out var at) && Now - at < TimeSpan.FromSeconds(5)) continue;
             _started[p.Name] = Now;

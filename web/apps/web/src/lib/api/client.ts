@@ -215,7 +215,7 @@ function validate<K extends RouteId>(id: K, schema: z.ZodType, data: unknown): R
   const result = schema.safeParse(data);
   if (result.success) return result.data as RouteResponse<K>;
   if (DEV) {
-    console.error(`[api] ${id}: response does not match the contract`, result.error.issues, data);
+    console.error(`[api] ${id}: response does not match the contract`, result.error.issues, id.startsWith('bodies.control') ? '[control response omitted]' : data);
     throw new ContractError(id, result.error.issues);
   }
   console.warn(`[api] ${id}: response does not match the contract; using it as is`, result.error.issues);

@@ -50,6 +50,7 @@ import { errorText } from '@/lib/api/client';
 import { cn } from '@/lib/utils';
 import { ContainerContents } from '@/features/world/ContainerPanel';
 import { InventorySection } from '@/features/live/inventory/InventoryPanel';
+import { TakeControlButton } from '@/features/control/TakeControlButton';
 import { benchTaskLine } from './CraftNeeds';
 import { retryIn, shortReason } from './failedLabels';
 import { BillRow } from './inspector/BillRow';
@@ -445,6 +446,7 @@ function PawnOverview({
       </div>
       {pawn.held ? <div className="text-muted">Holding {pawn.held}</div> : null}
       <PawnBedRow bed={bed} onShowBed={onShowBed} />
+      <TakeControlButton pawn={pawn.name} canControl={canWrite} online={!isOffline(pawn)} />
       <Button
         size="sm"
         variant={pawn.drafted ? 'subtle' : 'secondary'}

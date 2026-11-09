@@ -42,6 +42,7 @@ public sealed partial class StoryColony
     /// <summary>The job for <paramref name="p"/> now. Never null: with nothing to do it idles (and the colony hears about it).</summary>
     internal ActiveJob Pick(PawnState p, PawnLive live)
     {
+        if (_humanControlled.Contains(p.Name)) return Hold("controlled by player", "controlled", s: 1);
         ReconcileStorageSigns();
         _pickEnts = null; // the world's entities are read once per pick
         _toolPlans.Clear(); // and each block's tool once per pick

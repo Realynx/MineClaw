@@ -71,6 +71,7 @@ public sealed partial class StoryColony
         lock (_lock)
         {
             _leaving.Remove(pawn);
+            _humanControlled.Remove(pawn);
             if (!Pawns.Remove(pawn, out var p)) return;
             if (_current.Remove(pawn, out var cur)) Release(cur);
             StoryPorts.Unbind(pawn, this);

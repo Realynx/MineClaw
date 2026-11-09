@@ -81,7 +81,7 @@ public sealed partial class MinecraftClient
     /// </summary>
     public bool FaceIdle(Vec3d point)
     {
-        if (!IsPlaying || CurrentAction is not null || _driver is not null || SafetyEngaged) return false;
+        if (HumanControlled || !IsPlaying || CurrentAction is not null || _driver is not null || SafetyEngaged) return false;
         var (yaw, pitch) = PlayerPhysics.YawPitchTo(World.Player.EyePosition, point);
         _lookYaw = yaw;
         _lookPitch = Math.Clamp(pitch, -90f, 90f);
@@ -91,7 +91,7 @@ public sealed partial class MinecraftClient
     /// <summary>One arm swing (a "nod") without the action lock; skipped while an action, a fight or a safety hold runs.</summary>
     public bool SwingIdle()
     {
-        if (!IsPlaying || CurrentAction is not null || SafetyEngaged) return false;
+        if (HumanControlled || !IsPlaying || CurrentAction is not null || SafetyEngaged) return false;
         Send(new AnimationPacket { EntityId = World.Player.EntityId, Animation = 1 });
         return true;
     }

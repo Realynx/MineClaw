@@ -60,7 +60,7 @@ export function mergeEntities(prev: WorldEntities | undefined, next: WorldEntiti
 
 /** A frame no newer than what we have: only its bots move, and only when it is the same revision but later. */
 function botsOnly(prev: WorldEntities, next: WorldEntities): WorldEntities {
-  return next.rev === prev.rev && next.at > prev.at ? { ...prev, at: next.at, bots: next.bots } : prev;
+  return next.rev === prev.rev && next.at > prev.at ? { ...prev, at: next.at, bots: next.bots, ...(next.chests !== null && next.chests !== undefined ? { chests: next.chests } : {}) } : prev;
 }
 
 /** A newer delta: removed entities go, changed and new ones replace by key. */

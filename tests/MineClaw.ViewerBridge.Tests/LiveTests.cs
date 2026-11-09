@@ -116,6 +116,34 @@ public class LiveTests
     }
 
     [Fact]
+    public async Task Chest_snapshot_removal_is_emitted_without_entity_revision_or_event_changes()
+    {
+        await using var h = await BridgeHost.StartAsync();
+        int calls = 0;
+        h.Sup.Routes["/api/world/entities"] = _ => FakeSupervisor.Json(Interlocked.Increment(ref calls) == 1
+            ? """{"at":1,"rev":1,"full":true,"bots":[],"entities":[],"removed":[],"events":[],"chests":[{"dim":0,"x":1,"y":64,"z":2,"open_count":1}]}"""
+            : """{"at":2,"rev":1,"full":false,"bots":[],"entities":[],"removed":[],"events":[],"chests":[]}""");
+        var hub = h.Services.GetRequiredService<LiveHub>();
+        var (client, _, _) = hub.Subscribe(null);
+        try
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            var frames = new List<LiveHub.Frame>();
+            while (frames.Count < 2)
+            {
+                var frame = await client.Reader.ReadAsync(timeout.Token);
+                if (frame.Event == "entities") frames.Add(frame);
+            }
+            Assert.Contains("\"open_count\":1", frames[0].Text);
+            Assert.Contains("\"chests\":[]", frames[1].Text);
+            for (int i = 0; i < 50 && Volatile.Read(ref calls) < 4; i++) await Task.Delay(20, timeout.Token);
+            Assert.True(Volatile.Read(ref calls) >= 4);
+            while (client.Reader.TryRead(out var frame)) Assert.NotEqual("entities", frame.Event);
+        }
+        finally { hub.Unsubscribe(client); }
+    }
+
+    [Fact]
     public async Task Entity_events_are_emitted_even_when_no_bot_or_entity_pose_changed()
     {
         await using var h = await BridgeHost.StartAsync();

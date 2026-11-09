@@ -89,6 +89,10 @@ export interface RouteTypes {
   'bodies.scripts': { params: never; query: never; body: never; response: z.output<typeof C.LiveScriptsResponse> };
   'bodies.script': { params: z.input<typeof C.BodyParams>; query: z.input<typeof C.BodyScriptQuery>; body: never; response: z.output<typeof C.BodyScriptReply> };
   'bodies.controller': { params: z.input<typeof C.BodyParams>; query: never; body: never; response: z.output<typeof C.BodyControllerInfo> };
+  'bodies.controlAcquire': { params: z.input<typeof C.BodyParams>; query: never; body: z.input<typeof C.PawnControlAcquireRequest>; response: z.output<typeof C.PawnControlSession> };
+  'bodies.controlInput': { params: z.input<typeof C.BodyParams>; query: never; body: z.input<typeof C.PawnControlInputRequest>; response: z.output<typeof C.PawnControlSession> };
+  'bodies.controlAction': { params: z.input<typeof C.BodyParams>; query: never; body: z.input<typeof C.PawnControlActionRequest>; response: z.output<typeof C.PawnControlActionResponse> };
+  'bodies.controlRelease': { params: z.input<typeof C.BodyParams>; query: never; body: z.input<typeof C.PawnControlReleaseRequest>; response: z.output<typeof C.PawnControlReleaseResponse> };
   'vision.render': { params: z.input<typeof C.BodyParams>; query: z.input<typeof C.VisionRenderQuery>; body: never; response: never };
   'vision.png': { params: z.input<typeof C.VisionSheetParams>; query: never; body: never; response: never };
   'vision.sheet': { params: z.input<typeof C.VisionSheetParams>; query: never; body: never; response: z.output<typeof C.VisionSheetInfo> };

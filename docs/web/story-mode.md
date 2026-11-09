@@ -28,6 +28,37 @@ gameplay cap: server slots and available process memory determine how many can j
 
 ## The colony director (C#, bot side)
 
+### Playing as a pawn
+
+Select an online pawn in the Controller (top-down or freecam), or open its Live Hive entry, and choose **Take control**.
+The first-person view acquires that one pawn; **Click to play** enters fullscreen and captures the mouse. The browser uses
+its imported game textures/sounds and the human-view skin setting. The selected body is hidden only in its own first-person
+view, so another open viewer can still see it.
+
+WASD moves, mouse looks, Space jumps, Shift sneaks, Ctrl sprints, 1–9 or the wheel selects the hotbar, left mouse attacks/mines,
+right mouse uses/places, E opens inventory and Q drops the held item (Ctrl+Q drops its stack). Inventory supports left/right
+clicks, Shift transfers, crafting slots, armour and the off hand. The game server remains authoritative: collision, gravity,
+reach, line of sight, tool speed, inventory availability and block orientation use the normal game client rules.
+
+**Release & return** resumes the pawn's director. A takeover never changes saved roles, schedules, priorities or draft state.
+It ends the old work lane and releases its reservations, pauses new AI work/combat/idle gestures, then starts a fresh work
+lane when released. An offline, hidden or disconnected browser cannot keep driving it: input stops after 350 ms and the
+exclusive session expires after 3 seconds without renewed input. Another browser cannot take over the same pawn until it
+is released. Leaving inventory first returns cursor items through the existing inventory handling.
+
+The four authenticated POST routes under `/api/bodies/:body/control/` acquire, input, action and release a session. They
+require Story permission and CSRF; the bridge binds identity to the signed user. Inputs and actions have separate monotonic
+sequences. Browser input is latest-only with at most one movement request outstanding. Held actions acknowledge promptly
+and report completion through input replies; they never hold an HTTP request for an entire mining or bow-use operation.
+Control tokens are kept in memory and excluded from audits and contract-error logs.
+
+Controller freecam and pawn takeover request JavaScript fullscreen before mouse capture. Chrome's Keyboard Lock protects
+WASD shortcuts such as Ctrl+W only in that mode. Escape remains available to release the mouse/fullscreen. If the browser
+denies fullscreen or keyboard permission, the UI explains that protection is unavailable; Page Down also descends in
+freecam. This does not intercept shortcuts while typing in other parts of the app.
+
+### Director state
+
 There is one per colony. It holds:
 - **Pawns.** Each has an id (body name), a display name, and **characteristics** generated once per pawn, seeded by its
   name:

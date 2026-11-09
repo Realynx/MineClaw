@@ -88,6 +88,8 @@ export interface ViewSetup {
   labels: boolean;
   overlays: boolean;
   selected: string | null;
+  /** The locally controlled body is hidden in this first-person view only. */
+  hiddenBot?: string | null;
   /** X-ray cone subjects (points the cone aims at) and the floor it never cuts below. */
   cones: Array<{ x: number; y: number; z: number }>;
   floorY: number;
@@ -815,6 +817,7 @@ export class WorldRuntime {
     const s = new WorldSync(this.source, this.host, this.cache, {
       onApplied: (res) => {
         this.sections.get(res.dim)?.markDirty(res.dirty);
+        this.blockEntityLayer.columnsChanged(res.dim, res.columns.map((c) => [c.cx, c.cz]));
         // A column that arrived or changed: its block entities may have too.
         this.blockEntities.want(res.dim, res.columns.filter((c) => !c.missing).map((c) => [c.cx, c.cz] as [number, number]));
         this.blockEntities.drop(res.dim, res.columns.filter((c) => c.missing).map((c) => [c.cx, c.cz] as [number, number]));
@@ -839,6 +842,7 @@ export class WorldRuntime {
       onDirty: (dim, dirty) => this.sections.get(dim)?.markDirty(dirty),
       onChanged: (dim, blocks) => {
         this.flashes.add(dim, blocks, performance.now());
+        this.blockEntityLayer.blocksChanged(dim, blocks);
         for (const h of this.holoViews.values()) h.blocksChanged(dim, blocks);
         for (const l of this.blockListeners) l(dim, blocks);
       },
@@ -1018,9 +1022,11 @@ export class WorldRuntime {
     this.bubbles.update(now, this.botsBuf, this.entsBuf);
     this.refreshEntityLight(now);
     const events = this.store.drainEvents();
+    this.blockEntityLayer.reconcileChests(this.store.chests);
     if (!events.length) return;
     for (const ev of events) if (ev.kind === 'lightning') this.lightningFlash = 0.7;
     this.entities.onEvents?.(events, now);
+    this.blockEntityLayer.receiveEvents(events, now);
   }
 
   /** [blocks] The block-entity layer around the primary view (else the first view): sign text, banners, spawner mobs. */
@@ -1412,6 +1418,7 @@ export class WorldRuntime {
       botLabels: labels && s.botLabels !== false,
       cut: s.entityCut ?? null,
       selected: s.selected,
+      ...(s.hiddenBot ? { hiddenBot: s.hiddenBot } : {}),
       drawDistance: radius,
       centre: fromCentre ? s.centre : null,
       drops: q.drops,

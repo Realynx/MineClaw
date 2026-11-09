@@ -5,6 +5,8 @@ namespace MineClaw.App.Supervisor;
 
 /// <summary>A known chunk column in the hive's merged world memory (no blocks): the viewer's delta key.</summary>
 public sealed record WorldColumnInfo(int Cx, int Cz, long Hash, long Seen, string? By, bool Live);
+/// <summary>Currently open chest at integer block coordinates. The entities feed carries a complete sparse list.</summary>
+public sealed record WorldChestState(int Dim, int X, int Y, int Z, int OpenCount);
 
 /// <summary>A hive bot for the live viewer: pose (yaw/pitch when known), vitals, job, held item, claims; an in-process body also
 /// what it wears and holds (<paramref name="Equipment"/>, the entity wire's slots, glint included), from its own inventory.</summary>
@@ -67,6 +69,7 @@ public interface ISupervisorWorld
     /// <summary>The last few seconds of one-shot entity events (swings, hurts, deaths, crits, lightning) of every body, as each saw
     /// them (the delta log dedupes the copies).</summary>
     IReadOnlyList<WorldEntityEvent> EntityEvents() => [];
+    IReadOnlyList<WorldChestState> Chests() => [];
     /// <summary>The block entities of the columns (<c>/api/world/blockentities</c>); an unknown column comes back empty.</summary>
     IReadOnlyList<WorldBlockEntityColumn> BlockEntities(int dim, IReadOnlyList<(int Cx, int Cz)> cols) => [];
     /// <summary>What the hive knows of the container with a block at <paramref name="pos"/> (<c>/api/world/containers</c>,
@@ -254,11 +257,12 @@ public sealed class SupervisorWorldRoutes
             {
                 var d = _entityLog.Since(since, () => _world.Entities(null), _world.EntityEvents);
                 return Json(200, new { at = _time.GetUtcNow().ToUnixTimeMilliseconds(), rev = d.Rev, full = d.Full, bots = _world.Bots(), entities = d.Entities, removed = d.Removed,
-                    events = d.Events });
+                    events = d.Events, chests = _world.Chests() });
             }, ct));
         }
         return new(_cache.GetAsync($"entities:{edim}", EntitiesCache, () => Work(_live, () =>
-            Json(200, new { at = _time.GetUtcNow().ToUnixTimeMilliseconds(), bots = _world.Bots(), entities = _world.Entities(edim) }), ct)));
+            Json(200, new { at = _time.GetUtcNow().ToUnixTimeMilliseconds(), bots = _world.Bots(), entities = _world.Entities(edim),
+                chests = _world.Chests().Where(c => edim == null || c.Dim == edim).ToArray() }), ct)));
     }
 
     private SupervisorReply BlocksReply(SupervisorRequest r, int dim)

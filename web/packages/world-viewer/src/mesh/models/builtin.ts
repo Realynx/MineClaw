@@ -98,19 +98,23 @@ function chestQuads(s: StateRef, sheets: SheetLookup, out: Quad[]): void {
   const kind = s.props.kind ?? 'normal';
   const f = facingIndex(s.props.facing);
   const pair = s.props.pair ? (s.props.pair.split(',').map(Number) as [number, number]) : null;
-  if (pair) doubleChestQuads(kind, f, pair, sheets, out);
-  else singleChestQuads(kind, f, sheets, out);
+  const parts = s.props.liveLid === 'true' ? 'body' : 'all';
+  if (pair) doubleChestQuads(kind, f, pair, sheets, out, parts);
+  else singleChestQuads(kind, f, sheets, out, parts);
 }
 
-function singleChestQuads(kind: string, f: number, sheets: SheetLookup, out: Quad[]): void {
+type ChestParts = 'body' | 'lid' | 'all';
+const chestPart = (index: number, parts: ChestParts) => parts === 'all' || (parts === 'body' ? index === 1 : index !== 1);
+
+function singleChestQuads(kind: string, f: number, sheets: SheetLookup, out: Quad[], parts: ChestParts = 'all'): void {
   const sheet = sheets(`entity/chest/${kind}`);
   if (!sheet) return;
   const m = chain(translate(0, 1, 1), scale(1, -1, -1), translate(0.5, 0.5, 0.5), rotate(wallYaw(f), 'y'), translate(-0.5, -0.5, -0.5));
-  for (const part of CHEST) partQuads(sheet, part, m, out);
+  CHEST.forEach((part, i) => { if (chestPart(i, parts)) partQuads(sheet, part, m, out); });
 }
 
 /** The master (west/north cell) draws the 30-wide model; every cell keeps the half inside its own cell. */
-function doubleChestQuads(kind: string, f: number, pair: [number, number], sheets: SheetLookup, out: Quad[]): void {
+function doubleChestQuads(kind: string, f: number, pair: [number, number], sheets: SheetLookup, out: Quad[], parts: ChestParts = 'all'): void {
   const sheet = sheets(`entity/chest/${kind}_double`);
   if (!sheet) return;
   const masterHere = pair[0] > 0 || pair[1] > 0;
@@ -118,7 +122,7 @@ function doubleChestQuads(kind: string, f: number, pair: [number, number], sheet
   const alongX = pair[0] !== 0;
   const m = chain(translate(0, 1, 1), scale(1, -1, -1), translate(0.5, 0.5, 0.5), doubleChestShift(f, alongX), rotate(wallYaw(f), 'y'), translate(-0.5, -0.5, -0.5));
   const all: Quad[] = [];
-  for (const part of LARGE_CHEST) partQuads(sheet, part, m, all);
+  LARGE_CHEST.forEach((part, i) => { if (chestPart(i, parts)) partQuads(sheet, part, m, all); });
   for (const q of all) {
     offsetQuad(q, mx, 0, mz);
     const c = clipAxis(q, alongX ? 0 : 2, 0, 1);
@@ -129,6 +133,20 @@ function doubleChestQuads(kind: string, f: number, pair: [number, number], sheet
 function doubleChestShift(f: number, alongX: boolean): M4 {
   if (f === 2 && alongX) return translate(1, 0, 0);
   return f === 5 && !alongX ? translate(0, 0, -1) : translate(0, 0, 0);
+}
+
+/** Closed lid/latch geometry for one cell, with the shared double-chest hinge and its world-space rotation axis. */
+export function chestLidModel(kind: string, f: number, pair: [number, number] | null, sheets: SheetLookup): {
+  quads: Quad[]; hinge: [number, number, number]; axis: [number, number, number];
+} {
+  const quads: Quad[] = [];
+  if (pair) doubleChestQuads(kind, f, pair, sheets, quads, 'lid');
+  else singleChestQuads(kind, f, sheets, quads, 'lid');
+  const masterHere = !pair || pair[0] > 0 || pair[1] > 0;
+  const m = chain(translate(0, 1, 1), scale(1, -1, -1), translate(0.5, 0.5, 0.5),
+    pair ? doubleChestShift(f, pair[0] !== 0) : translate(0, 0, 0), rotate(wallYaw(f), 'y'), translate(-0.5, -0.5, -0.5));
+  const p = apply(m, 1 / 16, 7 / 16, 15 / 16), o = apply(m, 0, 0, 0), x = apply(m, 1, 0, 0);
+  return { quads, hinge: [p[0] + (masterHere ? 0 : pair[0]), p[1], p[2] + (masterHere ? 0 : pair[1])], axis: [x[0] - o[0], x[1] - o[1], x[2] - o[2]] };
 }
 
 /** A bed piece's turn about z and the shift that keeps it in its cell, by facing ([angle, x, z]; north none). */

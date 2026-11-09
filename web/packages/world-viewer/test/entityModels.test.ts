@@ -279,6 +279,22 @@ describe('EntityLayer', () => {
     layer.dispose();
   });
 
+  it('hides only the controlled body in first person and restores it for another shared view', () => {
+    const layer = new EntityLayer();
+    layer.setBundle(fakeBundle(PACK_1122));
+    const other = { ...bot, name: 'Bob', x: 5, dto: { ...bot.dto, name: 'Bob', short: '102' } };
+    layer.update([bot, other], [ent(1, 0)], 1000, new Set());
+    const camera = new THREE.Vector3(2, 65.62, 0);
+    layer.showFor(0, camera, { bots: true, entities: true, labels: true, hiddenBot: 'main' });
+    expect(layer.instances).toBe(2);
+    expect(layer.detailOf('Alice')).toBeNull();
+    expect(layer.detailOf('Bob')).toBe(true);
+    layer.showFor(0, camera, { bots: true, entities: true, labels: true });
+    expect(layer.instances).toBe(3);
+    expect(layer.detailOf('Alice')).toBe(true);
+    layer.dispose();
+  });
+
   it('a bot whose hp drops flashes red; hp 0 starts the death fall; botAt finds it', () => {
     const layer = new EntityLayer();
     layer.setBundle(fakeBundle(PACK_1122));

@@ -2,7 +2,7 @@
 // from where the entity is drawn now to the new position over the measured update interval (EWMA, 50..1000 ms), so 5 Hz
 // polls read as smooth motion; a jump of more than 8 blocks snaps. Bots glide the same way. Ages advance locally.
 
-import type { BotDto, Dim, EntityDelta, EntityDto, EntityEvent } from '../types';
+import type { BotDto, ChestState, Dim, EntityDelta, EntityDto, EntityEvent } from '../types';
 
 interface Track {
   fromX: number; fromY: number; fromZ: number;
@@ -88,6 +88,8 @@ export class EntityStore {
   rev = 0;
   /** Bumped on every applied reply. */
   version = 0;
+  /** Authoritative chest state travels with each frame, independently of entity revisions. */
+  chests: ChestState[] | null = null;
 
   constructor(public clock: () => number = () => performance.now()) {}
 
@@ -103,6 +105,7 @@ export class EntityStore {
     this.lastUpdate = now;
     this.applyEntities(d, now);
     this.applyBots(d.bots, now);
+    this.chests = d.chests ?? null;
     for (const ev of d.events ?? []) this.pending.push(ev);
     if (this.pending.length > 512) this.pending.splice(0, this.pending.length - 512);
     this.rev = d.rev;
@@ -211,6 +214,7 @@ export class EntityStore {
     this.lastUpdate = 0;
     this.lastFrame = undefined;
     this.rev = 0;
+    this.chests = null;
     this.version++;
   }
 }

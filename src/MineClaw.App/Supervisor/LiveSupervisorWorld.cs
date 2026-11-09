@@ -438,6 +438,8 @@ public sealed class LiveSupervisorWorld : ISupervisorWorld
         return list;
     }
 
+    public IReadOnlyList<WorldChestState> Chests() => ChestStateMerge.Merge(Bodies().Select(b => b.World));
+
     /// <summary>The columns' block entities, merged over every in-process body in <paramref name="dim"/>.</summary>
     /// <summary>A container's contents: live, the last look of any body, the world memory or Story's ledger (<see cref="ContainerKnowledge"/>).</summary>
     public ContainerView? Container(int dim, BlockPos pos) => _containers.GetForViewer(dim, pos);

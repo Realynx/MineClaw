@@ -338,6 +338,14 @@ public sealed partial class MinecraftClient
         phys.Sprinting = false;
         phys.Yaw = _lookYaw;
         phys.Pitch = _lookPitch;
+        if (Volatile.Read(ref _human) is { } human)
+        {
+            var keys = Volatile.Read(ref human.Keys);
+            var input = HumanInputAt(keys.Input, keys.At, Environment.TickCount64);
+            phys.Sneaking = input.Sneak; // vanilla sneak dismounts; the server remains authoritative for riding motion
+            phys.Yaw = input.Yaw;
+            phys.Pitch = input.Pitch;
+        }
         phys.Frozen = true;
         World.Player.SyncFromPhysics();
         if (!teleported) SendMovement(s, phys);

@@ -240,6 +240,7 @@ public sealed partial class MinecraftClient : IAsyncDisposable
 
     private void ResetForNewSession()
     {
+        EndHumanControl();
         World.Clear();
         World.Entities.Clear();
         World.Inventory.Close(-1);
@@ -299,6 +300,8 @@ public sealed partial class MinecraftClient : IAsyncDisposable
             try { s.Conn.Send(new KickPacket(quitReason)); } catch { /* ignore */ }
         }
         s.Cts.Cancel();
+        EndHumanControl();
+        World.ChestStates.Clear(); // the retained terrain is no longer an observer of current opener counts
         try { s.Conn.Dispose(); } catch { /* ignore */ }
         s.Recorder?.Dispose();
         s.SpawnedTcs.TrySetException(new IOException(reason));
@@ -364,6 +367,16 @@ public sealed partial class MinecraftClient : IAsyncDisposable
 
     private void Send(Session s, IPacket p)
     {
+        lock (_humanSync) SendOwned(s, p);
+    }
+
+    private void SendOwned(Session s, IPacket p)
+    {
+        // A canceled AI/human action can still unwind on a pool thread after ownership changes. Its cleanup must not
+        // send a late dig/use/window click into the new controller's session.
+        if (_humanActionContext.Value is { } owner && !ReferenceEquals(owner, Volatile.Read(ref _human)))
+            throw new OperationCanceledException("Human control ended.");
+        if (_autonomousActionContext.Value && HumanControlled) throw new OperationCanceledException("Human control began.");
         if (s.Ended) return;
         if (!s.Conn.CanSend(p))
         {

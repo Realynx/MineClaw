@@ -182,7 +182,8 @@ public sealed class EntityDeltaLog(TimeProvider? time = null)
         bool any = false;
         foreach (var e in list.OrderBy(e => e.At))
         {
-            var k = (e.Dim, e.Id, e.Kind, e.Sound, e.Sound != null ? e.X : null, e.Sound != null ? e.Y : null, e.Sound != null ? e.Z : null);
+            bool positioned = e.Sound != null || e.Kind is "chest_open" or "chest_close";
+            var k = (e.Dim, e.Id, e.Kind, e.Sound, positioned ? e.X : null, positioned ? e.Y : null, positioned ? e.Z : null);
             if (_eventSeen.TryGetValue(k, out var at) && (e.At <= at || e.At - at <= (e.Sound != null ? 75 : window))) continue;
             _eventSeen[k] = e.At;
             if (!any) { _rev++; any = true; }

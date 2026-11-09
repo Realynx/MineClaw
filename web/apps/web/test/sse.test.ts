@@ -168,6 +168,13 @@ describe('applyLiveEvent', () => {
     expect(mergeEntities(moved, { at: 9, rev: 5, full: false, bots: [bot(1)], entities: [] })).toBe(moved); // an older frame
   });
 
+  it('replaces the complete chest snapshot even when no entity revision changed', () => {
+    const base: WorldEntities = { at: 10, rev: 5, full: true, bots: [], entities: [], chests: [{ dim: 0, x: 1, y: 64, z: 2, openCount: 1 }] };
+    const closed = mergeEntities(base, { at: 11, rev: 5, full: false, bots: [], entities: [], chests: [] });
+    expect(closed.chests).toEqual([]);
+    expect(mergeEntities(closed, { ...base, full: false })).toBe(closed);
+  });
+
   it('appends memory activity events and replaces the in-context snapshot', () => {
     const qc = new QueryClient();
     const ev = (seq: number) => ({ seq, at, brain: 'main', memoryKind: 'note', memoryId: `doc:${seq}`, source: 'rag' as const });

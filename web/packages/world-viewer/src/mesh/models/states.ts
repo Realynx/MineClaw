@@ -74,7 +74,7 @@ function name(id: number): string {
 
 /** Blocks whose state needs the neighbours or the block entity (never cached per id/meta alone). */
 export function worldDependent(id: number): boolean {
-  return isStairs(id) || isFence(id) || isFenceGate(id) || isPane(id) || isDoor(id) || [139, 106, 175, 104, 105, 55, 54, 146, 2, 3, 110, 51, 26, 144, 140, 176, 177].includes(id);
+  return isStairs(id) || isFence(id) || isFenceGate(id) || isPane(id) || isDoor(id) || [139, 106, 175, 104, 105, 55, 54, 130, 146, 2, 3, 110, 51, 26, 144, 140, 176, 177].includes(id);
 }
 
 const SKULLS = ['skeleton', 'wither', 'zombie', 'player', 'creeper', 'dragon'];
@@ -518,6 +518,7 @@ function chest(r: Resolve): StateRef {
     p.facing = facing(pairFacing(nb, mate));
     p.pair = `${mate[0]},${mate[1]}`;
   } else p.facing = horizontal(r.meta);
+  if (['chest', 'trapped_chest', 'ender_chest'].includes(r.be()?.kind ?? '')) p.liveLid = 'true';
   return r.builtin();
 }
 

@@ -14,6 +14,16 @@ function clocked() {
 }
 
 describe('EntityStore interpolation (LiveHive/EntityStore.cs)', () => {
+  it('preserves authoritative chest snapshots through wire normalization and same-revision frames', () => {
+    const { s } = clocked();
+    s.apply(normalizeEntities({ rev: 1, frame: 1, bots: [], entities: [], chests: [{ dim: -1, x: 2, y: 64, z: 3, open_count: 2 }] }));
+    expect(s.chests).toEqual([{ dim: -1, x: 2, y: 64, z: 3, openCount: 2 }]);
+    s.apply(normalizeEntities({ rev: 1, frame: 2, bots: [], entities: [], chests: [] }));
+    expect(s.chests).toEqual([]);
+    s.clear(); expect(s.chests).toBeNull();
+    s.apply(normalizeEntities({ rev: 1, bots: [], entities: [] }));
+    expect(s.chests).toBeNull(); // legacy sources keep event-driven lids
+  });
   it('glides from the drawn position to the new one over the measured update interval', () => {
     const { s, at } = clocked();
     s.apply(delta(1, [mob(7, 0)], { full: true }));

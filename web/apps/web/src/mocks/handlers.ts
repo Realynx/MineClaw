@@ -55,7 +55,7 @@ function routeHandler(id: RouteId): HttpHandler | null {
   if (!resolve || route.responseKind === 'sse') return null;
   const method = route.method === 'GET' ? http.get : http.post;
   return method(route.path, async ({ request, params }) => {
-    await delay(route.method === 'GET' ? 60 + Math.random() * 140 : 250);
+    await delay(id.startsWith('bodies.control') ? 8 : route.method === 'GET' ? 60 + Math.random() * 140 : 250);
     try {
       checkAccess(id, request.headers.get('X-CSRF-Token'), request.method);
       const out = resolve(await parseRequest(route, request, params));

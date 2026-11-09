@@ -10,6 +10,10 @@ import type { z } from 'zod';
 import { WebHostingResponse, WebHostingSaveRequest } from './webHosting.js';
 import { HumanSkinSettings, HumanSkinSave, HumanSkinQuery, HumanSkinFeed } from './humanSkins.js';
 import {
+  PawnControlAcquireRequest, PawnControlSession, PawnControlInputRequest, PawnControlActionRequest,
+  PawnControlActionResponse, PawnControlReleaseRequest, PawnControlReleaseResponse,
+} from './pawnControl.js';
+import {
   ActivityCompactionReport,
   AdminAuditQuery,
   AdminAuditResponse,
@@ -1141,6 +1145,30 @@ export const ROUTES = {
     audit: null,
     summary: 'What drives a body (main/hive/subhive/script) and the links to its panels.',
   }),
+  'bodies.controlAcquire': post('/api/bodies/:body/control/acquire', {
+    access: 'story', params: BodyParams, body: PawnControlAcquireRequest, response: PawnControlSession,
+    responseKind: 'json', bridge: b('/v1/sup/bodies/{body}/control/acquire'),
+    supervisor: '/api/bodies/{body}/control/acquire', audit: null,
+    summary: 'Take direct control of an online colony pawn; requestId makes acquisition retries idempotent.',
+  }),
+  'bodies.controlInput': post('/api/bodies/:body/control/input', {
+    access: 'story', params: BodyParams, body: PawnControlInputRequest, response: PawnControlSession,
+    responseKind: 'json', bridge: b('/v1/sup/bodies/{body}/control/input'),
+    supervisor: '/api/bodies/{body}/control/input', audit: null,
+    summary: 'Refresh the owned control lease and apply movement; input stops after the short dead-man timeout.',
+  }),
+  'bodies.controlAction': post('/api/bodies/:body/control/action', {
+    access: 'story', params: BodyParams, body: PawnControlActionRequest, response: PawnControlActionResponse,
+    responseKind: 'json', bridge: b('/v1/sup/bodies/{body}/control/action'),
+    supervisor: '/api/bodies/{body}/control/action', audit: null,
+    summary: 'Perform an aimed world or inventory action using the owned pawn control session.',
+  }),
+  'bodies.controlRelease': post('/api/bodies/:body/control/release', {
+    access: 'story', params: BodyParams, body: PawnControlReleaseRequest, response: PawnControlReleaseResponse,
+    responseKind: 'json', bridge: b('/v1/sup/bodies/{body}/control/release'),
+    supervisor: '/api/bodies/{body}/control/release', audit: null,
+    summary: 'Release direct control and return the pawn to its colony work.',
+  }),
   'vision.render': get('/api/bodies/:body/vision/render', {
     access: 'viewer',
     params: BodyParams,
@@ -1754,9 +1782,9 @@ export const SUPERVISOR_PASSTHROUGH_ALLOW = {
     'designer/',
     'story',
   ],
-  post: ['viewer/chat', 'admin/', 'designer/', 'story/'],
+  post: ['viewer/chat', 'admin/', 'designer/', 'story/', 'bodies/'],
   /** Paths that require the `admin` role in `X-MCX-Roles` (both methods). */
   adminOnly: ['admin/'],
   /** POST paths that require the `story` or the `admin` role in `X-MCX-Roles`. */
-  storyWrite: ['story/'],
+  storyWrite: ['story/', 'bodies/'],
 } as const;

@@ -458,6 +458,14 @@ public sealed partial class MinecraftClient
     {
         var bp = new BlockPos(ba.X, ba.Y, ba.Z);
         int d1 = ba.Data1, d2 = ba.Data2;
+        int block = ba.BlockId ?? World.GetBlock(bp);
+        if (d1 == 1 && block is 54 or 146 or 130)
+        {
+            var at = DateTime.UtcNow;
+            World.ChestStates.Record(bp, d2, at);
+            World.Entities.Events.Add(new EntityEvent(0, d2 > 0 ? "chest_open" : "chest_close", at,
+                new Vec3d(bp.X, bp.Y, bp.Z), Dimension: World.Dimension));
+        }
         Raise(() => BlockAction?.Invoke(bp, d1, d2));
     }
 
@@ -549,6 +557,7 @@ public sealed partial class MinecraftClient
             if (!_wasDead)
             {
                 _wasDead = true;
+                EndHumanControl();
                 Log("died");
                 if (ActiveVoidStep is { } voidStep) OnDiedDuringVoidStep(voidStep, World.Player.Position);
                 Raise(() => Died?.Invoke());

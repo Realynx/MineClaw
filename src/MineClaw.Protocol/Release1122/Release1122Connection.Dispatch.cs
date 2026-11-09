@@ -45,6 +45,7 @@ public sealed partial class Release1122Connection
         t[Ids1122.WindowProperty] = static (c, b) => c.TranslateWindowProperty(b);
         t[Ids1122.ConfirmTransaction] = static (_, b) => TranslateConfirmTransaction(b);
         t[Ids1122.BlockBreakAnim] = static (_, b) => TranslateBlockBreakAnim(b);
+        t[Ids1122.BlockAction] = static (_, b) => TranslateBlockAction(b);
         t[Ids1122.UpdateBlockEntity] = static (c, b) => c.TranslateUpdateBlockEntity(b);
         // P4 (Release1122Connection.Entities.cs): every entity kind, metadata, moves, effects, attributes, passengers.
         t[Ids1122.SpawnObject] = static (c, b) => c.TranslateSpawnObject(b);

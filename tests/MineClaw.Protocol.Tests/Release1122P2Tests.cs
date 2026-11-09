@@ -78,6 +78,17 @@ public class Release1122P2Tests
     // ------------------------------------------------------------------ windows S→C
 
     [Fact]
+    public void Block_actions_preserve_chest_users_and_block_identity()
+    {
+        var (client, server) = InPlay();
+        server.Send(0x0A, w => w.WritePosition(-17, 64, 33).WriteUByte(1).WriteUByte(2).WriteVarInt(146));
+        var action = Assert.IsType<BlockActionPacket>(client.ReadPacket());
+        Assert.Equal((-17, 64, 33, 1, 2, (int?)146), (action.X, (int)action.Y, action.Z, (int)action.Data1, (int)action.Data2, action.BlockId));
+        server.Send(0x0A, w => w.WritePosition(-17, 64, 33).WriteUByte(1).WriteUByte(0).WriteVarInt(146));
+        Assert.Equal(0, Assert.IsType<BlockActionPacket>(client.ReadPacket()).Data2);
+    }
+
+    [Fact]
     public void Windows_translate_with_string_types_json_titles_offhand_and_inventory_indices()
     {
         var (client, server) = InPlay();

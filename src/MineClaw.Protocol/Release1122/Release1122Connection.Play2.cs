@@ -95,6 +95,13 @@ public sealed partial class Release1122Connection
 
     // ---- blocks ----
 
+    private static IPacket TranslateBlockAction(ReadOnlySpan<byte> body)
+    {
+        var r = new WireReader(body);
+        var (x, y, z) = r.ReadPosition();
+        return new BlockActionPacket { X = x, Y = (short)y, Z = z, Data1 = r.ReadUByte(), Data2 = r.ReadUByte(), BlockId = r.ReadVarInt() };
+    }
+
     private static IPacket? TranslateBlockBreakAnim(ReadOnlySpan<byte> body)
     {
         var r = new WireReader(body);

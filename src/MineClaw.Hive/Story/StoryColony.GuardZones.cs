@@ -82,7 +82,7 @@ public sealed partial class StoryColony
     private bool MayLeaveForGuardZone(PawnState p)
     {
         int priority = p.Priorities.GetValueOrDefault(WorkTypes.Guard);
-        if (p.Drafted || p.Queue.Count > 0 || _leaving.ContainsKey(p.Name) || priority is < 1 or > 4
+        if (p.Drafted || p.Queue.Count > 0 || _leaving.ContainsKey(p.Name) || _humanControlled.Contains(p.Name) || priority is < 1 or > 4
             || ScheduleBlockAt(p, HourNow) is not (ScheduleBlocks.Work or ScheduleBlocks.Anything)
             || !_current.TryGetValue(p.Name, out var job) || job.GuardZone) return false;
         if (job.Source is "none" or "wander") return job.Type == "idle";

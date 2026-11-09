@@ -295,6 +295,7 @@ interface Label {
 
 /** One `showFor`'s view parameters and counters (one object per layer, refilled for each view: no per-frame allocation). */
 interface ViewState {
+  hiddenBot: string | null;
   dim: number;
   cam: THREE.Vector3;
   zoom: number;
@@ -364,6 +365,7 @@ export interface EntityShowOptions {
   entities: boolean;
   labels: boolean;
   selected?: string | null;
+  hiddenBot?: string | null;
   /** Entities beyond this are not drawn (the view's draw distance; fog hides them anyway). */
   drawDistance?: number;
   /**
@@ -411,6 +413,7 @@ export class EntityLayer {
   private readonly labels = new LabelFactory();
   private readonly cullSphere = new THREE.Sphere();
   private readonly view: ViewState = {
+    hiddenBot: null,
     dim: 0, cam: new THREE.Vector3(), zoom: 1, bots: true, entities: true, labels: false, far: 0, botDetail: 0, cut: null, centre: null, drops: true, frustum: null, n: 0, boxes: 0, botModels: 0,
   };
   private readonly botObjs = new Map<string, BotObj>();
@@ -486,7 +489,9 @@ export class EntityLayer {
     this.textures = [];
     this.bundle = bundle;
     this.heldCache.clear();
-    for (const d of this.drawn.values()) d.sig = '';
+    // Equipment looks contain atlas cell numbers. The next model signature can equal the old one after a same-version
+    // import, so invalidate the equipment signature too instead of reusing cells from the previous atlas.
+    for (const d of this.drawn.values()) d.sig = d.eqSig = '';
     if (!bundle) {
       this.mats.shared.uTex.value = this.mats.shared.uItems.value = this.mats.shared.uBlocks.value = this.mats.shared.uGlint.value = null;
       return;
@@ -1753,6 +1758,7 @@ export class EntityLayer {
   private beginView(dim: number, cam: THREE.Vector3, opts: EntityShowOptions, zoom: number): ViewState {
     const v = this.view;
     v.dim = dim;
+    v.hiddenBot = opts.hiddenBot ?? null;
     v.cam = cam;
     v.zoom = zoom;
     v.bots = opts.bots;
@@ -1771,6 +1777,7 @@ export class EntityLayer {
   /** One drawn entity in this view: skipped, a full model, or a LOD box (and its label). */
   private showOne(d: Drawn, v: ViewState, want: Set<string>): void {
     d.detail = null;
+    if (v.hiddenBot && d.botView && (d.botView.name === v.hiddenBot || d.botView.dto.short === v.hiddenBot)) return;
     if (d.parent) {
       this.showRider(d, v.dim);
       return;
@@ -1850,7 +1857,9 @@ export class EntityLayer {
   /** A bot's ring and name label in this view. */
   private syncBotObj(name: string, o: BotObj, dim: number, opts: EntityShowOptions): void {
     const d = this.drawn.get(name);
-    o.root.visible = !!d && opts.bots && d.dim === dim && !cutAway(opts.cut ?? null, d.x, d.y, d.z);
+    o.root.visible = !!d && opts.bots && d.dim === dim &&
+      !(opts.hiddenBot && (name === opts.hiddenBot || d.botView?.dto.short === opts.hiddenBot)) &&
+      !cutAway(opts.cut ?? null, d.x, d.y, d.z);
     if (d) o.root.position.set(d.x, d.y, d.z);
     if (o.label) o.label.visible = opts.botLabels ?? opts.labels;
     o.ring.visible = !!opts.selected && (o.root.userData.name === opts.selected || o.root.userData.short === opts.selected);

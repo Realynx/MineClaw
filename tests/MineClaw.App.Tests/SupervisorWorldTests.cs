@@ -9,6 +9,8 @@ namespace MineClaw.App.Tests;
 internal sealed class FakeSupervisorWorld : ISupervisorWorld
 {
     public int IndexCalls, ColumnCalls;
+    public IReadOnlyList<WorldChestState> OpenChests = [];
+    public IReadOnlyList<WorldChestState> Chests() => OpenChests;
     public readonly ChunkSnapshot Snap;
 
     public FakeSupervisorWorld()
@@ -120,6 +122,20 @@ public class SupervisorWorldTests
         Assert.Equal(400, (await s.HandleAsync(Get("/api/world/chunks", "cols=nope"))).Status);
         var tooMany = string.Join(';', Enumerable.Range(0, SupervisorWorldRoutes.MaxColumnsPerRequest + 1).Select(i => $"{i},0"));
         Assert.Equal(400, (await s.HandleAsync(Get("/api/world/chunks", "cols=" + tooMany))).Status);
+    }
+
+    [Fact]
+    public async Task Every_entity_delta_includes_current_open_chests_even_without_new_entity_revision()
+    {
+        var (s, world) = Server();
+        await using var dispose = s;
+        world.OpenChests = [new(0, 5, 64, 6, 2)];
+        using var full = JsonDocument.Parse((await s.HandleAsync(Get("/api/world/entities", "since=0"))).Text);
+        Assert.Equal(2, full.RootElement.GetProperty("chests")[0].GetProperty("open_count").GetInt32());
+        long rev = full.RootElement.GetProperty("rev").GetInt64();
+        world.OpenChests = [];
+        using var delta = JsonDocument.Parse((await s.HandleAsync(Get("/api/world/entities", "since=" + rev))).Text);
+        Assert.Equal(0, delta.RootElement.GetProperty("chests").GetArrayLength());
     }
 
     [Fact]

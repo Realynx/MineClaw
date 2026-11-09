@@ -325,7 +325,7 @@ public sealed partial class MinecraftClient
     {
         bool right = button == 1 && (mode is ClickMode.Pickup or ClickMode.QuickMove), shift = mode == ClickMode.QuickMove;
         ThrowIfClickUnsupported(mode);
-        GuardStorageSignClick(slot, mode, button);
+        if (!HumanControlled) GuardStorageSignClick(slot, mode, button);
         int version = Volatile.Read(ref _windowItemsVersion);
         var marker = new ClickInFlight(World.Inventory.ActiveWindow.Id, -1, null, true);
         _clickInFlight = marker; // a slot packet between here and the real marker counts as a race (conservative)

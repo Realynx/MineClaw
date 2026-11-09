@@ -21,8 +21,41 @@ export function canCaptureController(): boolean {
     && !document.querySelector('[role="dialog"]:not([data-state="closed"]), [data-testid="fly-editor"], [data-controller-menu] [aria-expanded="true"]');
 }
 
+const fullscreenRequests = new WeakMap<HTMLElement, Promise<boolean>>();
+const KEYBOARD_NOTICE = 'Browser shortcut protection is unavailable. Avoid Ctrl+W while controlling this view.';
+
+/** Start during the click/key gesture, before React switches camera modes. Concurrent capture shares this request. */
+export function requestControllerFullscreen(host: HTMLElement): Promise<boolean> {
+  if (document.fullscreenElement?.contains(host)) return Promise.resolve(true);
+  const pending = fullscreenRequests.get(host);
+  if (pending) return pending;
+  let request: Promise<boolean>;
+  try {
+    request = host.requestFullscreen
+      ? Promise.resolve(host.requestFullscreen({ navigationUI: 'hide' })).then(() => true, () => false)
+      : Promise.resolve(false);
+  } catch { request = Promise.resolve(false); }
+  fullscreenRequests.set(host, request);
+  void request.finally(() => { if (fullscreenRequests.get(host) === request) fullscreenRequests.delete(host); });
+  return request;
+}
+
+/** Fullscreen must precede pointer lock so Chromium can capture reserved movement shortcuts such as Ctrl+W. */
+export async function requestControllerCapture(
+  target: { surface: HTMLElement; lock: () => void },
+  fullscreenHost: HTMLElement,
+  stillActive: () => boolean = () => true,
+): Promise<string | null> {
+  if (!await requestControllerFullscreen(fullscreenHost))
+    return 'Full screen was blocked. Click the world and allow full screen to protect movement keys from browser shortcuts.';
+  if (!stillActive() || target.surface.isConnected === false) return null;
+  try { target.lock(); }
+  catch { return 'Mouse capture was blocked. Click the world to try again.'; }
+  return (navigator as Navigator & { keyboard?: { lock?: unknown } }).keyboard?.lock ? null : KEYBOARD_NOTICE;
+}
+
 /** Reserved browser shortcuts need optional Keyboard Lock plus user-entered Fullscreen API mode. */
-export function bindControllerKeyboard(active: () => boolean): () => void {
+export function bindControllerKeyboard(active: () => boolean, notice?: (message: string | null) => void): () => void {
   const keyboard = (navigator as Navigator & { keyboard?: { lock: (codes: string[]) => Promise<void>; unlock: () => void } }).keyboard;
   if (!keyboard?.lock) return () => {};
   let requested = false, disposed = false, revision = 0;
@@ -38,8 +71,9 @@ export function bindControllerKeyboard(active: () => boolean): () => void {
     try {
       void keyboard.lock(['KeyW', 'KeyA', 'KeyS', 'KeyD']).then(() => {
         if (started !== revision && !requested) keyboard.unlock();
-      }, () => { if (started === revision) requested = false; });
-    } catch { requested = false; }
+        else if (started === revision) notice?.(null);
+      }, () => { if (started === revision) { requested = false; notice?.(KEYBOARD_NOTICE); } });
+    } catch { requested = false; notice?.(KEYBOARD_NOTICE); }
   };
   document.addEventListener('pointerlockchange', sync);
   document.addEventListener('fullscreenchange', sync);
@@ -64,8 +98,9 @@ export function bindControllerInput(options: {
   wheel: (state: ToolWheel | null) => void;
   choose: (tool: ControllerTool) => void;
   release: () => void;
+  notice?: (message: string | null) => void;
 }) {
-  const releaseKeyboard = bindControllerKeyboard(options.active);
+  const releaseKeyboard = bindControllerKeyboard(options.active, options.notice);
   let wheel: ToolWheel | null = null;
   const consume = (event: Event) => { event.preventDefault(); event.stopImmediatePropagation(); };
   const finish = (commit: boolean) => {

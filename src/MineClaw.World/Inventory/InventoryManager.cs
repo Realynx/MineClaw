@@ -481,6 +481,16 @@ public sealed partial class InventoryManager
     /// <summary>Copy of the window-0 slots (45; 46 with the 1.12.2 off hand).</summary>
     public ItemStack[] PlayerSlots() { lock (_sync) return (ItemStack[])_player.Clone(); }
 
+    /// <summary>The current container and cursor copied together for a human inventory UI.</summary>
+    public (Window Window, ItemStack[] Slots, ItemStack Cursor) WindowSnapshot()
+    {
+        lock (_sync)
+        {
+            var window = _open ?? _playerWindow;
+            return (window, Enumerable.Range(0, window.SlotCount).Select(window.Get).ToArray(), _cursor);
+        }
+    }
+
     public ItemStack GetPlayerSlot(int slot) { lock (_sync) return slot >= 0 && slot < _player.Length ? _player[slot] : ItemStack.Empty; }
 
     /// <summary>Item in the selected hotbar slot (0..8).</summary>

@@ -12,7 +12,7 @@ public static class Ids1122
     public const int Handshake = 0x00, LoginStart = 0x00;
     public const int LoginDisconnect = 0x00, EncryptionRequest = 0x01, LoginSuccess = 0x02, SetCompression = 0x03;
     // play, clientbound
-    public const int SpawnObject = 0x00, SpawnPlayer = 0x05, EntityAnimation = 0x06, BlockBreakAnim = 0x08, UpdateBlockEntity = 0x09,
+    public const int SpawnObject = 0x00, SpawnPlayer = 0x05, EntityAnimation = 0x06, BlockBreakAnim = 0x08, UpdateBlockEntity = 0x09, BlockAction = 0x0A,
         BlockChange = 0x0B, Difficulty = 0x0D, Chat = 0x0F, MultiBlockChange = 0x10, ConfirmTransaction = 0x11, CloseWindow = 0x12,
         OpenWindow = 0x13, WindowItems = 0x14, WindowProperty = 0x15, SetSlot = 0x16, Disconnect = 0x1A, EntityStatus = 0x1B, Explosion = 0x1C,
         UnloadChunk = 0x1D, ChangeGameState = 0x1E, KeepAlive = 0x1F, ChunkData = 0x20, JoinGame = 0x23, EntityRelMove = 0x26,

@@ -8,6 +8,7 @@ public sealed partial class MinecraftClient
     private readonly SemaphoreSlim _actionLock = new(1, 1);
     private CancellationTokenSource? _actionCts;
     private volatile string? _abortReason;
+    private readonly AsyncLocal<bool> _autonomousActionContext = new();
     private readonly SemaphoreSlim _chatLock = new(1, 1);
     private DateTime _lastChat = DateTime.MinValue;
 
@@ -20,6 +21,7 @@ public sealed partial class MinecraftClient
     /// signals can cancel. Exceptions become failure results.</summary>
     private async Task<ActionResult> RunActionAsync(string name, CancellationToken ct, Func<CancellationToken, Task<ActionResult>> body)
     {
+        if (HumanControlled) return ActionResult.Fail("human is controlling this pawn");
         if (await ActionGateAsync(name, ct).ConfigureAwait(false) is { } refused) return ActionResult.Fail(refused);
         try
         {
@@ -29,11 +31,17 @@ public sealed partial class MinecraftClient
         {
             return ActionResult.Fail("cancelled while waiting for " + CurrentAction);
         }
+        if (HumanControlled) { _actionLock.Release(); return ActionResult.Fail("human is controlling this pawn"); }
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct, SessionToken);
-        _actionCts = cts;
-        _abortReason = null;
-        Volatile.Write(ref _actionEditsOk, 0);
-        CurrentAction = name;
+        lock (_humanSync)
+        {
+            if (HumanControlled) { _actionLock.Release(); return ActionResult.Fail("human is controlling this pawn"); }
+            _actionCts = cts;
+            _abortReason = null;
+            Volatile.Write(ref _actionEditsOk, 0);
+            CurrentAction = name;
+        }
+        _autonomousActionContext.Value = true;
         // The static tables (Recipes, Smelting, Drops, Items…) answer from this body's version for the whole action, even
         // where the process default differs (tests; P5 facades over GameData.Current). Scoped to this async flow only (so it stays
         // in this frame: an async helper would drop the override when it returns).
@@ -60,6 +68,7 @@ public sealed partial class MinecraftClient
         finally
         {
             EndAction();
+            _autonomousActionContext.Value = false;
         }
     }
 
@@ -97,13 +106,13 @@ public sealed partial class MinecraftClient
     /// <summary>Cancels the running action (if any) and waits for it to wind down.</summary>
     public async Task<ActionResult> StopAsync(CancellationToken ct = default)
     {
+        if (HumanControlled && _actionCts is null) return ActionResult.Success("human control is active");
         var name = CurrentAction;
         if (name is null) return ActionResult.Success("idle");
         AbortCurrentAction("stopped");
         try
         {
-            await _actionLock.WaitAsync(TimeSpan.FromSeconds(5), ct).ConfigureAwait(false);
-            _actionLock.Release();
+            if (await _actionLock.WaitAsync(TimeSpan.FromSeconds(5), ct).ConfigureAwait(false)) _actionLock.Release();
         }
         catch (OperationCanceledException) { /* caller gave up */ }
         return ActionResult.Success("stopped " + name);

@@ -33,6 +33,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:skins": "node scripts/test-human-skins.mjs",
+    "test:world-items": "node scripts/test-world-items.mjs",
+    "test:chest-lids": "node scripts/test-chest-lids.mjs",
     "test:local-assets": "node scripts/test-local-assets.mjs",
     "assets:extract": "node scripts/extract-assets.mjs --find",
     "assets:pack": "node scripts/pack-assets.mjs",

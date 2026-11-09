@@ -12,14 +12,16 @@
 import * as THREE from 'three';
 import type { AssetBundle } from '../assets/bundle';
 import type { MeshHost } from '../mesh/host';
-import { partQuads, type Part, type Sheet } from '../mesh/models/builtin';
+import { chestLidModel, partQuads, type Part, type Sheet } from '../mesh/models/builtin';
+import { chestPartner, pairFacing, type Nb } from '../mesh/models/states';
 import { chain, rotate, scale, translate, type M4, type Quad } from '../mesh/quad';
-import type { BlockEntityDto, Dim } from '../types';
+import type { BlockEntityDto, ChestState, Dim, EntityEvent } from '../types';
 import { dyeIndex } from '../wire/normalize';
 import type { GameVersion } from '../world/blocks';
 import { bannerPatternName, charWidth as charWidthOf, compositeBanner, DYE_RGB, signLayout, SPAWNER_SPIN_RAD_S, spawnerMobFeet, spawnerMobScale } from './blockEntityTex';
 import type { ChunkUniforms } from './chunkMaterial';
 import { fontTable, layoutLine, rasterLine, richToLegacy, type FontPixels, type FontTable } from './font';
+import { ChestLidStates, chestLidAngle, chestLidStep } from './chestLids';
 
 const vertex = /* glsl */ `
 attribute float aShade;
@@ -45,6 +47,9 @@ uniform float uFlash;
 uniform vec3 uFogColor;
 uniform vec3 uFogCentre;
 uniform vec2 uFogRange;
+uniform vec4 uCell;
+uniform vec4 uRoof;
+uniform float uDimBelow;
 varying vec2 vUv;
 varying float vShade;
 varying vec3 vWorld;
@@ -53,9 +58,11 @@ float bright(float level) {
   return (1.0 - f1) / (f1 * 3.0 + 1.0) * (1.0 - uBase) + uBase;
 }
 void main() {
+  if (uCell.w > 0.0 && uRoof.w > 0.0 && uCell.y >= uRoof.y && length(uCell.xz - uRoof.xz) <= uRoof.w) discard;
   vec4 c = texture2D(map, vUv);
   if (c.a < 0.5) discard;
   float b = max(bright(max(uLight.y, uLight.x - uSkySub)), uMinBright) * vShade;
+  if (uCell.w > 0.0 && vWorld.y < uDimBelow) b *= 0.55;
   float fog = smoothstep(uFogRange.x, uFogRange.y, length(vWorld.xz - uFogCentre.xz));
   gl_FragColor = vec4(mix(c.rgb * b + vec3(uFlash), uFogColor, fog), 1.0);
 }
@@ -76,7 +83,8 @@ interface Obj {
   material?: THREE.ShaderMaterial;
   texture?: THREE.Texture;
   usedAt: number;
-  kind: 'sign' | 'banner' | 'spawner';
+  kind: 'sign' | 'banner' | 'spawner' | 'chest';
+  chest?: { lid: THREE.Mesh; hinge: THREE.Vector3; axis: THREE.Vector3; amount: number; pair: [number, number] | null; facing: number };
   /** Sign text with obfuscated (§k) glyphs: redrawn with new stand-ins every `obfuscatedMs` while in view; when it was drawn. */
   obfuscated?: boolean;
   textAt?: number;
@@ -86,13 +94,13 @@ interface Obj {
 }
 
 /** Model-space quads (px) → a BufferGeometry with uv in a w×h px texture and a per-vertex face shade. */
-function geometryOf(quads: Quad[], texW: number, texH: number): THREE.BufferGeometry {
+function geometryOf(quads: Quad[], texW: number, texH: number, atlas = false): THREE.BufferGeometry {
   const pos: number[] = [], uv: number[] = [], shade: number[] = [], index: number[] = [];
   for (const q of quads) {
     const b = pos.length / 3;
     for (let k = 0; k < 4; k++) {
       pos.push(q.p[k * 3], q.p[k * 3 + 1], q.p[k * 3 + 2]);
-      uv.push((q.uv[k * 2] * 16) / texW, (q.uv[k * 2 + 1] * 16) / texH);
+      uv.push(((q.uv[k * 2] + (atlas ? q.c : 0)) * 16) / texW, ((q.uv[k * 2 + 1] + (atlas ? q.r : 0)) * 16) / texH);
       shade.push(q.shade);
     }
     index.push(b, b + 1, b + 2, b, b + 2, b + 3);
@@ -118,8 +126,8 @@ function frameOf(standing: boolean, meta: number, banner: boolean): M4 {
 }
 
 /** The layer's kind of each block-entity kind it draws, and the block ids that must hold it (anything else is stale). */
-const KIND_OF: Record<string, Obj['kind']> = { sign: 'sign', banner: 'banner', mob_spawner: 'spawner' };
-const BLOCK_IDS: Record<Obj['kind'], readonly number[]> = { sign: [63, 68], banner: [176, 177], spawner: [52] };
+const KIND_OF: Record<string, Obj['kind']> = { sign: 'sign', banner: 'banner', mob_spawner: 'spawner', chest: 'chest', trapped_chest: 'chest', ender_chest: 'chest' };
+const BLOCK_IDS: Record<Obj['kind'], readonly number[]> = { sign: [63, 68], banner: [176, 177], spawner: [52], chest: [54, 130, 146] };
 
 /** The object already drawn for this cell still matches its block and block entity. */
 function sameObj(old: Obj, id: number, meta: number, be: BlockEntityDto): boolean {
@@ -214,8 +222,13 @@ export class BlockEntityLayer {
   private revision = -1;
   private dim: Dim | null = null;
   private building = false;
+  private blockRevision = 0;
+  private builtBlockRevision = -1;
   private lightAt = 0;
   private bundle: AssetBundle | null = null;
+  private chestTexture: THREE.Texture | null = null;
+  private readonly lids = new ChestLidStates();
+  private readonly lidOffset = new THREE.Vector3();
   private pixels: { data: Uint8ClampedArray; width: number } | null = null;
   private fontData: { table: FontTable; pixels: FontPixels } | null | undefined = undefined;
   private lastNow = 0;
@@ -235,6 +248,9 @@ export class BlockEntityLayer {
 
   setBundle(b: AssetBundle | null): void {
     if (b === this.bundle) return;
+    for (const o of [...this.objs.values()]) this.remove(o);
+    this.chestTexture?.dispose();
+    this.chestTexture = null;
     this.bundle = b;
     this.pixels = null;
     this.fontData = undefined;
@@ -245,7 +261,23 @@ export class BlockEntityLayer {
     return this.bundle?.version ?? null;
   }
 
-  private material(map: THREE.Texture, light: THREE.Vector2): THREE.ShaderMaterial {
+  receiveEvents(events: readonly EntityEvent[], now = 0): void { this.lids.receive(events, now); }
+  reconcileChests(snapshot: readonly ChestState[] | null): void { this.lids.reconcile(snapshot); }
+
+  /** Metadata or pairing can change without changing a chest's block-entity JSON/hash. */
+  blocksChanged(dim: Dim, cells: ReadonlyArray<readonly [number, number, number]>): void {
+    if (dim !== this.dim) return;
+    for (const [x, y, z] of cells) for (const [dx, dz] of [[0, 0], [-1, 0], [1, 0], [0, -1], [0, 1]])
+      if (this.objs.has(`${dim},${x + dx},${y},${z + dz}`)) { this.blockRevision++; return; }
+  }
+
+  columnsChanged(dim: Dim, cols: ReadonlyArray<readonly [number, number]>): void {
+    if (dim !== this.dim || !this.objs.size) return;
+    const keys = new Set(cols.map(([x, z]) => `${x},${z}`));
+    if ([...this.objs.values()].some((o) => keys.has(`${o.be.x >> 4},${o.be.z >> 4}`))) this.blockRevision++;
+  }
+
+  private material(map: THREE.Texture, light: THREE.Vector2, cell?: BlockEntityDto): THREE.ShaderMaterial {
     const u = this.uniforms;
     return new THREE.ShaderMaterial({
       vertexShader: vertex,
@@ -260,6 +292,9 @@ export class BlockEntityLayer {
         uFogColor: u.uFogColor,
         uFogCentre: u.uFogCentre,
         uFogRange: u.uFogRange,
+        uCell: { value: cell ? new THREE.Vector4(cell.x + 0.5, cell.y + 0.5, cell.z + 0.5, 1) : new THREE.Vector4() },
+        uRoof: u.uRoof,
+        uDimBelow: u.uDimBelow,
       },
       side: THREE.DoubleSide,
       polygonOffset: true,
@@ -283,6 +318,7 @@ export class BlockEntityLayer {
     for (const o of this.objs.values()) {
       const d = Math.hypot(o.be.x + 0.5 - c.x, o.be.y + 0.5 - c.y, o.be.z + 0.5 - c.z);
       if (o.kind === 'spawner') this.updateSpawner(o, d, dt, beta, p);
+      else if (o.kind === 'chest') this.updateChest(o, d, dt, p);
       else this.updateBoard(o, d, p);
     }
     this.hideGoneMobs(p);
@@ -295,7 +331,7 @@ export class BlockEntityLayer {
 
   /** Rebuilt when the store's revision or the dimension changed; the light refreshed every few seconds. */
   private upkeep(blockEntities: { revision: number; all(dim: Dim): Iterable<BlockEntityDto> }, p: BlockEntityLayerUpdate): void {
-    if ((blockEntities.revision !== this.revision || p.dim !== this.dim) && !this.building) void this.rebuild(blockEntities, p.dim);
+    if ((blockEntities.revision !== this.revision || this.blockRevision !== this.builtBlockRevision || p.dim !== this.dim) && !this.building) void this.rebuild(blockEntities, p.dim);
     if (p.now - this.lightAt > 3000 && !this.building && this.objs.size) this.refreshLight(p.dim, p.now);
   }
 
@@ -355,26 +391,48 @@ export class BlockEntityLayer {
   private async rebuild(store: { revision: number; all(dim: Dim): Iterable<BlockEntityDto> }, dim: Dim): Promise<void> {
     this.building = true;
     const rev = store.revision;
+    const blockRev = this.blockRevision;
     try {
-      const want = [...store.all(dim)].filter((b) => b.kind === 'sign' || b.kind === 'banner' || b.kind === 'mob_spawner');
-      const pts = want.flatMap((b) => [b.x, b.y, b.z]);
+      const want = [...store.all(dim)].filter((b) => KIND_OF[b.kind] && (KIND_OF[b.kind] !== 'chest' || this.version === '1.12.2' && !this.bundle?.fallback));
+      const pts: number[] = [], pointIndex = new Map<string, number>();
+      const posKey = (x: number, y: number, z: number) => `${x},${y},${z}`;
+      const point = (x: number, y: number, z: number) => {
+        const key = posKey(x, y, z);
+        if (!pointIndex.has(key)) { pointIndex.set(key, pts.length); pts.push(x, y, z); }
+      };
+      for (const b of want) {
+        point(b.x, b.y, b.z);
+        // Mutual chest pairing needs the mate's neighbours too; one deduplicated worker read for every object.
+        if (KIND_OF[b.kind] === 'chest') for (let dx = -2; dx <= 2; dx++) for (let dz = -2; dz <= 2; dz++)
+          if (Math.abs(dx) + Math.abs(dz) <= 2) point(b.x + dx, b.y, b.z + dz);
+      }
       const info = pts.length ? await this.host.blocksAt(dim, pts) : [];
+      const value = (x: number, y: number, z: number, field: number) => {
+        const i = pointIndex.get(posKey(x, y, z));
+        return i === undefined ? 0 : info[i + field];
+      };
       const keep = new Set<string>();
-      want.forEach((be, i) => {
-        const id = info[i * 3], meta = info[i * 3 + 1], light = info[i * 3 + 2];
+      want.forEach((be) => {
+        const id = value(be.x, be.y, be.z, 0), meta = value(be.x, be.y, be.z, 1), light = value(be.x, be.y, be.z, 2);
         const kind = KIND_OF[be.kind];
         if (!BLOCK_IDS[kind].includes(id)) return;
         const key = `${dim},${be.x},${be.y},${be.z}`;
         keep.add(key);
         const old = this.objs.get(key);
-        if (old && sameObj(old, id, meta, be)) return;
+        const nb: Nb = { wx: be.x, wy: be.y, wz: be.z,
+          id: (x, y, z) => value(be.x + x, be.y + y, be.z + z, 0), meta: (x, y, z) => value(be.x + x, be.y + y, be.z + z, 1) };
+        const pair = kind === 'chest' ? chestPartner(nb, id) : null;
+        const facing = pair ? pairFacing(nb, pair) : meta & 7;
+        if (old && sameObj(old, id, meta, be) && (kind !== 'chest' || old.chest?.facing === facing && String(old.chest?.pair) === String(pair))) return;
         if (old) this.remove(old);
         const o = this.create(key, be, id, meta, kind);
+        if (kind === 'chest') this.buildChest(o, pair, facing);
         if (light >= 0) o.light.set(light >> 4, light & 15);
         this.objs.set(key, o);
       });
-      for (const o of [...this.objs.values()]) if (!keep.has(o.key)) this.remove(o);
+      for (const o of [...this.objs.values()]) if (!keep.has(o.key)) { this.lids.forget(o.key); this.remove(o); }
       this.revision = rev;
+      this.builtBlockRevision = blockRev;
       this.dim = dim;
     } catch {
       /* the next frame retries */
@@ -402,6 +460,40 @@ export class BlockEntityLayer {
     if (kind === 'banner') this.buildBanner(o);
     if (kind !== 'spawner') this.group.add(group);
     return o;
+  }
+
+  private buildChest(o: Obj, pair: [number, number] | null, facing: number): void {
+    const b = this.bundle;
+    if (!b || b.pack.version !== '1.12.2') return;
+    const pack = b.pack;
+    const model = chestLidModel(o.id === 130 ? 'ender' : o.id === 146 ? 'trapped' : 'normal', facing, pair, (name) => {
+      const s = pack.blocks.sheets[name];
+      return s ? { c: s[0], r: s[1], wc: s[2], hc: s[3] } : null;
+    });
+    if (!model.quads.length) return;
+    if (!this.chestTexture) {
+      const t = this.chestTexture = new THREE.Texture(b.blocks);
+      t.flipY = false; t.magFilter = THREE.NearestFilter; t.minFilter = THREE.NearestFilter;
+      t.colorSpace = THREE.NoColorSpace; t.needsUpdate = true;
+    }
+    const mat = this.material(this.chestTexture, o.light, o.be);
+    const lid = new THREE.Mesh(geometryOf(model.quads, pack.blocks.columns * 16, pack.blocks.rows * 16, true), mat);
+    lid.name = 'chest-lid';
+    o.group.add(lid); o.material = mat;
+    o.chest = { lid, hinge: new THREE.Vector3(...model.hinge), axis: new THREE.Vector3(...model.axis).normalize(), amount: 0, pair, facing };
+  }
+
+  private updateChest(o: Obj, distance: number, dt: number, p: BlockEntityLayerUpdate): void {
+    const chest = o.chest;
+    // Static bodies remain in section meshes; their separate lids must remain visible to the same draw distance.
+    o.group.visible = !!chest && distance < 512;
+    if (!chest) return;
+    const amount = chestLidStep(chest.amount, this.lids.open(p.dim, o.be.x, o.be.y, o.be.z, chest.pair, p.now), dt);
+    if (amount === chest.amount) return;
+    chest.amount = amount;
+    chest.lid.quaternion.setFromAxisAngle(chest.axis, chestLidAngle(amount));
+    this.lidOffset.copy(chest.hinge).applyQuaternion(chest.lid.quaternion);
+    chest.lid.position.copy(chest.hinge).sub(this.lidOffset);
   }
 
   // ------------------------------------------------------------------------------------------------------------ signs
@@ -567,9 +659,12 @@ export class BlockEntityLayer {
   clear(): void {
     for (const o of [...this.objs.values()]) this.remove(o);
     this.revision = -1;
+    this.lids.clear();
   }
 
   dispose(): void {
     this.clear();
+    this.chestTexture?.dispose();
+    this.chestTexture = null;
   }
 }

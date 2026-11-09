@@ -55,6 +55,7 @@ export function normalizeEntities(raw: unknown): EntityDelta {
     at: r.at,
     rev: num(r.rev),
     full: r.full ?? true,
+    ...(Array.isArray(r.chests) ? { chests: r.chests.filter((c) => c && num(c.openCount) > 0).map((c) => ({ dim: num(c.dim), x: num(c.x), y: num(c.y), z: num(c.z), openCount: num(c.openCount) })) } : {}),
     bots: (r.bots ?? []).map(bot),
     entities: (r.entities ?? []).map((e: Partial<EntityDto>) => entity(e)),
     removed: (r.removed ?? []).filter((p) => Array.isArray(p) && p.length >= 2).map((p) => [num(p[0]), num(p[1])] as [number, number]),

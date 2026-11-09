@@ -205,6 +205,8 @@ public sealed class BlockActionPacket : IPacket
     public int Z { get; set; }
     public byte Data1 { get; set; }
     public byte Data2 { get; set; }
+    /// <summary>1.12.2's block identity; older versions identify it from the world at the position.</summary>
+    public int? BlockId { get; set; }
 
     public void Read(MinecraftReader r, PacketDirection d)
     {

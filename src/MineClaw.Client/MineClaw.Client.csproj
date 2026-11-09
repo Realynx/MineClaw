@@ -12,4 +12,7 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="MineClaw.Client.Tests" />
+  </ItemGroup>
 </Project>

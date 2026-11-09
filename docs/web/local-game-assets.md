@@ -34,13 +34,16 @@ Prism Launcher keeps these resources outside individual instances. On a typical 
 `%APPDATA%\PrismLauncher\assets`, beside `instances` and `libraries`. Select `assets` itself, not an instance's
 `minecraft` folder or one of the asset subfolders.
 
-The Controller's visible Sound slider, plus/minus buttons and percentage control a volume saved on this device. Mute
-remembers the prior volume. A click or key gesture enables Web Audio playback; Enable sound remains visible if the
+The Controller's small speaker button opens the Sound slider, plus/minus buttons and percentage. Volume is saved on this device. Mute
+remembers the prior volume. A click or key gesture enables Web Audio playback; Enable sound appears in the menu if the
 browser needs that interaction after a refresh. Returning to the window resumes previously unlocked audio when allowed.
 Live server sound packets and block-break effects travel through the existing entity event feed, deduplicated across
 pawns. Freecam uses spatial distance and camera direction. Top-down uses map X/Z distance, so camera altitude and
 terrain height do not suppress sound. Audio stops on leaving Controller, muting, or hiding the browser tab; there is no
-offline sound replay or background music download.
+offline sound replay or background music download. Pawn takeover uses the same sound player at the pawn's eye position.
+
+Replacing a texture pack invalidates held-item atlas indices as well as entity meshes, even when the pawn keeps holding
+the same item. Held and dropped items use the same current atlas and item model mapping.
 
 Implementation references: [browser-local storage](https://developer.mozilla.org/en-US/docs/Web/API/IndexedDB_API),
 [Web Audio playback](https://developer.mozilla.org/en-US/docs/Web/API/Web_Audio_API/Using_Web_Audio_API), and

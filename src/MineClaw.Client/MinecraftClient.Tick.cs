@@ -96,6 +96,15 @@ public sealed partial class MinecraftClient
             return;
         }
 
+        lock (_humanSync)
+        {
+            if (_human is { } human)
+            {
+                HumanTick(s, phys, human, teleported);
+                return;
+            }
+        }
+
         // ---- input from the active driver, or idle ----
         GestureTick(s, phys); // brainstem gesture frame: look overlay (sent only), idle sneak/jump, arm swing
         var d = _driver;
@@ -164,6 +173,7 @@ public sealed partial class MinecraftClient
         _lastX = t.X; _lastY = t.Y; _lastStance = t.Stance; _lastZ = t.Z;
         _lastYaw = t.Yaw; _lastPitch = t.Pitch;
         _lookYaw = t.Yaw; _lookPitch = t.Pitch;
+        ResetHumanInputAfterTeleport(t.Yaw, t.Pitch);
         _ticksSincePos = 0;
         _lastTeleportTick = TickCount;
         OnServerTeleportForSafety();
@@ -200,7 +210,7 @@ public sealed partial class MinecraftClient
         // ---- knockback: vanilla applies 0x1C to the local player (replacing motion) ----
         ApplyServerVelocity(phys);
         // ---- after a teleport/respawn: no movement until the ground below is loaded and verified ----
-        if (HoldForSafety(phys))
+        if (!HumanControlled && HoldForSafety(phys))
         {
             phys.Frozen = true;
             player.SyncFromPhysics();

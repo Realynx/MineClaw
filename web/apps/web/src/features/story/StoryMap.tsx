@@ -10,7 +10,7 @@
 import type { AimTarget, BotBadge, EntityView, PickedBlock, WorldViewerEngine, WorldViewerHandle } from '@mineclaw/world-viewer';
 import { getViewerQuality } from '@mineclaw/world-viewer/settings';
 import { designationCells, type StoryBuild, type StoryColonyState, type StoryArchitectEntry } from '@mineclaw/contracts';
-import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef } from 'react';
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useWorldHost } from '@/features/world/integration';
 import { DotMap } from '@/features/world/DotMap';
 import { DESIGN_DRAG_TYPE } from './DesignLibrary';
@@ -19,7 +19,7 @@ import { StoryAudio } from './StoryAudio';
 import { pawnBadges } from './pawnBadges';
 import { pawnNumber } from './pawnNumber';
 import { StoryFlyEditor, useStoryFlyEditor } from './StoryFlyEditor';
-import { canCaptureController } from './controllerInput';
+import { canCaptureController, requestControllerCapture } from './controllerInput';
 import type { EditSend } from './flyEdit';
 import {
   assignAlong,
@@ -463,6 +463,8 @@ export const StoryMap =forwardRef<StoryMapHandle, StoryMapProps>(function StoryM
   flyBadgesRef.current = flyBadges;
   const canvas = useRef<HTMLCanvasElement | null>(null);
   const wrap = useRef<HTMLDivElement | null>(null);
+  const [captureNotice, setCaptureNotice] = useState<string | null>(null);
+  const capturing = useRef(false);
   const p = useRef(props);
   p.current = props;
   const drag = useRef<DragState | null>(null);
@@ -504,14 +506,22 @@ export const StoryMap =forwardRef<StoryMapHandle, StoryMapProps>(function StoryM
 
   const engine = (): WorldViewerEngine | null => viewer.current?.engine() ?? null;
 
-  const startFly = (e: WorldViewerEngine) => {
+  const captureFly = useCallback(() => {
+    const e = viewer.current?.engine(), host = wrap.current?.closest<HTMLElement>('[data-testid="story-mode"]') ?? wrap.current;
+    if (!e || !host || capturing.current) return;
+    capturing.current = true;
+    void requestControllerCapture(e, host, () => p.current.view === 'fly' && wrap.current?.isConnected === true).then(setCaptureNotice)
+      .finally(() => { capturing.current = false; });
+  }, []);
+
+  const startFly = useCallback((e: WorldViewerEngine) => {
     // The top camera sits hundreds of blocks above its focus. Fly nearby while keeping the map framing for the return.
     const t = e.rig.target;
     e.rig.flyPos.set(t.x, t.y + 12, t.z + 16);
     e.rig.flyPitch = 35;
     e.rig.flyYaw = 180;
-    if (!editorRef.current.paletteOpen && canCaptureController()) e.lock();
-  };
+    if (!editorRef.current.paletteOpen && canCaptureController()) captureFly();
+  }, [captureFly]);
 
   // Worker picks/scans may outlive a released drag. Changing tools or leaving the map cancels their eventual command.
   useLayoutEffect(() => {
@@ -613,7 +623,7 @@ export const StoryMap =forwardRef<StoryMapHandle, StoryMapProps>(function StoryM
     };
     raf = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(raf);
-  }, [props.home, props.settle, ready]);
+  }, [props.home, props.settle, ready, startFly]);
 
   // Input, the world and its overlay share one rendered frame, including the viewer's FPS cap.
   const frameState = useRef({ centre: { at: 0, key: '', cb: undefined }, pan: { x: 0, z: 0 } });
@@ -1952,6 +1962,14 @@ export const StoryMap =forwardRef<StoryMapHandle, StoryMapProps>(function StoryM
   if (!ready) return <div className="absolute inset-0 bg-canvas" aria-busy="true" />;
   return (
     <div ref={wrap} className="absolute inset-0 overflow-hidden bg-canvas" data-testid="story-map"
+      onPointerDownCapture={(event) => {
+        const e = engine();
+        if (props.view !== 'fly' || event.button !== 0 || !e || viewer.current?.locked()
+          || event.target !== e.surface) return;
+        event.preventDefault();
+        event.stopPropagation(); // do not let the engine's normal click-to-lock bypass fullscreen
+        if (canCaptureController()) captureFly();
+      }}
       onDragOver={(event) => {
         if (props.canEdit && props.onDropDesign && event.dataTransfer.types.includes(DESIGN_DRAG_TYPE) && props.view !== 'fly') {
           event.preventDefault();
@@ -1992,7 +2010,8 @@ export const StoryMap =forwardRef<StoryMapHandle, StoryMapProps>(function StoryM
       />
       <StoryFlyCrosshair flying={props.view === 'fly'} host={wrap} />
       <StoryAudio viewer={viewer} view={props.view} />
-      <StoryFlyEditor editor={editor} state={props.state} flying={props.view === 'fly'} canEdit={!!props.canEdit} onStart={props.onDropTool} viewer={viewer} />
+      <StoryFlyEditor editor={editor} state={props.state} flying={props.view === 'fly'} canEdit={!!props.canEdit} onStart={props.onDropTool} viewer={viewer} onCapture={captureFly} onCaptureNotice={setCaptureNotice} />
+      {props.view === 'fly' && captureNotice ? <p role="status" className="pointer-events-none absolute bottom-14 left-1/2 z-30 max-w-md -translate-x-1/2 rounded-lg border border-warn/40 bg-surface/95 px-3 py-2 text-xs text-warn">{captureNotice}</p> : null}
       <div
         ref={labelsEl}
         className="pointer-events-none absolute inset-0 overflow-hidden"

@@ -13,6 +13,8 @@ import {
   type Me,
   type Role,
   type RouteId,
+  type PawnControlActionRequest,
+  type PawnControlInputRequest,
 } from '@mineclaw/contracts';
 import { blockSheetSvg, iso, nowIso } from './util';
 import * as admin from './data/administration';
@@ -24,6 +26,9 @@ import * as raptor from './data/raptor';
 import * as scripts from './data/scripts';
 import { designer } from './data/designer';
 import { seedStory, storySim } from './data/story';
+import { MockPawnControl } from './data/pawnControl';
+
+const pawnControl = new MockPawnControl();
 
 let mockTls = WebTlsSettings.parse({});
 let mockHumanSkins = false;
@@ -672,6 +677,10 @@ export const resolvers: Partial<Record<RouteId, Resolver>> = {
   'bodies.scripts': () => live.bodyScripts(),
   'bodies.script': ({ params, query }) => live.bodyScript(String(params.body), query.code === true),
   'bodies.controller': ({ params }) => live.controller(String(params.body)),
+  'bodies.controlAcquire': ({ params }) => pawnControl.acquire(String(params.body)),
+  'bodies.controlInput': ({ body }) => pawnControl.input(body as PawnControlInputRequest),
+  'bodies.controlAction': ({ body }) => pawnControl.action(body as PawnControlActionRequest),
+  'bodies.controlRelease': ({ body }) => pawnControl.release((body as { session: string }).session),
   'vision.render': ({ params }) =>
     new Response(blockSheetSvg(String(params.body).length * 3, 1024, 640, 'render'), {
       headers: { 'Content-Type': 'image/svg+xml' },

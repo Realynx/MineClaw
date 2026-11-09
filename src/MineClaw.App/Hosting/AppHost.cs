@@ -262,6 +262,8 @@ public static partial class AppHost
                     bot.Runtime.Llm, bot.Runtime.Options.Llm, bot.Runtime.Usage, () => main) { ServerSeed = () => client.World.Seed };
             // /api/story/*: Story Mode (colonies of script-only pawns, docs/web/story-mode.md); the viewer's gate, AllowStory for writes
             server.Story = Supervisor.StoryWiring.Attach(o, bot, client, mainHive?.Hierarchy, viewer, viewerFeed, allBodies, log);
+            server.PawnControl = new Supervisor.SupervisorPawnControlRoutes(o,
+                new Supervisor.PawnControlSessions(name => Supervisor.LivePawnControlBody.Resolve(bot, server.Story?.Colonies, name)));
         }
         try
         {

@@ -35,7 +35,7 @@ export interface EngineOptions extends RuntimeOptions {
   layers?: Partial<LayerToggles>;
   cameraMode?: CameraMode;
   /** Editor: cursor-first orbit (MMB), pan (Shift+MMB), and wheel dolly. Never captures the mouse with pointer lock. */
-  controls?: 'default' | 'editor' | 'controller';
+  controls?: 'default' | 'editor' | 'controller' | 'player';
   xray?: XRayMode;
   /** Blocks (32..256): the most this view ever draws; the viewer settings' draw distance applies below it. Absent = the setting. */
   drawDistance?: number;
@@ -358,15 +358,17 @@ export class WorldViewerEngine implements RuntimeView {
 
   private async aimAlong(o: THREE.Vector3, d: THREE.Vector3): Promise<AimTarget | null> {
     const request = ++this.aimRequest;
-    const ray: AimRay = { origin: [o.x, o.y, o.z], direction: [d.x, d.y, d.z], max: this.drawDistance + 32 };
-    const bots = this.layers.bots ? this.runtime.store.bots().filter((b) => b.dim === this.dim) : [];
+    const max = this.opts.controls === 'player' ? 5 : this.drawDistance + 32;
+    const ray: AimRay = { origin: [o.x, o.y, o.z], direction: [d.x, d.y, d.z], max };
+    const bots = this.layers.bots ? this.runtime.store.bots().filter((b) => b.dim === this.dim &&
+      !(this.opts.controls === 'player' && (b.name === this.followName || b.dto.short === this.followName))) : [];
     const physical = await aimAt(
       [o.x, o.y, o.z],
       [d.x, d.y, d.z],
       bots,
       (oo, dd, max) => this.runtime.host.pick(this.dim, oo, dd, max, this.levelCut ? this.pickCut() : null),
       (id) => blockName(this.runtime.version ?? 'b1.8.1', id),
-      this.drawDistance + 32,
+      max,
     );
     const t = this.opts.resolveAim ? this.opts.resolveAim(physical, ray) : physical;
     if (!this.disposed && request === this.aimRequest) this.setAim(t);
@@ -493,7 +495,7 @@ export class WorldViewerEngine implements RuntimeView {
     const bot = this.followed();
     this.followBot(bot, dt);
     this.rigInput.controller = this.opts.controls === 'controller';
-    if (this.inputPaused || this.opts.controls === 'controller' && this.rig.mode === 'fly' && !this.locked()) this.keys.clear();
+    if (this.inputPaused || this.opts.controls === 'player' || this.opts.controls === 'controller' && this.rig.mode === 'fly' && !this.locked()) this.keys.clear();
     this.rig.apply(this.camera, dt, this.rigInput, now);
     const iso = this.rig.mode === 'iso' || this.rig.mode === 'top';
     const cover = this.cover();
@@ -572,6 +574,7 @@ export class WorldViewerEngine implements RuntimeView {
       labels: true,
       overlays: true,
       selected: this.followName,
+      ...(this.opts.controls === 'player' && this.followName ? { hiddenBot: this.followName } : {}),
       cones: this.cones(subs),
       floorY: floorUnder(subs),
       roof: this.roofCut(),
@@ -762,7 +765,7 @@ export class WorldViewerEngine implements RuntimeView {
       if (e.button === 1 && this.opts.controls === 'controller' && this.rig.mode === 'fly') e.preventDefault();
     });
     this.listen(c, 'pointerdown', (e: PointerEvent) => {
-      if (this.inputPaused) return;
+      if (this.inputPaused || this.opts.controls === 'player') return;
       if (e.button === 1 && this.opts.controls === 'controller' && this.rig.mode === 'fly') e.preventDefault();
       c.focus();
       // Free cam plays like the game: the first click locks and hides the cursor (Esc releases it); that click picks nothing.
@@ -782,7 +785,7 @@ export class WorldViewerEngine implements RuntimeView {
       }
     });
     this.listen(c, 'pointermove', (e: PointerEvent) => {
-      if (this.inputPaused) return;
+      if (this.inputPaused || this.opts.controls === 'player') return;
       if (document.pointerLockElement === c) {
         this.rig.look(e.movementX, e.movementY);
         return;
@@ -804,7 +807,7 @@ export class WorldViewerEngine implements RuntimeView {
       else this.rig.look(dx, dy);
     });
     this.listen(c, 'pointerup', (e: PointerEvent) => {
-      if (this.inputPaused) return;
+      if (this.inputPaused || this.opts.controls === 'player') return;
       const d = this.drag;
       this.drag = null;
       if (c.hasPointerCapture?.(e.pointerId)) c.releasePointerCapture(e.pointerId);
@@ -830,7 +833,7 @@ export class WorldViewerEngine implements RuntimeView {
       c,
       'wheel',
       (e: WheelEvent) => {
-        if (this.inputPaused) return;
+        if (this.inputPaused || this.opts.controls === 'player') return;
         e.preventDefault();
         if (this.opts.controls === 'editor') this.rig.dolly(e.deltaY);
         else this.rig.wheel(e.deltaY);
@@ -838,7 +841,7 @@ export class WorldViewerEngine implements RuntimeView {
       { passive: false },
     );
     this.listen(window, 'keydown', (e: KeyboardEvent) => {
-      if (!this.active() || this.inputPaused || this.opts.controls === 'editor') return;
+      if (!this.active() || this.inputPaused || this.opts.controls === 'editor' || this.opts.controls === 'player') return;
       if (this.opts.controls === 'controller' && this.rig.mode === 'fly') {
         if (!this.locked() || (e.target as HTMLElement | null)?.closest?.('input,textarea,select,[contenteditable="true"]')) return;
         // Ctrl is descent, so Ctrl+W/S/D must not close/save/bookmark the page while flying.

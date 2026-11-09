@@ -19,10 +19,10 @@ public static class SupervisorProxy
     public static readonly string[] AllowGet =
         ["bots", "hive/tree", "status", "events", "locate", "blueprints", "buildplans", "world/", "scripts", "bodies/", "brains/", "viewer/feed", "viewer/now",
          "viewer/memory-activity", "viewer/bodies/", "admin/rebuild/", "admin/audit", "designer/", "story"];
-    public static readonly string[] AllowPost = ["viewer/chat", "admin/", "designer/", "story/"];
+    public static readonly string[] AllowPost = ["viewer/chat", "admin/", "designer/", "story/", "bodies/"];
     public static readonly string[] AdminOnly = ["admin/"];
     /// <summary>POST paths that need the <c>story</c> or the <c>admin</c> role (contracts <c>storyWrite</c>).</summary>
-    public static readonly string[] StoryWrite = ["story/"];
+    public static readonly string[] StoryWrite = ["story/", "bodies/"];
     /// <summary>Story directives to AI bodies: the bridge adds <c>player</c> and <c>allow_commands</c> from the identity, as for viewer chat.</summary>
     public const string StoryDirectives = "story/directives";
 
@@ -32,7 +32,15 @@ public static class SupervisorProxy
             : path == entry || path.StartsWith(entry + "/", StringComparison.Ordinal);
 
     public static bool Allowed(string method, string path) =>
-        (HttpMethods.IsGet(method) || HttpMethods.IsHead(method) ? AllowGet : HttpMethods.IsPost(method) ? AllowPost : []).Any(e => Matches(path, e));
+        (HttpMethods.IsGet(method) || HttpMethods.IsHead(method) ? AllowGet : HttpMethods.IsPost(method) ? AllowPost : []).Any(e => Matches(path, e))
+        && !(HttpMethods.IsPost(method) && path.StartsWith("bodies/", StringComparison.Ordinal) && !ControlPath(path));
+
+    private static bool ControlPath(string path)
+    {
+        var p = path.Split('/');
+        return p.Length == 4 && p[0] == "bodies" && p[1].Length > 0 && p[2] == "control"
+            && p[3] is "acquire" or "input" or "action" or "release";
+    }
 
     public static bool NeedsAdmin(string path) => AdminOnly.Any(e => Matches(path, e));
 
@@ -105,7 +113,8 @@ public static class SupervisorProxy
             content = body;
         }
         await ForwardAsync(ctx, sup, MethodOf(method), s.Path,
-            Upstream(s.Path, s.Query), content, observe: s.Path == "world/index" && cache != null ? body => cache.ObserveIndex(s.Query, body) : null);
+            Upstream(s.Path, s.Query), content, observe: s.Path == "world/index" && cache != null ? body => cache.ObserveIndex(s.Query, body) : null,
+            headers: ControlPath(s.Path) ? SettingsProxy.IdentityHeaders(id) : null);
     }
 
     internal static HttpMethod MethodOf(string method) => HttpMethods.IsHead(method) ? HttpMethod.Head : HttpMethods.IsPost(method) ? HttpMethod.Post : HttpMethod.Get;
@@ -143,12 +152,12 @@ public static class SupervisorProxy
     /// <param name="relative">The upstream URL relative to the supervisor base.</param>
     /// <param name="observe">Sees a buffered JSON reply (the chunk cache reads index hashes); the bytes pass on unchanged.</param>
     public static async Task ForwardAsync(HttpContext ctx, SupervisorClient sup, HttpMethod method, string path, string relative, HttpContent? content,
-        Func<byte[], byte[]?>? transform = null, Action<byte[]>? observe = null)
+        Func<byte[], byte[]?>? transform = null, Action<byte[]>? observe = null, IReadOnlyDictionary<string, string>? headers = null)
     {
         transform ??= TransformFor(path);
         if (observe != null && transform == null) transform = body => { observe(body); return null; };
         HttpResponseMessage res;
-        try { res = await sup.SendAsync(method, relative, content, TimeoutFor(path), stream: transform == null, ctx.RequestAborted); }
+        try { res = await sup.SendAsync(method, relative, content, TimeoutFor(path), stream: transform == null, ctx.RequestAborted, headers); }
         catch (SupervisorUnavailableException ex) { await ApiErrors.Write(ctx, 503, "upstream_unavailable", ex.Message); return; }
         using (res)
         {

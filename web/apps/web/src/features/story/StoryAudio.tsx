@@ -2,6 +2,8 @@
 
 import { useEffect, useRef, useState, type RefObject } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
+import { Volume2, VolumeX } from 'lucide-react';
+import { Popover } from 'radix-ui';
 import type { WorldEntities } from '@mineclaw/contracts';
 import type { ControllerAudio, EntityEvent, WorldViewerHandle } from '@mineclaw/world-viewer';
 import { loadWorldViewer } from '@/features/world/integration';
@@ -99,21 +101,42 @@ export function StoryAudio({
   };
   return (
     <div
-      className="absolute right-3 bottom-3 z-10 rounded-lg border border-border bg-surface/95 p-2 text-xs shadow-sm"
+      className="absolute right-3 bottom-3 z-10 text-xs"
       data-controller-menu="sound"
-      title="Uses sounds imported in Settings → Minecraft textures and sounds."
     >
-      <div className="flex items-center gap-2">
-        <button type="button" className="min-w-12 rounded px-1 py-1 hover:bg-surface-2" aria-label={volume ? 'Mute sound' : 'Unmute sound'} onClick={() => change(volume ? 0 : lastVolume.current)}>
-          {volume ? 'Sound' : 'Muted'}
-        </button>
-        <button type="button" aria-label="Volume down" className="rounded px-1.5 py-1 hover:bg-surface-2" onClick={() => change(volume - 0.05)} disabled={volume === 0}>−</button>
-        <input aria-label="Controller sound volume" className="w-24 accent-accent" type="range" min="0" max="1" step="0.05" value={volume} onChange={(e) => change(Number(e.target.value))} />
-        <button type="button" aria-label="Volume up" className="rounded px-1.5 py-1 hover:bg-surface-2" onClick={() => change(volume + 0.05)} disabled={volume === 1}>+</button>
-        <output className="w-8 text-right tabular-nums" aria-label="Sound volume">{Math.round(volume * 100)}%</output>
-      </div>
-      {!ready && volume > 0 && <button type="button" className="mt-1 rounded px-1 py-1 text-accent underline" onClick={() => { void audio.current?.enable().catch(() => setError('Audio is unavailable in this browser.')); }}>Enable sound</button>}
-      {error && <p role="alert" className="mt-1 max-w-64">{error}</p>}
+      <Popover.Root>
+        <Popover.Trigger asChild>
+          <button
+            type="button"
+            className="relative grid size-8 place-items-center rounded-lg border border-border bg-surface/90 text-muted shadow-sm hover:bg-surface hover:text-fg"
+            aria-label="Sound settings"
+            title={error || (volume ? `Sound ${Math.round(volume * 100)}%` : 'Sound muted')}
+          >
+            {volume ? <Volume2 className="size-4" aria-hidden /> : <VolumeX className="size-4" aria-hidden />}
+            {error ? <span className="absolute top-1 right-1 size-1.5 rounded-full bg-warn" aria-hidden /> : null}
+          </button>
+        </Popover.Trigger>
+        <Popover.Content
+          side="top"
+          align="end"
+          sideOffset={8}
+          className="z-50 rounded-lg border border-border bg-surface p-2 text-fg shadow-pop"
+          aria-label="Sound settings"
+          onEscapeKeyDown={(event) => event.stopPropagation()}
+        >
+          <div className="flex items-center gap-2">
+            <button type="button" className="min-w-12 rounded px-1 py-1 hover:bg-surface-2" aria-label={volume ? 'Mute sound' : 'Unmute sound'} onClick={() => change(volume ? 0 : lastVolume.current)}>
+              {volume ? 'Sound' : 'Muted'}
+            </button>
+            <button type="button" aria-label="Volume down" className="rounded px-1.5 py-1 hover:bg-surface-2" onClick={() => change(volume - 0.05)} disabled={volume === 0}>−</button>
+            <input aria-label="Controller sound volume" className="w-24 accent-accent" type="range" min="0" max="1" step="0.05" value={volume} onChange={(e) => change(Number(e.target.value))} />
+            <button type="button" aria-label="Volume up" className="rounded px-1.5 py-1 hover:bg-surface-2" onClick={() => change(volume + 0.05)} disabled={volume === 1}>+</button>
+            <output className="w-8 text-right tabular-nums" aria-label="Sound volume">{Math.round(volume * 100)}%</output>
+          </div>
+          {!ready && volume > 0 && <button type="button" className="mt-1 rounded px-1 py-1 text-accent underline" onClick={() => { void audio.current?.enable().catch(() => setError('Audio is unavailable in this browser.')); }}>Enable sound</button>}
+          {error && <p role="alert" className="mt-1 max-w-64">{error}</p>}
+        </Popover.Content>
+      </Popover.Root>
     </div>
   );
 }
