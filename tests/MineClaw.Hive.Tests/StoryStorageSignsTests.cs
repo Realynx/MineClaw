@@ -34,13 +34,84 @@ public sealed class StoryStorageSignsTests
     {
         IGameData data = version == "b1.8.1" ? Beta181GameData.Instance : Release1122GameData.Instance;
         var filter = StoryStorageKeywords.Parse(["Food, Seeds", "-apple", "wood", "Storehouse"], data)!;
-        Assert.Equal(["food", "plants_seeds", "wood"], filter.Allow);
-        Assert.Equal(["260"], filter.Deny);
+        Assert.Contains("food", filter.Allow);
+        Assert.Contains("plants_seeds", filter.Allow);
+        Assert.Contains("wood", filter.Allow);
+        Assert.Contains("260", filter.Deny);
         Assert.True(StoryCategories.For(data).Accepts(filter, 297, 0));
         Assert.True(StoryCategories.For(data).Accepts(filter, 295, 0));
         Assert.False(StoryCategories.For(data).Accepts(filter, 260, 0));
         Assert.Null(StoryStorageKeywords.Parse(["Storehouse", "First floor"], data));
         Assert.Null(StoryStorageKeywords.Normalize("999999", data));
+    }
+
+    [Theory]
+    [InlineData("b1.8.1")]
+    [InlineData("1.12.2")]
+    public void Freehand_wood_keeps_its_category_and_matches_wooden_items_of_any_durability(string version)
+    {
+        IGameData data = version == "b1.8.1" ? Beta181GameData.Instance : Release1122GameData.Instance;
+        var filter = StoryStorageKeywords.Parse(["§a[WoOd]"], data)!;
+        var categories = StoryCategories.For(data);
+        Assert.Contains("wood", filter.Allow);
+        Assert.True(categories.Accepts(filter, 17, 0)); // logs
+        Assert.True(categories.Accepts(filter, 280, 0)); // sticks: retained category behavior
+        Assert.True(categories.Accepts(filter, 270, 40)); // worn wooden pickaxe
+        Assert.True(categories.Accepts(filter, 268, 30)); // wooden sword
+        Assert.True(categories.Accepts(filter, 324, 0)); // wooden door
+        Assert.False(categories.Accepts(filter, 257, 0)); // iron pickaxe
+    }
+
+    [Theory]
+    [InlineData("b1.8.1")]
+    [InlineData("1.12.2")]
+    public void Freehand_searches_use_phrases_substrings_and_exclusions_without_broadening_metadata(string version)
+    {
+        IGameData data = version == "b1.8.1" ? Beta181GameData.Instance : Release1122GameData.Instance;
+        var categories = StoryCategories.For(data);
+        var iron = StoryStorageKeywords.Parse(["iRoN", "no axe; !sword"], data)!;
+        Assert.True(categories.Accepts(iron, 265, 0)); // iron ingot
+        Assert.True(categories.Accepts(iron, 309, 0)); // iron boots
+        Assert.False(categories.Accepts(iron, 257, 0)); // pickaxe also contains axe
+        Assert.False(categories.Accepts(iron, 267, 0));
+        var birch = StoryStorageKeywords.Parse(["BiRcH   WoOd"], data)!;
+        Assert.True(categories.Accepts(birch, 17, 2));
+        Assert.False(categories.Accepts(birch, 17, 0));
+        if (version == "1.12.2") Assert.True(categories.Accepts(birch, 5, 2));
+        Assert.Equal(birch.Allow, StoryStorageKeywords.Parse(["birch_wood"], data)!.Allow);
+        var exact = StoryStorageKeywords.Parse(["351:4"], data)!;
+        Assert.True(categories.Accepts(exact, 351, 4));
+        Assert.False(categories.Accepts(exact, 351, 1));
+        var fallback = StoryStorageKeywords.Parse(["food seeds"], data)!;
+        Assert.True(categories.Accepts(fallback, 297, 0));
+        Assert.True(categories.Accepts(fallback, 295, 0));
+    }
+
+    [Fact]
+    public void Freehand_signs_preserve_text_priority_and_authority_until_physical_removal()
+    {
+        var (c, _, _) = Rig("WoOd", "!sword", "Storehouse");
+        var storage = c.StorageAt(Chest)!;
+        Assert.Equal(["WoOd", "!sword", "Storehouse", ""], storage.Signs.Single().Lines);
+        Assert.Equal(Chest, c.BestChest(270, 20, Other)!.Chest);
+        Assert.Equal(Other, c.BestChest(268, 20, Chest)!.Chest);
+        Assert.Null(c.StorageOp("set", [Chest], new StorageFilter { Allow = ["food"] }, null, null).Error);
+        Assert.NotNull(storage.PendingFilter);
+        Assert.Equal(Chest, c.BestChest(270, 20, Other)!.Chest);
+        Assert.NotEmpty(storage.SignRemovals);
+    }
+
+    [Fact]
+    public void Existing_unchanged_sign_text_recompiles_legacy_filters_after_parser_upgrade()
+    {
+        var (c, _, _) = Rig("wood");
+        var storage = c.StorageAt(Chest)!;
+        var original = storage.Signs.Single();
+        storage.Signs = [new(original.At, original.Lines, ["wood"], [])];
+        c.ReconcileStorageSigns(true);
+        Assert.Equal(Chest, c.BestChest(270, 20, Other)!.Chest);
+        Assert.Equal(original.Lines, storage.Signs.Single().Lines);
+        Assert.Empty(storage.SignRemovals);
     }
 
     [Fact]

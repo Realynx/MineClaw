@@ -202,6 +202,7 @@ export interface BillDraft {
   mode: 'count' | 'until' | 'forever';
   target: number;
   paused: boolean;
+  priority: number;
   ingredients: StoryFilter;
   radius: number;
   pawn: string;
@@ -221,6 +222,7 @@ export function draftOf(b: StoryBill): BillDraft {
     mode: (['count', 'until', 'forever'].includes(b.mode) ? b.mode : 'count') as BillDraft['mode'],
     target: b.target,
     paused: b.paused,
+    priority: b.priority ?? 3,
     ingredients: b.ingredients,
     radius: b.radius,
     pawn: b.pawn,
@@ -241,6 +243,7 @@ export function newDraft(r: StoryRecipe, mode: BillDraft['mode'] = 'count', targ
     mode: modes.includes(mode) ? mode : modes[0]!,
     target,
     paused: false,
+    priority: 3,
     ingredients: { allow: r.inputs.flatMap((i) => (i.category ? [i.category] : (i.options ?? []).map(([a, m]) => `${a}:${m}`))), deny: [] },
     radius: 32,
     pawn: 'any',
@@ -259,6 +262,7 @@ export function specOf(d: BillDraft): StoryBillSpec {
     mode: d.mode,
     ...(d.mode !== 'forever' ? { target: Math.max(1, Math.min(9999, Math.round(d.target))) } : {}),
     paused: d.paused,
+    priority: Math.max(1, Math.min(4, Math.round(d.priority || 3))),
     ingredients: d.ingredients,
     radius: Math.max(4, Math.min(128, Math.round(d.radius))),
     pawn: d.pawn,

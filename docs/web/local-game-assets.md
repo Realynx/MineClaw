@@ -10,6 +10,10 @@ use the same file and folder pickers.
    The step displays the imported sound count and points to the Controller's Sound menu. Existing imports are recognized
    when Settings is reopened; replacements can be made independently.
 
+Replacing the texture JAR preserves previously imported sound files and event mappings. Imports are saved atomically;
+open windows at the same site address receive import/removal updates. The browser is asked to retain these resources
+under storage pressure. A temporary storage-read failure is retried instead of being remembered as a missing import.
+
 Beta textures work, but the launcher's legacy Beta sound folders are not supported by this walkthrough yet.
 The browser reads only allowlisted textures, models, blockstates and sound resources. It never executes Java classes or
 uploads the archive. The prepared atlases and audio remain in IndexedDB for that site address on that browser profile.
@@ -30,7 +34,9 @@ Prism Launcher keeps these resources outside individual instances. On a typical 
 `%APPDATA%\PrismLauncher\assets`, beside `instances` and `libraries`. Select `assets` itself, not an instance's
 `minecraft` folder or one of the asset subfolders.
 
-The Controller's Sound menu controls a volume saved on this device. A click or key gesture enables Web Audio playback.
+The Controller's visible Sound slider, plus/minus buttons and percentage control a volume saved on this device. Mute
+remembers the prior volume. A click or key gesture enables Web Audio playback; Enable sound remains visible if the
+browser needs that interaction after a refresh. Returning to the window resumes previously unlocked audio when allowed.
 Live server sound packets and block-break effects travel through the existing entity event feed, deduplicated across
 pawns. Freecam uses spatial distance and camera direction. Top-down uses map X/Z distance, so camera altitude and
 terrain height do not suppress sound. Audio stops on leaving Controller, muting, or hiding the browser tab; there is no

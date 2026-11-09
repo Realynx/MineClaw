@@ -80,35 +80,38 @@ public sealed partial class StoryColony
         }
     }
 
-    private IEnumerable<(P3? Chest, Stack Stack)> FurnaceInputs(BillState bill, RecipeInput input, WorkbenchState bench, PawnLive live)
+    private IEnumerable<(P3? Chest, Stack Stack)> FurnaceInputs(BillState bill, RecipeInput input, WorkbenchState bench, PawnLive live,
+        IReadOnlyList<(P3 Chest, Stack Stack)>? pending = null)
     {
         bool Fits(Stack stack) => input.Options.Any(o => o.Matches(stack.Id, stack.Meta)) && Cats!.Accepts(bill.Ingredients, stack.Id, stack.Meta);
         foreach (var stack in live.Inventory.Where(Fits)) yield return (null, stack);
         foreach (var store in Storages.Where(s => s.Chest.Dist(bench.Pos) <= bill.Radius && ChestOpen(s.Chest)))
-            foreach (var stack in FurnaceStock(store).Where(Fits)) yield return (store.Chest, stack);
+            foreach (var stack in FurnaceStock(store, pending).Where(Fits)) yield return (store.Chest, stack);
     }
 
-    private int FurnaceBatchSize(BillState bill, StoryRecipe recipe, WorkbenchState bench, PawnLive live, int wanted)
+    private int FurnaceBatchSize(BillState bill, StoryRecipe recipe, WorkbenchState bench, PawnLive live, int wanted,
+        IReadOnlyList<(P3 Chest, Stack Stack)>? pending = null)
     {
         var wood = WoodBudget(bill, recipe);
         foreach (var input in recipe.Inputs)
         {
             // A furnace slot holds one exact input variant. Different logs cannot jointly fill one load.
-            int available = FurnaceInputs(bill, input, bench, live).GroupBy(s => (s.Stack.Id, s.Stack.Meta))
+            int available = FurnaceInputs(bill, input, bench, live, pending).GroupBy(s => (s.Stack.Id, s.Stack.Meta))
                 .Select(g => WoodAvailable(wood, g.Key.Id, g.Key.Meta, g.Sum(s => s.Stack.Count))).DefaultIfEmpty().Max();
             wanted = Math.Min(wanted, available / Math.Max(1, input.Count));
         }
         return Math.Max(1, wanted);
     }
 
-    private (List<(P3? Chest, Stack Stack)> Got, string? Missing) FurnaceIngredients(BillState bill, StoryRecipe recipe, int crafts, WorkbenchState bench, PawnLive live)
+    private (List<(P3? Chest, Stack Stack)> Got, string? Missing) FurnaceIngredients(BillState bill, StoryRecipe recipe, int crafts, WorkbenchState bench, PawnLive live,
+        IReadOnlyList<(P3 Chest, Stack Stack)>? pending = null)
     {
         var got = new List<(P3? Chest, Stack Stack)>();
         var wood = WoodBudget(bill, recipe);
         foreach (var input in recipe.Inputs)
         {
             int need = input.Count * crafts;
-            var variants = FurnaceInputs(bill, input, bench, live).GroupBy(s => (s.Stack.Id, s.Stack.Meta));
+            var variants = FurnaceInputs(bill, input, bench, live, pending).GroupBy(s => (s.Stack.Id, s.Stack.Meta));
             var chosen = variants.OrderByDescending(g => WoodAvailable(wood, g.Key.Id, g.Key.Meta, g.Sum(s => s.Stack.Count))).FirstOrDefault();
             if (chosen == null || WoodAvailable(wood, chosen.Key.Id, chosen.Key.Meta, chosen.Sum(s => s.Stack.Count)) < need)
                 return (got, chosen != null && wood != null ? ReservedText(input, recipe, 0) : MissingText(input, bill.Radius, bench));

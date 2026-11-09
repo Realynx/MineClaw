@@ -17,6 +17,7 @@ import { DESIGN_DRAG_TYPE } from './DesignLibrary';
 import { StoryFlyCrosshair } from './StoryFlyCrosshair';
 import { StoryAudio } from './StoryAudio';
 import { pawnBadges } from './pawnBadges';
+import { pawnNumber } from './pawnNumber';
 import { StoryFlyEditor, useStoryFlyEditor } from './StoryFlyEditor';
 import { canCaptureController } from './controllerInput';
 import type { EditSend } from './flyEdit';
@@ -1085,7 +1086,7 @@ export const StoryMap =forwardRef<StoryMapHandle, StoryMapProps>(function StoryM
     }
   };
 
-  /** The formation preview: the dashed line and a ghost token (the pawn's colour and initials) on every slot. */
+  /** The formation preview: the dashed line and a ghost token (the pawn's colour and number) on every slot. */
   const drawFormation = (pt: MapPainter, f: Formation) => {
     const ctx = pt.ctx,
       m = pt.m;
@@ -1120,7 +1121,7 @@ export const StoryMap =forwardRef<StoryMapHandle, StoryMapProps>(function StoryM
       ctx.setLineDash([]);
       ctx.fillStyle = col;
       const name = p.current.state?.pawns.find((x) => x.name === mv.pawn)?.display ?? mv.pawn;
-      ctx.fillText(name.slice(0, 2).toUpperCase(), at.x, at.y + 0.5);
+      ctx.fillText(pawnNumber(mv.pawn) || name.slice(0, 2).toUpperCase(), at.x, at.y + 0.5);
     }
     if (f.ignored && s2) pt.label(s2, `${f.ignored} undrafted: not in the line`, false);
     ctx.textAlign = 'center';

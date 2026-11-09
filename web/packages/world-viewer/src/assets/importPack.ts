@@ -49,9 +49,12 @@ export async function importGameJar(file: File, progress?: (message: string) => 
   const sounds = { ...old?.sounds };
   for (const [path, data] of resources)
     if (path.startsWith('assets/minecraft/sounds/') && path.endsWith('.ogg')) sounds[path.slice(24, -4)] = data;
-  const soundEvents = resources.has('assets/minecraft/sounds.json')
-    ? await json(resources.get('assets/minecraft/sounds.json'))
-    : (old?.soundEvents ?? {});
+  // Replacing textures must not replace the separately imported sound catalog. A JAR can fill missing event names;
+  // existing entries retain the mappings that match the user's installed sound blobs.
+  const soundEvents = {
+    ...(resources.has('assets/minecraft/sounds.json') ? await json(resources.get('assets/minecraft/sounds.json')) : {}),
+    ...old?.soundEvents,
+  };
   const saved: LocalPack = { version, name: file.name, importedAt: Date.now(), pack, images, sounds, soundEvents };
   progress?.('Saving on this device…');
   await writeLocalPack(saved);

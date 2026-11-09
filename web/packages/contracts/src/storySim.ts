@@ -2618,7 +2618,10 @@ export class StorySim {
       for (const b of f.v.bills)
         if (String(b.id) === String(body.id)) {
           b.paused = body.op === 'pause';
-          if (body.op === 'resume') b.suspendedReason = null;
+          if (body.op === 'resume') {
+            b.suspendedReason = null;
+            if (b.waitingReason !== undefined) b.waitingReason = null;
+          }
         }
     return { f };
   }
@@ -2649,7 +2652,10 @@ export class StorySim {
       ...(fields.fuel !== undefined ? { fuel: fields.fuel === 'inherit' ? null : fields.fuel } : {}),
     });
     if (f.v.kind === 'furnace') b.fuelNeed = this.fuelNeedOf(b, b.fuel ?? f.v.fuel ?? 'auto');
-    if (fields.paused === false) b.suspendedReason = null;
+    if (fields.paused === false || fields.priority !== undefined) {
+      b.suspendedReason = null;
+      if (b.waitingReason !== undefined) b.waitingReason = null;
+    }
   }
 
   // ------------------------------------------------------------------ builds craft what they need; designated benches; tiers
@@ -3315,7 +3321,8 @@ export class StorySim {
     this.billWork(c, p, here, cands);
     this.guardWork(c, p, here, cands);
     if (cands.length === 0) return false;
-    cands.sort((a, b) => a.pri - b.pri || a.col - b.col || b.skill - a.skill || a.d - b.d);
+    cands.sort((a, b) => a.pri - b.pri || a.col - b.col || b.skill - a.skill ||
+      (a.billPriority ?? 3) - (b.billPriority ?? 3) || a.d - b.d);
     cands[0]!.take();
     return true;
   }
@@ -3403,6 +3410,7 @@ export class StorySim {
     type: string,
     at: readonly unknown[],
     take: () => void,
+    billRank?: Pick<WorkCand, 'billPriority'>,
   ): void {
     const pri = pawn.priorities[type] ?? 0;
     if (pri <= 0) return;
@@ -3412,6 +3420,7 @@ export class StorySim {
       skill: pawn.skills[type]?.level ?? 0,
       d: dist(here, at),
       take,
+      ...billRank,
     });
   }
 
@@ -3474,26 +3483,27 @@ export class StorySim {
     }
   }
 
-  /** Bills at workbenches, top to bottom: each bench's first bill this pawn may do. */
+  /** Eligible bills across benches: work priorities first, then bill priority, distance and local queue order. */
   private billWork(c: Colony, p: PawnSim, here: [number, number, number], cands: WorkCand[]): void {
     const pawn = p.p;
     for (const f of c.benches.values()) {
       const bench = f.v;
-      const bill = bench.bills.find((b) => billWanted(b) && billOpenTo(b, pawn));
-      if (!bill) continue;
-      const recipe = STORY_DEFAULT_RECIPES.find((r) => r.id === bill.recipe);
-      const type = recipe?.workType === 'cook' ? 'cook' : 'craft';
-      this.addWork(pawn, here, cands, type, bench.pos, () => {
-        p.task = {
-          kind: 'bill',
-          ref: bill.id,
-          label: `${type === 'cook' ? 'Cooking' : 'Crafting'} ${recipe?.label.toLowerCase() ?? bill.recipe}`,
-          target: bench.pos,
-          type,
-        };
-        p.goal = [bench.pos[0] + 0.5, bench.pos[1], bench.pos[2] + 0.5];
-        p.work = WORK_MS.craft!;
-      });
+      for (const bill of bench.bills) {
+        if (!billWanted(bill) || !billOpenTo(bill, pawn)) continue;
+        const recipe = STORY_DEFAULT_RECIPES.find((r) => r.id === bill.recipe);
+        const type = recipe?.workType === 'cook' ? 'cook' : 'craft';
+        this.addWork(pawn, here, cands, type, bench.pos, () => {
+          p.task = {
+            kind: 'bill',
+            ref: bill.id,
+            label: `${type === 'cook' ? 'Cooking' : 'Crafting'} ${recipe?.label.toLowerCase() ?? bill.recipe}`,
+            target: bench.pos,
+            type,
+          };
+          p.goal = [bench.pos[0] + 0.5, bench.pos[1], bench.pos[2] + 0.5];
+          p.work = WORK_MS.craft!;
+        }, { billPriority: (bill.forBuild ?? null) === null ? (bill.priority ?? 3) : 5 });
+      }
     }
   }
 
@@ -3906,6 +3916,7 @@ interface WorkCand {
   skill: number;
   d: number;
   take: () => void;
+  billPriority?: number;
 }
 
 /** Designations whose blocks go when done. */
@@ -3991,6 +4002,7 @@ function newBill(id: string, recipe: SimRecipe, spec: BillSpec): StoryBill {
     target: spec.target ?? (spec.mode === 'until' ? 64 : 1),
     done: 0,
     paused: spec.paused ?? false,
+    ...(spec.priority !== undefined ? { priority: spec.priority } : {}),
     suspendedReason: null,
     ingredients: spec.ingredients ?? { allow: recipeIngredients(recipe), deny: [] },
     radius: spec.radius ?? 32,

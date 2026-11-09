@@ -151,7 +151,12 @@ public sealed partial class StoryColony
         if (bill.ForBuild != null) return (null, $"an auto bill (for build {bill.ForBuild}) can only be cancelled");
         var (upd, err) = ParseBill(w, body, bench!, bill);
         if (upd == null) return (null, err);
+        bill.WaitingReason = null;
+        if (body.ContainsKey("priority") && !_billFails.ContainsKey(bill.Id)) bill.SuspendedReason = null;
         bench!.Rev = Touch();
+        MaterialsChanged();
+        RetrySuspended();
+        WakeIdle();
         return (new JsonObject { ["id"] = bill.Id }, null);
     }
 
@@ -179,14 +184,17 @@ public sealed partial class StoryColony
         }
         else if (bill.ForBuild == ToolsTag && bill.ForItem is { } ti) ToolCraftCancelled(ti); // that tool isn't made by itself again
         MaterialsChanged();
+        RetrySuspended();
     }
 
     private void PauseBill(BillState bill, bool pause)
     {
         bill.Paused = pause;
         MaterialsChanged();
+        RetrySuspended();
         if (pause) return;
         bill.SuspendedReason = null;
+        bill.WaitingReason = null;
         _billFails.Remove(bill.Id);
         _noOffer.Remove(bill.Id);
     }
@@ -217,7 +225,7 @@ public sealed partial class StoryColony
     {
         // Field by field, in order: an error stops there (an update keeps what was applied before it).
         var bill = into ?? new BillState();
-        var err = BillRecipe(w, spec, bench, bill, into == null) ?? BillMode(spec, bill) ?? BillAmounts(spec, bill) ?? BillPawn(spec, bill)
+        var err = BillRecipe(w, spec, bench, bill, into == null) ?? BillMode(spec, bill) ?? BillAmounts(spec, bill) ?? BillPriority(spec, bill) ?? BillPawn(spec, bill)
             ?? BillIngredients(spec, bill) ?? BillStore(spec, bill) ?? BillFuel(w, spec, bench, bill) ?? BillStation(w, spec, bill);
         return err != null ? (null, err) : (bill, null);
     }
@@ -242,6 +250,15 @@ public sealed partial class StoryColony
     {
         if (spec["target"] is { } t) bill.Target = Math.Clamp(t.GetValue<int>(), 1, 100_000);
         if (spec["radius"] is { } rad) bill.Radius = Math.Clamp(rad.GetValue<int>(), 1, 256);
+        return null;
+    }
+
+    private static string? BillPriority(JsonObject spec, BillState bill)
+    {
+        if (!spec.ContainsKey("priority")) return null;
+        if (spec["priority"] is not JsonValue v || !v.TryGetValue<int>(out var priority) || priority is < 1 or > 4)
+            return "priority must be 1 (highest), 2 (high), 3 (normal) or 4 (low)";
+        bill.Priority = priority;
         return null;
     }
 
@@ -429,42 +446,56 @@ public sealed partial class StoryColony
         EnsureMaterials(); // the builds' auto bills are on the benches
         RetryOnStockChange(); // a deposit or a look since: the waiting bills try again now (StoryColony.StockCheck.cs)
         var from = live.Block;
-        foreach (var bench in Benches.OrderBy(b => b.Pos.Dist(from)))
-            if (BenchJob(w, p, live, work, bench, only) is { } job) return job;
+        var benches = Benches.OrderBy(b => b.Pos.Dist(from)).ToArray();
+        // Rank every bill before distance: a nearer low-priority furnace must not consume a farther urgent bill's fuel.
+        for (int priority = 0; priority <= 5; priority++)
+            foreach (var bench in benches)
+                if (BenchJob(w, p, live, work, bench, only, priority) is { } job) return job;
         return null;
     }
 
     /// <summary>The bench's job for this pawn: collecting a furnace that is done, else its first runnable bill; null = none here.</summary>
-    private ActiveJob? BenchJob(IStoryWorld w, PawnState p, PawnLive live, string work, WorkbenchState bench, Func<BillState, bool>? only)
+    private ActiveJob? BenchJob(IStoryWorld w, PawnState p, PawnLive live, string work, WorkbenchState bench, Func<BillState, bool>? only, int priority)
     {
         if (bench.Kind is "crafting_table" or "furnace" && !BenchAvailable(bench)) return null;
+        bool AtPriority(BillState b) => BillWorkPriority(b) == priority && (only == null || only(b));
+        bool urgentManual = bench.Kind == "furnace" && only != null && priority == 0 && bench.Tasks.Any(only);
+        var shared = bench.Kind == "crafting_table"
+            ? Benches.Where(b => b != bench && b.Kind == bench.Kind).OrderBy(b => b.Pos.Dist(bench.Pos))
+                .SelectMany(b => BenchQueue(b, AtPriority).Where(t => t.ForBuild != null))
+            : Enumerable.Empty<BillState>();
+        var local = BenchQueue(bench, AtPriority);
+        if (bench.LoadedBill is { } loaded)
+        {
+            if (only != null || (BillById(bench, loaded) is { } loadedBill ? BillWorkPriority(loadedBill) : 3) != priority) return null;
+        }
+        else if (!urgentManual && !local.Any() && !shared.Any()) return null;
         var key = "bench:" + bench.Pos;
         if (!Open(key, p.Name, null)) { NoteBenchInUse(w, bench, work); return null; }
         // A loaded furnace: fuel for a load left without it, collecting one that is done (the bill's work type), else still smelting.
         if (bench.LoadedBill is { } lb) return only == null ? LoadedFurnaceJob(w, live, work, bench, lb, key) : null;
         if (StoryRecipes.Stations.Contains(bench.Kind) && (!StoryRecipes.SupportedIn(w.Data, bench.Kind) || StationGone(bench))) return null;
-        if (bench.Kind == "furnace" && only != null)
+        if (urgentManual)
         {
             // A local manual bill making an urgent task's same product can satisfy that urgency. Keep its
             // precedence even though an automatic fallback now remains queued beside it.
-            var recipes = bench.Tasks.Where(only).Select(t => t.Recipe).ToHashSet(StringComparer.OrdinalIgnoreCase);
-            foreach (var manual in bench.Bills.Where(b => recipes.Contains(b.Recipe)))
+            var recipes = bench.Tasks.Where(only!).Select(t => t.Recipe).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            foreach (var manual in bench.Bills.Where(b => recipes.Contains(b.Recipe)).OrderBy(b => b.Priority))
                 if (BillOnBench(w, p, live, work, bench, manual, key) is { } urgent) return urgent;
         }
-        foreach (var bill in BenchQueue(bench, only)) // immediate tasks, the owner's bills, the other tasks
+        foreach (var bill in local)
             if (BillOnBench(w, p, live, work, bench, bill, key) is { } job) return job;
         // Colony crafts can use any crafting table. Manual bills stay beside the supplies
         // the owner chose when configuring that table.
         if (bench.Kind == "crafting_table" && w.Loaded(bench.Pos.X, bench.Pos.Z) && w.Block(bench.Pos.X, bench.Pos.Y, bench.Pos.Z).Id == 58)
-            foreach (var source in Benches.Where(b => b != bench && b.Kind == bench.Kind).OrderBy(b => b.Pos.Dist(bench.Pos)))
-                foreach (var bill in BenchQueue(source, only).Where(b => b.ForBuild != null))
-                    if (BillOnBench(w, p, live, work, bench, bill, key) is { } shared) return shared;
+            foreach (var bill in shared)
+                if (BillOnBench(w, p, live, work, bench, bill, key) is { } sharedJob) return sharedJob;
         return null;
     }
 
     private void NoteBenchInUse(IStoryWorld w, WorkbenchState bench, string work)
     {
-        if (_blockedNotes != null && BillsAndTasks(bench).Any(b => !b.Paused && b.SuspendedReason == null && StoryRecipes.Get(w.Data, b.Recipe) is { } br && br.WorkType == work && Wanted(b, br)))
+        if (_blockedNotes != null && BillsAndTasks(bench).Any(b => !b.Paused && b.SuspendedReason == null && b.WaitingReason == null && StoryRecipes.Get(w.Data, b.Recipe) is { } br && br.WorkType == work && Wanted(b, br)))
             Blocked($"the {bench.Kind.Replace('_', ' ')} at {bench.Pos} is in use");
     }
 
@@ -492,6 +523,7 @@ public sealed partial class StoryColony
         if (bill.Paused) return null;
         if (StoryRecipes.Get(w.Data, bill.Recipe) is not { } r || r.WorkType != work || !MayTake(bill, p, work)) return null;
         if (bill.SuspendedReason != null) { NoteSuspended(bill, r); return null; }
+        if (bill.WaitingReason != null) return null;
         if (!Wanted(bill, r)) return null;
         // Brewing stand, enchanting table, anvil (StoryColony.Stations.cs): their own jobs, XP levels and reasons.
         if (r.Station != null) return StationBillJob(p, live, work, bench, bill, r, key);
@@ -512,8 +544,16 @@ public sealed partial class StoryColony
     }
 
     /// <summary>The bill waits with a reason (shown on the bench), said once as an alert until the reason changes.</summary>
-    private void SuspendBill(WorkbenchState bench, BillState bill, StoryRecipe r, string why)
+    private void SuspendBill(WorkbenchState bench, BillState bill, StoryRecipe r, string why, bool expectedShortage = false)
     {
+        if (expectedShortage && (bill.Mode == "forever" || why.Contains("reserved for higher-priority bills", StringComparison.Ordinal)))
+        {
+            if (bill.WaitingReason == why && bill.SuspendedReason == null) return;
+            bill.WaitingReason = why;
+            bill.SuspendedReason = null;
+            bench.Rev = Touch();
+            return;
+        }
         bill.SuspendedReason = why;
         bench.Rev = Touch();
         if (_billAlerted.GetValueOrDefault(bill.Id) != why) { _billAlerted[bill.Id] = why; Alert("warn", $"Bill {r.Label} suspended: {why}"); }
@@ -548,8 +588,8 @@ public sealed partial class StoryColony
         if (LookBeforeWaiting(p, work, bench, bill, r, live, ref batch) is { } look) return look;
         if (batch.Missing != null)
         {
-            Blocked($"bill {r.Label} suspended: {batch.Missing}");
-            SuspendBill(bench, bill, r, batch.Missing);
+            if (bill.Mode != "forever") Blocked($"bill {r.Label} suspended: {batch.Missing}");
+            SuspendBill(bench, bill, r, batch.Missing, expectedShortage: true);
             return null;
         }
         return BatchJob(work, bench, bill, r, key, live, batch, auto);
@@ -679,7 +719,7 @@ public sealed partial class StoryColony
     {
         var (fuel, units, src, noFuel) = PickFuel(bench, bill, crafts, live, own, job.Takes);
         if (noFuel != null && auto) return null;
-        if (noFuel != null) { SuspendBill(bench, bill, r, noFuel); return null; }
+        if (noFuel != null) { SuspendBill(bench, bill, r, noFuel, expectedShortage: true); return null; }
         AddFuel(job, fuel, units, src);
         return job;
     }
@@ -823,13 +863,31 @@ public sealed partial class StoryColony
         bench.Rev = Touch();
     }
 
+    /// <summary>A forever bill may exhaust supplies between planning and executing. Wait for
+    /// fresh stock without penalizing the pawn or turning normal exhaustion into an error notice.</summary>
+    private bool ForeverBillShortage(ActiveJob job, string? note)
+    {
+        if (job.Source is not ("bill" or "furnace") || note == null || !ExpectedExecutionShortage(note)) return false;
+        foreach (var bench in Benches)
+        {
+            if (BillById(bench, job.SourceId) is not { Mode: "forever", ForBuild: null } bill
+                || World is not { } w || StoryRecipes.Get(w.Data, bill.Recipe) is not { } recipe) continue;
+            _billFails.Remove(bill.Id);
+            if (note.StartsWith("no fuel", StringComparison.Ordinal) || note.StartsWith("not enough fuel", StringComparison.Ordinal)) NoFuelLeft(bench);
+            SuspendBill(bench, bill, recipe, note, expectedShortage: true);
+            return true;
+        }
+        return false;
+    }
+
     /// <summary>Suspended bills whose ingredients may be back are retried (every storage change wakes them).</summary>
     internal void RetrySuspended()
     {
         foreach (var bench in Benches.Where(BenchAvailable))
-            foreach (var b in BillsAndTasks(bench).Where(b => b.SuspendedReason != null && !_billFails.ContainsKey(b.Id)))
+            foreach (var b in BillsAndTasks(bench).Where(b => (b.SuspendedReason != null || b.WaitingReason != null) && !_billFails.ContainsKey(b.Id)))
             {
                 b.SuspendedReason = null;
+                b.WaitingReason = null;
                 bench.Rev = Touch();
             }
     }

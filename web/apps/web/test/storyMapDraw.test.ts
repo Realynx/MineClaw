@@ -73,6 +73,19 @@ describe('the Story map overlay painter (mapDraw.ts)', () => {
     expect(log).toMatchSnapshot();
   });
 
+  it.each([false, true])('draws pawn numbers instead of old nicknames in the map nameplates (angled=%s)', (angled) => {
+    const { pt, log } = painter({ angled });
+    const name = 'maid_chan_109';
+    const st = { pawns: [pawn(name, { display: 'Old nickname' })] } as unknown as StoryColonyState;
+    pt.drawBodies([{ key: name, at: { x: 50, y: 60 }, kind: 'pawn', pos: [0, 0, 0], look: 'token', r: 18 }], new Set([name]), st);
+    pt.drawBeds([{ pos: [0, 0, 0], pawn: name }], st.pawns, null);
+    expect(log.filter((s) => s.startsWith('fillText("109",'))).toHaveLength(2);
+    expect(log.join('\n')).not.toContain('Old nickname');
+    expect(log.join('\n')).not.toContain('maid_chan');
+    expect(st.pawns[0]!.name).toBe(name);
+    expect(st.pawns[0]!.display).toBe('Old nickname');
+  });
+
   it('chests: a registered double chest draws once with its priority pips; a bench shows its bill count; selection boxes', () => {
     const { pt, log } = painter({ cell: 10 });
     pt.vw = 1000; // this fixture tests all four marks; keep their identity-projected x positions on screen
@@ -134,6 +147,9 @@ describe('the Story map overlay painter (mapDraw.ts)', () => {
     expect(inDanger(undefined)).toBe(false);
     const ai = (kind: string) => ({ name: 'maid_chan_bo', kind }) as NonNullable<StoryColonyState['ai']>[number];
     expect(bodyLabel('k', pawn('ann'), undefined)).toBe('ANN');
+    expect(bodyLabel('maid_chan_109', pawn('maid_chan_109', { display: 'Old nickname' }), undefined)).toBe('109');
+    expect(bodyLabel('maid_chat_1337', pawn('maid_chat_1337', { display: 'Another nickname' }), undefined)).toBe('1337');
+    expect(bodyLabel('HumanPlayer109', undefined, undefined)).toBe('HumanPlayer109');
     expect(bodyLabel('k', undefined, ai('main'))).toBe('main');
     expect(bodyLabel('k', undefined, ai('sub'))).toBe('bo');
     expect(bodyLabel('k', undefined, undefined)).toBe('k');

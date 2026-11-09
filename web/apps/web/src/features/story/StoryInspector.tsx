@@ -53,6 +53,7 @@ import { InventorySection } from '@/features/live/inventory/InventoryPanel';
 import { benchTaskLine } from './CraftNeeds';
 import { retryIn, shortReason } from './failedLabels';
 import { BillRow } from './inspector/BillRow';
+import { BillPrioritySelect } from './inspector/BillPrioritySelect';
 import { StorageEntryActions, StorageSigns } from './inspector/StorageSigns';
 import { WORK_LABELS, WORK_TYPES } from './model';
 import { panel } from './StoryHud';
@@ -1417,7 +1418,7 @@ export function BillsInspector({
   return (
     <Shell
       title={label[0]!.toUpperCase() + label.slice(1)}
-      sub={`${bench.bills.length} bill${bench.bills.length === 1 ? '' : 's'} · top to bottom`}
+      sub={`${bench.bills.length} bill${bench.bills.length === 1 ? '' : 's'} · priority first, then list order`}
       onClose={onClose}
       testid="bills-inspector"
       wide
@@ -1892,6 +1893,13 @@ export function BillDialog({
     >
       <div className="space-y-3 text-sm" data-testid="bill-dialog">
         <BillRepeat d={d} set={set} recipe={recipe} />
+        <div className="space-y-1">
+          <label className="flex items-center gap-2 text-xs">
+            <span className="w-28 font-semibold">Priority</span>
+            <BillPrioritySelect value={d.priority} onChange={(priority) => set({ priority })} />
+          </label>
+          <p className="text-xs text-muted">1 is highest. Applies across workbenches and fuel allocation.</p>
+        </div>
         <BillRequires recipe={recipe} option={d.option} />
         <BillFuel d={d} set={set} recipe={recipe} />
         <BillEnchanting d={d} set={set} recipe={recipe} />

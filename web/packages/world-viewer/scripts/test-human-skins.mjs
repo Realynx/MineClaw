@@ -1,5 +1,5 @@
 // Isolated browser/WebGL regression. Synthetic solid skins only; no game server, user browser or downloaded assets.
-/* global document */
+/* global document, createImageBitmap */
 import { createServer } from 'vite';
 import { chromium } from 'playwright';
 import { fileURLToPath } from 'node:url';
@@ -32,7 +32,8 @@ try {
     };
     const layer = new EntityLayer();
     const blue = solid(64, '#0000ff');
-    layer.setBundle({ version: '1.12.2', pack, blocks: blue, items: blue, entity: blue, anim: null, env: {} });
+    const defaultSheet = await createImageBitmap(blue);
+    layer.setBundle({ version: '1.12.2', pack, blocks: defaultSheet, items: defaultSheet, entity: defaultSheet, anim: null, env: {} });
     configureHumanSkins(() => Promise.resolve({ enabled: true, epoch: 'smoke', revision: 2, skins: [
       { name: 'slim', slim: true, height: 64, png: solid(64, '#ff0000').toDataURL().split(',')[1] },
       { name: 'legacy', slim: false, height: 32, png: solid(32, '#00ff00').toDataURL().split(',')[1] },
@@ -56,13 +57,29 @@ try {
       }
       return counts;
     };
-    const enabled = render(); configureHumanSkins(null); const disabled = render();
+    const restoreContext = async () => {
+      const waitEvent = (event) => new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error('Timed out waiting for ' + event)), 5000);
+        renderer.domElement.addEventListener(event, () => { clearTimeout(timeout); resolve(); }, { once: true });
+      });
+      const lost = waitEvent('webglcontextlost'); renderer.forceContextLoss(); await lost;
+      // The browser finishes dispatching the loss event before it permits WEBGL_lose_context to restore it.
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      const restored = waitEvent('webglcontextrestored'); renderer.forceContextRestore(); await restored;
+    };
+    const enabled = render();
+    await restoreContext(); const restoredSkins = render();
+    configureHumanSkins(null); const disabled = render();
+    await restoreContext(); const restoredDefault = render();
     target.dispose(); renderer.dispose(); layer.dispose();
-    return { enabled, disabled };
+    defaultSheet.close();
+    return { enabled, disabled, restoredSkins, restoredDefault };
   });
   assert.ok(result.enabled.red > 100 && result.enabled.green > 100, JSON.stringify(result));
   assert.equal(result.disabled.red + result.disabled.green, 0, JSON.stringify(result));
   assert.ok(result.disabled.blue > 200, JSON.stringify(result));
+  assert.deepEqual(result.restoredSkins, result.enabled, 'Skin atlas changed after WebGL context restoration');
+  assert.deepEqual(result.restoredDefault, result.disabled, 'Imported bitmap texture changed after WebGL context restoration');
   assert.deepEqual(errors, []);
   process.stdout.write('Human skin WebGL regression passed: ' + JSON.stringify(result) + '\n');
 } finally { await browser?.close(); await server.close(); }

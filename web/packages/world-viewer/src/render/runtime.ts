@@ -277,6 +277,9 @@ export class WorldRuntime {
   private readonly beCentre = new THREE.Vector3();
   private atlasFor: GameVersion | null = null;
   private assetGeneration = 0;
+  private assetsFailed = false;
+  private assetRetryTimer: ReturnType<typeof setTimeout> | undefined;
+  private assetRetryDelay = 1000;
   private configKey = '';
   private overlayData = new Map<Dim, Overlays>();
   private readonly botsBuf: BotView[] = [];
@@ -316,7 +319,10 @@ export class WorldRuntime {
   readonly gpu: string;
 
   constructor(source: WorldSource, opts: RuntimeOptions = {}) {
-    if (typeof window !== 'undefined') window.addEventListener(ASSETS_CHANGED, this.reloadAssets);
+    if (typeof window !== 'undefined') {
+      window.addEventListener(ASSETS_CHANGED, this.reloadAssets);
+      window.addEventListener('focus', this.retryAssets);
+    }
     this.source = source;
     this.opts = opts;
     // Software WebGL (hardware acceleration off) gets its own profile: no MSAA, 1× pixels, shorter draw distance, 25 ms target.
@@ -565,6 +571,7 @@ export class WorldRuntime {
     this.deltas.start();
     this.entityPoller.start();
     this.overlayPoller.start();
+    this.retryAssets();
   }
 
   /**
@@ -623,7 +630,11 @@ export class WorldRuntime {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
-    if (typeof window !== 'undefined') window.removeEventListener(ASSETS_CHANGED, this.reloadAssets);
+    if (typeof window !== 'undefined') {
+      window.removeEventListener(ASSETS_CHANGED, this.reloadAssets);
+      window.removeEventListener('focus', this.retryAssets);
+    }
+    clearTimeout(this.assetRetryTimer);
     if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', this.onVisibility);
     cancelAnimationFrame(this.raf);
     this.sync.stop();
@@ -844,7 +855,7 @@ export class WorldRuntime {
     const c = this.meshConfig();
     const { v, ready, fastLeaves } = c;
     // While the version's textures load, sections wait instead of meshing flat first and textured again.
-    this.setMeshHold(c.want && !ready);
+    this.setMeshHold(c.want && !ready && (c.key !== this.configKey || this.atlasFor === v));
     if (c.key === this.configKey) return;
     this.configKey = c.key;
     this.version = v;
@@ -880,17 +891,44 @@ export class WorldRuntime {
         this.bundle = b;
         this.sky.setBundle(b);
       })
-      .catch((e) => this.opts.onError?.('assets', e));
+      .catch((e) => { if (this.version === v) this.assetLoadFailed('assets', e, generation); });
+  }
+
+  /** Retry failed local reads without reloading healthy textures on every window focus. */
+  private readonly retryAssets = (): void => {
+    if (this.disposed || this.hidden || this.paused || (!this.assetsFailed && !this.blockAtlas?.bundle.fallback)) return;
+    clearTimeout(this.assetRetryTimer);
+    this.assetRetryTimer = undefined;
+    const generation = this.assetGeneration;
+    const version = this.version;
+    if (!version) return;
+    void loadBundle(version, true).then((bundle) => {
+      if (this.disposed || generation !== this.assetGeneration || this.version !== version) return;
+      if (this.assetsFailed || this.blockAtlas?.bundle !== bundle) this.reloadAssets();
+    }).catch((error) => { if (this.version === version) this.assetLoadFailed('assets', error, generation); });
+  };
+
+  private assetLoadFailed(route: string, error: unknown, generation: number): void {
+    if (this.disposed || generation !== this.assetGeneration) return;
+    this.assetsFailed = true;
+    this.opts.onError?.(route, error);
+    if (this.assetRetryTimer !== undefined || this.hidden || this.paused) return;
+    this.assetRetryTimer = setTimeout(this.retryAssets, this.assetRetryDelay);
+    this.assetRetryDelay = Math.min(30_000, this.assetRetryDelay * 2);
   }
 
   private readonly reloadAssets = (): void => {
+    clearTimeout(this.assetRetryTimer);
+    this.assetRetryTimer = undefined;
+    this.assetsFailed = false;
     this.assetGeneration++;
     this.atlasFor = null;
     this.entityBundle = null;
     this.blockAtlas?.dispose();
     this.blockAtlas = null;
     this.configKey = '';
-    void this.configure().catch((e) => this.opts.onError?.('assets', e));
+    const generation = this.assetGeneration;
+    void this.configure().catch((e) => this.assetLoadFailed('assets', e, generation));
   };
 
   // [entity models] The entity layer textures its models from the bundled sheets of the world's version.
@@ -904,7 +942,10 @@ export class WorldRuntime {
       .then((b) => {
         if (!this.disposed && generation === this.assetGeneration && this.entityBundle === v) this.entities.setBundle(b);
       })
-      .catch((e) => this.opts.onError?.('bundle', e));
+      .catch((e) => {
+        if (generation === this.assetGeneration && this.entityBundle === v) this.entityBundle = null;
+        if (this.version === v) this.assetLoadFailed('bundle', e, generation);
+      });
   }
 
   private async loadBlockAtlas(v: GameVersion): Promise<void> {
@@ -915,6 +956,7 @@ export class WorldRuntime {
       if (this.disposed || generation !== this.assetGeneration || this.atlasFor !== v) return;
       this.blockAtlas?.dispose();
       this.blockAtlas = new BlockAtlas(bundle);
+      this.assetRetryDelay = 1000;
       this.blockAtlas.bind(this.uniforms);
       this.blockEntityLayer.setBundle(bundle); // [blocks] banner pattern textures
       await this.configure();
@@ -922,7 +964,7 @@ export class WorldRuntime {
       if (this.disposed || generation !== this.assetGeneration || this.atlasFor !== v) return;
       this.atlasFor = null;
       this.setMeshHold(false); // no textures: mesh flat rather than nothing
-      this.opts.onError?.('atlas', e);
+      this.assetLoadFailed('atlas', e, generation);
     }
   }
 

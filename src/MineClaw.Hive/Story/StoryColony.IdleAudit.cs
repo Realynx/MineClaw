@@ -225,7 +225,7 @@ public sealed partial class StoryColony
         {
             if (bench.LoadedBill != null) continue; // smelting: nothing to do there until it's done
             foreach (var bill in BillsAndTasks(bench))
-                if (!bill.Paused && bill.SuspendedReason == null && StoryRecipes.Get(w.Data, bill.Recipe) is { } rec && Wanted(bill, rec))
+                if (!bill.Paused && bill.SuspendedReason == null && bill.WaitingReason == null && StoryRecipes.Get(w.Data, bill.Recipe) is { } rec && Wanted(bill, rec))
                     set.Add(rec.WorkType);
         }
     }

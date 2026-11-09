@@ -785,6 +785,7 @@ public sealed partial class StoryColony
     {
         if (ChestRemovalWait(j, note)) return;
         if (HarvestGone(p, j, note)) return;
+        if (ForeverBillShortage(j, note)) return;
         // A batch has already accounted for every attempted cell. Its untouched tail is simply released.
         if (j.DigCells != null && (j.DigReported || note == "dig batch interrupted")) { GearTakesEnded(j, done: false); return; }
         // Older/single-cell callers can report the whole placement as failed when only its support is pending.

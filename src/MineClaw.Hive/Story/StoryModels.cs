@@ -438,7 +438,11 @@ public sealed class BillState
     public int Target { get; set; } = 1;
     public int Done { get; set; }
     public bool Paused { get; set; }
+    /// <summary>Across all workbenches: 1 highest, 2 high, 3 normal, 4 low. Equal priorities keep the bench's bill order.</summary>
+    public int Priority { get; set; } = 3;
     public string? SuspendedReason { get; set; }
+    /// <summary>A forever bill's expected ingredient/fuel shortage; retried when stock changes, without an error alert.</summary>
+    public string? WaitingReason { get; set; }
     public StorageFilter Ingredients { get; set; } = new();
     public int Radius { get; set; } = 32;
     public string Pawn { get; set; } = "any";

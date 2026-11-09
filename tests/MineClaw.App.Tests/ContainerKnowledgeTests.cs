@@ -46,6 +46,110 @@ public class ContainerKnowledgeTests
     }
 
     [Fact]
+    public void Live_contents_do_not_read_the_database_or_colony_ledger()
+    {
+        var w = World((A, Blocks.Chest));
+        var store = new ContainerSightings();
+        var slots = new[] { S(4, 12) };
+        store.Record(new ContainerSighting(0, A, [A], Blocks.Chest, slots, 0, "maid_chan_102"), () => slots);
+        int slowerReads = 0;
+        var k = new ContainerKnowledge(store, () => [w], () => { slowerReads++; return null; }, () => "b1.8.1",
+            new ManualClock(T0), () => { slowerReads++; return null; });
+
+        Assert.Equal("live", k.Get(0, A)!.Source);
+        Assert.Equal("live", k.GetForViewer(0, A)!.Source);
+        Assert.Equal(0, slowerReads);
+    }
+
+    [Fact]
+    public async Task Viewer_returns_the_last_look_while_a_coalesced_refresh_waits_then_shows_newer_ledger_counts()
+    {
+        var w = World((A, Blocks.Chest), (B, Blocks.Chest));
+        var store = new ContainerSightings();
+        store.Record(new ContainerSighting(0, A, [A, B], Blocks.Chest, [S(4, 12)], T0.ToUnixTimeMilliseconds(), "maid_chan_102"));
+        using var entered = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+        var ledger = new Ledger { View = new StoryChestView("colony", new P3(A.X, A.Y, A.Z), new P3(B.X, B.Y, B.Z),
+            [new Stack(265, 0, 70)], T0 + TimeSpan.FromMinutes(1), 54, 52, "normal", null) };
+        int reads = 0;
+        var k = new ContainerKnowledge(store, () => [w], () =>
+        {
+            Interlocked.Increment(ref reads);
+            entered.Set();
+            release.Wait();
+            return null;
+        }, () => "b1.8.1", new ManualClock(T0), () => ledger);
+        try
+        {
+            var immediate = await Task.Run(() => k.GetForViewer(0, B)).WaitAsync(TimeSpan.FromSeconds(2));
+            Assert.Equal(("memory", true, T0.ToUnixTimeMilliseconds()), (immediate!.Source, immediate.Exact, immediate.SeenAt));
+            Assert.Equal(12, Assert.Single(immediate.Slots).Count);
+            Assert.True(entered.Wait(TimeSpan.FromSeconds(2)));
+            // Both halves share one refresh; a busy DB cannot hold the next viewer request either.
+            var again = await Task.Run(() => k.GetForViewer(0, A)).WaitAsync(TimeSpan.FromSeconds(2));
+            Assert.Equal("memory", again!.Source);
+            Assert.Equal(1, Volatile.Read(ref reads));
+        }
+        finally { release.Set(); }
+        await WaitFor(() => k.GetForViewer(0, B)!.Source == "story");
+        var refreshed = k.GetForViewer(0, A)!;
+        Assert.False(refreshed.Exact);
+        Assert.Equal(new[] { 64, 6 }, refreshed.Slots.Select(s => s.Count));
+        Assert.Equal(1, Volatile.Read(ref reads));
+        // A newly opened window beats the cached ledger immediately.
+        store.Record(new ContainerSighting(0, A, [A, B], Blocks.Chest, [S(264, 1)], 0, "maid_chan_109"), () => [S(264, 1)]);
+        Assert.Equal("live", k.GetForViewer(0, B)!.Source);
+        Assert.Equal("diamond", Assert.Single(k.GetForViewer(0, B)!.Slots).Name);
+        w.SetBlock(A.X, A.Y, A.Z, Blocks.Stone, 0);
+        Assert.Null(k.GetForViewer(0, A));
+    }
+
+    [Fact]
+    public async Task Viewer_caches_first_persisted_only_answer_and_keeps_its_freshness_during_a_blocked_refresh()
+    {
+        var w = World((A, Blocks.Chest), (B, Blocks.Chest));
+        var clock = new ManualClock(T0);
+        var seenAt = T0 - TimeSpan.FromHours(2);
+        var ledger = new Ledger { View = new StoryChestView("saved-colony", new P3(A.X, A.Y, A.Z), new P3(B.X, B.Y, B.Z),
+            [new Stack(265, 0, 70)], seenAt, 54, 52, "normal", null) };
+        using var entered = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+        int reads = 0;
+        var k = new ContainerKnowledge(new ContainerSightings(), () => [w], () =>
+        {
+            if (Interlocked.Increment(ref reads) > 1) { entered.Set(); release.Wait(); }
+            return null;
+        }, () => "b1.8.1", clock, () => ledger);
+        try
+        {
+            var first = k.GetForViewer(0, B)!;
+            Assert.Equal(("story", false, "saved-colony", seenAt.ToUnixTimeMilliseconds()), (first.Source, first.Exact, first.SeenBy, first.SeenAt));
+            Assert.Equal(new[] { 64, 6 }, first.Slots.Select(s => s.Count));
+            var cached = await Task.Run(() => k.GetForViewer(0, A)).WaitAsync(TimeSpan.FromSeconds(2));
+            Assert.Equal(first.SeenAt, cached!.SeenAt);
+            Assert.Equal(1, Volatile.Read(ref reads));
+            clock.Now += TimeSpan.FromSeconds(4);
+            var stale = await Task.Run(() => k.GetForViewer(0, A)).WaitAsync(TimeSpan.FromSeconds(2));
+            Assert.Equal((first.Source, first.Exact, first.SeenAt), (stale!.Source, stale.Exact, stale.SeenAt));
+            Assert.Equal(new[] { 64, 6 }, stale.Slots.Select(s => s.Count));
+            Assert.True(entered.Wait(TimeSpan.FromSeconds(2)));
+            var during = await Task.Run(() => k.GetForViewer(0, B)).WaitAsync(TimeSpan.FromSeconds(2));
+            Assert.Equal(first.SeenAt, during!.SeenAt);
+            Assert.Equal(2, Volatile.Read(ref reads));
+            ledger.View = ledger.View with { Contents = [], KnownAt = T0 };
+        }
+        finally { release.Set(); }
+        await WaitFor(() => k.GetForViewer(0, A)!.SeenAt == T0.ToUnixTimeMilliseconds());
+        Assert.Empty(k.GetForViewer(0, B)!.Slots); // an explicitly observed empty chest replaces cached contents
+    }
+
+    private static async Task WaitFor(Func<bool> ready)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+        while (!ready()) await Task.Delay(10, timeout.Token);
+    }
+
+    [Fact]
     public void A_body_opening_a_chest_is_live_while_open_and_its_last_look_stays_after_the_close()
     {
         var w = World((A, Blocks.Chest));
@@ -224,6 +328,9 @@ public class ContainerKnowledgeTests
         Assert.Equal(("memory", false, "maid_chan_109"), (v.Source, v.Exact, v.SeenBy));
         Assert.Equal(("double_chest", 54), (v.Kind, v.Size));
         Assert.Equal(new[] { 64, 6 }, v.Slots.Select(s => s.Count));
+        var offline = k.GetForViewer(0, B)!; // no local look: persisted knowledge still answers
+        Assert.Equal((v.Source, v.Exact, v.SeenAt), (offline.Source, offline.Exact, offline.SeenAt));
+        Assert.Equal(v.Slots.Select(s => s.Count), offline.Slots.Select(s => s.Count));
 
         // a body has it open now: live, whatever the others say
         story.View = new StoryChestView("c", new P3(A.X, A.Y, A.Z), new P3(B.X, B.Y, B.Z), [new Stack(1, 0, 1)], T0 + TimeSpan.FromHours(1), 54, 53, "normal", null);

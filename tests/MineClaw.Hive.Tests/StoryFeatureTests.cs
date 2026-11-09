@@ -411,12 +411,13 @@ public sealed class StoryFeatureTests
         Assert.NotEqual("craft", c.Next(1)["kind"]!.GetValue<string>());
         c.Report(c.P(1), c.CurrentOf(c.P(1))!.Id, "done", null, null);
         c.BillsOp("update", new JsonObject { ["id"] = until, ["min_skill"] = null });
-        // An ingredient filter that denies planks: suspended, with the reason and an alert.
+        // A forever bill with no allowed planks waits quietly until its stock or filter changes.
         c.BillsOp("update", new JsonObject { ["id"] = until, ["ingredients"] = new JsonObject { ["allow"] = new JsonArray("*"), ["deny"] = new JsonArray("wood_planks") } });
         Assert.NotEqual("craft", c.Next(1)["kind"]!.GetValue<string>());
         var bill = c.Benches.Single(b => b.Pos == new P3(3, 64, 0)).Bills.Single();
-        Assert.StartsWith("no ", bill.SuspendedReason);
-        Assert.Contains(c.Alerts, a => a.Text.Contains("suspended"));
+        Assert.StartsWith("no ", bill.WaitingReason);
+        Assert.Null(bill.SuspendedReason);
+        Assert.DoesNotContain(c.Alerts, a => a.Text.Contains("suspended"));
         Assert.NotNull(c.BillsOp("add", new JsonObject { ["bench"] = new JsonArray(3, 64, 0), ["bill"] = new JsonObject { ["recipe"] = "smelt:porkchop" } }).Error);
     }
 

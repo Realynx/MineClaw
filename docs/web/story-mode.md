@@ -1849,7 +1849,11 @@ Filters:
 - Priority is one of `low|normal|preferred|important|critical`.
 
 A wooden sign physically attached to either half of a chest controls its effective filter when it contains recognized entries.
-Category aliases such as `food`, `wood`, and `seeds` can be separated by commas or sign lines; a `-` prefix excludes an entry.
+Sign text searches item registry/display/variant names case-insensitively: `wood` includes wooden tools and doors as well as
+the existing wood category, `iron` matches iron items, and `dark oak` matches that phrase. Spaces and underscores are equivalent.
+Category aliases such as `food`, `wood`, and `seeds` remain supported. Separate alternatives with commas, semicolons, pipes, or
+sign lines; `-`, `!`, or `no ` excludes a search/category. A phrase with no matches falls back to individual words, preserving
+labels such as `food seeds`. Exact numeric `id` and `id:meta` entries retain their precise meaning. Original sign text stays intact.
 Ordinary labels with no recognized entries do not control storage. Multiple controlling signs combine their entries, with deny
 winning. Nearby signs on other supports do not count. Signed chests have the highest hauling priority, above ordinary critical
 storage, and pull matching items from ordinary accepting chests as space allows. Their filters are strict, including fallback
@@ -1998,18 +2002,20 @@ type>`, `enchant:<item>`, `repair:<item>`, `combine:<item>` and `book:<item>`. F
 `POST …/bills`:
 - `{op:"add", bench:[x,y,z], bill}` → `{id}`
 - `{op:"update", id, …bill fields}`, `{op:"remove"|"pause"|"resume", id}`
-- `{op:"reorder", bench, ids}` → `{ids}`. Bills run top to bottom per bench.
+- `{op:"reorder", bench, ids}` → `{ids}`. Bills at the same priority run top to bottom per bench.
 - `{op:"enchant_tools", prefer?, material?, items?, count?, prefer_only?}` → `{ids, note}`: the tools system's hook (below).
 
-Bill: `{id, recipe, mode: count|until|forever, target, done, paused, suspended_reason, ingredients:{allow, deny}, radius, pawn: "any"|name,
+Bill: `{id, recipe, mode: count|until|forever, target, done, paused, priority, suspended_reason, waiting_reason, ingredients:{allow, deny}, radius, pawn: "any"|name,
 min_skill, store: "best"|{chest:[x,y,z]}, option, prefer, prefer_only, xp_needed, last}`. `until` counts the product in every storage
 plus the pawns' inventories. `option`/`prefer`/`prefer_only` are an enchant bill's (below); `xp_needed` is the XP level the last try
 needed (an offer's level, an anvil's price); `last` is what the last job made ("enchanted diamond pickaxe: Fortune II (offer #3,
 level 18)").
 
 Execution:
-- A pawn with the bill's work type on, and allowed by `pawn` and `min_skill`, takes the first runnable bill of the nearest free
-  bench. Furnaces have one active load; crafting tables can serve several pawns working different tasks.
+- A pawn with the bill's work type on, and allowed by `pawn` and `min_skill`, takes runnable bills by priority across benches:
+  1 urgent, 2 high, 3 normal (the default), 4 low. Distance and local list order break ties. Higher-priority runnable furnace
+  bills reserve scarce fuel before lower-priority bills, including across Craft and Cook work. Immediate colony dependencies
+  still come first. Furnaces have one active load; crafting tables can serve several pawns working different tasks.
 - A registered table or furnace that is confirmed missing in a loaded column stops receiving work. Automatic tasks move to
   another available bench of the same kind, clearing their old station failures. Manual bills and settings stay at their chosen
   location for a replacement bench. An unloaded column does not establish that a bench is missing.
@@ -2020,9 +2026,10 @@ Execution:
 - Automatic build smelting spreads the remaining demand across available owned furnaces. A paused or blocked manual bill
   leaves its furnace available for automatic work; runnable manual bills keep their local queue precedence. Inputs and fuel
   being fetched by another pawn are reserved, and each load uses one exact input variant.
-- Missing ingredients or fuel set `suspended_reason` and raise an alert. Resume clears it.
-- An owner's bill leaves what the builds reserved: when the stored ingredient is only there for a build, the bill is suspended
-  with "the … in storage is reserved for builds".
+- A manual `forever` bill missing ingredients or fuel sets `waiting_reason` quietly and retries when supplies change. It remains
+  enabled without top-right shortage alerts. Other suspended bills use `suspended_reason`; real execution failures remain visible.
+- An owner's bill leaves what the builds reserved: when the stored ingredient is only there for a build, the bill waits
+  with "the … in storage is reserved for builds" (quietly for `forever` bills).
 
 ### Craft tasks (added 2026-11-05)
 
@@ -2036,7 +2043,7 @@ of the list for crafting." (Live 11-05: one table listed 20 finished "wooden hoe
   spare)", "for the fence of build b4", "growing zone 'East' needs a hoe to till"), is taken by pawns with the recipe's work type
   (Craft, or Cook for a furnace's food), and goes when it is made or no longer needed. A one-off need (hoe, rod, seeds) stays until
   its count is made, then goes.
-- **Order on a bench:** immediate tasks, then the owner's bills top to bottom, then the other tasks (a build's ingredients, by build
+- **Order on a bench:** immediate tasks, then the owner's bills by priority and list order, then the other tasks (a build's ingredients, by build
   order then step). **Immediate** = work waits on it right now: a tool a pawn is waiting for (or works on with a worn one), a
   need's one-off (hoe, rod, seeds), a water build's bucket chain, the chest of an Architect chest build (storage the owner is
   waiting for). A pawn with Craft (or Cook) work takes an immediate task before any other work, whatever its priorities (live

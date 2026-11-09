@@ -21,7 +21,7 @@ public sealed partial class StoryColony
     /// <param name="ownInputs">What the batch's input takes from the pawn's own pockets: never counted as its fuel too (charcoal from logs
     /// burning logs: live 11-04, the one log it carried was both, and the furnace got a log and no fuel).</param>
     internal (StoryFuel? Fuel, int Units, (P3 Chest, Stack Stack)? From, string? Missing) PickFuel(WorkbenchState bench, BillState bill, int items, PawnLive? live,
-        IReadOnlyList<Stack>? ownInputs = null, IReadOnlyList<(P3 Chest, Stack Stack)>? reservedInputs = null)
+        IReadOnlyList<Stack>? ownInputs = null, IReadOnlyList<(P3 Chest, Stack Stack)>? reservedInputs = null, bool protectPriority = true)
     {
         var d = World!.Data;
         var choice = FuelChoice(bench, bill);
@@ -29,12 +29,17 @@ public sealed partial class StoryColony
         if (fuels.Count == 0) return (null, 0, null, $"needs fuel: {d.VersionId} has no {StoryFuels.Describe(choice)}");
         int net = items - (int)Math.Floor(FuelCreditNow(bench) + 1e-9);
         if (net <= 0) return (fuels[0], 0, null, null);
+        var priority = protectPriority ? HigherPriorityFuel(bench, bill, live) : new PriorityFuel();
+        ownInputs = (ownInputs ?? []).Concat(priority.Own).ToArray();
+        reservedInputs = (reservedInputs ?? []).Concat(priority.Stored).ToArray();
         // Auto (and any) leave the builds' and bills' reserved stock alone unless nothing else is there; a named fuel is what was asked.
         bool guard = bill.ForBuild == null && choice is StoryFuels.Auto or "any" && _reserved.Count > 0;
         var need = new FuelNeed(net, bench, bill, live, ownInputs, reservedInputs);
         for (int pass = guard ? 0 : 1; pass < 2; pass++)
             if (FuelPass(fuels, need, unreservedOnly: pass == 0) is { } got) return got;
-        return (null, 0, null, $"needs fuel: no {StoryFuels.Describe(choice)} within {bill.Radius} blocks");
+        return (null, 0, null, priority.Own.Count + priority.Stored.Count > 0
+            ? "needs fuel: available fuel reserved for higher-priority bills"
+            : $"needs fuel: no {StoryFuels.Describe(choice)} within {bill.Radius} blocks");
     }
 
     /// <summary>What a fuel pass looks for: the items to cover, at which furnace, for which bill (its radius), the pawn and what its batch
@@ -147,7 +152,9 @@ public sealed partial class StoryColony
         int items = Math.Clamp(left, 1, 8);
         var choice = FuelChoice(bench, bill);
         var fuels = StoryFuels.For(w.Data, choice);
-        var (fuel, units, _, missing) = PickFuel(bench, bill, items, null);
+        // State polling reports raw availability. Cross-bench allocation belongs to job selection;
+        // the bill's WaitingReason explains a priority reservation without replanning every UI refresh.
+        var (fuel, units, _, missing) = PickFuel(bench, bill, items, null, protectPriority: false);
         var shown = fuel ?? fuels.FirstOrDefault();
         int net = Math.Max(0, items - (int)Math.Floor(FuelCreditNow(bench) + 1e-9));
         return new JsonObject
@@ -188,6 +195,8 @@ public sealed partial class StoryColony
         bench.FuelSetting = fuel == StoryFuels.Auto ? null : fuel;
         bench.Rev = Touch();
         foreach (var b in BillsAndTasks(bench).Where(b => b.SuspendedReason?.StartsWith("needs fuel", StringComparison.Ordinal) == true)) b.SuspendedReason = null;
+        foreach (var b in BillsAndTasks(bench).Where(b => b.WaitingReason is { } why &&
+            (why.StartsWith("needs fuel", StringComparison.Ordinal) || why.StartsWith("no fuel", StringComparison.Ordinal) || why.StartsWith("not enough fuel", StringComparison.Ordinal)))) b.WaitingReason = null;
         MaterialsChanged();
         WakeIdle();
         return (new JsonObject { ["pos"] = bench.Pos.Json(), ["kind"] = bench.Kind, ["designated"] = true, ["fuel"] = fuel }, null);

@@ -32,7 +32,7 @@ public sealed partial class StoryColony
                     && StoryStorageKeywords.Parse(sign.Lines, w.Data) is { } filter)
                     signs.Add(new(sign.At, sign.Lines.ToArray(), filter.Allow, filter.Deny));
             signs = signs.OrderBy(s => s.At.X).ThenBy(s => s.At.Y).ThenBy(s => s.At.Z).ToList();
-            bool changed = SignSignature(storage.Signs) != SignSignature(signs);
+            bool changed = !SameStorageSigns(storage.Signs, signs);
             if (changed) { storage.Signs = signs; StorageChanged(storage); }
             if (storage.PendingFilter == null) continue;
             // A new/edited label is a newer in-world instruction. Do not erase it for an older UI request.
@@ -59,8 +59,14 @@ public sealed partial class StoryColony
         PublishStorageSignRules(w, observed);
     }
 
-    private static string SignSignature(IEnumerable<StorageSignState> signs) =>
-        string.Join("|", signs.Select(s => s.At + ":" + string.Join("\n", s.Lines)));
+    private static bool SameStorageSigns(IReadOnlyList<StorageSignState> before, IReadOnlyList<StorageSignState> after)
+    {
+        if (before.Count != after.Count) return false;
+        for (int i = 0; i < before.Count; i++)
+            if (before[i].At != after[i].At || !before[i].Lines.SequenceEqual(after[i].Lines)
+                || !before[i].Allow.SequenceEqual(after[i].Allow) || !before[i].Deny.SequenceEqual(after[i].Deny)) return false;
+        return true;
+    }
 
     private void StorageChanged(StorageState storage)
     {

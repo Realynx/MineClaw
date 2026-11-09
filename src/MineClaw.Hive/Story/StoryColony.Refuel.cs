@@ -40,9 +40,11 @@ public sealed partial class StoryColony
         var (fuel, units, src, noFuel) = PickFuel(bench, bill ?? new BillState(), n, live);
         if (noFuel != null)
         {
-            Blocked($"the furnace at {bench.Pos} holds {what} and no fuel: {noFuel}");
+            if (bill?.Mode == "forever" && lr != null) SuspendBill(bench, bill, lr, noFuel, expectedShortage: true);
+            else Blocked($"the furnace at {bench.Pos} holds {what} and no fuel: {noFuel}");
             return null;
         }
+        if (bill?.WaitingReason != null) { bill.WaitingReason = null; bench.Rev = Touch(); }
         // The input only names a smeltable item for the primitive; with count 0 it loads no input, it fuels what the furnace holds.
         var input = lr?.Inputs.FirstOrDefault()?.Options.FirstOrDefault() is { } o ? ItemName(o.Id, Math.Max(0, o.Meta)) : bench.RefuelItem ?? "log";
         var job = Job(work, "smelt", $"fuelling the furnace ({what} waiting)", bench.Pos, key, "furnace", lb, "working", f =>

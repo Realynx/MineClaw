@@ -611,6 +611,13 @@ These are the bot-side additions from architecture.md, in their wire form. They 
     seen_by, source, cells}], capped}`, newest look first, shared for 1 s. Story Mode's map badges read it.
   - **Cost.** Rate-capped like the other world routes (10/s, burst 20, 429 + Retry-After). The web polls one container every
     3 s only while its panel is open and the tab is visible, and the box every 10 s while the Story map is open.
+    A live window returns immediately without reading the observation database or colony ledger. A known in-process last
+    look also returns immediately, keeping its original freshness; those slower sources reconcile in the background and
+    appear on subsequent polls (3 s refresh, at most two refreshes running, 128 cached containers, both halves share a key).
+    With no local look, the first read still checks persisted memory and the colony ledger; a successful persisted answer
+    joins the same bounded cache, keeping its original source and timestamp while later refreshes run in the background.
+    Inspection never sends a pawn
+    to the chest or opens its window.
 
 - **`GET /api/viewer/memory-activity?since&brain`** (`MemoryActivityResponse`). Response:
 

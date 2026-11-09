@@ -8,6 +8,7 @@ import { cn } from '@/lib/utils';
 import { billProgress, billSummary, enchantLabel, fuelLabel, fuelLine } from '../storage';
 import type { StoryWrite } from '../useStory';
 import { ItemIcon } from '../visuals';
+import { BillPrioritySelect } from './BillPrioritySelect';
 
 /** "· Ann only" when the bill is one pawn's. */
 function pawnOnly(b: StoryBill, state: StoryColonyState | undefined): string {
@@ -43,6 +44,7 @@ function BillText({ b, name, state }: { b: StoryBill; name: string; state: Story
         </div>
       ) : null}
       {b.last ? <div className="truncate text-[10.5px] text-subtle">Last: {b.last}</div> : null}
+      {b.waitingReason ? <div className="text-[10.5px] text-muted">Waiting: {b.waitingReason}</div> : null}
       {b.suspendedReason ? <div className="text-[10.5px] text-danger">Suspended: {b.suspendedReason}</div> : null}
     </>
   );
@@ -130,6 +132,8 @@ export function BillRow({
       <button type="button" onClick={onEdit} className="min-w-0 flex-1 text-left">
         <BillText b={b} name={name} state={state} />
       </button>
+      <BillPrioritySelect value={b.priority ?? 3} label={`Priority for ${name}`} disabled={!canWrite}
+        onChange={(priority) => void write('story.bills', { op: 'update', id: b.id, priority } as never)} />
       <BillFuelSelect b={b} name={name} bench={bench} canWrite={canWrite} write={write} />
       <button
         type="button"

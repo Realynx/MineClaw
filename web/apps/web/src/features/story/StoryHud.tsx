@@ -41,6 +41,7 @@ import { ViewerQualityButton } from '@/features/settings/QuickSettings';
 import { cn } from '@/lib/utils';
 import { useWorldClock, type WorldClock } from './clock';
 import { pawnMood, reorderNames, type PawnMood } from './model';
+import { pawnNumber } from './pawnNumber';
 import {
   DESIGNATE_TOOLS,
   MINE_FILTERS,
@@ -311,7 +312,7 @@ function Portrait({
   lifted: boolean;
   h: PortraitHandlers;
 }) {
-  const number = b.name.match(/\d+$/)?.[0] ?? '';
+  const number = pawnNumber(b.name);
   const accessibleName = number || b.name;
   return (
     <div

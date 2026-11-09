@@ -32,8 +32,11 @@ public sealed partial class StoryColony
     internal IEnumerable<BillState> BenchQueue(WorkbenchState b, Func<BillState, bool>? only = null)
     {
         var all = b.Tasks.Count == 0 ? b.Bills : b.Tasks.Where(Immediate).Concat(b.Bills).Concat(b.Tasks.Where(t => !Immediate(t)));
-        return only == null ? all : all.Where(only);
+        return (only == null ? all : all.Where(only)).OrderBy(BillWorkPriority);
     }
+
+    /// <summary>Immediate dependencies first, then manual priorities across benches, then normal automatic build supplies.</summary>
+    internal int BillWorkPriority(BillState bill) => Immediate(bill) ? 0 : bill.ForBuild == null ? Math.Clamp(bill.Priority, 1, 4) : 5;
 
     /// <summary>Work waits on it right now: a tool pawns are waiting on, a farm's hoe or a fishing rod, the bucket of a water build.</summary>
     internal bool Immediate(BillState t) =>
@@ -76,6 +79,14 @@ public sealed partial class StoryColony
         bool changed = false;
         foreach (var bench in Benches)
         {
+            // Older forever bills suspended on normal shortages. Retry those after loading;
+            // execution failures (pathing, inventory, server errors) remain suspended.
+            foreach (var bill in bench.Bills.Where(b => b.Mode == "forever" && ExpectedBillShortage(b.SuspendedReason)))
+            {
+                bill.SuspendedReason = null;
+                bill.WaitingReason = null;
+                changed = true;
+            }
             foreach (var bill in bench.Bills.Where(x => x.ForBuild != null).ToList())
             {
                 bench.Bills.Remove(bill);
@@ -87,6 +98,19 @@ public sealed partial class StoryColony
         }
         return changed;
     }
+
+    private static bool ExpectedBillShortage(string? why) => why != null &&
+        (why.StartsWith("needs fuel:", StringComparison.Ordinal)
+         || why.StartsWith("no ", StringComparison.Ordinal) && (why.Contains(": checked ", StringComparison.Ordinal) || why.Contains(" within ", StringComparison.Ordinal))
+         || why.Contains(" reserved ", StringComparison.Ordinal) && why.EndsWith(" free", StringComparison.Ordinal)
+         || ExpectedExecutionShortage(why));
+
+    // Crafter.Shortfall and Skills.Smelting report normal resource exhaustion with these
+    // specific forms. Do not classify arbitrary inventory, path, or server errors as shortages.
+    private static bool ExpectedExecutionShortage(string why) => why is "no fuel" or "no fuel (coal, charcoal, planks, logs)" or "no fuel (coal, charcoal, planks, logs, sticks)"
+        || System.Text.RegularExpressions.Regex.IsMatch(why,
+            @"^need \d+ more .+ for .+; (?:inventory \+ the \d+ known chests? have only |none in inventory (?:or the \d+ known chests?|and no known chests))")
+        || System.Text.RegularExpressions.Regex.IsMatch(why, @"^(?:no [^\r\n]+ to smelt|not enough fuel \(0 [^\r\n]+\))$");
 
     /// <summary>A one-off bill the colony added for a need that isn't made yet becomes that need's (immediate) task.</summary>
     private static bool OpenNeedBillsToTasks(WorkbenchState bench)

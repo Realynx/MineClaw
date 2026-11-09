@@ -18,6 +18,7 @@ export function StorageSigns({ storages, tree }: { storages: StoryStorage[]; tre
             <>
               <p className="font-medium">Active filter from attached signs: {filterSummary(tree, s.filter)}</p>
               <p className="text-muted-foreground">Sign priority: highest; matching items move here as space allows.</p>
+              <p className="text-muted-foreground">Sign text searches item names: wood also matches wooden tools. Use commas or separate lines for alternatives, and - or ! to exclude. Categories such as food still work.</p>
               <details>
                 <summary className="cursor-pointer text-muted-foreground">Attached signs ({s.signs.length})</summary>
                 {s.signs.map((sign) => (

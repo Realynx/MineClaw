@@ -56,7 +56,7 @@ public sealed class StoryChests(StoryColonies colonies, Func<int> dimension) : I
 /// <item>else <b>unknown</b> (200, no slots).</item>
 /// </list>
 /// A double chest answers from either half with its 54 slots; two looks taken while each half was a single chest are joined.
-/// Read-only; the store's reads are brief locks and the memory reads one indexed query each.
+/// Read-only; the viewer can show a known look immediately while slower memory/ledger reads refresh in the background.
 /// </summary>
 public sealed class ContainerKnowledge(ContainerSightings store, Func<IReadOnlyList<WorldState>> worlds, Func<ObservationStore?> memory,
     Func<string?> version, TimeProvider? time = null, Func<IStoryChests?>? story = null)
@@ -71,6 +71,11 @@ public sealed class ContainerKnowledge(ContainerSightings store, Func<IReadOnlyL
 
     private readonly TimeProvider _time = time ?? TimeProvider.System;
     private readonly Func<IStoryChests?> _story = story ?? (() => Story);
+    private readonly object _refreshGate = new();
+    private readonly Dictionary<(int Dim, BlockPos Pos, int Id), (long At, List<Candidate> Items)> _refreshed = [];
+    private readonly HashSet<(int Dim, BlockPos Pos, int Id)> _refreshing = [];
+    private const int RefreshLimit = 128, RefreshConcurrency = 2;
+    private const long RefreshMs = 3000;
 
     /// <summary>One candidate answer (cells first-half first).</summary>
     private sealed record Candidate(BlockPos[] Cells, int BlockId, string? MemKind, ItemStack[]? Slots, IReadOnlyList<(int Id, int Meta, int Count)>? Counts,
@@ -103,14 +108,91 @@ public sealed class ContainerKnowledge(ContainerSightings store, Func<IReadOnlyL
         return best == null ? Unknown(dim, id, cells) : View(dim, id, cells, best);
     }
 
+    /// <summary>
+    /// The interactive viewer never waits on the observation database or colony lock when an in-process look is already
+    /// available. Its original timestamp/source remain visible; bounded, coalesced refreshes reconcile newer count-only
+    /// sources on subsequent polls. A first persisted/offline answer is cached too, preserving its original freshness.
+    /// </summary>
+    public ContainerView? GetForViewer(int dim, BlockPos pos)
+    {
+        var w = WorldAt(dim, pos);
+        int id = w?.GetBlock(pos) ?? -1;
+        if (w != null && ContainerSightings.KindOf(id) == null) return null;
+        BlockPos[] cells = w != null && ChestPairs.IsPairable(id) ? ChestPairs.Cells(w, pos) : [pos];
+        var look = Looked(dim, pos, cells);
+        if (look != null && id > 0 && !Fits(id, look)) look = null;
+        if (look?.Source == "live") return View(dim, id, cells, look);
+
+        var key = (dim, look?.Cells[0] ?? cells[0], id);
+        List<Candidate> previous;
+        lock (_refreshGate)
+            previous = _refreshed.TryGetValue(key, out var previousEntry) ? previousEntry.Items : [];
+        var candidates = previous.Where(c => id <= 0 || Fits(id, c)).ToList();
+        if (look != null) candidates.Add(look);
+        var best = Choose(candidates);
+        if (best == null)
+        {
+            // No honest cached answer: keep the first-read behavior, including a genuinely unknown container.
+            var stored = StoredCandidates(dim, pos).Where(c => id <= 0 || Fits(id, c)).ToList();
+            best = Choose(stored);
+            if (best == null) return Unknown(dim, id, cells);
+            CacheStored(key, stored);
+            return View(dim, id, cells, best);
+        }
+
+        bool refresh;
+        lock (_refreshGate)
+        {
+            bool found = _refreshed.TryGetValue(key, out var cached);
+            refresh = (!found || Now - cached.At >= RefreshMs) && _refreshing.Count < RefreshConcurrency && _refreshing.Add(key);
+        }
+        if (refresh) _ = Task.Run(() => Refresh(key));
+        return View(dim, id, cells, best);
+    }
+
+    private void CacheStored((int Dim, BlockPos Pos, int Id) key, List<Candidate> items)
+    {
+        lock (_refreshGate)
+        {
+            // Sources can be temporarily unavailable; retain the last known answer with its original SeenAt.
+            // A known empty inventory still has a timestamped candidate and replaces the old counts normally.
+            if (items.Count == 0 && _refreshed.TryGetValue(key, out var previous)) items = previous.Items;
+            if (_refreshed.Count >= RefreshLimit && !_refreshed.ContainsKey(key))
+                _refreshed.Remove(_refreshed.MinBy(kv => kv.Value.At).Key);
+            _refreshed[key] = (Now, items);
+        }
+    }
+
+    private void Refresh((int Dim, BlockPos Pos, int Id) key)
+    {
+        try
+        {
+            var items = StoredCandidates(key.Dim, key.Pos).Where(c => key.Id <= 0 || Fits(key.Id, c)).ToList();
+            CacheStored(key, items);
+        }
+        catch (Exception) { /* Retain the known look if a source is shutting down/unavailable. */ }
+        finally { lock (_refreshGate) _refreshing.Remove(key); }
+    }
+
     /// <summary>The looks, the world memory's row and Story Mode's ledger for the container; with a block there, only those of its kind.</summary>
     private List<Candidate> CandidatesAt(int dim, BlockPos pos, BlockPos[] cells, int id)
     {
         var cands = new List<Candidate>();
-        if (Looked(dim, pos, cells) is { } look) cands.Add(look);
+        if (Looked(dim, pos, cells) is { } look && (id <= 0 || Fits(id, look)))
+        {
+            if (look.Source == "live") return [look]; // authoritative; slower sources can never win
+            cands.Add(look);
+        }
+        cands.AddRange(StoredCandidates(dim, pos));
+        if (id > 0) cands.RemoveAll(c => !Fits(id, c)); // the block was replaced since (a furnace where a chest was): not its contents
+        return cands;
+    }
+
+    private List<Candidate> StoredCandidates(int dim, BlockPos pos)
+    {
+        var cands = new List<Candidate>();
         if (Remembered(dim, pos) is { } mem) cands.Add(mem);
         if (Ledger(dim, pos) is { } led) cands.Add(led);
-        if (id > 0) cands.RemoveAll(c => !Fits(id, c)); // the block was replaced since (a furnace where a chest was): not its contents
         return cands;
     }
 

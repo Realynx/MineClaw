@@ -2,6 +2,7 @@ import { STORY_DEFAULT_RECIPES, StoryBillsRequest, StoryWorkbenchesRequest, type
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { BillDialog, FuelPicker, ReservationList } from '@/features/story/StoryInspector';
+import { BillRow } from '@/features/story/inspector/BillRow';
 import {
   addBillBody,
   draftOf,
@@ -20,6 +21,30 @@ afterEach(cleanup);
 const recipe = (id: string) => STORY_DEFAULT_RECIPES.find((r) => r.id === id)!;
 
 describe('station bills in the bill dialog', () => {
+  it('saves cross-bench priority from the editor and changes it directly from a waiting bill', () => {
+    const r = recipe('smelt_iron');
+    const onSave = vi.fn();
+    const view = render(<BillDialog recipe={r} initial={newDraft(r, 'forever')} isNew state={undefined}
+      onPickChest={() => {}} onSave={onSave} onClose={() => {}} />);
+    expect(screen.getByLabelText<HTMLSelectElement>('Bill priority').value).toBe('3');
+    fireEvent.change(screen.getByLabelText('Bill priority'), { target: { value: '1' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add bill' }));
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ priority: 1 }));
+    const bill: StoryBill = {
+      id: 'priority-bill', recipe: r.id, mode: 'forever', target: 1, done: 0, paused: false,
+      ingredients: { allow: [], deny: [] }, radius: 32, pawn: 'any', store: 'best', waitingReason: 'no iron ore',
+    };
+    expect(updateBillBody(bill, { ...draftOf(bill), priority: 1 })).toEqual({ op: 'update', id: bill.id, priority: 1 });
+    expect(addBillBody([6, 64, 0], { ...newDraft(r), priority: 2 }).bill.priority).toBe(2);
+    const write = vi.fn(() => Promise.resolve(undefined));
+    view.rerender(<BillRow bill={bill} recipe={r} bench={{ pos: [6, 64, 0], kind: 'furnace', bills: [bill] }}
+      state={undefined} canWrite write={write as never} onDragStart={() => {}} onDrop={() => {}} onEdit={() => {}} />);
+    expect(screen.getByText('Waiting: no iron ore').className).not.toContain('text-danger');
+    expect(screen.queryByText(/Suspended:/)).toBeNull();
+    fireEvent.change(screen.getByLabelText(`Priority for ${r.label}`), { target: { value: '2' } });
+    expect(write).toHaveBeenCalledWith('story.bills', { op: 'update', id: bill.id, priority: 2 });
+  });
+
   it('an enchant bill offers count and forever, the option, the preferred enchantment and prefer-only', () => {
     const r = recipe('enchant:diamond_pickaxe');
     const onSave = vi.fn();

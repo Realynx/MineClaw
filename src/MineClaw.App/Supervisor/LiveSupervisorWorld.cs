@@ -440,7 +440,7 @@ public sealed class LiveSupervisorWorld : ISupervisorWorld
 
     /// <summary>The columns' block entities, merged over every in-process body in <paramref name="dim"/>.</summary>
     /// <summary>A container's contents: live, the last look of any body, the world memory or Story's ledger (<see cref="ContainerKnowledge"/>).</summary>
-    public ContainerView? Container(int dim, BlockPos pos) => _containers.Get(dim, pos);
+    public ContainerView? Container(int dim, BlockPos pos) => _containers.GetForViewer(dim, pos);
 
     public (IReadOnlyList<ContainerSummary> Items, bool Capped) Containers(int dim, BlockPos min, BlockPos max, int limit) => _containers.InBox(dim, min, max, limit);
 

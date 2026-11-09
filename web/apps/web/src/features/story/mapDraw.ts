@@ -14,6 +14,7 @@ import { project, type Pt, type V3, type ViewMats } from './math';
 import { failedCells, type FailedCell } from './tools';
 import { COLORS, glyph, pawnColor } from './visuals';
 import { WORK_GLYPHS } from './workAppearance';
+import { pawnNumber } from './pawnNumber';
 
 type Pawn = StoryColonyState['pawns'][number];
 type AiBody = NonNullable<StoryColonyState['ai']>[number];
@@ -181,9 +182,10 @@ export function inDanger(pw: Pawn | undefined): boolean {
   return pw ? (pw.hp ?? 20) <= 8 || (pw.food ?? 20) <= 4 : false;
 }
 
-/** A bed owner's initials on its tag (the pawn's display name, else its name). */
+/** A known pawn's number on its bed tag; unnumbered owners retain their initials. */
 function bedInitials(owner: string, pawns: readonly Pawn[] | undefined): string {
-  return (pawns?.find((x) => x.name === owner)?.display ?? owner).slice(0, 2).toUpperCase();
+  const pw = pawns?.find((x) => x.name === owner);
+  return (pw && pawnNumber(pw.name)) || (pw?.display ?? owner).slice(0, 2).toUpperCase();
 }
 
 /** A pawn's job target and queued order targets, as cells. */
@@ -193,9 +195,10 @@ function orderTargets(pw: Pawn | undefined): Array<[number, number, number]> {
     .filter((t): t is [number, number, number] => !!t);
 }
 
-/** A body's name tag: the pawn's display name, `main`, an AI body's short name, else its key. */
+/** A pawn's number takes precedence over old nicknames; AI bodies and other identities keep their existing labels. */
 export function bodyLabel(key: string, pw: Pawn | undefined, ai: AiBody | undefined): string {
-  return pw?.display ?? (ai ? (ai.kind === 'main' ? 'main' : ai.name.replace(/^maid_chan_/, '')) : key);
+  if (pw) return pawnNumber(pw.name) || (pw.display ?? key);
+  return ai ? (ai.kind === 'main' ? 'main' : ai.name.replace(/^maid_chan_/, '')) : key;
 }
 
 const isOffScreen = (at: Pt, vw: number, vh: number) => at.x < -20 || at.y < -20 || at.x > vw + 20 || at.y > vh + 20;
@@ -402,7 +405,7 @@ export class MapPainter {
     ctx.stroke();
   }
 
-  /** Beds: a bed mark, the owner's colour ring and initials. */
+  /** Beds: a bed mark, the owner's colour ring and pawn number (or unnumbered owner's initials). */
   drawBeds(beds: readonly Bed[], pawns: readonly Pawn[] | undefined, selected: V3 | null | undefined): void {
     for (const bd of beds) {
       if ((bd.dim ?? 0) !== 0 || this.hiddenByCut(bd.pos[1])) continue;

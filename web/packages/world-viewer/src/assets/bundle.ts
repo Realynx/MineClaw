@@ -92,11 +92,13 @@ export interface AssetBundle {
 }
 
 const cache = new Map<GameVersion, Promise<AssetBundle>>();
+const missing = new Set<GameVersion>();
 const urls = new Map<GameVersion, Record<string, string>>();
 let generation = 0;
 if (typeof window !== 'undefined') window.addEventListener(ASSETS_CHANGED, () => {
   generation++;
   cache.clear();
+  missing.clear();
   for (const old of urls.values()) for (const url of Object.values(old)) URL.revokeObjectURL(url);
   urls.clear();
 });
@@ -105,16 +107,22 @@ if (typeof window !== 'undefined') window.addEventListener(ASSETS_CHANGED, () =>
 export function bundleUrls(version: GameVersion): Record<string, string> { return urls.get(version) ?? {}; }
 
 /** Loads the browser's own pack once, or renders original placeholders until a JAR is imported in Settings. */
-export function loadBundle(version: GameVersion): Promise<AssetBundle> {
+export function loadBundle(version: GameVersion, retryMissing = false): Promise<AssetBundle> {
+  const priorMissing = retryMissing && missing.delete(version) ? cache.get(version) : undefined;
+  if (priorMissing) cache.delete(version);
   let promise = cache.get(version);
   if (!promise) {
     const started = generation;
     promise = (async () => {
-      const local = await readLocalPack(version).catch(() => null);
+      // A failed IndexedDB read is not evidence that the user's imported JAR disappeared.
+      // Propagate it and evict the rejected promise below so a later attempt can recover.
+      const local = await readLocalPack(version);
       if (started !== generation) return loadBundle(version);
       if (!local) {
+        // Returning to a window without an import should not allocate new sheets or remesh the same placeholders.
+        if (priorMissing) { missing.add(version); return priorMissing; }
         const fallback = await fallbackBundle(version);
-        if (started === generation) return fallback;
+        if (started === generation) { missing.add(version); return fallback; }
         for (const image of [fallback.blocks, fallback.items, fallback.entity]) image.close();
         return loadBundle(version);
       }

@@ -127,12 +127,13 @@ it('moves free cam to the colony when its first home position arrives after the 
   };
   const position = vi.fn();
   const setBotBadges = vi.fn();
+  const setBotLabels = vi.fn();
   const matrix = { elements: new Array<number>(16).fill(0) };
   viewer.engine = {
     surface: { focus: viewer.focus }, lock: viewer.lock,
     rig: { target, isoZoom: 44, flyPos: { set: position } },
     camera: { matrixWorldInverse: matrix, projectionMatrix: matrix, matrixWorld: matrix, projectionMatrixInverse: matrix },
-    setBotLabels: vi.fn(),
+    setBotLabels,
     setBotBadges,
     setLevelCut: vi.fn(),
     setHolograms: vi.fn(),
@@ -144,6 +145,7 @@ it('moves free cam to the colony when its first home position arrives after the 
   frame(); // engine exists, but the asynchronous colony position has not arrived
   expect(position).toHaveBeenLastCalledWith(0, 12, 16);
   expect(setBotBadges).toHaveBeenLastCalledWith([expect.objectContaining({ text: '109', activity: 'Mining quarry' })]);
+  expect(setBotLabels).toHaveBeenLastCalledWith(false);
   rerender(<StoryMap {...props} view="fly" home={[100, 63, 200]} />);
   frame();
   expect(position).toHaveBeenLastCalledWith(100.5, 76, 216.5);
@@ -152,6 +154,7 @@ it('moves free cam to the colony when its first home position arrives after the 
   rerender(<StoryMap {...props} view="top" />);
   frame();
   expect(setBotBadges).toHaveBeenLastCalledWith([]);
+  expect(setBotLabels).toHaveBeenLastCalledWith(false);
 });
 
 it('has an always-available free camera button, and flight keys cannot pause the colony or rotate a held tool', () => {

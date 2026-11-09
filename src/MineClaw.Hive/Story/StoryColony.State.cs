@@ -189,7 +189,7 @@ public sealed partial class StoryColony
     private static JsonObject BillJson(BillState b) => new()
     {
         ["id"] = b.Id, ["recipe"] = b.Recipe, ["mode"] = b.Mode, ["target"] = b.Target, ["done"] = b.Done, ["paused"] = b.Paused,
-        ["suspended_reason"] = b.SuspendedReason,
+        ["suspended_reason"] = b.SuspendedReason, ["waiting_reason"] = b.WaitingReason, ["priority"] = b.Priority,
         ["ingredients"] = new JsonObject
         {
             ["allow"] = new JsonArray(b.Ingredients.Allow.Select(a => (JsonNode)a!).ToArray()),
