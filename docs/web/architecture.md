@@ -191,6 +191,11 @@ Tests for these go in `tests/MineClaw.App.Tests` (or the closest existing test p
   ticks with their time) and per route (ids folded) count and p50/p95/max of the time callers waited. World/control push
   diagnostics count publication gaps over 250 ms, the longest gap and GC pause during it, and the peak queued work observed
   at a send. These measure supervisor publication, not browser receipt; queued work can drain before the observation.
+- **Worker availability (2026-11-08).** Normal bot startup raises the worker minimum to four per available CPU, capped at 64,
+  while preserving a higher existing minimum, the configured maximum and the I/O minimum. Workers are created on demand.
+  This gives socket continuations room alongside existing synchronous colony and inspection work: live testing on the
+  16-CPU host found roughly 1.2-second publication gaps with only 115 ms of GC pause and queues exceeding 300 items.
+  Colony timer callbacks also coalesce so slow reconciliation cannot accumulate duplicate lock waiters.
 
 Nest's public `/api` mirrors these one-to-one under friendlier paths, typed by `packages/contracts`. Examples:
 `/api/memory/:kind`, `/api/live/stream`, `/api/bots/:bot/chat`, `/api/world/chunks`. Nest adds auth, RBAC, CSRF, audit

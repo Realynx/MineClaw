@@ -39,6 +39,7 @@ public static partial class AppHost
         AppLogging.SetConsoleLevel(s.Settings.Host.ConsoleLogLevel);
         var loggers = AppLogging.Create(useTui, format, fileLog, ring);
         var log = loggers.CreateLogger("MineClaw.App");
+        RuntimeWorkerPool.Configure(log);
         using var signals = new ShutdownSignals(sig => log.LogInformation("{Signal}: shutting down", sig));
         // The web's Administration page (Supervisor/Admin): the config it edits on top of, and its graceful restart (systemd restarts us).
         if (cli.CloneName == null) Supervisor.Admin.AdminSettingsWiring.Configure(s.Config, s.Settings, signals.Request);
