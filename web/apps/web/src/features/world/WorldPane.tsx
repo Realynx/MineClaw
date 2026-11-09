@@ -9,11 +9,12 @@
 import type { AimTarget, CameraMode, LayerToggles, PickedBlock, ViewerStats, WorldViewerHandle, XRayMode } from '@mineclaw/world-viewer';
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { useAuth } from '@/lib/auth';
-import { useEntities } from '@/lib/live/hooks';
+import { useEntities, useStatus } from '@/lib/live/hooks';
 import { usePrefs } from '@/lib/prefs';
 import { cn } from '@/lib/utils';
 import { PortalContainer } from '@/components/ui/overlays';
 import { isContainerBlock } from '@/features/live/inventory/containerLayout';
+import { TakeControlButton } from '@/features/control/TakeControlButton';
 import { concreteFields } from '@/features/settings/schema';
 import { detectedProfile, setField, useRendererProbe, useViewerSettings } from '@/features/settings/store';
 import { ContainerPanel, sameContainer, type ContainerTarget } from './ContainerPanel';
@@ -83,12 +84,14 @@ function ContainerLayer({ container, stageEl, onClose }: { container: ContainerT
  */
 export function WorldPane({
   follow,
+  returnTo,
   className,
   toolbarStart,
   onBodyClick,
   overlay,
 }: {
   follow?: string;
+  returnTo?: string;
   className?: string;
   toolbarStart?: ReactNode;
   onBodyClick?: (name: string) => void;
@@ -101,6 +104,8 @@ export function WorldPane({
   }, [onBodyClick]);
   const { devDetails } = usePrefs();
   const viewer = useRef<WorldViewerHandle>(null);
+  const [followTarget, setFollowTarget] = useState(follow);
+  useEffect(() => setFollowTarget(follow), [follow]);
   const [mode, setMode] = useState<CameraMode>(initialMode(follow));
   const [xray, setXray] = useState<XRayMode>('auto');
   // The draw distance is the device's viewer setting (Settings → Viewer quality): this slider edits it for every view.
@@ -116,12 +121,18 @@ export function WorldPane({
   const [gotoError, setGotoError] = useState<string | null>(null);
   const [drops, setDrops] = useState(false);
   const entities = useEntities();
-  const { me, dim } = followed(entities.data, follow);
+  const status = useStatus();
+  const { me, dim } = followed(entities.data, followTarget);
+  const followedStatus = status.data?.bots.find((b) => b.name === me?.name);
   const dimRef = useRef(dim);
   useEffect(() => {
     dimRef.current = dim;
   }, [dim]);
-  const { canChat } = useAuth();
+  const { canChat, can } = useAuth();
+  const takeover = mode === 'follow' && me && !me.main && (followedStatus?.kind ?? me.kind) === 'script'
+    ? <TakeControlButton pawn={me.name} canControl={can('story')}
+      online={me.online !== false && (followedStatus ? followedStatus.status === 'online' : me.online === true)} returnTo={returnTo} />
+    : null;
   // The stage (the world and every overlay on it) is what goes fullscreen: the shared canvas moves with it, no new context.
   const stage = useRef<HTMLDivElement>(null);
   const [stageEl, setStageEl] = useState<HTMLDivElement | null>(null);
@@ -289,7 +300,7 @@ export function WorldPane({
     setGotoError(null);
     const q = gotoText.trim();
     if (!q) return;
-    const err = await goTo(q, viewer, mode, setMode);
+    const err = await goTo(q, viewer, mode, setMode, setFollowTarget);
     if (err !== null) setGotoError(err);
   };
   const onMode = (m: CameraMode) => {
@@ -297,13 +308,14 @@ export function WorldPane({
     viewer.current?.setCameraMode(m);
   };
 
-  if (!loaded(host)) return <WorldFallback follow={follow} ready={host.ready} className={className} />;
+  if (!loaded(host)) return <WorldFallback follow={followTarget} ready={host.ready} className={className} />;
   const { mod, source } = host;
 
   return (
     <div className={cn('flex size-full min-h-0 flex-col', className)}>
       <WorldToolbar
         toolbarStart={toolbarStart}
+        takeover={takeover}
         mode={mode}
         onMode={onMode}
         layers={layers}
@@ -328,7 +340,7 @@ export function WorldPane({
           ref={viewer}
           source={source}
           dim={dim}
-          follow={follow ?? null}
+          follow={followTarget ?? null}
           layers={layers}
           cameraMode={mode}
           xray={xray}
@@ -336,6 +348,7 @@ export function WorldPane({
           onStats={devDetails ? setStats : undefined}
           onCameraModeChange={setMode}
           onSelectBot={(name) => {
+            setFollowTarget(name);
             viewer.current?.followBot(name);
             bodyClick.current?.(name);
           }}
@@ -347,7 +360,7 @@ export function WorldPane({
           className="absolute inset-0"
         />
         <FreeCamOverlay mode={mode} locked={locked} chatOpen={chatOpen} aim={aim} bots={entities.data?.bots} />
-        <FullscreenBar shown={fullscreen} mode={mode} onMode={onMode} selected={selected} marker={marker} escToPage={escToPage} toggleFullscreen={toggleFullscreen} />
+        <FullscreenBar shown={fullscreen} mode={mode} onMode={onMode} selected={selected} marker={marker} escToPage={escToPage} toggleFullscreen={toggleFullscreen} takeover={takeover} />
         {hud ? <SelectionBar selected={selected} marker={marker} onClear={() => setSelected([])} onClearMarker={() => setMarker(null)} /> : null}
         <ChatOverlay
           open={chatOpen}

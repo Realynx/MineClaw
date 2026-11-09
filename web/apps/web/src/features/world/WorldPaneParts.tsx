@@ -109,6 +109,7 @@ function LayersPopover(p: {
 export function WorldToolbar(
   p: React.ComponentProps<typeof LayersPopover> & {
     toolbarStart?: ReactNode;
+    takeover?: ReactNode;
     mode: CameraMode;
     onMode: (m: CameraMode) => void;
     gotoText: string;
@@ -137,6 +138,7 @@ export function WorldToolbar(
           { value: 'iso', label: 'Iso', title: 'Isometric dolly; Q/E rotate' },
         ]}
       />
+      {p.takeover}
       <LayersPopover layers={p.layers} setLayers={p.setLayers} xray={p.xray} setXray={p.setXray} distance={p.distance} setDistance={p.setDistance} />
       <ViewerQualityButton />
       <form onSubmit={p.onGo} className="flex items-center gap-1">
@@ -181,6 +183,7 @@ export function FullscreenBar(p: {
   marker: unknown;
   escToPage: boolean;
   toggleFullscreen: () => void;
+  takeover?: ReactNode;
 }) {
   if (!p.shown) return null;
   return (
@@ -195,6 +198,7 @@ export function FullscreenBar(p: {
           { value: 'fly', label: 'Free cam' },
         ]}
       />
+      {p.takeover}
       <Button size="sm" variant="subtle" onClick={p.toggleFullscreen} aria-label="Exit full screen">
         <Minimize className="size-3.5" /> Exit {p.escToPage ? '(Esc twice)' : '(Esc)'}
       </Button>

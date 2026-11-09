@@ -54,6 +54,26 @@ async function connect() {
   return { page, socket };
 }
 
+it('sends key transitions before the next heartbeat and bounds high-rate look without delaying key-up', async () => {
+  const { page, socket } = await connect();
+  page.result.current.input.current.forward = 1;
+  page.result.current.inputChanged('movement');
+  expect(socket.frames('input')).toHaveLength(1);
+  expect(socket.frames('input')[0]).toMatchObject({ forward: 1 });
+  for (let i = 0; i < 100; i++) {
+    page.result.current.input.current.yaw = i;
+    page.result.current.inputChanged('look');
+  }
+  expect(socket.frames('input')).toHaveLength(1);
+  page.result.current.input.current.forward = 0;
+  page.result.current.inputChanged('stop');
+  expect(socket.frames('input')).toHaveLength(2);
+  expect(socket.frames('input').at(-1)).toMatchObject({ forward: 0, yaw: 99 });
+  await act(() => vi.advanceTimersByTimeAsync(30));
+  expect(socket.frames('input')).toHaveLength(2); // pending look was cancelled by the immediate stop
+  page.unmount();
+});
+
 it('attaches with CSRF protocols and keeps 20 Hz movement independent of response timing', async () => {
   const page = renderHook(() => usePawnControl('102'));
   await act(() => vi.advanceTimersByTimeAsync(1));

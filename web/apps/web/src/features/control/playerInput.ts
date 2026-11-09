@@ -24,7 +24,9 @@ export interface PlayerBindings {
   inventory: () => void;
   lockChanged: (locked: boolean) => void;
   hotbarChanged: (slot: number) => void;
+  inputChanged?: (kind: PlayerInputChange) => void;
 }
+export type PlayerInputChange = 'movement' | 'look' | 'hotbar' | 'stop';
 
 /** All held controls are cleared on unlock/blur. A capture click never swings a tool. */
 export function bindPlayerInput(surface: HTMLElement, callbacks: PlayerBindings): () => void {
@@ -33,9 +35,16 @@ export function bindPlayerInput(surface: HTMLElement, callbacks: PlayerBindings)
   const input = callbacks.input;
   let cleared = false;
   const locked = () => document.pointerLockElement === surface;
-  const sync = () => Object.assign(input, movement(keys, input));
+  const sync = () => {
+    const next = movement(keys, input);
+    const changed = next.forward !== input.forward || next.strafe !== input.strafe || next.jump !== input.jump
+      || next.sneak !== input.sneak || next.sprint !== input.sprint;
+    Object.assign(input, next);
+    if (changed) callbacks.inputChanged?.('movement');
+  };
   const clear = () => {
     keys.clear(); heldButtons.clear(); sync();
+    callbacks.inputChanged?.('stop');
     // E/Escape clear synchronously; the browser delivers pointerlockchange later. A second cancel would discard
     // the inventory request queued after E. Blur/unlock/visibility form one stop until a fresh locked interaction.
     if (!cleared) callbacks.action('cancel');
@@ -46,7 +55,7 @@ export function bindPlayerInput(surface: HTMLElement, callbacks: PlayerBindings)
     else cleared = false;
     callbacks.lockChanged(locked());
   };
-  const choose = (slot: number) => { input.hotbar = (slot + 9) % 9; callbacks.hotbarChanged(input.hotbar); };
+  const choose = (slot: number) => { input.hotbar = (slot + 9) % 9; callbacks.hotbarChanged(input.hotbar); callbacks.inputChanged?.('hotbar'); };
   const down = (event: KeyboardEvent) => {
     if (!locked()) return;
     if (event.code === 'KeyE' && event.repeat) { event.preventDefault(); return; }
@@ -65,6 +74,7 @@ export function bindPlayerInput(surface: HTMLElement, callbacks: PlayerBindings)
     if (!locked()) return;
     input.yaw = ((input.yaw + event.movementX * 0.15) % 360 + 360) % 360;
     input.pitch = Math.max(-90, Math.min(90, input.pitch + event.movementY * 0.15));
+    callbacks.inputChanged?.('look');
   };
   const press = (event: PointerEvent) => {
     if (!locked() || (event.button !== 0 && event.button !== 2)) return;

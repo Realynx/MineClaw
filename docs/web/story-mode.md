@@ -31,9 +31,11 @@ gameplay cap: server slots and available process memory determine how many can j
 ### Playing as a pawn
 
 Select an online pawn in the Controller (top-down or freecam), or open its Live Hive entry, and choose **Take control**.
-The first-person view acquires that one pawn; **Click to play** enters fullscreen and captures the mouse. The browser uses
-its imported game textures/sounds and the human-view skin setting. The selected body is hidden only in its own first-person
-view, so another open viewer can still see it.
+Live Hive also offers this button beside the World tab's Follow camera controls, targeting the pawn currently followed.
+That single click enters fullscreen and captures the mouse, retaining capture while the first-person view acquires the pawn.
+**Click to play** is available after releasing the mouse or if browser capture was blocked. The browser uses its imported
+game textures/sounds and the human-view skin setting. The selected body is hidden only in its own first-person view, so
+another open viewer can still see it.
 
 WASD moves, mouse looks, Space jumps, Shift sneaks, Ctrl sprints, 1–9 or the wheel selects the hotbar, left mouse attacks/mines,
 right mouse uses/places, E opens inventory and Q drops the held item (Ctrl+Q drops its stack). Inventory supports left/right
@@ -56,10 +58,13 @@ requires the signed-in cookie, allowed Origin, Story permission and a CSRF subpr
 selected and forwarded credentials come from the authenticated session. The lease token travels in the first `attach` frame,
 never in a URL. Socket closure releases that attachment; an older socket cannot release a newer attachment. HTTP release
 remains the fallback, and the four POST routes remain compatible with other callers. Inputs/actions have separate monotonic
-sequences. Camera positions interpolate confirmed samples while mouse look stays immediate. Control tokens remain in memory
-and excluded from audits and contract-error logs.
+sequences. Key transitions send immediately; mouse updates are bounded to 40 Hz alongside the 20 Hz input heartbeat.
+The controlled camera predicts movement locally against loaded terrain, with immediate mouse look and smooth correction
+from server samples aligned to its recent movement history. Prediction is bounded, stops trusting stale state after 350 ms,
+and falls back to authoritative positions where terrain is unavailable. Control tokens remain in memory and excluded from
+audits and contract-error logs.
 
-Controller freecam and pawn takeover request JavaScript fullscreen before mouse capture. Chrome's Keyboard Lock protects
+Controller freecam and pawn takeover enter JavaScript fullscreen as part of mouse capture. Chrome's Keyboard Lock protects
 WASD shortcuts such as Ctrl+W only in that mode. Escape remains available to release the mouse/fullscreen. If the browser
 denies fullscreen or keyboard permission, the UI explains that protection is unavailable; Page Down also descends in
 freecam. This does not intercept shortcuts while typing in other parts of the app.

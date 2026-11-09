@@ -4,6 +4,20 @@ import { bindPlayerInput, idleInput, movement } from '@/features/control/playerI
 afterEach(() => { vi.useRealTimers(); Object.defineProperty(document, 'pointerLockElement', { configurable: true, value: null }); });
 
 describe('pawn player input', () => {
+  it('notifies input transitions immediately without keyboard-repeat movement spam, then explicitly stops on blur', () => {
+    const surface = document.createElement('canvas'), input = idleInput();
+    Object.defineProperty(document, 'pointerLockElement', { configurable: true, value: surface });
+    const changes: Array<{ kind: string; forward: number }> = [];
+    const cleanup = bindPlayerInput(surface, { input, action: vi.fn(), inventory: vi.fn(), lockChanged: vi.fn(), hotbarChanged: vi.fn(),
+      inputChanged: (kind) => changes.push({ kind, forward: input.forward }) });
+    window.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyW' }));
+    window.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyW', repeat: true }));
+    window.dispatchEvent(new KeyboardEvent('keyup', { code: 'KeyW' }));
+    expect(changes).toEqual([{ kind: 'movement', forward: 1 }, { kind: 'movement', forward: 0 }]);
+    window.dispatchEvent(new Event('blur'));
+    expect(changes.at(-1)).toEqual({ kind: 'stop', forward: 0 });
+    cleanup();
+  });
   it('uses survival movement: Space jumps, Shift sneaks, Ctrl sprints', () => {
     expect(movement(new Set(['KeyW', 'KeyA', 'Space', 'ShiftLeft', 'ControlLeft']), idleInput(42, -12, 3)))
       .toEqual({ forward: 1, strafe: 1, yaw: 42, pitch: -12, hotbar: 3, jump: true, sneak: true, sprint: true });

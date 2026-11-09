@@ -216,9 +216,9 @@ function BotHeader(p: {
       ) : null}
       {n?.brainState ? <span className="text-sm text-muted">{n.brainState}</span> : null}
       <div className="ml-auto flex flex-wrap items-center gap-1.5">
-        {kind === 'script' ? (
+        {kind === 'script' && p.pane === 'now' ? (
           <TakeControlButton pawn={p.bot} canControl={can('story')} online={p.view?.status === 'online'}
-            returnTo={`/live/${encodeURIComponent(p.bot)}${p.pane === 'world' ? '?pane=world' : ''}`} />
+            returnTo={`/live/${encodeURIComponent(p.bot)}`} />
         ) : null}
         <Segmented<Pane>
           label="Main pane"
@@ -269,7 +269,7 @@ function WorldView({ bot, n }: { bot: string; n: NowData | undefined }) {
     <div className="flex h-full min-h-[28rem] flex-col">
       <div className="min-h-0 flex-1">
         <WorldHost>
-          <WorldPane follow={bot} />
+          <WorldPane follow={bot} returnTo={`/live/${encodeURIComponent(bot)}?pane=world`} />
         </WorldHost>
       </div>
       <div className="flex flex-wrap items-center gap-4 border-t border-border bg-surface px-5 py-3 text-sm">

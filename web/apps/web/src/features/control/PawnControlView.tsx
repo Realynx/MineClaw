@@ -12,6 +12,7 @@ import { bindControllerKeyboard, requestControllerCapture } from '@/features/sto
 import { bindPlayerInput } from './playerInput';
 import { usePawnControl } from './usePawnControl';
 import { PlayerInventory, PlayerSlot } from './PlayerInventory';
+import { takeoverCapture, type TakeoverCapture } from './captureHandoff';
 
 export function PawnControlView({ body, returnTo }: { body: string; returnTo: string }) {
   const router = useRouter(), { mod, source } = useWorldHost();
@@ -24,6 +25,22 @@ export function PawnControlView({ body, returnTo }: { body: string; returnTo: st
   const [inputReady, setInputReady] = useState(false);
   const inputSurface = useRef<HTMLElement | null>(null);
   const [captureNotice, setCaptureNotice] = useState('');
+  const capture = useRef<TakeoverCapture | null>(null);
+  const captureBody = useRef(body);
+  const [rootFullscreen, setRootFullscreen] = useState(false);
+  useEffect(() => {
+    if (captureBody.current !== body) { capture.current?.release(); capture.current = null; captureBody.current = body; }
+    capture.current = takeoverCapture(body) ?? capture.current;
+    const owned = capture.current;
+    const unmount = owned?.mount();
+    const sync = () => setRootFullscreen(document.fullscreenElement === document.documentElement);
+    sync(); document.addEventListener('fullscreenchange', sync);
+    return () => {
+      document.removeEventListener('fullscreenchange', sync);
+      unmount?.();
+    };
+  }, [body]);
+  useEffect(() => { if (control.status === 'ended') capture.current?.release(); }, [control.status]);
   const inventory = useBodyInventory(body, control.status === 'active');
   const version = inventory.data?.version ?? '1.12.2', icons = useItemIcons(version);
   const nameOf = (id: number, meta: number) => mod?.itemName(id)?.replaceAll('_', ' ') ?? `Item ${id}:${meta}`;
@@ -45,10 +62,13 @@ export function PawnControlView({ body, returnTo }: { body: string; returnTo: st
       setHotbar(control.input.current.hotbar);
       detach = bindPlayerInput(surface, {
         input: control.input.current, lockChanged: setLocked, inventory: openInventory, hotbarChanged: setHotbar,
+        inputChanged: (kind) => latest.current.inputChanged(kind),
         action: (kind, wholeStack) => { void latest.current.action({ kind, ...(wholeStack !== undefined ? { wholeStack } : {}) }); },
       });
       inputSurface.current = surface;
       setInputReady(true);
+      void capture.current?.transfer(surface, () => latest.current.status === 'active' && inputSurface.current === surface)
+        .then((captured) => { if (captured) setLocked(true); });
     }, 30);
     return () => { clearInterval(id); inputSurface.current = null; detach?.(); };
   }, [mod, source, control.status, control.input, openInventory]);
@@ -78,7 +98,8 @@ export function PawnControlView({ body, returnTo }: { body: string; returnTo: st
   }, [inventoryOpen, inventoryBusy, closeInventory]);
 
   const beforeFrame = useCallback((engine: WorldViewerEngine, now: number) => {
-    const pose = latest.current.camera.current.position(now), input = latest.current.input.current;
+    const input = latest.current.input.current;
+    const pose = latest.current.camera.current.position(now, input, (bounds, dim) => engine.playerCollision(bounds, dim));
     if (!pose) return;
     const eyeY = pose.y + (input.sneak ? 1.54 : 1.62);
     engine.rig.flyPos.set(pose.x, eyeY, pose.z);
@@ -92,6 +113,7 @@ export function PawnControlView({ body, returnTo }: { body: string; returnTo: st
   };
   const leave = () => {
     control.end();
+    capture.current?.release();
     if (document.fullscreenElement === host.current) void document.exitFullscreen?.().catch(() => {});
     router.push(returnTo);
   };
@@ -102,7 +124,7 @@ export function PawnControlView({ body, returnTo }: { body: string; returnTo: st
     ? liveSlots.slots.find((s) => s.slot === liveSlots.hotbarStart + i)
     : ownItems.find((s) => s.slot === i));
 
-  return <div ref={host} className="relative h-full min-h-96 overflow-hidden bg-black" data-testid="pawn-control">
+  return <div ref={host} className={`${rootFullscreen ? 'fixed inset-0 z-50' : 'relative h-full min-h-96'} overflow-hidden bg-black`} data-testid="pawn-control">
     {mod && source && control.state ? <mod.WorldViewer ref={viewer} source={source} dim={control.state.dim} follow={body}
       cameraMode="fly" controls="player" xray="off" hideHint onBeforeFrame={beforeFrame}
       layers={{ notes: false, bubbles: true }} /> : <div className="grid h-full place-items-center text-white">Opening the world…</div>}
@@ -123,7 +145,7 @@ export function PawnControlView({ body, returnTo }: { body: string; returnTo: st
     {control.state && <div className="absolute bottom-4 left-1/2 z-10 -translate-x-1/2 text-white">
       <div className="mb-2 flex justify-between text-xs [text-shadow:1px_1px_2px_black]"><span>♥ {Math.ceil(control.state.hp)} / 20</span><span>Food {Math.ceil(control.state.food)} / 20</span></div>
       <div className="flex gap-0.5">{hotbarItems.map((item, i) => <PlayerSlot key={i} icons={icons} item={item} selected={hotbar === i}
-        label={`${i + 1}: ${item ? nameOf(item.id, item.meta) : 'Empty'}`} onClick={() => { control.input.current.hotbar = i; setHotbar(i); }} />)}</div>
+        label={`${i + 1}: ${item ? nameOf(item.id, item.meta) : 'Empty'}`} onClick={() => { control.input.current.hotbar = i; setHotbar(i); control.inputChanged('hotbar'); }} />)}</div>
     </div>}
     {inventoryOpen && control.inventory && control.status === 'active' && <PlayerInventory inventory={control.inventory} icons={icons} nameOf={nameOf} busy={inventoryBusy}
       onClose={closeInventory} onClick={(slot, button, shift) => {

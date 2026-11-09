@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { PawnControlActionRequest, PawnControlActionResponse, PawnControlInventory, PawnControlSession, PawnControlState } from '@mineclaw/contracts';
 import { api, errorText, getCsrfToken } from '@/lib/api/client';
-import { idleInput } from './playerInput';
+import { idleInput, type PlayerInputChange } from './playerInput';
 import { PawnControlSocket } from './controlSocket';
 import { ControlCamera } from './controlCamera';
 
@@ -29,11 +29,33 @@ export function usePawnControl(body: string) {
   const inventoryChange = useRef(0);
   const lastCompletedAction = useRef(-1);
   const generation = useRef(0);
+  const lastInputSent = useRef(-Infinity);
+  const lookTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const sendInput = useCallback(() => {
+    if (socket.current?.input({ ...input.current })) lastInputSent.current = performance.now();
+  }, []);
+  const inputChanged = useCallback((kind: PlayerInputChange) => {
+    const now = performance.now();
+    if (kind !== 'look') camera.current.setInput(input.current, now, kind === 'stop');
+    if (lookTimer.current !== null) { clearTimeout(lookTimer.current); lookTimer.current = null; }
+    // Keyboard transitions and stops go immediately. Mouse look is bounded to40Hz, in addition to the20Hz heartbeat,
+    // so a high-rate mouse cannot exhaust the gateway's frame limit or delay later key-up/cancel frames.
+    const delay = kind === 'look' ? Math.max(0, 25 - (now - lastInputSent.current)) : 0;
+    if (delay) {
+      const active = socket.current;
+      lookTimer.current = setTimeout(() => {
+        lookTimer.current = null;
+        if (socket.current === active) sendInput();
+      }, delay);
+    } else sendInput();
+  }, [sendInput]);
   const end = useCallback((reason = '') => {
     const current = lease.current;
     lease.current = null; generation.current++;
     socket.current?.dispose(); socket.current = null;
     Object.assign(input.current, idleInput(input.current.yaw, input.current.pitch, input.current.hotbar));
+    camera.current.setInput(input.current, performance.now(), true);
+    if (lookTimer.current !== null) { clearTimeout(lookTimer.current); lookTimer.current = null; }
     if (document.pointerLockElement) document.exitPointerLock();
     setStatus('ended'); setError(reason);
     // Closing the socket releases on the server. HTTP also covers a failed upgrade before the attach frame arrived.
@@ -47,6 +69,7 @@ export function usePawnControl(body: string) {
     const invalidate = () => { if (currentGeneration === generation.current) generation.current++; };
     setStatus('connecting'); setError(''); setState(null); setInventory(null); setInventoryAt(0); pose.current = null;
     camera.current.clear();
+    lastInputSent.current = -Infinity;
     actionSeq.current = 0; lastActionApplied.current = 0; lastCompletedAction.current = -1; heldActionBusy.current = null;
     lastInventoryApplied.current = 0; inventoryChange.current++;
     const acquire = async () => {
@@ -81,7 +104,7 @@ export function usePawnControl(body: string) {
     // Strict Mode's discarded effect never acquires a real pawn.
     const begin = setTimeout(() => { void acquire(); }, 0);
     const timer = setInterval(() => {
-      if (isCurrent() && attached) socket.current?.input({ ...input.current });
+      if (isCurrent() && attached) sendInput();
     }, 50);
     const hidden = () => { if (document.hidden) end('Control released while this tab was hidden.'); };
     const unload = () => {
@@ -98,15 +121,16 @@ export function usePawnControl(body: string) {
     window.addEventListener('pagehide', unload);
     return () => {
       disposed = true; clearTimeout(begin); clearInterval(timer);
+      if (lookTimer.current !== null) { clearTimeout(lookTimer.current); lookTimer.current = null; }
       invalidate();
       document.removeEventListener('visibilitychange', hidden);
       window.removeEventListener('pagehide', unload);
       socket.current?.dispose(); socket.current = null;
       const current = lease.current; lease.current = null;
       if (current) void api('bodies.controlRelease', { params: { body }, body: { session: current.session } }).catch(() => {});
-      if (document.pointerLockElement) document.exitPointerLock();
+      if (current && document.pointerLockElement) document.exitPointerLock();
     };
-  }, [body, attempt, end]);
+  }, [body, attempt, end, sendInput]);
 
   const action = useCallback((command: ControlAction): Promise<PawnControlActionResponse | null> => {
     const current = socket.current, at = generation.current;
@@ -144,5 +168,5 @@ export function usePawnControl(body: string) {
     }).finally(() => { if (heldActionBusy.current === seq && at === generation.current) heldActionBusy.current = null; });
   }, []);
 
-  return { input, pose, camera, state, inventory, inventoryAt, status, error, action, end, retry: () => setAttempt((n) => n + 1) };
+  return { input, inputChanged, pose, camera, state, inventory, inventoryAt, status, error, action, end, retry: () => setAttempt((n) => n + 1) };
 }

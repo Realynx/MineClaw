@@ -29,6 +29,7 @@ export async function goTo(
   viewer: RefObject<WorldViewerHandle | null>,
   mode: CameraMode,
   setMode: (m: CameraMode) => void,
+  onFollow?: (name: string) => void,
 ): Promise<string | null> {
   const c = parseCoords(q);
   if (c) {
@@ -38,6 +39,7 @@ export async function goTo(
   const bot = viewer.current?.bots().find((b) => b.name.toLowerCase() === q.toLowerCase() || b.dto.short === q);
   if (bot) {
     goToBot(viewer.current, bot, mode, setMode);
+    if (mode !== 'fly') onFollow?.(bot.name);
     return null;
   }
   try {

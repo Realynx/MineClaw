@@ -25,6 +25,7 @@ import { CameraRig, lookDir, type RigInput } from './cameraRig';
 import { newViewId, WorldRuntime, type RuntimeOptions, type RuntimeView, type ViewSetup } from './runtime';
 import type { HoloCell, HologramStats } from './holograms';
 import type { Centre } from './sections';
+import { PlayerCollisionCache, type PlayerCollisionBox, type PlayerCollisionResult } from './playerCollision';
 
 export interface EngineOptions extends RuntimeOptions {
   source: WorldSource;
@@ -61,6 +62,7 @@ const XRAY_RANGE = 48; // FreecamXRay.Range
 export class WorldViewerEngine implements RuntimeView {
   readonly id = newViewId();
   readonly runtime: WorldRuntime;
+  private readonly playerCollisions: PlayerCollisionCache;
   readonly camera = new THREE.PerspectiveCamera(70, 1, 0.05, 2000);
   readonly rig = new CameraRig();
   /** The element input binds to: the runtime canvas (primary) or this view's own 2D canvas (copy mode). */
@@ -122,7 +124,13 @@ export class WorldViewerEngine implements RuntimeView {
     if (opts.controls === 'editor') this.rig.mode = 'follow';
     this.ownsRuntime = !opts.runtime;
     this.runtime = (opts.runtime ?? new WorldRuntime(opts.source, opts)).retain();
+    this.playerCollisions = new PlayerCollisionCache(this.runtime.host, () => this.runtime.cache.detectedVersion() ?? '1.12.2');
     this.mountSurface();
+  }
+
+  /** Synchronous nearby terrain for local player prediction; refreshes from the existing mesh worker in the background. */
+  playerCollision(box: PlayerCollisionBox, dim = this.dim): PlayerCollisionResult {
+    return this.playerCollisions.query(box, dim);
   }
 
   private mountSurface(): void {
@@ -441,6 +449,7 @@ export class WorldViewerEngine implements RuntimeView {
   }
 
   dispose(): void {
+    this.playerCollisions.dispose();
     if (this.disposed) return;
     this.suspend();
     this.disposed = true;
