@@ -62,9 +62,17 @@ public sealed class LivePawnControlBody(Body body, StoryColony colony) : IPawnCo
     public void Input(PawnControlInput input) => Client.SetHumanInput(new MoveInput(input.Forward, input.Strafe, input.Jump,
         input.Sneak, input.Sprint, input.Yaw, input.Pitch), input.Hotbar);
 
-    public Task<ActionResult> ActionAsync(PawnControlAction action, CancellationToken ct, CancellationToken holdRelease = default) => Client.HumanActionAsync(action.Kind,
+    public Task<ActionResult> ActionAsync(PawnControlAction action, CancellationToken ct, CancellationToken holdRelease = default) => ExecuteAction(action, null, ct, holdRelease);
+
+    public Func<CancellationToken, CancellationToken, Task<ActionResult>> PrepareAction(PawnControlAction action)
+    {
+        var aim = Client.CaptureHumanAim();
+        return (ct, release) => ExecuteAction(action, aim, ct, release);
+    }
+
+    private Task<ActionResult> ExecuteAction(PawnControlAction action, HumanControlAim? aim, CancellationToken ct, CancellationToken holdRelease) => Client.HumanActionAsync(action.Kind,
         action.Target is { } p ? new BlockPos(p.X, p.Y, p.Z) : null, action.EntityId, action.Face, action.WindowId,
-        action.Slot, action.Button ?? 0, action.Shift, action.WholeStack, ct, holdRelease);
+        action.Slot, action.Button ?? 0, action.Shift, action.WholeStack, ct, holdRelease, aim);
 
     public void End()
     {

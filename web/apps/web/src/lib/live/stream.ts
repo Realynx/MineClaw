@@ -1,14 +1,14 @@
 /**
- * The one SSE connection of the tab (`GET /api/live/stream`). Every widget reads the query cache the stream feeds; nothing
+ * The one live WebSocket of the tab (`/api/live/socket`). Every widget reads the query cache the stream feeds; nothing
  * opens its own connection or poller.
  *
  * Reconnects:
- * - Transient drops: the browser's EventSource reconnects by itself and sends `Last-Event-ID`; Nest replays the missed frames
+ * - Transient drops: reconnect with the last event cursor; Nest replays the missed frames
  *   (or sends `status` with `resync: true` when the id is too old).
- * - Hard failures (the EventSource closed, e.g. a 401/502 on reconnect): we open a new EventSource with exponential back-off
- *   plus jitter. A new EventSource cannot send `Last-Event-ID`, so `onResync` asks the app to re-fetch its REST state.
+ * - Hard failures: reconnect with exponential backoff plus jitter. `onResync` also refreshes REST cursors after a gap.
  */
 import { SSE_EVENT_NAMES, SSE_EVENTS, type SseEventName } from '@mineclaw/contracts';
+import { LiveSocketSource } from './socket';
 
 export type LiveEventName = SseEventName;
 
@@ -62,8 +62,8 @@ export class LiveStream {
     private readonly handlers: StreamHandlers,
     opts: LiveStreamOptions = {},
   ) {
-    this.url = opts.url ?? '/api/live/stream';
-    this.factory = opts.factory ?? ((url) => new EventSource(url, { withCredentials: true }));
+    this.url = opts.url ?? '/api/live/socket';
+    this.factory = opts.factory ?? ((url) => new LiveSocketSource(url, this.lastEventId));
     this.validate = opts.validate ?? DEV;
     this.minBackoff = opts.minBackoffMs ?? 1000;
     this.maxBackoff = opts.maxBackoffMs ?? 15000;

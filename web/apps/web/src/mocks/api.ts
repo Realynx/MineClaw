@@ -28,7 +28,7 @@ import { designer } from './data/designer';
 import { seedStory, storySim } from './data/story';
 import { MockPawnControl } from './data/pawnControl';
 
-const pawnControl = new MockPawnControl();
+export const pawnControl = new MockPawnControl();
 
 let mockTls = WebTlsSettings.parse({});
 let mockHumanSkins = false;

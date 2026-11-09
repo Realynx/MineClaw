@@ -14,6 +14,7 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { WebSocketServer } from 'ws';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import {
@@ -492,6 +493,20 @@ export async function startMockBridge(key: string, opts: { streamIntervalMs?: nu
       send(res, { status: 500, json: { error: e instanceof Error ? e.message : 'mock error' } });
     });
   });
+  const sockets = new WebSocketServer({ noServer: true, perMessageDeflate: false, maxPayload: 8192 });
+  server.on('upgrade', (req, socket, head) => {
+    const verified = verifier.verify({ method: 'GET', rawTarget: req.url ?? '/', headers: req.headers });
+    if (!verified.ok || req.url !== '/v1/live/socket') { socket.destroy(); return; }
+    sockets.handleUpgrade(req, socket, head, (ws) => {
+      let id = Number(req.headers['last-event-id'] ?? 0) || 0, n = 0;
+      const frame: Frame = (event, data) => ws.send(JSON.stringify({ event, id: ++id, data }));
+      frame('bots', world.status()); frame('hive', world.tree());
+      for (const bot of world.botNames()) frame('now', world.now(bot));
+      const off = world.on(frame);
+      const timer = setInterval(() => { streamTick(world, ++n, frame); if (n % 10 === 0) streamSecond(world, () => ws.ping(), frame); }, Math.max(1, interval / 10));
+      ws.on('close', () => { clearInterval(timer); off(); });
+    });
+  });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const { port } = server.address() as AddressInfo;
   return {
@@ -500,6 +515,8 @@ export async function startMockBridge(key: string, opts: { streamIntervalMs?: nu
     world,
     close: () =>
       new Promise<void>((resolve) => {
+        for (const ws of sockets.clients) ws.terminate();
+        sockets.close();
         server.closeAllConnections();
         server.close(() => resolve());
       }),

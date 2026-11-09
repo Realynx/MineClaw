@@ -11,7 +11,7 @@ using MineClaw.Hive.Story;
 
 namespace MineClaw.App.Tests;
 
-public sealed class PawnControlTests
+public sealed partial class PawnControlTests
 {
     private sealed class Clock : TimeProvider
     {

@@ -3,15 +3,19 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { PawnControlActionRequest, PawnControlActionResponse, PawnControlInventory, PawnControlSession, PawnControlState } from '@mineclaw/contracts';
 import { api, errorText, getCsrfToken } from '@/lib/api/client';
-import { idleInput, type PlayerInput } from './playerInput';
+import { idleInput } from './playerInput';
+import { PawnControlSocket } from './controlSocket';
+import { ControlCamera } from './controlCamera';
 
 export type ControlAction = Omit<PawnControlActionRequest, 'session' | 'seq'>;
 
-/** One browser owns one short lease; inputs are latest-only, never an HTTP backlog. */
+/** A short HTTP lease, then ordered real-time input and server position updates on one persistent connection. */
 export function usePawnControl(body: string) {
   const input = useRef(idleInput());
   const pose = useRef<PawnControlState | null>(null);
+  const camera = useRef(new ControlCamera());
   const lease = useRef<PawnControlSession | null>(null);
+  const socket = useRef<PawnControlSocket | null>(null);
   const [state, setState] = useState<PawnControlState | null>(null);
   const [inventory, setInventory] = useState<PawnControlInventory | null>(null);
   const [inventoryAt, setInventoryAt] = useState(0);
@@ -20,10 +24,6 @@ export function usePawnControl(body: string) {
   const [attempt, setAttempt] = useState(0);
   const actionSeq = useRef(0);
   const heldActionBusy = useRef<number | null>(null);
-  const actionQueue = useRef<Promise<unknown>>(Promise.resolve());
-  const actionEpoch = useRef(0);
-  const pressInFlight = useRef<number | null>(null);
-  const flushInput = useRef<((snapshot: PlayerInput, valid: () => boolean) => Promise<boolean>) | null>(null);
   const lastActionApplied = useRef(0);
   const lastInventoryApplied = useRef(0);
   const inventoryChange = useRef(0);
@@ -31,25 +31,24 @@ export function usePawnControl(body: string) {
   const generation = useRef(0);
   const end = useCallback((reason = '') => {
     const current = lease.current;
-    lease.current = null;
-    generation.current++;
-    actionEpoch.current++;
+    lease.current = null; generation.current++;
+    socket.current?.dispose(); socket.current = null;
     Object.assign(input.current, idleInput(input.current.yaw, input.current.pitch, input.current.hotbar));
     if (document.pointerLockElement) document.exitPointerLock();
     setStatus('ended'); setError(reason);
-    if (current) void api('bodies.controlRelease', { params: { body }, body: { session: current.session } }).catch(() => { /* lease expires without further input */ });
+    // Closing the socket releases on the server. HTTP also covers a failed upgrade before the attach frame arrived.
+    if (current) void api('bodies.controlRelease', { params: { body }, body: { session: current.session } }).catch(() => {});
   }, [body]);
 
   useEffect(() => {
-    let disposed = false, busy = false, seq = 0, lastUi = 0;
-    let inputFlight: Promise<boolean> | null = null;
+    let disposed = false, lastUi = 0, attached = false;
     const currentGeneration = ++generation.current;
     const isCurrent = () => !disposed && currentGeneration === generation.current;
+    const invalidate = () => { if (currentGeneration === generation.current) generation.current++; };
     setStatus('connecting'); setError(''); setState(null); setInventory(null); setInventoryAt(0); pose.current = null;
+    camera.current.clear();
     actionSeq.current = 0; lastActionApplied.current = 0; lastCompletedAction.current = -1; heldActionBusy.current = null;
     lastInventoryApplied.current = 0; inventoryChange.current++;
-    actionQueue.current = Promise.resolve(); actionEpoch.current++;
-    pressInFlight.current = null;
     const acquire = async () => {
       try {
         const acquired = await api('bodies.controlAcquire', { params: { body }, body: { requestId: crypto.randomUUID() } });
@@ -57,56 +56,37 @@ export function usePawnControl(body: string) {
           void api('bodies.controlRelease', { params: { body }, body: { session: acquired.session } }).catch(() => {});
           return;
         }
-        lease.current = acquired;
-        pose.current = acquired.state;
+        lease.current = acquired; pose.current = acquired.state;
+        camera.current.push(acquired.state, performance.now());
         Object.assign(input.current, idleInput(acquired.state.yaw, acquired.state.pitch, acquired.state.heldSlot));
-        setState(acquired.state); setStatus('active');
-        setInventory(acquired.inventory ?? null);
-        setInventoryAt(acquired.inventory ? Date.now() : 0);
+        setState(acquired.state); setInventory(acquired.inventory ?? null); setInventoryAt(acquired.inventory ? Date.now() : 0);
+        const csrf = getCsrfToken();
+        if (!csrf) throw new Error('The control connection needs a fresh login.');
+        socket.current = new PawnControlSocket(body, acquired, csrf, (reply, at, sampledAtMs) => {
+          if (!isCurrent()) return;
+          lease.current = reply; pose.current = reply.state; camera.current.push(reply.state, at, sampledAtMs);
+          if (reply.action && !reply.action.pending && reply.action.seq > lastCompletedAction.current) {
+            lastCompletedAction.current = reply.action.seq;
+            if (reply.action.seq >= lastActionApplied.current) {
+              if (reply.action.ok === false && reply.action.message !== 'action cancelled') setError(reply.action.message ?? 'The action could not be completed.');
+              else setError('');
+            }
+          }
+          if (reply.inventory) { setInventory(reply.inventory); setInventoryAt(Date.now()); }
+          if (!attached || at - lastUi >= 100) { lastUi = at; setState(reply.state); }
+          if (!attached) { attached = true; setStatus('active'); }
+        }, (reason) => { if (isCurrent()) end(reason); });
       } catch (e) { if (isCurrent()) end(errorText(e)); }
     };
     // Strict Mode's discarded effect never acquires a real pawn.
     const begin = setTimeout(() => { void acquire(); }, 0);
-    const postInput = (snapshot: PlayerInput): Promise<boolean> => {
-      const current = lease.current;
-      if (!isCurrent() || !current) return Promise.resolve(false);
-      busy = true;
-      const pending = api('bodies.controlInput', {
-        params: { body }, body: { session: current.session, seq: ++seq, ...snapshot },
-        // Transport jitter may outlast the movement deadman; leave key safety to the client and allow a reply
-        // within the advertised lease, with a small margin to release before an unresponsive session expires.
-        signal: AbortSignal.timeout(Math.max(1, current.leaseTimeoutMs - 250)),
-      }).then((reply) => {
-        if (!isCurrent()) return false;
-        lease.current = reply; pose.current = reply.state;
-        if (reply.action && !reply.action.pending && reply.action.seq > lastCompletedAction.current) {
-          lastCompletedAction.current = reply.action.seq;
-          if (reply.action.ok === false && reply.action.message !== 'action cancelled') setError(reply.action.message ?? 'The action could not be completed.');
-          else setError('');
-        }
-        if (reply.inventory) { setInventory(reply.inventory); setInventoryAt(Date.now()); }
-        if (performance.now() - lastUi > 100) { lastUi = performance.now(); setState(reply.state); }
-        return true;
-      }).catch((e: unknown) => { if (isCurrent()) end(errorText(e)); return false; }).finally(() => {
-        if (inputFlight === pending) { inputFlight = null; busy = false; }
-      });
-      inputFlight = pending;
-      return pending;
-    };
-    flushInput.current = async (snapshot, valid) => {
-      // Share the heartbeat's sequence and transport: an old input response cannot overwrite a click's newer aim.
-      if (inputFlight) await inputFlight;
-      if (!isCurrent() || !valid()) return false;
-      // A queued click keeps its intended aim/hand, but must not revive a movement key released while it waited.
-      return postInput({ ...input.current, yaw: snapshot.yaw, pitch: snapshot.pitch, hotbar: snapshot.hotbar, sneak: snapshot.sneak });
-    };
     const timer = setInterval(() => {
-      if (!isCurrent() || !lease.current || busy || pressInFlight.current !== null) return;
-      void postInput({ ...input.current });
+      if (isCurrent() && attached) socket.current?.input({ ...input.current });
     }, 50);
     const hidden = () => { if (document.hidden) end('Control released while this tab was hidden.'); };
     const unload = () => {
       const current = lease.current, csrf = getCsrfToken();
+      socket.current?.dispose(); socket.current = null;
       if (!current || !csrf) return;
       lease.current = null;
       void fetch(`/api/bodies/${encodeURIComponent(body)}/control/release`, {
@@ -118,9 +98,10 @@ export function usePawnControl(body: string) {
     window.addEventListener('pagehide', unload);
     return () => {
       disposed = true; clearTimeout(begin); clearInterval(timer);
-      flushInput.current = null;
+      invalidate();
       document.removeEventListener('visibilitychange', hidden);
       window.removeEventListener('pagehide', unload);
+      socket.current?.dispose(); socket.current = null;
       const current = lease.current; lease.current = null;
       if (current) void api('bodies.controlRelease', { params: { body }, body: { session: current.session } }).catch(() => {});
       if (document.pointerLockElement) document.exitPointerLock();
@@ -128,59 +109,40 @@ export function usePawnControl(body: string) {
   }, [body, attempt, end]);
 
   const action = useCallback((command: ControlAction): Promise<PawnControlActionResponse | null> => {
-    const current = lease.current, at = generation.current;
-    if (!current) return Promise.resolve(null);
+    const current = socket.current, at = generation.current;
+    if (!current?.active || !lease.current) return Promise.resolve(null);
     const held = command.kind === 'attack' || command.kind === 'use';
     if (held && heldActionBusy.current !== null) return Promise.resolve(null);
     const seq = ++actionSeq.current;
     const readOnly = command.kind === 'inventory';
     if (!readOnly && command.kind !== 'cancel' && command.kind !== 'release') inventoryChange.current++;
     const inventoryRevision = inventoryChange.current;
-    const pressedInput = { ...input.current };
     if (held) heldActionBusy.current = seq;
-    if (command.kind === 'release') heldActionBusy.current = null;
-    // Blur/Escape must stop immediately and discard queued presses. Mouse release follows its press's bounded server
-    // acknowledgement instead: independent HTTP requests can otherwise deliver release first and erase a quick click.
-    if (command.kind === 'cancel') {
-      actionEpoch.current++;
-      heldActionBusy.current = null;
-      lastActionApplied.current = seq;
-      actionQueue.current = Promise.resolve();
-      pressInFlight.current = null;
-    }
-    const epoch = actionEpoch.current;
-    const send = async (): Promise<PawnControlActionResponse | null> => {
-      if (at !== generation.current || (!readOnly && epoch !== actionEpoch.current) || lease.current?.session !== current.session) return null;
-      try {
-        if (held || command.kind === 'dig') {
-          pressInFlight.current = seq;
-          const valid = () => at === generation.current && epoch === actionEpoch.current;
-          if (!await flushInput.current?.(pressedInput, valid) || !valid()) return null;
-        }
-        const reply = await api('bodies.controlAction', { params: { body }, body: { session: current.session, seq, ...command } });
-        if (at !== generation.current || (!readOnly && seq < lastActionApplied.current)) return null;
-        if (readOnly) {
-          // Reading a window must survive unlock/cancel, but a snapshot requested before a new click cannot undo it.
-          if (inventoryRevision !== inventoryChange.current || seq < lastInventoryApplied.current) return null;
-          if (reply.inventory) { lastInventoryApplied.current = seq; setInventory(reply.inventory); setInventoryAt(Date.now()); }
-          if (!reply.ok && seq >= lastActionApplied.current) setError(reply.message ?? 'The inventory could not be read.');
-          return reply;
-        }
-        lastActionApplied.current = seq;
-        if (!reply.ok) setError(reply.message ?? 'The action could not be completed.');
-        else setError('');
-        if (reply.inventory && seq >= lastInventoryApplied.current) {
-          lastInventoryApplied.current = seq; setInventory(reply.inventory); setInventoryAt(Date.now());
-        }
-        // Input replies are the camera clock; a slower action must not rewind the camera.
+    if (command.kind === 'release' || command.kind === 'cancel') heldActionBusy.current = null;
+    if (command.kind === 'cancel') lastActionApplied.current = seq;
+    // The socket preserves input→click ordering without pausing later movement while an acknowledgement is pending.
+    if ((held || command.kind === 'dig' || command.kind === 'drop' || command.kind === 'cancel') && !current.input({ ...input.current })) return Promise.resolve(null);
+    return current.action({ seq, ...command }).then((reply) => {
+      if (at !== generation.current || (!readOnly && seq < lastActionApplied.current)) return null;
+      if (readOnly) {
+        // A read survives unlock/cancel, but a snapshot requested before a new click cannot undo that click.
+        if (inventoryRevision !== inventoryChange.current || seq < lastInventoryApplied.current) return null;
+        if (reply.inventory) { lastInventoryApplied.current = seq; setInventory(reply.inventory); setInventoryAt(Date.now()); }
+        if (!reply.ok && seq >= lastActionApplied.current) setError(reply.message ?? 'The inventory could not be read.');
         return reply;
-      } catch (e) { if (at === generation.current && seq >= lastActionApplied.current) setError(errorText(e)); return null; }
-      finally { if (pressInFlight.current === seq && at === generation.current) pressInFlight.current = null; }
-    };
-    const pending = readOnly || command.kind === 'cancel' ? send() : actionQueue.current.then(send);
-    if (!readOnly) actionQueue.current = pending;
-    return pending.finally(() => { if (heldActionBusy.current === seq && at === generation.current) heldActionBusy.current = null; });
-  }, [body]);
+      }
+      lastActionApplied.current = seq;
+      if (!reply.ok) setError(reply.message ?? 'The action could not be completed.');
+      else setError('');
+      if (reply.inventory && seq >= lastInventoryApplied.current) {
+        lastInventoryApplied.current = seq; setInventory(reply.inventory); setInventoryAt(Date.now());
+      }
+      return reply;
+    }).catch((e: unknown) => {
+      if (at === generation.current && seq >= lastActionApplied.current) setError(errorText(e));
+      return null;
+    }).finally(() => { if (heldActionBusy.current === seq && at === generation.current) heldActionBusy.current = null; });
+  }, []);
 
-  return { input, pose, state, inventory, inventoryAt, status, error, action, end, retry: () => setAttempt((n) => n + 1) };
+  return { input, pose, camera, state, inventory, inventoryAt, status, error, action, end, retry: () => setAttempt((n) => n + 1) };
 }

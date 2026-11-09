@@ -6,6 +6,7 @@
  */
 import { Agent, request as httpRequest, type IncomingHttpHeaders, type IncomingMessage } from 'node:http';
 import { BRIDGE_HEADERS } from '@mineclaw/contracts';
+import WebSocket from 'ws';
 import { ApiHttpError, Errors } from '../common/errors.js';
 import type { Logger } from '../common/logger.js';
 import { signedHeaders, type BridgeIdentity } from './signing.js';
@@ -61,6 +62,16 @@ export class BridgeClient {
     if (!isLoopbackHost(this.base.hostname)) {
       log.warn({ host: this.base.hostname }, 'Bridge:Url is not loopback; the bridge only accepts loopback sources');
     }
+  }
+
+  /** A signed persistent channel. Credentials stay in upgrade headers, never URLs or frames. */
+  socket(target: string, identity: BridgeIdentity, headers?: Record<string, string>): WebSocket {
+    const url = new URL(target, this.base);
+    url.protocol = 'ws:';
+    return new WebSocket(url, {
+      headers: { ...signedHeaders(this.cfg.key, { method: 'GET', pathAndQuery: target, identity }, Date.now()), ...headers },
+      handshakeTimeout: 15_000, maxPayload: MAX_JSON_BYTES, perMessageDeflate: false,
+    });
   }
 
   /** Resolves with the upstream response once its headers arrive. Connection failures and timeouts become 503. */

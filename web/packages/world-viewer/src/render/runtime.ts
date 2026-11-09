@@ -30,6 +30,7 @@ import { BubbleLayer, type BubbleKind, type BubbleMode, type ShownBubble } from 
 import { loadBundle, type AssetBundle } from '../assets/bundle';
 import { ASSETS_CHANGED } from '../assets/localStore';
 import { PROFILES, QualityController, probeRendererOnce, type QualityName, type QualityProfile, type RendererProbe } from './quality';
+import { FrameTiming } from './frameTiming';
 import { effectiveProfile, entityReach, FrameLimiter, getViewerQuality, reportViewerStatus, viewerQualityRev, type ViewerQuality } from './viewerQuality';
 import { ChangeFlash } from './changeFlash';
 import { BlockDeltaFeed } from '../world/deltas';
@@ -314,7 +315,7 @@ export class WorldRuntime {
   private readonly tmpDir = new THREE.Vector3();
   /** World brightening from a lightning strike (decays over ~25 frames). */
   private lightningFlash = 0;
-  private readonly pixel = new Uint8Array(4);
+  private readonly frameTiming: FrameTiming;
   private slots = 0;
   /** Called (on the runtime's frame) after the overlays of a dimension changed. */
   onOverlays: ((dim: Dim, ov: Overlays) => void) | null = null;
@@ -333,6 +334,7 @@ export class WorldRuntime {
     this.baseProfile = profile;
     this.quality = new QualityController(profile);
     this.renderer = new THREE.WebGLRenderer({ antialias: (opts.antialias ?? true) && profile.antialias, powerPreference: 'high-performance', preserveDrawingBuffer: false });
+    this.frameTiming = new FrameTiming(this.renderer.getContext());
     this.renderer.setPixelRatio(1);
     this.renderer.setScissorTest(true);
     this.canvas = this.renderer.domElement;
@@ -667,6 +669,7 @@ export class WorldRuntime {
     this.backstop.geometry.dispose();
     this.blockAtlas?.dispose();
     this.host.dispose();
+    this.frameTiming.dispose();
     this.renderer.renderLists.dispose();
     this.renderer.dispose();
     this.renderer.forceContextLoss();
@@ -1081,8 +1084,9 @@ export class WorldRuntime {
   /** Every view that wants a picture this frame, most overdue first and the primary last. */
   private renderViews(now: number, dt: number): void {
     let primarySetup: ViewSetup | null = null;
-    const timed = this.quality.due(now);
-    const t0 = performance.now();
+    const completed = this.frameTiming.poll(now);
+    if (completed !== null && this.quality.enabled) this.quality.sample(now, completed);
+    const timed = this.quality.due(now) && !!this.primary && this.frameTiming.begin();
     this.slots = Math.min(this.opts.viewsPerFrame ?? 2, this.quality.state.profile.thumbSlots);
     const order = [...this.views.values()].sort((a, b) => (this.renderedAt.get(a.id) ?? 0) - (this.renderedAt.get(b.id) ?? 0));
     for (const v of order) {
@@ -1092,18 +1096,11 @@ export class WorldRuntime {
       if (this.isPrimary(v)) primarySetup = s;
       else this.render(s, now);
     }
-    if (!primarySetup) return;
-    this.render(primarySetup, now);
-    if (timed) this.sampleFrame(now, t0);
-  }
-
-  /** Once a second the whole frame is timed to completion (gl.finish): CPU and GPU (or the software rasteriser) together,
-   * so a throttled background tab (slow rAF, cheap frames) never lowers the quality. */
-  private sampleFrame(now: number, t0: number): void {
-    // gl.finish returns early on ANGLE/SwiftShader; reading one pixel back really waits for the frame to be drawn.
-    const gl = this.renderer.getContext();
-    gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, this.pixel);
-    this.quality.sample(now, performance.now() - t0);
+    if (primarySetup) this.render(primarySetup, now);
+    if (timed) {
+      const cpu = this.frameTiming.end(now);
+      if (cpu !== null && primarySetup) this.quality.sample(now, cpu);
+    }
   }
 
   /** After a primary render: the page-wide viewer status (fps over half-second windows, the levers, the entity reach). */

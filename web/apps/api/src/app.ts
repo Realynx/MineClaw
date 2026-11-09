@@ -32,6 +32,7 @@ import { dbPathOf, type ApiConfig } from './config/config.js';
 import { tlsMaterial, tlsOrigin, WebHostingSettings } from './config/web-hosting.js';
 import { WebDb } from './db/web-db.js';
 import { LiveHub, type LiveHubOptions } from './live/live-hub.js';
+import { SocketGateway } from './live/socket-gateway.js';
 import { startMockBridge, type MockBridge } from './mock/mock-bridge.js';
 import { createNextProxy, isApiPath } from './proxy/next-proxy.js';
 import { RouteDispatcher } from './routes/dispatcher.js';
@@ -216,17 +217,21 @@ export async function createApp(config: ApiConfig, opts: CreateAppOptions = {}):
   server.requestTimeout = 300_000;
   // Upgraded sockets leave the HTTP server's bookkeeping; track them so shutdown can end them.
   const upgraded = new Set<Socket>();
+  const sockets = new SocketGateway(auth, bridge, hub, config.web.allowedOrigins);
   const onUpgrade = (req: IncomingMessage, socket: Socket, head: Buffer) => {
     upgraded.add(socket);
     socket.on('close', () => upgraded.delete(socket));
     context(req, undefined);
-    if (!nextProxy || isApiPath(req.url)) {
-      socket.destroy();
-      return;
-    }
-    if (!cf) return nextProxy.upgrade(req, socket, head);
+    const upgrade = () => {
+      try {
+        if (isApiPath(req.url)) sockets.upgrade(req, socket, head);
+        else if (nextProxy) nextProxy.upgrade(req, socket, head);
+        else socket.destroy();
+      } catch { socket.destroy(); }
+    };
+    if (!cf) return upgrade();
     cf.verify(req).then(
-      (ok) => (ok ? nextProxy.upgrade(req, socket, head) : socket.destroy()),
+      (ok) => (ok ? upgrade() : socket.destroy()),
       () => socket.destroy(),
     );
   };
@@ -270,6 +275,7 @@ export async function createApp(config: ApiConfig, opts: CreateAppOptions = {}):
       clearInterval(gc);
       skins.close();
       hub.close();
+      sockets.close();
       for (const s of upgraded) s.destroy();
       if (tlsServer) {
         tlsServer.closeAllConnections();

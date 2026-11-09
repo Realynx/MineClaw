@@ -109,7 +109,8 @@ describe('prod reverse proxy to Next', () => {
     expect(ok).toMatch(/^HTTP\/1\.1 101/);
     expect(ok).toContain('echo:ping');
     const refused = await talk('/api/live/stream');
-    expect(refused).toBe('');
+    expect(refused).toContain('HTTP/1.1 404');
+    expect(refused).not.toContain('101 Switching Protocols');
   });
 
   it('answers a small 502 page when Next is down', async () => {

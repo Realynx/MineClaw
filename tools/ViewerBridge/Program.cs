@@ -60,6 +60,7 @@ namespace MineClaw.ViewerBridge
             configure?.Invoke(s);
 
             var app = builder.Build();
+            app.UseWebSockets(new WebSocketOptions { KeepAliveInterval = TimeSpan.FromSeconds(20) });
             app.UseMiddleware<BridgeAuthMiddleware>();
             app.Use(async (ctx, next) =>
             {

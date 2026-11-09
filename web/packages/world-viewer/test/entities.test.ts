@@ -59,14 +59,14 @@ describe('EntityStore interpolation (LiveHive/EntityStore.cs)', () => {
     expect(s.entities(0)[0].x).toBe(50);
   });
 
-  it('clamps the interval to 50..1000 ms', () => {
+  it('resets the cadence after long silence instead of treating idle time as motion duration', () => {
     const { s, at } = clocked();
     s.apply(delta(1, [], { full: true }));
     for (let i = 1; i < 30; i++) {
       at(1000 + i * 5000);
       s.apply(delta(i + 1, []));
     }
-    expect(s.intervalMs).toBe(1000);
+    expect(s.intervalMs).toBe(200);
   });
 
   it('deltas update and remove; a full reply replaces the set; rev is remembered for since=', () => {

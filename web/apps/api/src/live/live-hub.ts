@@ -1,5 +1,5 @@
 /**
- * `GET /api/live/stream`: ONE signed upstream `GET /v1/live/stream`, held open while at least one browser is connected
+ * `/api/live/socket` and compatible SSE `/api/live/stream`: ONE signed upstream `/v1/live/socket`, held open while a browser is connected
  * (closed after a short linger once the last one leaves), fanned out to every browser.
  *
  * - Upstream: reconnects with jittered exponential backoff and `Last-Event-ID` (the bridge's last id); a 45 s silence
@@ -31,8 +31,12 @@ import type { BridgeHealth } from '../bridge/bridge-health.js';
 import { NO_IDENTITY } from '../bridge/signing.js';
 import { BotAliases, coalesceKey, filterOf, filterPayload, type ClientFilter } from './filters.js';
 import { SseParser } from './sse-parser.js';
+import type WebSocket from 'ws';
+import { SocketSink, type LiveSink } from './socket-sink.js';
+import { socketText } from './socket-data.js';
 
 export interface LiveHubOptions {
+  upstreamTransport: 'websocket' | 'sse';
   maxClients: number;
   maxClientsPerUser: number;
   ringSize: number;
@@ -48,6 +52,7 @@ export interface LiveHubOptions {
 }
 
 export const DEFAULT_HUB_OPTIONS: LiveHubOptions = {
+  upstreamTransport: 'websocket',
   maxClients: 200,
   maxClientsPerUser: 12,
   ringSize: 256,
@@ -75,7 +80,7 @@ interface Queued {
 
 interface Client {
   id: number;
-  res: ServerResponse;
+  res: LiveSink;
   username: string;
   filter: ClientFilter;
   stillValid: () => boolean;
@@ -168,6 +173,17 @@ export class LiveHub {
     }
     openEventStream(req, res);
 
+    req.on('close', () => res.end());
+    this.attachSink(res, query, o, req.headers['last-event-id']);
+  }
+
+  attachSocket(socket: WebSocket, query: LiveStreamQuery | undefined, o: AttachOptions, lastId?: string): void {
+    if (this.attachRefusal(o.username)) { socket.close(1013, 'Too many live streams'); return; }
+    this.attachSink(new SocketSink(socket), query, o, lastId);
+  }
+
+  private attachSink(res: LiveSink, query: LiveStreamQuery | undefined, o: AttachOptions, lastId?: string | string[]): void {
+
     const client: Client = {
       id: this.nextClientId++,
       res,
@@ -183,12 +199,11 @@ export class LiveHub {
     };
     this.clients.set(client.id, client);
     const drop = () => this.detach(client);
-    req.on('close', drop);
     res.on('close', drop);
     res.on('error', drop);
 
     this.write(client, 'retry: 3000\n\n');
-    this.resume(client, req.headers['last-event-id']);
+    this.resume(client, lastId);
 
     this.ensureTimers();
     if (this.lingerTimer) {
@@ -358,13 +373,13 @@ export class LiveHub {
     for (const c of this.clients.values()) this.deliver(c, f);
   }
 
-  private onUpstreamEvent(event: string, data: string, id: string | undefined): void {
+  private onUpstreamEvent(event: string, data: unknown, id: string | undefined): void {
     if (id) this.lastUpstreamId = id;
     if (event === 'status' || !(event in SSE_EVENTS)) return;
     const name = event as SseEventName;
     let payload: unknown;
     try {
-      payload = toCamel(parseBridgeJson(data));
+      payload = toCamel(typeof data === 'string' ? parseBridgeJson(data) : data);
       if (event === 'entities') this.observeWorld?.(payload);
     } catch {
       this.log.warn({ event }, 'bridge sent an unparseable SSE frame');
@@ -420,9 +435,9 @@ export class LiveHub {
     while (this.wanted && !this.closed) {
       this.setUpstream(this.everConnected ? 'reconnecting' : 'connecting');
       try {
-        const res = await this.openUpstream();
+        if (this.opts.upstreamTransport === 'sse') await this.follow(await this.openUpstream());
+        else await this.followSocket(this.openSocket());
         attempt = 0;
-        await this.follow(res);
       } catch (e) {
         if (!this.wanted || this.closed) break;
         this.log.warn({ err: e instanceof Error ? e.message : String(e) }, 'bridge live stream failed');
@@ -433,6 +448,40 @@ export class LiveHub {
       attempt++;
       await this.sleep(delay / 2 + Math.random() * (delay / 2));
     }
+  }
+
+  private openSocket(): WebSocket {
+    const ac = new AbortController();
+    this.abort = ac;
+    const ws = this.bridge.socket('/v1/live/socket', NO_IDENTITY,
+      this.lastUpstreamId ? { 'Last-Event-ID': this.lastUpstreamId } : undefined);
+    ac.signal.addEventListener('abort', () => ws.terminate(), { once: true });
+    return ws;
+  }
+
+  private followSocket(ws: WebSocket): Promise<void> {
+    return new Promise((resolve, reject) => {
+      let lastFrame = Date.now();
+      const watchdog = setInterval(() => { if (Date.now() - lastFrame > this.opts.upstreamIdleMs) ws.terminate(); }, Math.min(5000, this.opts.upstreamIdleMs));
+      watchdog.unref();
+      ws.on('open', () => {
+        this.upstreamConnects++;
+        const reconnect = this.everConnected;
+        this.everConnected = true;
+        this.setUpstream('connected', reconnect);
+        void this.health.check(true).then(() => this.broadcastStatus(false));
+      });
+      ws.on('message', (raw, binary) => {
+        lastFrame = Date.now();
+        if (binary) return;
+        try {
+          const frame = parseBridgeJson(socketText(raw)) as { event: string; id?: string | number; data: unknown };
+          this.onUpstreamEvent(frame.event, frame.data, frame.id === undefined ? undefined : String(frame.id));
+        } catch { this.log.warn('bridge sent an invalid live socket frame'); }
+      });
+      ws.on('error', reject);
+      ws.on('close', () => { clearInterval(watchdog); resolve(); });
+    });
   }
 
   /** The bridge's `/v1/live/stream` (resuming from the last upstream id); anything but a 200 event stream throws. */

@@ -7,7 +7,7 @@ namespace MineClaw.App.Supervisor;
 
 /// <summary>Authenticated human control for one pawn. Reads remain on the existing viewer routes;
 /// all lease mutations require the bridge's user identity and Story permission.</summary>
-public sealed class SupervisorPawnControlRoutes(SupervisorOptions options, PawnControlSessions sessions) : IDisposable
+public sealed partial class SupervisorPawnControlRoutes(SupervisorOptions options, PawnControlSessions sessions) : IDisposable
 {
     private static readonly JsonSerializerOptions Json = SupervisorJson.Options;
     private static readonly HashSet<string> Actions = ["attack", "dig", "cancel", "release", "use", "inventory", "inventory_click", "close_inventory", "drop"];

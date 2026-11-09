@@ -1,7 +1,7 @@
 // Quality profiles and the frame-time controller. The user's everyday browser runs WebGL in software (hardware acceleration
 // off: SwiftShader / ANGLE-on-SwiftShader / llvmpipe / Microsoft Basic Render Driver), so the viewer detects that and picks a
 // "software" profile aiming at 22 ms of measured work (40 fps once the compositor adds its share); with a GPU 16 ms (60 fps). The controller times one primary
-// frame to completion every second (gl.finish, so a throttled background tab never misleads it) and turns the levers in
+// frame every second with asynchronous GPU queries (CPU time when unavailable) and turns the levers in
 // order: render resolution, then draw distance, then (software) translucent and entity detail distances; it gives them back
 // in reverse order when there is headroom.
 

@@ -126,6 +126,28 @@ public sealed class SupervisorServer : IAsyncDisposable
         long started = System.Diagnostics.Stopwatch.GetTimestamp();
         try
         {
+            if (ctx.Request.IsWebSocketRequest && ctx.Request.Url?.AbsolutePath == "/api/world/socket" && World is { } world)
+            {
+                var request = await RequestOfAsync(ctx.Request, ct).ConfigureAwait(false);
+                if (!Authorized(request with { Query = new Dictionary<string, string>() })) await WriteAsync(ctx, Json(401, new { error = "token required" }), ct).ConfigureAwait(false);
+                else
+                {
+                    using var socket = (await ctx.AcceptWebSocketAsync(null).ConfigureAwait(false)).WebSocket;
+                    await world.SocketAsync(socket, request, ct).ConfigureAwait(false);
+                }
+                return;
+            }
+            if (ctx.Request.IsWebSocketRequest && SupervisorPawnControlRoutes.IsSocketPath(ctx.Request.Url?.AbsolutePath ?? "") && PawnControl is { } control)
+            {
+                var request = await RequestOfAsync(ctx.Request, ct).ConfigureAwait(false);
+                if (control.SocketAuthorization(request) is { } refused) await WriteAsync(ctx, refused, ct).ConfigureAwait(false);
+                else
+                {
+                    using var socket = (await ctx.AcceptWebSocketAsync(null).ConfigureAwait(false)).WebSocket;
+                    await control.SocketAsync(socket, request, ct).ConfigureAwait(false);
+                }
+                return; // A persistent socket never occupies a short-lived HTTP connection slot.
+            }
             var reply = await AnswerAsync(ctx.Request, ct).ConfigureAwait(false);
             // The time a caller waited for the answer (a free slot included), by route; never the query (it may carry the token).
             Perf.Record(ctx.Request.Url?.AbsolutePath ?? "/", System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds);

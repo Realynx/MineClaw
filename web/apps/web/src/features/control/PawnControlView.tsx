@@ -77,17 +77,11 @@ export function PawnControlView({ body, returnTo }: { body: string; returnTo: st
     return () => { window.removeEventListener('keydown', key); clearInterval(timer); };
   }, [inventoryOpen, inventoryBusy, closeInventory]);
 
-  const camera = useRef<{ x: number; y: number; z: number; dim: number } | null>(null);
-  const beforeFrame = useCallback((engine: WorldViewerEngine, _now: number, dt: number) => {
-    const pose = latest.current.pose.current, input = latest.current.input.current;
+  const beforeFrame = useCallback((engine: WorldViewerEngine, now: number) => {
+    const pose = latest.current.camera.current.position(now), input = latest.current.input.current;
     if (!pose) return;
     const eyeY = pose.y + (input.sneak ? 1.54 : 1.62);
-    let previous = camera.current;
-    if (!previous || previous.dim !== pose.dim || Math.hypot(previous.x - pose.x, previous.y - eyeY, previous.z - pose.z) > 4)
-      previous = camera.current = { x: pose.x, y: eyeY, z: pose.z, dim: pose.dim };
-    const k = 1 - Math.exp(-35 * dt);
-    previous.x += (pose.x - previous.x) * k; previous.y += (eyeY - previous.y) * k; previous.z += (pose.z - previous.z) * k;
-    engine.rig.flyPos.set(previous.x, previous.y, previous.z);
+    engine.rig.flyPos.set(pose.x, eyeY, pose.z);
     engine.rig.flyYaw = input.yaw; engine.rig.flyPitch = input.pitch;
   }, []);
   const play = () => {

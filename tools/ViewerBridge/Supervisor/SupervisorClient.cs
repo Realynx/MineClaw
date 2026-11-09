@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Net;
+using System.Net.WebSockets;
 
 namespace MineClaw.ViewerBridge.Supervisor;
 
@@ -64,6 +65,21 @@ public sealed class SupervisorClient : IDisposable
     public double LatencyMs => _latencyMs;
     public DateTimeOffset? LastOk { get; private set; }
     public DateTimeOffset? LastFailure { get; private set; }
+
+    /// <summary>A persistent authenticated channel bypasses the bounded request pools; no per-frame HTTP queue.</summary>
+    internal async Task<ClientWebSocket> ConnectSocketAsync(string relative, IReadOnlyDictionary<string, string> headers, CancellationToken ct)
+    {
+        var socket = new ClientWebSocket();
+        socket.Options.Proxy = null;
+        socket.Options.KeepAliveInterval = TimeSpan.FromSeconds(20);
+        if (_token is { Length: > 0 }) socket.Options.SetRequestHeader(TokenHeader, _token);
+        foreach (var (key, value) in headers) socket.Options.SetRequestHeader(key, value);
+        var url = new UriBuilder(new Uri(new Uri(BaseUrl + "/"), relative)) { Scheme = BaseUrl.StartsWith("https:", StringComparison.Ordinal) ? "wss" : "ws" };
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeout.CancelAfter(TimeSpan.FromSeconds(4));
+        try { await socket.ConnectAsync(url.Uri, timeout.Token).ConfigureAwait(false); return socket; }
+        catch { socket.Dispose(); throw; }
+    }
 
     /// <summary>
     /// Sends a request (path relative to the base, e.g. <c>api/status?bot=main</c>). The caller owns the response; with

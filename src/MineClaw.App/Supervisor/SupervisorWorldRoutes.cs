@@ -136,7 +136,7 @@ public sealed class TokenBucket(double perSecond, double burst, TimeProvider tim
 /// (<c>more</c>: ask again from <c>rev</c>); <c>full</c> = too far behind, refetch the columns whose index hash changed</item>
 /// </list>
 /// </summary>
-public sealed class SupervisorWorldRoutes
+public sealed partial class SupervisorWorldRoutes
 {
     public const string Prefix = "/api/world/";
     public const int MaxColumnsPerRequest = 64;
@@ -151,9 +151,11 @@ public sealed class SupervisorWorldRoutes
     private readonly RenderCache<SupervisorReply> _cache;
     /// <summary>The heavy reads (chunk batches, the index, block entities, overlays, container boxes): at most two at once.</summary>
     private readonly SemaphoreSlim _work = new(2);
-    /// <summary>The live lane (the 5 Hz entity delta, one container): its own two slots, so it never queues behind a chunk batch
+    /// <summary>The live lane (the entity delta): its own two slots, so it never queues behind a chunk batch
     /// (live 11-04: the bridge's entity poll waited on two 64-column batches, players moved in steps or stopped for a second).</summary>
     private readonly SemaphoreSlim _live = new(2);
+    /// <summary>A cold container can wait on colony/database reads; inspections must not occupy motion slots.</summary>
+    private readonly SemaphoreSlim _inspections = new(2);
     private readonly EntityDeltaLog _entityLog;
 
     public SupervisorWorldRoutes(ISupervisorWorld world, WorldRouteLimits? limits = null, TimeProvider? time = null)
@@ -255,14 +257,19 @@ public sealed class SupervisorWorldRoutes
             long since = long.TryParse(sinceText, NumberStyles.Integer, CultureInfo.InvariantCulture, out var sv) ? sv : 0;
             return new(Work(_live, () =>
             {
-                var d = _entityLog.Since(since, () => _world.Entities(null), _world.EntityEvents);
-                return Json(200, new { at = _time.GetUtcNow().ToUnixTimeMilliseconds(), rev = d.Rev, full = d.Full, bots = _world.Bots(), entities = d.Entities, removed = d.Removed,
-                    events = d.Events, chests = _world.Chests() });
+                return Json(200, EntityDelta(since).Data);
             }, ct));
         }
         return new(_cache.GetAsync($"entities:{edim}", EntitiesCache, () => Work(_live, () =>
             Json(200, new { at = _time.GetUtcNow().ToUnixTimeMilliseconds(), bots = _world.Bots(), entities = _world.Entities(edim),
                 chests = _world.Chests().Where(c => edim == null || c.Dim == edim).ToArray() }), ct)));
+    }
+
+    private (long Rev, object Data) EntityDelta(long since)
+    {
+        var delta = _entityLog.Since(since, () => _world.Entities(null), _world.EntityEvents);
+        return (delta.Rev, new { at = _time.GetUtcNow().ToUnixTimeMilliseconds(), rev = delta.Rev, full = delta.Full,
+            bots = _world.Bots(), entities = delta.Entities, removed = delta.Removed, events = delta.Events, chests = _world.Chests() });
     }
 
     private SupervisorReply BlocksReply(SupervisorRequest r, int dim)
@@ -286,7 +293,7 @@ public sealed class SupervisorWorldRoutes
         if (Q(r, "x0") is { Length: > 0 }) return ContainerBoxAsync(r, dim, ct);
         if (I(Q(r, "x")) is not { } cx || I(Q(r, "y")) is not { } cy || I(Q(r, "z")) is not { } cz)
             return new(Json(400, new { error = "containers needs x, y, z (or a box x0..z1)" }));
-        return new(Work(_live, () => _world.Container(dim, new BlockPos(cx, cy, cz)) is { } view
+        return new(Work(_inspections, () => _world.Container(dim, new BlockPos(cx, cy, cz)) is { } view
             ? Json(200, view)
             : Json(404, new { error = $"no container at {cx},{cy},{cz}" }), ct));
     }

@@ -379,12 +379,10 @@ describe('frame golden', () => {
     const frames = log.filter((l) => l.startsWith('---- frame')).length;
     expect(frames).toBe(25);
     expect(log.filter((l) => l.startsWith('render.camera')).length).toBeGreaterThan(40);
-    // The internal displayMobs view stores one new null hiddenBot field; normal view setup/layer arguments omit it.
-    // Pin the exact migration so no camera, geometry, frame order or other serialized state can change unnoticed.
-    const beforeTakeover = new Digest();
-    for (const line of log) beforeTakeover.add(line.replaceAll('"hiddenBot":null,', ''));
-    expect(beforeTakeover.hex()).toBe('d714f1f501a2c0fc5e58996d3d4e6d11');
-    expect(a).toBe('a83da944fe55a6248c0585c3ecc2316c');
+    // Compared with a83da944, exactly four blocking readPixels calls disappeared. Every remaining trace line is identical.
+    // This fixture is a legacy source without sender timestamps; timestamped movement is covered by motion.test.ts.
+    expect(log).not.toContain('readPixels');
+    expect(a).toBe('1d5aef9f00097ed876e9a2e3ee54e863');
   }, 30000);
 
   it('pans before the world frame and projects the overlay after that same camera is rendered', () => {

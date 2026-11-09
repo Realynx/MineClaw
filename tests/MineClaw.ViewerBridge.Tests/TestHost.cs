@@ -1,7 +1,9 @@
 using System.Collections.Concurrent;
 using System.Globalization;
 using System.Net;
+using System.Net.WebSockets;
 using System.Text;
+using System.Text.Json.Nodes;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Hosting.Server;
@@ -28,6 +30,8 @@ public sealed class FakeSupervisor : IAsyncDisposable
     public ConcurrentQueue<SeenRequest> Seen { get; } = new();
     /// <summary>path (no query) → (status, content type, body); a func of the query for cursor routes.</summary>
     public ConcurrentDictionary<string, Func<HttpRequest, (int Status, string Type, byte[] Body)>> Routes { get; } = new(StringComparer.Ordinal);
+    public ConcurrentDictionary<string, Func<HttpContext, Task>> Sockets { get; } = new(StringComparer.Ordinal);
+    public ConcurrentQueue<string> SocketWorldReads { get; } = new();
     public string Url { get; }
 
     private FakeSupervisor(WebApplication app, string url)
@@ -43,6 +47,7 @@ public sealed class FakeSupervisor : IAsyncDisposable
         var b = WebApplication.CreateSlimBuilder();
         b.WebHost.ConfigureKestrel(k => k.Listen(IPAddress.Loopback, 0));
         var app = b.Build();
+        app.UseWebSockets();
         FakeSupervisor? self = null;
         app.Run(async ctx =>
         {
@@ -51,6 +56,8 @@ public sealed class FakeSupervisor : IAsyncDisposable
             var target = ctx.Request.Path.Value + ctx.Request.QueryString.Value;
             self!.Seen.Enqueue(new SeenRequest(ctx.Request.Method, target, ctx.Request.Headers["X-Supervisor-Token"].FirstOrDefault(), body,
                 ctx.Request.Headers["X-MCX-User"].FirstOrDefault(), ctx.Request.Headers["X-MCX-Roles"].FirstOrDefault()));
+            if (ctx.WebSockets.IsWebSocketRequest && self.Sockets.TryGetValue(ctx.Request.Path.Value ?? "", out var socket))
+            { await socket(ctx); return; }
             if (self.Routes.TryGetValue(ctx.Request.Path.Value ?? "", out var h))
             {
                 var (status, type, bytes) = h(ctx.Request);
@@ -71,6 +78,7 @@ public sealed class FakeSupervisor : IAsyncDisposable
 
     private void Defaults()
     {
+        Sockets["/api/world/socket"] = StreamWorld;
         Routes["/api/status"] = _ => Json("""{"at":"2026-11-02T10:00:00+00:00","main":"maid_chan","bots":[{"name":"maid_chan","status":"online","at":"2026-11-02T10:00:00+00:00","pos":"1,64,2","dim":0,"hp":20,"food":20,"budget_mode":"normal","chat":[]}],"claims":[]}""");
         Routes["/api/bots"] = _ => Json("""{"at":"2026-11-02T10:00:00+00:00","bots":[]}""");
         Routes["/api/viewer/now"] = _ => Json("""{"bot":"maid_chan","at":"2026-11-02T10:00:00+00:00","brain_state":"awake","in_flight":null,"thought":null,"tool":null,"task":"mining","script":null,"body":{"hp":20,"food":19,"pos":"1,64,-2","dim":0,"held":"stone_pickaxe"}}""");
@@ -84,6 +92,41 @@ public sealed class FakeSupervisor : IAsyncDisposable
         Routes["/api/world/entities"] = _ => Json("""{"at":1762077600000,"rev":1,"full":true,"bots":[],"entities":[],"removed":[]}""");
         Routes["/api/world/blocks"] = _ => Json("""{"at":1762077600000,"rev":0,"full":true,"more":false,"blocks":{},"columns":[]}""");
         Routes["/api/viewer/memory-activity"] = _ => Json("""{"events":[],"in_context":[],"last":0}""");
+    }
+
+    private async Task StreamWorld(HttpContext ctx)
+    {
+        using var socket = await ctx.WebSockets.AcceptWebSocketAsync();
+        using var stop = CancellationTokenSource.CreateLinkedTokenSource(ctx.RequestAborted);
+        long Read(string key) => long.TryParse(ctx.Request.Query[key], out var n) ? n : 0;
+        long entities = Read("entities_since"), blocks = Read("blocks_since");
+        var receive = socket.ReceiveAsync(new byte[1024].AsMemory(), stop.Token).AsTask();
+        try
+        {
+            while (!receive.IsCompleted && !stop.IsCancellationRequested)
+            {
+                entities = await Send("entities", entities);
+                blocks = await Send("blocks", blocks);
+                await Task.Delay(100, stop.Token);
+            }
+        }
+        catch (Exception ex) when (ex is WebSocketException or OperationCanceledException) { }
+        finally { stop.Cancel(); try { await receive; } catch { } }
+
+        async Task<long> Send(string topic, long since)
+        {
+            var path = "/api/world/" + topic;
+            var request = new DefaultHttpContext().Request;
+            request.QueryString = new QueryString("?since=" + since);
+            SocketWorldReads.Enqueue(path + request.QueryString);
+            var (status, _, bytes) = Routes[path](request);
+            if (status != 200) return since;
+            var data = JsonNode.Parse(bytes)!;
+            long rev = data["rev"]?.GetValue<long>() ?? since;
+            var frame = Encoding.UTF8.GetBytes(new JsonObject { ["event"] = topic, ["id"] = rev, ["data"] = data }.ToJsonString());
+            await socket.SendAsync(frame.AsMemory(), WebSocketMessageType.Text, true, stop.Token);
+            return rev;
+        }
     }
 
     public ValueTask DisposeAsync() => _app.DisposeAsync();

@@ -50,11 +50,14 @@ Initial handover can wait for a colony planning pass; its lease clock starts whe
 a separate ownership claim without taking the director's planning lock. Release stops the client's controls immediately;
 colony cleanup checks that same claim before restoring AI, so delayed cleanup cannot interrupt a newer takeover.
 
-The four authenticated POST routes under `/api/bodies/:body/control/` acquire, input, action and release a session. They
-require Story permission and CSRF; the bridge binds identity to the signed user. Inputs and actions have separate monotonic
-sequences. Browser input is latest-only with at most one movement request outstanding. Held actions acknowledge promptly
-and report completion through input replies; they never hold an HTTP request for an entire mining or bow-use operation.
-Control tokens are kept in memory and excluded from audits and contract-error logs.
+An authenticated POST acquires the session, then `/api/bodies/:body/control/socket` carries ordered input/action frames and
+independent authoritative state updates at 20 Hz. Movement never waits for an action or input acknowledgement. The upgrade
+requires the signed-in cookie, allowed Origin, Story permission and a CSRF subprotocol token; only `mineclaw.control.v1` is
+selected and forwarded credentials come from the authenticated session. The lease token travels in the first `attach` frame,
+never in a URL. Socket closure releases that attachment; an older socket cannot release a newer attachment. HTTP release
+remains the fallback, and the four POST routes remain compatible with other callers. Inputs/actions have separate monotonic
+sequences. Camera positions interpolate confirmed samples while mouse look stays immediate. Control tokens remain in memory
+and excluded from audits and contract-error logs.
 
 Controller freecam and pawn takeover request JavaScript fullscreen before mouse capture. Chrome's Keyboard Lock protects
 WASD shortcuts such as Ctrl+W only in that mode. Escape remains available to release the mouse/fullscreen. If the browser

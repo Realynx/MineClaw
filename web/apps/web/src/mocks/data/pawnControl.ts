@@ -4,6 +4,7 @@ import type { PawnControlActionRequest, PawnControlInputRequest, PawnControlSess
 export class MockPawnControl {
   current: PawnControlSession | null = null;
   private last = 0;
+  private released: { session: string; state: PawnControlSession['state'] } | null = null;
   acquire(body: string) {
     this.last = Date.now();
     this.current = {
@@ -35,9 +36,12 @@ export class MockPawnControl {
     return structuredClone({ ok: true, message: '', state: current.state, inventory: inv });
   }
   release(session: string) {
+    if (this.released?.session === session) return structuredClone({ ok: true, state: this.released.state });
     const current = this.require(session); this.current = null;
+    this.released = { session, state: structuredClone(current.state) };
     return { ok: true, state: current.state };
   }
+  snapshot(session: string) { return structuredClone(this.require(session)); }
   private require(session: string) {
     if (!this.current || this.current.session !== session) throw new Error('Control session ended');
     return this.current;

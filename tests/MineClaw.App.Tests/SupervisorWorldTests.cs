@@ -8,8 +8,10 @@ namespace MineClaw.App.Tests;
 /// <summary>A fake merged world: two known columns at (0,0) and (1,0), one bot, one claim.</summary>
 internal sealed class FakeSupervisorWorld : ISupervisorWorld
 {
-    public int IndexCalls, ColumnCalls;
+    public int IndexCalls, ColumnCalls, EntityCalls;
     public IReadOnlyList<WorldChestState> OpenChests = [];
+    public Func<ContainerView?>? ReadContainer;
+    public ContainerView? Container(int dim, BlockPos pos) => ReadContainer?.Invoke();
     public IReadOnlyList<WorldChestState> Chests() => OpenChests;
     public readonly ChunkSnapshot Snap;
 
@@ -40,7 +42,7 @@ internal sealed class FakeSupervisorWorld : ISupervisorWorld
     public IReadOnlyList<WorldBot> Bots() =>
         [new("maid_chan", "main", true, 0, 1.5, 65, 1.5, 90, 20, 0, 20, 18, "idle", null, "cobblestone x12", ["block 4,64,6"], true, 0)];
 
-    public IReadOnlyList<WorldEntity> Entities(int? dim) => [new("player", "PoofImaFox", 0, 3, 65, 3)];
+    public IReadOnlyList<WorldEntity> Entities(int? dim) { Interlocked.Increment(ref EntityCalls); return [new("player", "PoofImaFox", 0, 3, 65, 3)]; }
 
     public WorldOverlays Overlays(int dim) => new(DateTimeOffset.UnixEpoch, dim,
         [new WorldMark("block", "block 4,64,6", [4, 64, 6], [4, 64, 6], "maid_chan")], [new WorldMark("waypoint", "home", [0, 65, 0], [0, 65, 0])],
@@ -49,6 +51,24 @@ internal sealed class FakeSupervisorWorld : ISupervisorWorld
 
 public class SupervisorWorldTests
 {
+    [Fact]
+    public async Task Two_cold_container_inspections_cannot_occupy_the_entity_motion_lane()
+    {
+        using var entered = new CountdownEvent(2);
+        using var proceed = new ManualResetEventSlim();
+        var (server, world) = Server();
+        await using var dispose = server;
+        world.ReadContainer = () => { entered.Signal(); proceed.Wait(TimeSpan.FromSeconds(5)); return null; };
+        var first = server.HandleAsync(Get("/api/world/containers", "x=1&y=64&z=1"));
+        var second = server.HandleAsync(Get("/api/world/containers", "x=2&y=64&z=1"));
+        try
+        {
+            Assert.True(entered.Wait(TimeSpan.FromSeconds(3)));
+            var moving = await server.HandleAsync(Get("/api/world/entities", "since=0")).WaitAsync(TimeSpan.FromSeconds(2));
+            Assert.Equal(200, moving.Status);
+        }
+        finally { proceed.Set(); await Task.WhenAll(first, second); }
+    }
     private static SupervisorRequest Get(string path, string? query = null, string? token = "s3cret")
     {
         var q = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);

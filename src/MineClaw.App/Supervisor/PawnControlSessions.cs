@@ -27,6 +27,8 @@ public interface IPawnControlBody
     void Begin();
     void Input(PawnControlInput input);
     Task<ActionResult> ActionAsync(PawnControlAction action, CancellationToken ct, CancellationToken holdRelease = default);
+    Func<CancellationToken, CancellationToken, Task<ActionResult>> PrepareAction(PawnControlAction action) =>
+        (ct, holdRelease) => ActionAsync(action, ct, holdRelease);
     void End();
 }
 
@@ -51,7 +53,14 @@ public sealed class PawnControlSessions : IDisposable
         public CancellationTokenSource? HoldRelease;
         public Task<PawnControlActionReply>? Action;
         public PawnControlAction? ActionRequest;
+        public SocketAttachment? Socket;
         public readonly HashSet<string> Aliases = new(StringComparer.OrdinalIgnoreCase) { body.Name };
+    }
+
+    internal sealed class SocketAttachment(string body, string owner, string session)
+    {
+        internal readonly string Body = body, Owner = owner, Session = session;
+        internal readonly CancellationTokenSource Closed = new();
     }
 
     private sealed class Acquisition(IPawnControlBody body, string owner, string request, string alias)
@@ -178,6 +187,7 @@ public sealed class PawnControlSessions : IDisposable
             var holdRelease = new CancellationTokenSource();
             lease.ActionCancel = cancel;
             lease.HoldRelease = holdRelease;
+            var perform = lease.Body.PrepareAction(action);
             // Run off the route lock: a client interaction can wait for a server window or block acknowledgement.
             lease.Action = Task.Run(async () =>
             {
@@ -187,7 +197,7 @@ public sealed class PawnControlSessions : IDisposable
                     cancel.Token.ThrowIfCancellationRequested();
                     var result = action.Kind == "cancel" ? ActionResult.Success("action cancelled")
                         : action.Kind == "inventory" ? ActionResult.Success("inventory")
-                        : await lease.Body.ActionAsync(action, cancel.Token, holdRelease.Token).ConfigureAwait(false);
+                        : await perform(cancel.Token, holdRelease.Token).ConfigureAwait(false);
                     return new PawnControlActionReply(result.Ok, result.Message, lease.Body.State(), lease.Body.Inventory());
                 }
                 catch (OperationCanceledException) { return new PawnControlActionReply(false, "action cancelled", lease.Body.State()); }
@@ -220,6 +230,64 @@ public sealed class PawnControlSessions : IDisposable
             var lease = Find(body, owner, session);
             End(lease);
             return lease.Body.State();
+        }
+    }
+
+    /// <summary>A socket binds an existing lease; opening it never renews idle input or lifetime.
+    /// Replacement revokes the old connection before it can submit or release the new connection's work.</summary>
+    internal SocketAttachment Attach(string body, string owner, string session)
+    {
+        lock (_lock)
+        {
+            var lease = Find(body, owner, session);
+            if (lease.Socket is { } previous)
+            {
+                previous.Closed.Cancel();
+                try { lease.ActionCancel?.Cancel(); } catch (ObjectDisposedException) { }
+                try { lease.HoldRelease?.Cancel(); } catch (ObjectDisposedException) { }
+                var state = lease.Body.State();
+                lease.Body.Input(new PawnControlInput(lease.InputSeq, 0, 0, state.Yaw, state.Pitch));
+                lease.Stopped = true;
+            }
+            return lease.Socket = new SocketAttachment(body, owner, session);
+        }
+    }
+
+    private Lease Attached(SocketAttachment socket)
+    {
+        var lease = Find(socket.Body, socket.Owner, socket.Session);
+        if (!ReferenceEquals(lease.Socket, socket)) throw new PawnControlException(409, "Control socket was replaced.");
+        return lease;
+    }
+
+    internal PawnControlReply SocketState(SocketAttachment socket)
+    {
+        lock (_lock) return Reply(Attached(socket));
+    }
+
+    internal void SocketInput(SocketAttachment socket, PawnControlInput input)
+    {
+        lock (_lock) { Attached(socket); Input(socket.Body, socket.Owner, socket.Session, input); }
+    }
+
+    internal Task<PawnControlActionReply> SocketActionAsync(SocketAttachment socket, PawnControlAction action, CancellationToken ct)
+    {
+        lock (_lock)
+        {
+            Attached(socket);
+            // AcknowledgeActionAsync registers the action synchronously before its first await. Thus a following release
+            // frame is applied in wire order without waiting for a long dig/use acknowledgement.
+            return AcknowledgeActionAsync(socket.Body, socket.Owner, socket.Session, action, ct);
+        }
+    }
+
+    internal void Detach(SocketAttachment socket)
+    {
+        lock (_lock)
+        {
+            var lease = _leases.GetValueOrDefault(socket.Body) ?? _leases.Values.FirstOrDefault(l => l.Aliases.Contains(socket.Body));
+            if (lease != null && ReferenceEquals(lease.Socket, socket)) End(lease);
+            socket.Closed.Cancel();
         }
     }
 
@@ -263,6 +331,7 @@ public sealed class PawnControlSessions : IDisposable
     private void End(Lease lease)
     {
         _leases.Remove(lease.Body.Name);
+        lease.Socket?.Closed.Cancel();
         try { lease.ActionCancel?.Cancel(); } catch (ObjectDisposedException) { }
         try { lease.Body.End(); } catch { /* an offline transport must not kill the expiry timer */ }
     }

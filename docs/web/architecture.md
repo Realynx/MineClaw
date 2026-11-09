@@ -173,11 +173,13 @@ Tests for these go in `tests/MineClaw.App.Tests` (or the closest existing test p
   - `/v1/render/tile/{bot}.png`: the per-bot tile.
   - The world viewer's textures ship with `@mineclaw/world-viewer` (committed assets, atlas built client-side), so the
     bridge serves no atlas.
-- **Live.** `GET /v1/live/stream` is SSE. The bridge polls the supervisor on loopback (status 1 Hz, events 2 Hz, feed
-  2 Hz, `viewer/now` 2 Hz per watched bot (1 Hz for subhive and script-only bodies: Story pawns), entity deltas 5 Hz) and
-  emits typed events: `bots`, `event`, `feed`, `now`, `entities`, `hive`. Nest holds one upstream stream and fans it out to
-  browsers. A failed poll backs off 1 → 15 s, except the motion topics (entities, blocks): 0.1 → 0.5 s, so one busy answer
-  never freezes the bodies for seconds.
+- **Live.** Browsers use `/api/live/socket` (`mineclaw.live.v1`), and Nest shares one signed `/v1/live/socket` connection to
+  the bridge. JSON envelopes contain `event`, `id` and `data`; topic/bot/brain/dimension filters, bounded queues, replay and
+  explicit resync are shared with the compatible SSE endpoint. Reconnects pass only the event cursor in the URL. Upgrades
+  require an allowed Origin and a viewer session, and active sessions are rechecked. Slow clients coalesce state and resync
+  after overflowing their bounded delta queue. The bridge's world socket receives entity deltas at 10 Hz and block deltas
+  at 5 Hz; slower status/feed/thought topics retain their existing cadences. The control socket separately pushes the owned
+  pawn's state at 20 Hz. Chunk assets and occasional inspections remain ordinary HTTP requests.
 - **Motion path (2026-11-04).** Bodies' poses ride the `entities` frames (`bots` is always the whole list; it is not part of the
   entity revision, so a frame where only bots moved keeps the revision and the web's cache merge still takes its bots). The
   dispatcher pushes each frame to the world viewers (`WorldSource.onEntities`): a runtime reads it at once and glides at the

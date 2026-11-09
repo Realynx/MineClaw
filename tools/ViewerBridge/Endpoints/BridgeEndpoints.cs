@@ -323,6 +323,12 @@ public static class BridgeEndpoints
             return Results.Empty;
         });
 
+        v1.MapGet("/sup/bodies/{body}/control/socket", async (HttpContext ctx, string body, SupervisorClient sup) =>
+        {
+            await PawnControlSocketProxy.HandleAsync(ctx, body, sup);
+            return Results.Empty;
+        });
+
         v1.MapMethods("/sup/{**rest}", ["GET", "HEAD", "POST"], async (HttpContext ctx, SupervisorClient sup, ChunkCache cache) =>
         {
             await SupervisorProxy.HandleAsync(ctx, sup, cache);
@@ -345,6 +351,11 @@ public static class BridgeEndpoints
         v1.MapGet("/live/stream", async (HttpContext ctx, LiveHub hub) =>
         {
             await hub.StreamAsync(ctx);
+            return Results.Empty;
+        });
+        v1.MapGet("/live/socket", async (HttpContext ctx, LiveHub hub) =>
+        {
+            await hub.SocketAsync(ctx);
             return Results.Empty;
         });
     }

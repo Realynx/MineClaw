@@ -9,13 +9,14 @@ namespace MineClaw.ViewerBridge.Live;
 
 /// <summary>
 /// <c>GET /v1/live/stream</c>: the bridge polls the supervisor on loopback only while at least one client is connected
-/// (status 1 Hz, events 2 Hz, viewer/feed 2 Hz, viewer/now 2 Hz per online bot (1 Hz per subhive body), entity deltas 5 Hz, hive/tree every 3 s,
-/// viewer/memory-activity 1 Hz, world/blocks 5 Hz, Story Mode colonies 2 Hz) and emits the typed events of api.md §5 (<c>bots</c>, <c>event</c>,
+/// (status 1 Hz, events 2 Hz, viewer/feed 2 Hz, viewer/now 2 Hz per online bot (1 Hz per subhive body), hive/tree every 3 s,
+/// viewer/memory-activity 1 Hz, Story Mode colonies 2 Hz), subscribes to world socket entity deltas at 10 Hz and block batches at 5 Hz,
+/// and emits the typed events of api.md §5 (<c>bots</c>, <c>event</c>,
 /// <c>feed</c>, <c>now</c>, <c>entities</c>, <c>hive</c>, <c>memoryActivity</c>, <c>blocks</c>, <c>story</c>) as <c>event/id/data</c> frames with increasing ids. The last 256 frames
 /// are kept for <c>Last-Event-ID</c> resume, within an 8 MiB text budget; a fresh client first gets the latest state frames (bots, hive, one now per bot).
 /// Delta topics start from the supervisor's current cursor (clients fetch the REST route once, then apply newer frames).
 /// </summary>
-public sealed class LiveHub : IDisposable
+public sealed partial class LiveHub : IDisposable
 {
     public const int RingSize = 256;
     public const long RingBytes = 8L * 1024 * 1024;
@@ -175,12 +176,10 @@ public sealed class LiveHub : IDisposable
         _ = Loop("events", TimeSpan.FromMilliseconds(500), PollCursor("api/events", "event", "events"), ct);
         _ = Loop("feed", TimeSpan.FromMilliseconds(500), PollCursor("api/viewer/feed", "feed", "lines"), ct);
         _ = Loop("now", TimeSpan.FromMilliseconds(500), PollNow(), ct);
-        // The motion topics back off briefly: a busy answer (503) or a slow one is retried within half a second, never after 15 s
-        // (live 11-04: one 503 on the entity poll froze every player for 1, 2, 4… seconds).
-        _ = Loop("entities", TimeSpan.FromMilliseconds(200), PollEntities(), ct, FastBackoff);
+        // World motion has a persistent transport independent of the short-lived request pools.
+        _ = StreamWorld(ct);
         _ = Loop("hive", TimeSpan.FromSeconds(3), PollChanged("api/hive/tree", "hive", "hive", TimeSpan.FromSeconds(3)), ct);
         _ = Loop("memoryActivity", TimeSpan.FromSeconds(1), PollMemory(), ct);
-        _ = Loop("blocks", TimeSpan.FromMilliseconds(200), PollBlocks(), ct, FastBackoff);
         _ = Loop("story", TimeSpan.FromMilliseconds(500), PollStory(), ct);
     }
 
@@ -325,50 +324,35 @@ public sealed class LiveHub : IDisposable
         };
     }
 
-    private Func<CancellationToken, Task> PollEntities()
+    private sealed class EntityCursor
     {
-        long rev = 0;
-        string? prevBots = null, prevChests = null;
-        return async ct =>
-        {
-            var node = await GetJson($"api/world/entities?since={rev.ToString(CultureInfo.InvariantCulture)}", TimeSpan.FromSeconds(3), ct);
-            if (node is not JsonObject o) return;
-            long newRev = o["rev"]?.GetValue<long>() ?? rev;
-            bool full = o["full"]?.GetValue<bool>() == true;
-            bool changed = full || o["entities"] is JsonArray { Count: > 0 } || o["removed"] is JsonArray { Count: > 0 }
-                || o["events"] is JsonArray { Count: > 0 };
-            var bots = Normalized(o["bots"], "age_seconds", "pose_age", "age");
-            changed |= bots != prevBots;
-            prevBots = bots;
-            // Current opener counts are a complete snapshot, independent of entity revisions:
-            // unloading the last observer can remove an open chest without producing an event.
-            var chests = Normalized(o["chests"]);
-            changed |= chests != prevChests;
-            prevChests = chests;
-            rev = newRev;
-            if (changed) Publish("entities", o);
-        };
+        public long Rev;
+        public string? Bots, Chests;
+    }
+
+    private void EntitiesPage(JsonObject o, EntityCursor cursor)
+    {
+        long newRev = o["rev"]?.GetValue<long>() ?? cursor.Rev;
+        bool full = o["full"]?.GetValue<bool>() == true;
+        bool changed = full || o["entities"] is JsonArray { Count: > 0 } || o["removed"] is JsonArray { Count: > 0 }
+            || o["events"] is JsonArray { Count: > 0 };
+        var bots = Normalized(o["bots"], "age_seconds", "pose_age", "age");
+        changed |= bots != cursor.Bots;
+        cursor.Bots = bots;
+        // Current opener counts are a complete snapshot, independent of entity revisions:
+        // unloading the last observer can remove an open chest without producing an event.
+        var chests = Normalized(o["chests"]);
+        changed |= chests != cursor.Chests;
+        cursor.Chests = chests;
+        cursor.Rev = newRev;
+        if (changed) Publish("entities", o);
     }
 
     /// <summary>
-    /// Per-block world deltas (<c>/api/world/blocks?since=rev</c>): the first call only takes the cursor; then every non-empty page is
-    /// emitted in rev order (<c>more</c> = fetch the next page right away, ≤ 8 per tick). A <c>full: true</c> page is emitted too:
+    /// Per-block world deltas: the first frame only takes the cursor; then every non-empty page is
+    /// emitted in rev order. A <c>full: true</c> page is emitted too:
     /// the client was too far behind and falls back to the hash-diff refetch of /world/index + /world/chunks.
-    /// A bot without the route (404) is skipped quietly (the loop backs off).
     /// </summary>
-    private Func<CancellationToken, Task> PollBlocks()
-    {
-        var cursor = new BlocksCursor();
-        return async ct =>
-        {
-            for (int page = 0; page < 8; page++)
-            {
-                var node = await GetJson($"api/world/blocks?since={(cursor.Rev ?? 0).ToString(CultureInfo.InvariantCulture)}", TimeSpan.FromSeconds(3), ct);
-                if (node is not JsonObject o || !BlocksPage(o, cursor)) return;
-            }
-        };
-    }
-
     private sealed class BlocksCursor
     {
         public long? Rev;
@@ -381,7 +365,7 @@ public sealed class LiveHub : IDisposable
         long newRev = o["rev"]?.GetValue<long>() ?? cursor.Rev ?? 0;
         bool first = cursor.Rev == null;
         bool full = o["full"]?.GetValue<bool>() == true, more = o["more"]?.GetValue<bool>() == true;
-        if (cursor.Rev is { } r && newRev < r) { cursor.Rev = newRev; return false; }
+        if (cursor.Rev is { } r && newRev < r) { cursor.Rev = newRev; if (full) Publish("blocks", o); return false; }
         cursor.Rev = newRev;
         if (first) return more;
         if (full || HasBlocks(o) || o["columns"] is JsonArray { Count: > 0 }) Publish("blocks", o);

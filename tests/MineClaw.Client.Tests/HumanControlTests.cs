@@ -200,6 +200,67 @@ public sealed class HumanControlTests
     }
 
     [Fact]
+    public async Task A_queued_click_keeps_its_aim_sneak_and_hand_without_replacing_newer_input()
+    {
+        var (c, s) = await Harness.StartAsync(server =>
+        {
+            server.Blocks[(8, 64, 10)] = Blocks.Chest;
+            server.Chests[(8, 64, 10)] = Enumerable.Repeat(ItemStack.Empty, 27).ToArray();
+            server.Inventory[37] = Harness.Stack(Blocks.Dirt, 4);
+        }, Quiet, release1122: true);
+        await using var _ = c; using var __ = s;
+        c.BeginHumanControl(); Aim(c, new BlockPos(8, 64, 10), 0);
+        var click = c.CaptureHumanAim();
+        Assert.NotNull(click);
+        c.SetHumanInput(new MoveInput(Yaw: 180, Sneak: true), 1); // later heartbeat before the queued action executes
+        var result = await c.HumanActionAsync("use", aim: click);
+        Assert.True(result.Ok, result.Message);
+        Assert.True(c.World.Inventory.ActiveWindow.Id > 0);
+        Assert.True(await Harness.WaitAsync(() => s.Got<PlayerBlockPlacementPacket>().Any()));
+        var placement = Assert.Single(s.Got<PlayerBlockPlacementPacket>());
+        Assert.Equal((8, 64, 10), (placement.X, placement.Y, placement.Z));
+        Assert.True(placement.HeldItem.IsEmpty);
+        Assert.True(await Harness.WaitAsync(() => c.World.Player.HeldSlot == 1 && Math.Abs(c.World.Player.Yaw - 180) < 0.1));
+        Assert.Equal(Blocks.Chest, c.World.GetBlock(8, 64, 10));
+        c.EndHumanControl();
+    }
+
+    [Fact]
+    public async Task A_captured_attack_rechecks_current_line_of_sight_but_keeps_click_time_look()
+    {
+        var (c, s) = await Harness.StartAsync(opts: Quiet, release1122: true);
+        await using var _ = c; using var __ = s;
+        c.BeginHumanControl(); c.SetHumanInput(MoveInput.Idle(0, 0));
+        c.World.Entities.SpawnPlayer(77, "target", new Vec3d(8.5, 64, 10.5), 0, 0, 0);
+        var click = c.CaptureHumanAim();
+        c.SetHumanInput(MoveInput.Idle(180, 0));
+        s.SetBlock(8, 65, 9, Blocks.Stone);
+        Assert.True(await Harness.WaitAsync(() => c.World.GetBlock(8, 65, 9) == Blocks.Stone));
+        Assert.False((await c.HumanActionAsync("attack", entityId: 77, aim: click)).Ok);
+        Assert.Empty(s.Got<UseEntityPacket>());
+        s.SetBlock(8, 65, 9, 0);
+        Assert.True(await Harness.WaitAsync(() => c.World.GetBlock(8, 65, 9) == 0));
+        Assert.True((await c.HumanActionAsync("attack", entityId: 77, aim: click)).Ok);
+        Assert.True(await Harness.WaitAsync(() => s.Got<UseEntityPacket>().Any(p => p.TargetEntityId == 77 && p.LeftClick)));
+        c.EndHumanControl();
+    }
+
+    [Fact]
+    public async Task An_old_captured_click_cannot_act_in_a_new_takeover()
+    {
+        var (c, s) = await Harness.StartAsync(opts: Quiet, release1122: true);
+        await using var _ = c; using var __ = s;
+        c.BeginHumanControl();
+        var old = c.CaptureHumanAim();
+        c.EndHumanControl(); c.BeginHumanControl(); c.SetHumanInput(MoveInput.Idle(90, 0));
+        Assert.False((await c.HumanActionAsync("use", aim: old)).Ok);
+        Assert.Empty(s.Got<PlayerBlockPlacementPacket>());
+        Assert.Empty(s.Got<UseEntityPacket>());
+        Assert.True(c.HumanControlled);
+        c.EndHumanControl();
+    }
+
+    [Fact]
     public async Task A_hidden_entity_is_never_attacked_and_the_visible_nearest_entity_is()
     {
         var (c, s) = await Harness.StartAsync(server => server.Blocks[(8, 65, 9)] = Blocks.Stone, Quiet, release1122: true);

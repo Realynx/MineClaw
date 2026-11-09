@@ -5,6 +5,15 @@ using MineClaw.World;
 
 namespace MineClaw.Client;
 
+/// <summary>Click-time orientation and hand, tied to one takeover. Movement keys remain live.</summary>
+public sealed class HumanControlAim
+{
+    internal HumanControlAim(object owner, MoveInput input, int? hotbar) => (Owner, Input, Hotbar) = (owner, input, hotbar);
+    internal object Owner { get; }
+    internal MoveInput Input { get; }
+    internal int? Hotbar { get; }
+}
+
 public sealed partial class MinecraftClient
 {
     public const int HumanInputTimeoutMs = 350;
@@ -21,6 +30,13 @@ public sealed partial class MinecraftClient
     private readonly AsyncLocal<HumanControl?> _humanActionContext = new();
     private HumanControl? _human;
     public bool HumanControlled => Volatile.Read(ref _human) is not null;
+
+    public HumanControlAim? CaptureHumanAim()
+    {
+        if (Volatile.Read(ref _human) is not { } control) return null;
+        var keys = Volatile.Read(ref control.Keys);
+        return new HumanControlAim(control, keys.Input, keys.Hotbar ?? World.Player.HeldSlot);
+    }
 
     /// <summary>Owns the body immediately. AI actions wind down under their existing action lock before a human interaction starts.</summary>
     public void BeginHumanControl()
@@ -120,10 +136,13 @@ public sealed partial class MinecraftClient
 
     public async Task<ActionResult> HumanActionAsync(string kind, BlockPos? target = null, int? entityId = null,
         int? face = null, int? windowId = null, int? slot = null, int button = 0, bool shift = false, bool wholeStack = false,
-        CancellationToken ct = default, CancellationToken holdRelease = default)
+        CancellationToken ct = default, CancellationToken holdRelease = default, HumanControlAim? aim = null)
     {
         var control = Volatile.Read(ref _human);
         if (control is null) return ActionResult.Fail("The pawn is not under human control.");
+        var initial = Volatile.Read(ref control.Keys);
+        aim ??= new HumanControlAim(control, initial.Input, initial.Hotbar ?? World.Player.HeldSlot);
+        if (!ReferenceEquals(aim.Owner, control)) return ActionResult.Fail("Control ended.");
         using var cancel = CancellationTokenSource.CreateLinkedTokenSource(ct, control.Cancel.Token, SessionToken);
         bool locked = false;
         try
@@ -151,36 +170,12 @@ public sealed partial class MinecraftClient
                 await EnsureNoWindowAsync(cancel.Token).ConfigureAwait(false);
                 return ActionResult.Success("closed inventory");
             }
-            if (World.Inventory.OpenWindow is not null) return ActionResult.Fail("Close the inventory first.");
-            var keys = Volatile.Read(ref control.Keys);
-            if (Environment.TickCount64 - keys.At >= HumanInputTimeoutMs) return ActionResult.Fail("Control input timed out.");
-            PrepareHumanClick(control, keys);
-            if (kind == "drop")
-            {
-                if (HeldStack().IsEmpty) return ActionResult.Success("empty hand");
-                int count = wholeStack && Options.Profile.Version.Id == "b1.8.1" ? HeldStack().Count : 1;
-                byte status = wholeStack && Options.Profile.Version.Id != "b1.8.1" ? PlayerDiggingPacket.StatusDropStack : PlayerDiggingPacket.StatusDropItem;
-                for (int i = 0; i < count; i++) { cancel.Token.ThrowIfCancellationRequested(); Send(new PlayerDiggingPacket { Status = status }); }
-                return ActionResult.Success("dropped item");
-            }
-            var hit = HumanBlockHit(control);
-            var entity = HumanEntityHit(control, hit?.Distance ?? Options.Reach);
-            if (entityId is { } expectedEntity && entity?.Id != expectedEntity) return ActionResult.Fail("The entity is not under the crosshair within reach.");
-            if (target is { } expectedTarget && hit?.Pos != expectedTarget) return ActionResult.Fail("The block is not under the crosshair within reach.");
-            if (face is { } expectedFace && (expectedFace is < 0 or > 5 || (int?)hit?.Face != expectedFace)) return ActionResult.Fail("The block face changed.");
-            if (kind == "attack" && entity is not null)
-            {
-                SendMeleeHit(_session!, entity.Id);
-                return ActionResult.Success("attacked " + entity.DisplayName);
-            }
-            if (kind is "attack" or "dig")
-            {
-                if (hit is null) { Send(new AnimationPacket { EntityId = World.Player.EntityId, Animation = 1 }); return ActionResult.Success("swung hand"); }
-                using var held = CancellationTokenSource.CreateLinkedTokenSource(cancel.Token, holdRelease);
-                return await HumanDigAsync(control, hit.Value, held.Token).ConfigureAwait(false);
-            }
-            if (kind is "use" or "place") return await HumanUseAsync(control, entity, hit, cancel.Token, holdRelease).ConfigureAwait(false);
-            return ActionResult.Fail("Unknown human action.");
+            using var held = CancellationTokenSource.CreateLinkedTokenSource(cancel.Token, holdRelease);
+            Task<ActionResult> interaction;
+            // Only the initial click is atomic with the tick: a newer hotbar update cannot change the item between
+            // selecting the captured hand and sending the placement packet. Async dig/window waits are outside.
+            lock (_humanSync) interaction = StartHumanClick(control, aim, kind, target, entityId, face, wholeStack, cancel.Token, held.Token, holdRelease);
+            return await interaction.ConfigureAwait(false);
         }
         catch (OperationCanceledException) { return ActionResult.Fail("action cancelled"); }
         catch (ActionAbortedException e) { return ActionResult.Fail(e.Message); }
@@ -196,13 +191,45 @@ public sealed partial class MinecraftClient
         }
     }
 
-    private RaycastHit? HumanBlockHit(HumanControl control)
+    private Task<ActionResult> StartHumanClick(HumanControl control, HumanControlAim aim, string kind,
+        BlockPos? target, int? entityId, int? face, bool wholeStack, CancellationToken ct, CancellationToken held, CancellationToken holdRelease)
     {
-        var input = Volatile.Read(ref control.Keys).Input;
-        return Raycast.Cast(World, World.Player.EyePosition, input.Yaw, input.Pitch, Math.Min(4.5, Options.Reach));
+        static Task<ActionResult> Done(ActionResult result) => Task.FromResult(result);
+        if (World.Inventory.OpenWindow is not null) return Done(ActionResult.Fail("Close the inventory first."));
+        if (Environment.TickCount64 - Volatile.Read(ref control.Keys).At >= HumanInputTimeoutMs) return Done(ActionResult.Fail("Control input timed out."));
+        ct.ThrowIfCancellationRequested();
+        PrepareHumanClick(control, aim);
+        if (kind == "drop")
+        {
+            if (HeldStack().IsEmpty) return Done(ActionResult.Success("empty hand"));
+            int count = wholeStack && Options.Profile.Version.Id == "b1.8.1" ? HeldStack().Count : 1;
+            byte status = wholeStack && Options.Profile.Version.Id != "b1.8.1" ? PlayerDiggingPacket.StatusDropStack : PlayerDiggingPacket.StatusDropItem;
+            for (int i = 0; i < count; i++) { ct.ThrowIfCancellationRequested(); Send(new PlayerDiggingPacket { Status = status }); }
+            return Done(ActionResult.Success("dropped item"));
+        }
+        var hit = HumanBlockHit(aim.Input);
+        var entity = HumanEntityHit(aim.Input, hit?.Distance ?? Options.Reach);
+        if (entityId is { } expectedEntity && entity?.Id != expectedEntity) return Done(ActionResult.Fail("The entity is not under the crosshair within reach."));
+        if (target is { } expectedTarget && hit?.Pos != expectedTarget) return Done(ActionResult.Fail("The block is not under the crosshair within reach."));
+        if (face is { } expectedFace && (expectedFace is < 0 or > 5 || (int?)hit?.Face != expectedFace)) return Done(ActionResult.Fail("The block face changed."));
+        if (kind == "attack" && entity is not null)
+        {
+            SendMeleeHit(_session!, entity.Id);
+            return Done(ActionResult.Success("attacked " + entity.DisplayName));
+        }
+        if (kind is "attack" or "dig")
+        {
+            if (hit is null) { Send(new AnimationPacket { EntityId = World.Player.EntityId, Animation = 1 }); return Done(ActionResult.Success("swung hand")); }
+            return HumanDigAsync(control, hit.Value, held);
+        }
+        if (kind is "use" or "place") return HumanUseAsync(control, entity, hit, aim.Input.Sneak, ct, holdRelease);
+        return Done(ActionResult.Fail("Unknown human action."));
     }
 
-    private void PrepareHumanClick(HumanControl control, HumanKeys keys)
+    private RaycastHit? HumanBlockHit(HumanControl control) => HumanBlockHit(Volatile.Read(ref control.Keys).Input);
+    private RaycastHit? HumanBlockHit(MoveInput input) => Raycast.Cast(World, World.Player.EyePosition, input.Yaw, input.Pitch, Math.Min(4.5, Options.Reach));
+
+    private void PrepareHumanClick(HumanControl control, HumanControlAim keys)
     {
         lock (_humanSync)
         {
@@ -220,11 +247,8 @@ public sealed partial class MinecraftClient
         }
     }
 
-    private Entity? HumanEntityHit(HumanControl control, double blockDistance)
-    {
-        var input = Volatile.Read(ref control.Keys).Input;
-        return HumanPickEntity(World, World.Player.EyePosition, input.Yaw, input.Pitch, Math.Min(3, blockDistance));
-    }
+    private Entity? HumanEntityHit(MoveInput input, double blockDistance) =>
+        HumanPickEntity(World, World.Player.EyePosition, input.Yaw, input.Pitch, Math.Min(3, blockDistance));
 
     internal static Entity? HumanPickEntity(WorldState world, Vec3d eye, float yaw, float pitch, double range)
     {
@@ -273,7 +297,7 @@ public sealed partial class MinecraftClient
             ? ActionResult.Success("dug block") : ActionResult.Fail("The server did not break that block.");
     }
 
-    private async Task<ActionResult> HumanUseAsync(HumanControl control, Entity? entity, RaycastHit? hit, CancellationToken ct, CancellationToken holdRelease)
+    private async Task<ActionResult> HumanUseAsync(HumanControl control, Entity? entity, RaycastHit? hit, bool sneak, CancellationToken ct, CancellationToken holdRelease)
     {
         if (entity is not null)
         {
@@ -289,7 +313,7 @@ public sealed partial class MinecraftClient
             Send(new PlayerBlockPlacementPacket { X = pos.X, Y = pos.Y, Z = pos.Z, Direction = (byte)block.Face, HeldItem = HeldStack(),
                 Cursor = ((float)(block.Point.X - pos.X), (float)(block.Point.Y - pos.Y), (float)(block.Point.Z - pos.Z)) });
             Send(new AnimationPacket { EntityId = World.Player.EntityId, Animation = 1 });
-            if (OpensWindow(block.BlockId) && !Volatile.Read(ref control.Keys).Input.Sneak)
+            if (OpensWindow(block.BlockId) && !sneak)
             {
                 if (await WaitUntilAsync(() => Volatile.Read(ref _windowsOpened) > before, TimeSpan.FromSeconds(2), ct).ConfigureAwait(false))
                 {
@@ -300,7 +324,7 @@ public sealed partial class MinecraftClient
                 return ActionResult.Fail("The server did not open that block.");
             }
             // Vanilla falls through to item-use for a non-interactable target (food, bow, bucket etc.).
-            if (Options.Profile.Data.Block(block.BlockId).Interactable && !Volatile.Read(ref control.Keys).Input.Sneak) return ActionResult.Success("used block");
+            if (Options.Profile.Data.Block(block.BlockId).Interactable && !sneak) return ActionResult.Success("used block");
             if (!UsesRightClickAction(HeldStack().Id)) return ActionResult.Success("used block");
         }
         var held = HeldStack();

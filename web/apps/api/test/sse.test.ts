@@ -88,7 +88,7 @@ beforeAll(async () => {
   t = await startApp(
     { bridge: { url: bridge.url } },
     {
-      hub: { lingerMs: 300, heartbeatMs: 250, sessionCheckMs: 150, ringSize: 8, backoffBaseMs: 50, backoffMaxMs: 100 },
+      hub: { upstreamTransport: 'sse', lingerMs: 300, heartbeatMs: 250, sessionCheckMs: 150, ringSize: 8, backoffBaseMs: 50, backoffMaxMs: 100 },
     },
   );
   fox = await fetchLogin(t.url, 'fox');

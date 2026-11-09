@@ -1,9 +1,10 @@
-/** MSW handlers: every route in ROUTES (registration order) plus the synthetic SSE stream. */
+/** MSW handlers: public HTTP routes plus the same synthetic live stream over WebSocket or SSE. */
 import { ROUTES, type RouteId } from '@mineclaw/contracts';
-import { delay, http, HttpResponse, sse, type HttpHandler } from 'msw';
+import { delay, http, HttpResponse, sse, ws, type HttpHandler } from 'msw';
 import { checkAccess, MockError, resolvers } from './api';
 import { liveStatus, setEmitter, statusResponse, hiveTree, tick } from './data/live';
 import { startStory } from './data/story';
+import { controlSocket } from './controlSocket';
 
 function errorResponse(e: unknown): Response {
   if (e instanceof MockError) {
@@ -85,10 +86,8 @@ function broadcast(event: string, data: unknown): void {
 
 setEmitter(broadcast);
 
-const stream = sse(ROUTES['live.stream'].path, ({ client, request }) => {
-  const c = client as unknown as Client;
+function attachLive(c: Client): void {
   clients.add(c);
-  request.signal.addEventListener('abort', () => clients.delete(c));
   const send = (event: string, data: unknown) => c.send({ event, id: String(++frameId), data });
   send('status', liveStatus());
   send('bots', statusResponse());
@@ -97,9 +96,26 @@ const stream = sse(ROUTES['live.stream'].path, ({ client, request }) => {
   timer ??= setInterval(() => {
     for (const [event, data] of tick()) broadcast(event, data);
   }, Number(process.env.NEXT_PUBLIC_MOCK_TICK_MS) || 1000);
+}
+
+const stream = sse(ROUTES['live.stream'].path, ({ client, request }) => {
+  const c = client as unknown as Client;
+  attachLive(c);
+  request.signal.addEventListener('abort', () => clients.delete(c));
 });
 
-export const handlers: HttpHandler[] = [
+const liveSocket = ws.link(/^wss?:\/\/[^/]+\/api\/live\/socket(?:\?.*)?$/).addEventListener('connection', ({ client }) => {
+  try { checkAccess('live.stream', null, 'GET'); }
+  catch { client.close(1008, 'Not signed in'); return; }
+  const c: Client = { send: (frame) => client.send(JSON.stringify(frame)) };
+  attachLive(c);
+  client.addEventListener('close', () => clients.delete(c));
+  client.addEventListener('message', () => client.close(1008, 'Read-only live stream'));
+});
+
+export const handlers = [
+  liveSocket,
+  controlSocket,
   stream,
   ...(Object.keys(ROUTES) as RouteId[]).map(routeHandler).filter((h): h is HttpHandler => h !== null),
 ];

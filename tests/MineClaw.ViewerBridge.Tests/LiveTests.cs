@@ -172,7 +172,8 @@ public class LiveTests
             for (int i = 0; i < 50 && Volatile.Read(ref calls) < 4; i++) await Task.Delay(20, timeout.Token);
             Assert.True(Volatile.Read(ref calls) >= 4);
             while (client.Reader.TryRead(out var frame)) Assert.NotEqual("entities", frame.Event);
-            Assert.Contains(h.Sup.Seen, request => request.Target == "/api/world/entities?since=2");
+            Assert.Contains("/api/world/entities?since=2", h.Sup.SocketWorldReads);
+            Assert.DoesNotContain(h.Sup.Seen, request => request.Target.StartsWith("/api/world/entities?", StringComparison.Ordinal));
         }
         finally { hub.Unsubscribe(client); }
     }
