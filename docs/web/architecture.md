@@ -195,7 +195,8 @@ Tests for these go in `tests/MineClaw.App.Tests` (or the closest existing test p
   while preserving a higher existing minimum, the configured maximum and the I/O minimum. Workers are created on demand.
   This gives socket continuations room alongside existing synchronous colony and inspection work: live testing on the
   16-CPU host found roughly 1.2-second publication gaps with only 115 ms of GC pause and queues exceeding 300 items.
-  Colony timer callbacks also coalesce so slow reconciliation cannot accumulate duplicate lock waiters.
+  Colony reconciliation and each script's watchdog signal polls also coalesce so a held colony lock cannot accumulate
+  duplicate timer waiters. Script wall-time checks remain active even while an earlier signal poll is blocked.
 
 Nest's public `/api` mirrors these one-to-one under friendlier paths, typed by `packages/contracts`. Examples:
 `/api/memory/:kind`, `/api/live/stream`, `/api/bots/:bot/chat`, `/api/world/chunks`. Nest adds auth, RBAC, CSRF, audit

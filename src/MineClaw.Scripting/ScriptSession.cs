@@ -94,6 +94,7 @@ public sealed partial class ScriptSession
     private readonly TaskCompletionSource<string> _done = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly Stopwatch _active = new();
     private ITimer? _watchdog;
+    private int _watchPolling;
     private IScriptRuntime? _runtime;
     private long _instructions, _sinceAction, _allocBase;
     private string[] _sourceLines = [];
@@ -288,7 +289,11 @@ public sealed partial class ScriptSession
         {
             if (Status is ScriptStatus.Running && _active.Elapsed > _o.MaxWall)
                 Stop($"time limit {ScriptText.Dur(_o.MaxWall)}", limit: true);
-            if (Status is ScriptStatus.Running) Signals.Poll(onScriptThread: false);
+            // story.during's condition can wait on the colony monitor. Do not stack another pool worker behind it every
+            // 200ms; the next timer tick checks current signals after it finishes. Wall limits above still run while blocked.
+            if (Status is not ScriptStatus.Running || Interlocked.CompareExchange(ref _watchPolling, 1, 0) != 0) return;
+            try { Signals.Poll(onScriptThread: false); }
+            finally { Volatile.Write(ref _watchPolling, 0); }
         }
         catch (Exception) { /* a timer callback: throwing would end the process (every in-process hive with it); next tick retries */ }
     }
