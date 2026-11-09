@@ -5,6 +5,25 @@ namespace MineClaw.ViewerBridge.Tests;
 public class PawnControlProxyTests
 {
     [Fact]
+    public void Handover_has_time_for_planning_without_extending_movement_timeouts()
+    {
+        Assert.Equal(TimeSpan.FromSeconds(15), SupervisorProxy.TimeoutFor("bodies/102/control/acquire"));
+        Assert.Equal(TimeSpan.FromSeconds(4), SupervisorProxy.TimeoutFor("bodies/102/control/input"));
+    }
+
+    [Fact]
+    public async Task Expired_control_preserves_the_conflict_and_recovery_message()
+    {
+        await using var h = await BridgeHost.StartAsync();
+        h.Sup.Routes["/api/bodies/102/control/input"] = _ => FakeSupervisor.Json(
+            """{"error":"Control session expired. Take control again."}""", 409);
+        var (status, body) = await h.PostAsync("/v1/sup/bodies/102/control/input", """{"session":"test-only","seq":1}""", roles: "story");
+        Assert.Equal(409, status);
+        Assert.Contains("conflict", body);
+        Assert.Contains("Take control again", body);
+    }
+
+    [Fact]
     public async Task Control_requires_story_and_forwards_only_the_signed_identity()
     {
         await using var h = await BridgeHost.StartAsync();

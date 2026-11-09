@@ -88,6 +88,7 @@ public static class SupervisorProxy
         "world/chunks" => TimeSpan.FromSeconds(10),
         "world/entities" => TimeSpan.FromSeconds(3),
         "admin/shard/import" => TimeSpan.FromSeconds(180),
+        _ when ControlPath(path) && path.EndsWith("/acquire", StringComparison.Ordinal) => TimeSpan.FromSeconds(15),
         _ when path.StartsWith("admin/", StringComparison.Ordinal) => TimeSpan.FromSeconds(60),
         _ when path.EndsWith("/vision/render", StringComparison.Ordinal) => TimeSpan.FromSeconds(12),
         _ when path.EndsWith(".png", StringComparison.Ordinal) => TimeSpan.FromSeconds(6),
@@ -208,6 +209,11 @@ public static class SupervisorProxy
         int status = (int)res.StatusCode;
         var bytes = await res.Content.ReadAsByteArrayAsync(ctx.RequestAborted);
         var (passThrough, msg, retryMs) = ReadUpstreamError(bytes, status, post);
+        if (status == 409 && post && ControlPath(path))
+        {
+            await ApiErrors.Write(ctx, 409, "conflict", msg);
+            return;
+        }
         if (passThrough)
         {
             ctx.Response.StatusCode = 400;

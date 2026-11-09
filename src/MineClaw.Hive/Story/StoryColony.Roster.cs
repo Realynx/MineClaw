@@ -29,6 +29,7 @@ public sealed partial class StoryColony
         {
             if (!Pawns.TryGetValue(pawn, out var p) || _leaving.ContainsKey(p.Name)) return false;
             _leaving[p.Name] = (Now, false);
+            RevokeHumanControl(p.Name);
             p.Queue.Clear();
             p.Drafted = false;
             Supersede(p, "leaving the colony");
@@ -71,7 +72,7 @@ public sealed partial class StoryColony
         lock (_lock)
         {
             _leaving.Remove(pawn);
-            _humanControlled.Remove(pawn);
+            ForgetHumanControl(pawn);
             if (!Pawns.Remove(pawn, out var p)) return;
             if (_current.Remove(pawn, out var cur)) Release(cur);
             StoryPorts.Unbind(pawn, this);

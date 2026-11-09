@@ -5,15 +5,36 @@ namespace MineClaw.Hive.Tests;
 public sealed class StoryHumanControlTests
 {
     [Fact]
+    public void Delayed_cleanup_cannot_clear_a_new_takeover_or_restart_its_script()
+    {
+        var (c, _, _) = StoryRig.Make();
+        var first = c.BeginHumanControl(c.P())!;
+        first.Revoke();
+        var second = c.BeginHumanControl(c.P())!;
+        Assert.NotSame(first, second);
+        int restarts = 0;
+        Assert.False(c.CompleteHumanControl(first, () => restarts++));
+        Assert.True(second.Active);
+        Assert.True(c.HumanControlled(c.P()));
+        Assert.Equal(0, restarts);
+        Assert.True(c.CompleteHumanControl(second, () => restarts++));
+        Assert.False(second.Active);
+        Assert.False(c.HumanControlled(c.P()));
+        Assert.Equal(1, restarts);
+    }
+
+    [Fact]
     public void Leaving_revokes_eligibility_and_a_removed_rejoined_account_has_no_old_human_ownership()
     {
         var (c, h, w) = StoryRig.Make(2);
         var pawn = c.P(1);
         Assert.True(c.CanHumanControl(pawn));
-        Assert.True(c.SetHumanControl(pawn, true));
+        var claim = c.BeginHumanControl(pawn)!;
+        Assert.True(claim.Active);
         var colonies = new StoryColonies(h);
         Assert.Null(colonies.RemovePawn(c, pawn).Error);
         Assert.False(c.CanHumanControl(pawn)); // the live adapter expires the lease even if input heartbeats continue
+        Assert.False(claim.Active);
         Assert.False(c.SetHumanControl(pawn, true));
         h.Lives[pawn] = PawnLive.Offline;
         c.Tick();

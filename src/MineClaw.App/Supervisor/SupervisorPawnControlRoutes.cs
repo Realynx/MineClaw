@@ -41,7 +41,7 @@ public sealed class SupervisorPawnControlRoutes(SupervisorOptions options, PawnC
             using var doc = JsonDocument.Parse(request.Body);
             var json = doc.RootElement;
             if (json.ValueKind != JsonValueKind.Object) throw new PawnControlException(400, "Control request must be an object.");
-            if (parts[4] == "acquire") return Reply(200, sessions.Acquire(body, owner, Text(json, "request_id")));
+            if (parts[4] == "acquire") return Reply(200, await sessions.AcquireAsync(body, owner, Text(json, "request_id")).WaitAsync(ct).ConfigureAwait(false));
             string session = Text(json, "session");
             switch (parts[4])
             {

@@ -2,6 +2,12 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using MineClaw.App.Supervisor;
 using MineClaw.Client;
+using MineClaw.Client.Tests;
+using MineClaw.Bot;
+using MineClaw.Bot.Game;
+using MineClaw.Agent.Events;
+using MineClaw.Agent.Tools;
+using MineClaw.Hive.Story;
 
 namespace MineClaw.App.Tests;
 
@@ -14,7 +20,8 @@ public sealed class PawnControlTests
     }
     private sealed class Body : IPawnControlBody
     {
-        public string Name => "maid_chan_101";
+        public string Name { get; init; } = "maid_chan_101";
+        public Action? BeginWork;
         public bool Online { get; set; } = true;
         public int Begins, Ends, Actions;
         public readonly List<PawnControlInput> Inputs = [];
@@ -23,7 +30,7 @@ public sealed class PawnControlTests
         public TaskCompletionSource? DiscreteAction;
         public PawnControlState State() => new(2, 64, 3, 15, -20, 0, 20, 18, 2, true);
         public PawnControlInventory Inventory() => new(0, "player", "Inventory", 46, 9, 9, 36, [], null);
-        public void Begin() => Begins++;
+        public void Begin() { Begins++; BeginWork?.Invoke(); }
         public void End() => Ends++;
         public void Input(PawnControlInput input) => Inputs.Add(input);
         public async Task<ActionResult> ActionAsync(PawnControlAction action, CancellationToken ct, CancellationToken holdRelease = default)
@@ -35,6 +42,79 @@ public sealed class PawnControlTests
             if (HoldAction) await Task.Delay(Timeout.Infinite, held.Token);
             return ActionResult.Success(action.Kind);
         }
+    }
+
+    [Fact]
+    public void The_lease_clock_starts_after_slow_director_handoff_and_inputs_never_resolve_again()
+    {
+        var clock = new Clock();
+        var body = new Body { BeginWork = () => clock.Now += TimeSpan.FromSeconds(12) };
+        int resolves = 0;
+        using var sessions = new PawnControlSessions(_ => ++resolves == 1 ? body : throw new InvalidOperationException("director lock unavailable"), clock, startTimer: false);
+        var lease = sessions.Acquire("101", "alice", "tab");
+        Assert.Equal(clock.Now.AddMilliseconds(PawnControlSessions.LeaseTimeoutMs), lease.ExpiresAt);
+        Assert.Equal(lease.Session, sessions.Input("101", "alice", lease.Session, new(1, 0, 0, 0, 0)).Session);
+        sessions.Release("101", "alice", lease.Session);
+        Assert.Equal(1, resolves);
+    }
+
+    [Fact]
+    public async Task Another_pawns_slow_acquisition_does_not_block_input_or_allow_duplicate_ownership()
+    {
+        using var entered = new ManualResetEventSlim();
+        using var proceed = new ManualResetEventSlim();
+        var first = new Body();
+        var second = new Body { Name = "maid_chan_102", BeginWork = () => { entered.Set(); proceed.Wait(TimeSpan.FromSeconds(5)); } };
+        using var sessions = new PawnControlSessions(name => name == "101" ? first : second, startTimer: false);
+        var lease = sessions.Acquire("101", "alice", "tab");
+        var pending = sessions.AcquireAsync("102", "bob", "other-tab");
+        try
+        {
+            Assert.True(entered.Wait(TimeSpan.FromSeconds(1)));
+            Assert.Same(pending, sessions.AcquireAsync("102", "bob", "other-tab"));
+            await Assert.ThrowsAsync<PawnControlException>(() => sessions.AcquireAsync("102", "alice", "third-tab"));
+            await Task.Run(() => sessions.Input("101", "alice", lease.Session, new(1, 0, 0, 0, 0))).WaitAsync(TimeSpan.FromSeconds(1));
+        }
+        finally { proceed.Set(); }
+        Assert.Equal(second.Name, (await pending.WaitAsync(TimeSpan.FromSeconds(1))).Body);
+        Assert.Equal(1, second.Begins);
+    }
+
+    [Fact]
+    public async Task Live_inputs_and_release_continue_while_colony_reconciliation_holds_its_lock()
+    {
+        using var server = new FakeServer();
+        await using var client = new MinecraftClient(new ClientOptions { Username = "maid_chan_101", ConnectionFactory = server.CreateClientConnection,
+            TickInterval = TimeSpan.FromMilliseconds(5), HostileAlertRadius = 0, AutoRespawn = false });
+        using var connectTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        await client.ConnectAsync(connectTimeout.Token);
+        var game = new MinecraftGameClient(client);
+        var body = new MineClaw.Bot.Bodies.Body("maid_chan_101", false, game, game, new ActivityManager(new ToolRegistry(), new EventQueue()));
+        var colony = new StoryColony(new ColonyMeta { Id = "latency" }, new SupervisorStoryRouteTests.Host(new SupervisorStoryRouteTests.World()));
+        colony.Joined([body.Name]);
+        var live = new LivePawnControlBody(body, colony);
+        var other = new Body { Name = "maid_chan_102" };
+        using var sessions = new PawnControlSessions(name => name == "101" ? live : other, startTimer: false);
+        var lease = sessions.Acquire("101", "alice", "tab");
+        var otherLease = sessions.Acquire("102", "bob", "other-tab");
+        var directorLock = typeof(StoryColony).GetField("_lock", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(colony)!;
+        using var entered = new ManualResetEventSlim();
+        using var proceed = new ManualResetEventSlim();
+        var reconciliation = new Thread(() => { lock (directorLock) { entered.Set(); proceed.Wait(TimeSpan.FromSeconds(5)); } });
+        reconciliation.Start();
+        try
+        {
+            Assert.True(entered.Wait(TimeSpan.FromSeconds(1)));
+            await Task.Run(() =>
+            {
+                for (int seq = 0; seq < 20; seq++) sessions.Input("101", "alice", lease.Session, new(seq, 0, 0, 0, 0));
+                sessions.Release("101", "alice", lease.Session);
+                sessions.Input("102", "bob", otherLease.Session, new(1, 0, 0, 0, 0));
+            }).WaitAsync(TimeSpan.FromSeconds(1));
+            Assert.False(client.HumanControlled);
+        }
+        finally { proceed.Set(); reconciliation.Join(); }
+        Assert.True(SpinWait.SpinUntil(() => !colony.HumanControlled(body.Name), TimeSpan.FromSeconds(2)));
     }
 
     [Fact]

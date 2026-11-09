@@ -51,10 +51,19 @@ public sealed class PawnControlSessions : IDisposable
         public CancellationTokenSource? HoldRelease;
         public Task<PawnControlActionReply>? Action;
         public PawnControlAction? ActionRequest;
+        public readonly HashSet<string> Aliases = new(StringComparer.OrdinalIgnoreCase) { body.Name };
+    }
+
+    private sealed class Acquisition(IPawnControlBody body, string owner, string request, string alias)
+    {
+        public readonly IPawnControlBody Body = body;
+        public readonly string Owner = owner, Request = request, Alias = alias;
+        public readonly TaskCompletionSource<PawnControlReply> Done = new(TaskCreationOptions.RunContinuationsAsynchronously);
     }
 
     private readonly object _lock = new();
     private readonly Dictionary<string, Lease> _leases = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, Acquisition> _acquiring = new(StringComparer.OrdinalIgnoreCase);
     private readonly Func<string, IPawnControlBody?> _resolve;
     private readonly TimeProvider _time;
     private readonly ITimer? _timer;
@@ -67,24 +76,63 @@ public sealed class PawnControlSessions : IDisposable
         if (startTimer) _timer = _time.CreateTimer(_ => Sweep(), null, TimeSpan.FromMilliseconds(100), TimeSpan.FromMilliseconds(100));
     }
 
-    public PawnControlReply Acquire(string body, string owner, string requestId)
+    public PawnControlReply Acquire(string body, string owner, string requestId) => AcquireAsync(body, owner, requestId).GetAwaiter().GetResult();
+
+    public Task<PawnControlReply> AcquireAsync(string body, string owner, string requestId)
     {
+        // Resolving membership and interrupting the director can wait behind a long colony reconciliation.
+        // Neither may run under the monitor used by another pawn's 20 Hz inputs or the deadman timer.
+        var live = _resolve(body) ?? throw new PawnControlException(404, "This body is not an available colony pawn.");
         lock (_lock)
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
             SweepLocked();
-            var live = _resolve(body) ?? throw new PawnControlException(404, "This body is not an available colony pawn.");
-            if (!live.Online) throw new PawnControlException(409, "The pawn is offline.");
             if (_leases.TryGetValue(live.Name, out var existing))
             {
                 if (existing.Owner != owner || existing.Request != requestId) throw new PawnControlException(409, "This pawn is already controlled by another browser session.");
-                return Reply(existing, inventory: true);
+                existing.Aliases.Add(body);
+                return Task.FromResult(Reply(existing, inventory: true));
             }
-            var lease = new Lease(live, owner, requestId, _time.GetUtcNow());
-            try { live.Begin(); }
-            catch { try { live.End(); } catch { } throw; }
-            _leases.Add(live.Name, lease);
-            return Reply(lease, inventory: true);
+            if (_acquiring.TryGetValue(live.Name, out var pending))
+            {
+                if (pending.Owner != owner || pending.Request != requestId) throw new PawnControlException(409, "This pawn is already being taken over by another browser session.");
+                return pending.Done.Task;
+            }
+            var acquisition = new Acquisition(live, owner, requestId, body);
+            _acquiring.Add(live.Name, acquisition);
+            _ = Task.Run(() => FinishAcquisition(acquisition));
+            return acquisition.Done.Task;
+        }
+    }
+
+    private void FinishAcquisition(Acquisition acquisition)
+    {
+        var live = acquisition.Body;
+        try
+        {
+            lock (_lock) ObjectDisposedException.ThrowIf(_disposed, this);
+            if (!live.Online) throw new PawnControlException(409, "The pawn is offline.");
+            live.Begin();
+            lock (_lock)
+            {
+                ObjectDisposedException.ThrowIf(_disposed, this);
+                var lease = new Lease(live, acquisition.Owner, acquisition.Request, _time.GetUtcNow());
+                lease.Aliases.Add(acquisition.Alias);
+                var reply = Reply(lease, inventory: true);
+                _leases.Add(live.Name, lease);
+                _acquiring.Remove(live.Name);
+                acquisition.Done.TrySetResult(reply);
+            }
+        }
+        catch (Exception ex)
+        {
+            try { live.End(); } catch { }
+            acquisition.Done.TrySetException(ex);
+        }
+        finally
+        {
+            lock (_lock)
+                if (_acquiring.TryGetValue(live.Name, out var current) && ReferenceEquals(current, acquisition)) _acquiring.Remove(live.Name);
         }
     }
 
@@ -178,8 +226,8 @@ public sealed class PawnControlSessions : IDisposable
     private Lease Find(string body, string owner, string token)
     {
         SweepLocked();
-        string name = _leases.ContainsKey(body) ? body : _resolve(body)?.Name ?? body;
-        _leases.TryGetValue(name, out var lease);
+        // Alias resolution was captured on acquire. A heartbeat must never re-enter the colony's roster lock.
+        var lease = _leases.GetValueOrDefault(body) ?? _leases.Values.FirstOrDefault(l => l.Aliases.Contains(body));
         if (lease == null || lease.Owner != owner || !SameToken(lease.Token, token)) throw new PawnControlException(409, "Control session expired or belongs to another browser. Take control again.");
         return lease;
     }

@@ -13,8 +13,11 @@ public sealed class LivePawnControlBody(Body body, StoryColony colony) : IPawnCo
 {
     private MinecraftClient Client => body.Client ?? throw new InvalidOperationException("No game client for this pawn.");
     private bool _begun, _restartScript;
+    private StoryHumanControlClaim? _claim;
     public string Name => body.Name;
-    public bool Online => Client.IsPlaying && (!_begun || Client.HumanControlled) && colony.CanHumanControl(Name);
+    public bool Online => Client.IsPlaying && (_begun
+        ? Client.HumanControlled && _claim is { Active: true } && colony.Meta.Active
+        : colony.CanHumanControl(Name));
 
     public static IPawnControlBody? Resolve(BotHost bot, StoryColonies? colonies, string name)
     {
@@ -45,7 +48,8 @@ public sealed class LivePawnControlBody(Body body, StoryColony colony) : IPawnCo
     public void Begin()
     {
         if (_begun) return;
-        if (!Online || !colony.SetHumanControl(Name, true)) throw new PawnControlException(409, "The pawn is no longer available.");
+        if (!Client.IsPlaying || colony.BeginHumanControl(Name) is not { } claim) throw new PawnControlException(409, "The pawn is no longer available.");
+        _claim = claim;
         _begun = true;
         _restartScript = body.Scripts?.Current is not { Status: ScriptStatus.Paused };
         // End the lane so its old in-flight primitive cannot replay after the lease ends. The
@@ -69,8 +73,16 @@ public sealed class LivePawnControlBody(Body body, StoryColony colony) : IPawnCo
         try { Client.EndHumanControl(); }
         finally
         {
-            colony.SetHumanControl(Name, false);
-            if (_restartScript && Online) colony.Host.StartPawn(Name, colony.Id);
+            if (_claim is { } claim)
+            {
+                claim.Revoke();
+                // Colony reconciliation can hold its lock for seconds. It must never hold the global browser
+                // session lock or delay this client's key release. Claim identity protects a later takeover.
+                _ = Task.Run(() => colony.CompleteHumanControl(claim, () =>
+                {
+                    if (_restartScript && Client.IsPlaying) colony.Host.StartPawn(Name, colony.Id);
+                }));
+            }
         }
     }
 }

@@ -46,6 +46,10 @@ lane when released. An offline, hidden or disconnected browser cannot keep drivi
 exclusive session expires after 3 seconds without renewed input. Another browser cannot take over the same pawn until it
 is released. Leaving inventory first returns cursor items through the existing inventory handling.
 
+Initial handover can wait for a colony planning pass; its lease clock starts when handover finishes. Ongoing inputs check
+a separate ownership claim without taking the director's planning lock. Release stops the client's controls immediately;
+colony cleanup checks that same claim before restoring AI, so delayed cleanup cannot interrupt a newer takeover.
+
 The four authenticated POST routes under `/api/bodies/:body/control/` acquire, input, action and release a session. They
 require Story permission and CSRF; the bridge binds identity to the signed user. Inputs and actions have separate monotonic
 sequences. Browser input is latest-only with at most one movement request outstanding. Held actions acknowledge promptly

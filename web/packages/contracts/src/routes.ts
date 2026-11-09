@@ -1148,6 +1148,7 @@ export const ROUTES = {
   'bodies.controlAcquire': post('/api/bodies/:body/control/acquire', {
     access: 'story', params: BodyParams, body: PawnControlAcquireRequest, response: PawnControlSession,
     responseKind: 'json', bridge: b('/v1/sup/bodies/{body}/control/acquire', 'POST'),
+    timeoutMs: 20_000, // Initial handover can wait for the current colony planning pass; movement never does.
     supervisor: '/api/bodies/{body}/control/acquire', audit: null,
     summary: 'Take direct control of an online colony pawn; requestId makes acquisition retries idempotent.',
   }),
