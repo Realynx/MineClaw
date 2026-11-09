@@ -3,6 +3,9 @@ import { PawnControlActionRequest, PawnControlInputRequest, PawnControlReleaseRe
 import { ws, type WebSocketHandlerConnection } from 'msw';
 import { checkAccess, currentUser, pawnControl } from './api';
 
+// The supervisor serializes the entire typed envelope, including its `data` payload, as snake_case.
+const controlCase = { opaque: new Set<string>() };
+
 export function connectMockControl({ client, info }: Pick<WebSocketHandlerConnection, 'client' | 'info'>): void {
   const protocols = Array.isArray(info.protocols) ? info.protocols : [info.protocols ?? ''];
   const csrf = protocols.find((p) => p.startsWith('csrf.'))?.slice(5) ?? null;
@@ -18,7 +21,7 @@ export function connectMockControl({ client, info }: Pick<WebSocketHandlerConnec
 
   let session: string | null = null, inputSeq = -1;
   const created = Date.now();
-  const send = (frame: unknown) => client.send(JSON.stringify(toSnake(frame)));
+  const send = (frame: unknown) => client.send(JSON.stringify(toSnake(frame, controlCase)));
   const snapshot = () => {
     authorize();
     if (!session) throw new Error('Attach a control session first');
@@ -28,7 +31,8 @@ export function connectMockControl({ client, info }: Pick<WebSocketHandlerConnec
   };
   const state = (inventory = false) => {
     const value = snapshot();
-    if (!inventory) delete value.inventory;
+    if (!inventory) value.inventory = null;
+    value.action ??= null;
     send({ type: 'state', sampledAtMs: Date.now(), data: value });
   };
   const fail = (error: unknown) => {

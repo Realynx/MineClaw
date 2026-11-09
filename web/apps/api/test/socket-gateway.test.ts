@@ -7,6 +7,17 @@ import { fakeBridge, fetchLogin, json, KEY, ORIGIN, sleep, startApp, type TestAp
 let app: TestApp, bridge: Awaited<ReturnType<typeof fakeBridge>>, player: Awaited<ReturnType<typeof fetchLogin>>;
 const upstreams = new Set<WebSocket>(), frames: unknown[] = [], identities: unknown[] = [];
 const server = new WebSocketServer({ noServer: true, perMessageDeflate: false });
+// Literal supervisor wire data: the control relay is transparent, unlike the viewer event normalizer.
+// Do not derive this with toSnake(envelope): its opaque `data` would leave camelCase test payloads unchanged.
+const controlState = { x: 225, y: 65, z: 379, yaw: 90, pitch: 0, dim: 0, hp: 20, food: 18, held_slot: 2, on_ground: true, window_id: 0 };
+const stateFrame = { type: 'state', sampled_at_ms: 1_794_182_403_123, data: {
+  session: 'lease', body: 'maid_chan_105', expires_at: '2026-11-09T02:20:03Z', input_timeout_ms: 350, lease_timeout_ms: 3000,
+  state: controlState, action: { seq: 1, pending: false, ok: true, message: 'action released' },
+} };
+const actionFrame = { type: 'action', request_id: 'click', data: { ok: true, message: 'inventory', pending: false,
+  state: controlState, inventory: { window_id: 0, kind: 'inventory', title: '', slot_count: 45, container_slots: 0,
+    main_start: 9, hotbar_start: 36, slots: [{ slot: 38, id: 5, meta: 0, count: 12 }], cursor: null },
+} };
 beforeAll(async () => {
   bridge = await fakeBridge((_req, res) => json(res, 200, { ok: true, supervisor: 'up' }));
   const verifier = new SignatureVerifier(KEY);
@@ -20,7 +31,8 @@ beforeAll(async () => {
       ws.on('message', (raw) => {
         const frame = JSON.parse(socketText(raw)) as { type: string };
         frames.push(frame);
-        if (frame.type === 'attach') ws.send(JSON.stringify({ type: 'state', data: { session: 'lease', state: { x: 1 } } }));
+        if (frame.type === 'attach') ws.send(JSON.stringify(stateFrame));
+        if (frame.type === 'action') ws.send(JSON.stringify(actionFrame));
         // Deliberately withhold input replies. Subsequent input frames must still arrive.
       });
     });
@@ -63,7 +75,8 @@ it('forwards signed ordered frames immediately without awaiting input acknowledg
   await expect.poll(() => frames.length).toBe(4);
   expect(frames).toEqual([{ type: 'attach', session: 'lease' }, { type: 'input', session: 'lease', seq: 1 }, { type: 'input', session: 'lease', seq: 2 }, { type: 'action', request_id: 'click', session: 'lease', seq: 1 }]);
   expect(identities.at(-1)).toEqual({ path: '/v1/sup/bodies/maid_chan_105/control/socket', identity: { user: 'sky', player: 'sky_mc', roles: 'story,viewer' }, cookie: undefined, protocol: undefined });
-  await expect.poll(() => received.length).toBe(1);
+  await expect.poll(() => received.length).toBe(2);
+  expect(received).toEqual([stateFrame, actionFrame]);
   ws.close();
   await expect.poll(() => upstreams.size).toBe(0);
 });

@@ -7,6 +7,8 @@ const Incoming = z.discriminatedUnion('type', [
   z.object({ type: z.literal('action'), requestId: z.string(), data: PawnControlActionResponse }),
   z.object({ type: z.literal('error'), message: z.string() }),
 ]);
+// These envelopes contain a typed control DTO, unlike opaque domain `data` in general API responses.
+const controlCase = { opaque: new Set<string>() };
 type PendingAction = { resolve: (reply: PawnControlActionResponse) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> };
 
 /** One ordered stream; neither movement nor mouse release waits for an action acknowledgement. */
@@ -75,7 +77,7 @@ export class PawnControlSocket {
     if (this.stopped) return;
     try {
       if (typeof raw !== 'string' || raw.length > 262_144) throw new Error('Invalid control frame.');
-      const message = Incoming.parse(toCamel(JSON.parse(raw) as unknown));
+      const message = Incoming.parse(toCamel(JSON.parse(raw) as unknown, controlCase));
       if (message.type === 'error') { this.fail(message.message); return; }
       if (message.type === 'state') {
         if (message.data.session !== this.session.session) throw new Error('Wrong control session.');

@@ -25,7 +25,7 @@ class FakeSocket {
   send(value: string) { this.sent.push(value); }
   close() { this.readyState = 3; }
   open() { this.readyState = 1; this.onopen?.(new Event('open')); }
-  frame(value: unknown) { this.onmessage?.(new MessageEvent('message', { data: JSON.stringify(toSnake(value)) })); }
+  frame(value: unknown) { this.onmessage?.(new MessageEvent('message', { data: JSON.stringify(toSnake(value, { opaque: new Set<string>() })) })); }
   reply(seq: number, data: Partial<PawnControlActionResponse> = {}) {
     this.frame({ type: 'action', requestId: String(seq), data: { ok: true, message: '', state: session.state, ...data } });
   }
@@ -79,6 +79,54 @@ it('attaches with CSRF protocols and keeps 20 Hz movement independent of respons
   page.unmount();
   expect(socket.readyState).toBe(3);
   expect(api).toHaveBeenCalledWith('bodies.controlRelease', expect.objectContaining({ body: { session: session.session } }));
+});
+
+it('accepts a literal supervisor state frame with snake_case payload fields and null optional snapshots', async () => {
+  const page = renderHook(() => usePawnControl('102'));
+  await act(() => vi.advanceTimersByTimeAsync(1));
+  const socket = FakeSocket.instances[0]!;
+  await act(async () => {
+    socket.open();
+    // Keep this wire fixture literal: converting a camelCase fixture with the same helper would hide decoding mistakes.
+    socket.onmessage?.(new MessageEvent('message', { data: JSON.stringify({
+      type: 'state', sampled_at_ms: 1_794_241_000_000,
+      data: {
+        session: 'private-test-session', body: '102', expires_at: '2026-11-09T08:16:43.1234567+00:00',
+        input_timeout_ms: 350, lease_timeout_ms: 3000,
+        state: { x: 229, y: 64, z: 381, yaw: 90, pitch: -10, dim: 0, hp: 20, food: 18, held_slot: 6, on_ground: false, window_id: 0 },
+        inventory: null, action: null,
+      },
+    }) }));
+    await Promise.resolve();
+  });
+  expect(page.result.current.status).toBe('active');
+  expect(page.result.current.error).toBe('');
+  expect(page.result.current.state).toMatchObject({ x: 229, heldSlot: 6, onGround: false, windowId: 0 });
+  expect(page.result.current.camera.current.position(performance.now())).toMatchObject({ x: 229, y: 64, z: 381, dim: 0 });
+  await act(() => vi.advanceTimersByTimeAsync(50));
+  expect(socket.frames('input')).toHaveLength(1);
+  page.unmount();
+});
+
+it('decodes a literal supervisor action response including nested inventory layout fields', async () => {
+  const { page, socket } = await connect();
+  const reply = page.result.current.action({ kind: 'inventory' });
+  await act(async () => {
+    socket.onmessage?.(new MessageEvent('message', { data: JSON.stringify({
+      type: 'action', request_id: '1', data: {
+        ok: true, message: 'inventory', pending: false,
+        state: { x: 1, y: 64, z: 2, yaw: 90, pitch: -10, dim: 0, hp: 20, food: 18, held_slot: 2, on_ground: true, window_id: 7 },
+        inventory: { window_id: 7, kind: 'chest', title: 'Chest', slot_count: 63, container_slots: 27, main_start: 27, hotbar_start: 54,
+          slots: [{ slot: 54, id: 5, meta: 1, count: 32 }], cursor: null },
+      },
+    }) }));
+    await reply;
+  });
+  expect(page.result.current.status).toBe('active');
+  expect(page.result.current.error).toBe('');
+  expect(page.result.current.inventory).toEqual({ ...inventory, slots: [{ slot: 54, id: 5, meta: 1, count: 32 }], cursor: null });
+  expect(page.result.current.inventoryAt).toBe(Date.now());
+  page.unmount();
 });
 
 it('sends click aim immediately before the action and keeps moving while its acknowledgement is pending', async () => {
