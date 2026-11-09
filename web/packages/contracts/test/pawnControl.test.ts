@@ -12,6 +12,7 @@ describe('pawn control contracts', () => {
       expect(route.access).toBe('story');
       expect(route.audit).toBeNull();
       expect(route.method).toBe('POST');
+      expect(route.bridge?.method).toBe('POST');
       expect(C.apiPath(id, { body: 'maid_chan_109' })).toBe(`/api/bodies/maid_chan_109/control/${op.toLowerCase()}`);
       expect(C.bridgePath(id, { body: 'maid_chan_109' })).toBe(`/v1/sup/bodies/maid_chan_109/control/${op.toLowerCase()}`);
     }
