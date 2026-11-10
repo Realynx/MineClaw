@@ -238,6 +238,14 @@ public sealed class ZoneState
     public int? QuarryTop { get; set; }
     /// <summary>A quarry: the layer it has reached (0 = the top), a hint its scan starts from.</summary>
     public int QuarryLayer { get; set; }
+    /// <summary>A quarry: the cells its finished <c>place</c> jobs put a block in that is no stair step (seals, plugs), and on an upgrade
+    /// the pawns' blocks already in or beside it. Its own: never swept as strays (StoryColony.QuarrySweep.cs). Null = none.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<P3>? QuarryPlaced { get; set; }
+    /// <summary>A quarry: its lowest bottom (one over the bedrock) when every column of it was last in view; stands in for a column out
+    /// of view, which reads as air (no bedrock). Null = not seen whole yet.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? QuarryBottom { get; set; }
     /// <summary>Preserve: the zone keeps its blocks as its snapshot has them (StoryColony.Preserve.cs); null = off. Always on for a zone of
     /// kind <c>preserve</c>.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
@@ -271,6 +279,7 @@ public sealed class ZoneState
     {
         Id = id, Kind = Kind, Name = Name, Plant = Plant, Sow = Sow, Harvest = Harvest, Mode = Mode, QuarryTop = QuarryTop, QuarryLayer = QuarryLayer,
         Preserve = Preserve?.Copy(),
+        QuarryPlaced = QuarryPlaced?.ToList(), QuarryBottom = QuarryBottom,
         Bills = Bills?.Select(b => new GrowBill { Id = b.Id, Plant = b.Plant, Mode = b.Mode, Target = b.Target, Done = b.Done, Paused = b.Paused }).ToList(),
     };
 }
@@ -573,6 +582,8 @@ public sealed class ColonyMeta
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public List<OreFrontier>? OreFrontiers { get; set; }
     /// <summary>Cancelled automatic ore extensions stay cancelled across neighboring digs and restarts.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public List<P3>? CancelledOre { get; set; }
+    /// <summary>The pawns' blocks already in or beside quarries were taken as theirs once (StoryColony.QuarrySweep.cs); false for older saves.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] public bool QuarrySealsAdopted { get; set; }
 }
 
 public sealed record OreWorkOrigin(string Source, string Id, string Type);

@@ -27,7 +27,8 @@ public sealed partial class StoryColony
         _straysSwept = true;
         IReadOnlyList<(P3 At, int Id, string Bot)> placed;
         try { placed = Host.PlacedByBots(); } catch (Exception) { return; }
-        var cand = StrayCandidates(w, home, placed);
+        AdoptQuarrySeals(placed); // StoryColony.QuarrySweep.cs
+        var cand = StrayCandidates(w, placed, at => NearHome(home, at));
         var builds = BuildCellSet(includeReplacementAir: true); // intentional air owns historical strays; live access is adopted separately
         var found = Clusters(cand.Keys).Where(g => LooksTemporary(g, builds)).SelectMany(g => g).Take(StrayMax).Select(at => cand[at]).ToList();
         var (lids, unproven) = LidStrays(w, placed, builds, found);
@@ -70,15 +71,16 @@ public sealed partial class StoryColony
         return (queued, unproven);
     }
 
-    /// <summary>The colony's pawns' standing scaffold-kind blocks near home that nothing else claims (not registered, not designated, not
-    /// in a quarry).</summary>
-    private Dictionary<P3, TempBlockState> StrayCandidates(IStoryWorld w, P3 home, IReadOnlyList<(P3 At, int Id, string Bot)> placed)
+    /// <summary>The colony's pawns' standing scaffold-kind blocks <paramref name="near"/> (home, or a quarry just done) that nothing else
+    /// claims (not registered, not designated, not a quarry's own).</summary>
+    private Dictionary<P3, TempBlockState> StrayCandidates(IStoryWorld w, IReadOnlyList<(P3 At, int Id, string Bot)> placed, Func<P3, bool> near)
     {
         var known = (Meta.TempBlocks ?? []).Select(t => t.At).Concat(Designations.Where(d => d.At != null).Select(d => d.At!.Value)).ToHashSet();
+        var own = QuarryOwnCells();
         var cand = new Dictionary<P3, TempBlockState>();
         foreach (var (at, id, bot) in placed)
         {
-            if (!Pawns.ContainsKey(bot) || !TempKinds.Contains(id) || known.Contains(at) || !NearHome(home, at) || InQuarry(at)) continue;
+            if (!Pawns.ContainsKey(bot) || !TempKinds.Contains(id) || known.Contains(at) || !near(at) || InQuarry(w, at, own)) continue;
             if (!w.Loaded(at.X, at.Z) || !SameTempBlock(id, w.Block(at.X, at.Y, at.Z).Id)
                 || PreservedTemp(at, w.Block(at.X, at.Y, at.Z).Id)) continue;
             cand[at] = new TempBlockState { At = at, Id = id, Pawn = bot, Kind = "stray", Since = Now };
@@ -88,9 +90,13 @@ public sealed partial class StoryColony
 
     private static bool NearHome(P3 home, P3 at) => Math.Abs(at.X - home.X) <= StrayRange && Math.Abs(at.Z - home.Z) <= StrayRange;
 
-    /// <summary>In a quarry's columns or right beside them (its stair steps and hazard seals are the quarry's own).</summary>
-    private bool InQuarry(P3 at) => Zones.Any(z => IsQuarry(z) && (z.Contains(at.X, at.Z) || z.Contains(at.X + 1, at.Z) || z.Contains(at.X - 1, at.Z)
-        || z.Contains(at.X, at.Z + 1) || z.Contains(at.X, at.Z - 1)));
+    /// <summary>A quarry's own block, never a stray: a cell of its stair or a seal its place jobs put there (<paramref name="own"/>,
+    /// StoryColony.QuarrySweep.cs), or a block in or beside a quarry that holds back lava or water. Every block in or beside a quarry was
+    /// skipped before, because its seals were recorded nowhere: a pawn's pillar left in the pit stood for good. A block walling a cave
+    /// off from it is kept the same way (a seal whose place job reported failure after the block went in is recorded nowhere).</summary>
+    private bool InQuarry(IStoryWorld w, P3 at, HashSet<P3> own) =>
+        own.Contains(at) || Zones.FirstOrDefault(z => IsQuarry(z) && BesideQuarry(z, at)) is { } qz
+        && (LiquidBeside(w, at) != null || WallsOffCave(w, qz, at));
 
     /// <summary>A small cluster or one column, and none of it a build's cell.</summary>
     private static bool LooksTemporary(List<P3> group, HashSet<P3> buildCells)

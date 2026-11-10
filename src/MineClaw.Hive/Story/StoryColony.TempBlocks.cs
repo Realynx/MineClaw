@@ -88,6 +88,7 @@ public sealed partial class StoryColony
         if (Meta.TempBlocks is { Count: > 0 } temps)
             foreach (var t in temps.ToList()) TempCheck(w, t, cells);
         if (!_straysSwept) SweepStrays(w);
+        SweepDoneQuarries(w); // StoryColony.QuarrySweep.cs
         AlertQueuedTemps();
         AlertLeftTemps();
     }

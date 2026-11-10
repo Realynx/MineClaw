@@ -75,6 +75,27 @@ describe('zone paint preview', () => {
     expect(ext.zones[0]!.plant).toBe('wheat');
   });
 
+  it('a paint or erase that would cost a quarry its stair is no preview: the label says why', () => {
+    const zs = [
+      zone('q', 'mine', [10, 10, 13, 13], { mode: 'quarry' }),
+      zone('o', 'mine', [10, 18, 13, 19], { mode: 'ores' }),
+    ];
+    const ell = zonePreview(zs, add('mine'), [10, 14, 11, 15], 63, null, undefined);
+    expect(ell).toBeNull();
+    expect(previewLabel(add('mine'), ell, 4)).toMatch(
+      /^Quarry q would lose its stair.*Nothing changed: paint the new part/,
+    );
+    const erase: ZoneTool = { kind: 'zone', id: ERASE_ANY, op: 'remove' };
+    const notch = zonePreview(zs, erase, [11, 10, 12, 10], 63, null, undefined);
+    expect(previewLabel(erase, notch, 2)).toContain('only whole rows or columns can come off its sides');
+    const merge = zonePreview(zs, add('mine'), [10, 14, 13, 17], 63, null, undefined);
+    expect(previewLabel(add('mine'), merge, 16)).toContain('Quarry q and ores-only zone o would merge');
+    // A whole row off a side is fine, and the next refusal-free preview shows its own label again.
+    const row = zonePreview(zs, erase, [10, 10, 13, 10], 63, null, undefined)!;
+    expect(previewLabel(erase, row, 4)).toMatch(/^erase 4 cells/);
+    expect(previewLabel(add('farm'), null, 1)).toBe('too large');
+  });
+
   it('a zone outline goes around the whole merged shape', () => {
     const cells = new Set([cellKey(0, 0), cellKey(1, 0), cellKey(0, 1)]); // an L
     const seg = outlineOf(cells);

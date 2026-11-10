@@ -8,6 +8,7 @@ import {
   eraseZones,
   isOverlayZone,
   paintZones,
+  quarryPaintRefusal,
   rectCells,
   waterColumns,
   zoneCellSet,
@@ -87,6 +88,9 @@ export function zoneBody(
 }
 
 let seq = 0;
+/** Why the last {@link zonePreview} came back null when the director refuses it with a reason (a quarry's shape), else null. */
+let refused: string | null = null;
+
 /** What the paint or erase would make of the colony's zones (null when the director would refuse it). */
 export function zonePreview(
   zones: readonly StoryZone[],
@@ -104,6 +108,23 @@ export function zonePreview(
     Math.max(rect[0], rect[2]),
     Math.max(rect[1], rect[3]),
   ] as const;
+  const out = zoneChange(zones, tool, r, level, plant, into, water, newId);
+  // Costing a quarry its stair (or merging it with an ores-only zone) is refused: nothing is drawn, the label says why.
+  refused = out && quarryPaintRefusal(zones, out);
+  return refused ? null : out;
+}
+
+/** The paint or erase itself (null when the painter throws: too large, nothing to paint). */
+function zoneChange(
+  zones: readonly StoryZone[],
+  tool: ZoneTool,
+  r: ZoneRect,
+  level: number,
+  plant: string | null,
+  into: string | number | undefined,
+  water: ReadonlySet<number> | null | undefined,
+  newId: () => string,
+): ZonePaintOut<StoryZone> | null {
   try {
     if (tool.op === 'remove') return eraseZones(zones, tool.id === ERASE_ANY ? null : tool.id, r, newId);
     return paintZones(
@@ -130,7 +151,7 @@ export function zonePreview(
 
 /** The preview's line under the cursor: the cells and what happens to the zones. */
 export function previewLabel(tool: ZoneTool, out: ZonePaintOut<StoryZone> | null, cells: number): string {
-  if (!out) return tool.id === 'fish' && tool.op === 'add' ? 'no still water here' : 'too large';
+  if (!out) return refused ?? (tool.id === 'fish' && tool.op === 'add' ? 'no still water here' : 'too large');
   if (tool.op === 'remove') {
     const n = out.removedCells.size;
     return n ? `erase ${n} cell${n === 1 ? '' : 's'} · ${describeZonePaint(out.result)}` : 'nothing to erase here';

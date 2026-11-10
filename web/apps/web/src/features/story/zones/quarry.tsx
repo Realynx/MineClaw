@@ -3,9 +3,16 @@
 /**
  * Quarries (docs/web/story-mode.md "Quarries"): the Quarry tool's mode (Quarry: everything to bedrock with a spiral stair, the
  * default; or Ores only), the stair drawn on the map (the drag preview and the quarry zones), and the Quarries window beside the
- * Colony tab (progress, depth, the stair, the mode).
+ * Colony tab (progress, depth, the stair, the mode, what it leaves standing).
  */
-import { quarryRing, quarryStep, zoneCellSet, type StoryColonyState, type StoryZone } from '@mineclaw/contracts';
+import {
+  quarryRing,
+  quarryStep,
+  zoneCellSet,
+  type StoryColonyState,
+  type StoryQuarry,
+  type StoryZone,
+} from '@mineclaw/contracts';
 import { Pickaxe } from 'lucide-react';
 import { useSyncExternalStore } from 'react';
 import { cn } from '@/lib/utils';
@@ -145,6 +152,44 @@ export function drawQuarries(ctx: CanvasRenderingContext2D, zones: readonly Stor
   }
 }
 
+/** Why a cell of the quarry stays, by the bot's kind (`StoryQuarry.left`). */
+const LEFT_WORDS: Record<string, string> = {
+  lava: 'beside lava',
+  water: 'beside water',
+  cave: 'walling off a cave',
+  sand: 'under sand or gravel',
+  pool: 'liquid closed in by rock',
+  walled: 'walled in',
+  protected: 'protected',
+  kept: 'kept (removal cancelled)',
+  danger: 'where a pawn met danger',
+};
+
+/** What a quarry leaves standing apart from its stair: the count by kind, and the cells (up to 64) when opened. */
+function QuarryLeftovers({ q }: { q: StoryQuarry }) {
+  const kinds = Object.entries(q.left ?? {})
+    .filter(([k, n]) => k !== 'step' && n > 0)
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  if (!kinds.length) return null;
+  const total = kinds.reduce((s, [, n]) => s + n, 0);
+  return (
+    <details className="text-subtle" data-testid="quarry-left">
+      <summary className="cursor-pointer">
+        {total} cell(s) left standing: {kinds.map(([k, n]) => `${n} ${LEFT_WORDS[k] ?? k}`).join(', ')}
+      </summary>
+      {q.leftovers?.length ? (
+        <ul className="mt-1 max-h-32 space-y-0.5 overflow-y-auto tabular-nums">
+          {q.leftovers.map((c) => (
+            <li key={c.at.join(',')}>
+              {c.at.join(', ')} · {LEFT_WORDS[c.kind] ?? c.kind}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </details>
+  );
+}
+
 /** The Quarries window beside the Colony tab: each quarry's progress, depth, stair and mode. */
 export function QuarryZonesPanel({
   state,
@@ -201,8 +246,9 @@ export function QuarryZonesPanel({
                   <div className="text-subtle">
                     From y {q.top} to y {q.bottom} · stair of {q.stair.length} steps
                     {q.stairFixes ? ` · ${q.stairFixes} step(s) need a block` : ''}
-                    {q.sealed ? ` · ${q.sealed} cell(s) sealed by lava or water` : ''}
+                    {!q.left && q.sealed ? ` · ${q.sealed} cell(s) left standing` : ''}
                   </div>
+                  <QuarryLeftovers q={q} />
                 </>
               ) : (
                 <div className="text-muted">Mines the ores in the zone.</div>

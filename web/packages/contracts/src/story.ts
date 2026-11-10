@@ -444,12 +444,33 @@ export const StoryQuarry = z.object({
   y: z.number().int(),
   cellsLeft: z.number().int().default(0),
   stairFixes: z.number().int().default(0).describe('steps waiting for a block (air, liquid, sand or gravel)'),
-  sealed: z.number().int().default(0).describe('cells left standing beside lava or water'),
+  sealed: z
+    .number()
+    .int()
+    .default(0)
+    .describe('cells left standing apart from the stair (the `left` kinds other than step)'),
   done: z.boolean().default(false),
   stair: z.array(z.tuple([z.number().int(), z.number().int(), z.number().int()])).default([]).describe('the steps, top first'),
   status: z.string().nullish(),
+  left: z
+    .record(z.string(), z.number().int())
+    .nullish()
+    .describe(
+      'what the last full look found still standing, by kind: step, lava, water, cave, sand, pool, walled, protected, kept, danger',
+    ),
+  leftovers: z
+    .array(z.lazy(() => StoryQuarryLeftover))
+    .nullish()
+    .describe('up to 64 of those cells (no steps), top-most first'),
 });
 export type StoryQuarry = z.infer<typeof StoryQuarry>;
+
+/** A cell a quarry leaves standing, and why (its kind, as in `StoryQuarry.left`). */
+export const StoryQuarryLeftover = z.object({
+  at: z.tuple([z.number().int(), z.number().int(), z.number().int()]),
+  kind: z.string(),
+});
+export type StoryQuarryLeftover = z.infer<typeof StoryQuarryLeftover>;
 
 /** A zone row run: `[z, x1, x2]`. */
 export const StoryZoneRow = z.tuple([z.number().int(), z.number().int(), z.number().int()]);

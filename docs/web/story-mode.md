@@ -550,6 +550,15 @@ so the other pawns stood idle in front of a field of work. Fox also saw pawns st
 - **The colony sees what the pawn can't.** Three unreachable targets in a row within a minute, or a pawn under ground (three blocks of
   natural ground over it) with no mining, deconstructing or build within 16 blocks, outside a home zone and with no queued order: the
   pawn's next job is `escape` (label "stuck: getting out (attempt N)", "stuck? heading home", "under ground: heading back up").
+- **Down in a quarry** (added 2026-11-10). A pawn in a quarry's columns, at or under its top, is never lost under ground: the stair's
+  steps and the seals standing over a miner read as ground over it, and deep in a small quarry every pick sent its miners home. A
+  quarry is "mining near" within 16 blocks across of its columns, at any depth up to 2 over its top (it was measured from the level
+  it was painted at). A pawn under ground outside every quarry's columns and every home zone (a cave beside the pit) is stuck at its
+  first quarry job out of reach ("no path"), not after three; its next job is `escape`. Mobs in the pit stay a painted guard zone's
+  job (see "Defending").
+  That one-miss rule holds only within 16 blocks across of that quarry, and never for a pawn digging there: its last finished job was
+  a wall-ore dig from that quarry, a vein cell of it is within 4, or other mining (a mine or deconstruct mark, a build, an ores-only
+  zone) is near. Such a pawn is taken for stuck after three misses, as before.
 - **Stuck is sticky (live 11-04, a ravine at y 49 under home at y 63).** Pawns stuck in the ravine went back to work after a few
   blocks' walk along its floor and failed task after task, about 100 failures each in 20 minutes. A stuck pawn now gets only escape work
   (never a regular task) until its escape walks it home. That walk is the path check: the `escape` job is done only when `go(home)`
@@ -752,6 +761,14 @@ Now:
   planks, stone kinds, logs, sand and gravel that still stand, in a small cluster (12 or fewer: a box, a stub, a lone block) or one
   column (a pillar), not a build's cell, not in or beside a quarry, not already designated, become cleanup jobs with one alert ("Found 23 stray
   block(s) the pawns left near home (14 oak wood planks, …)"). Never a player's block, never main's, never a wall or a floor.
+- **A quarry's own blocks** (added 2026-11-10). "Not in or beside a quarry" skipped every pawn's block there, because the quarry's
+  seals were recorded nowhere: a pillar left on the rim or in the pit stood for good. Now only the quarry's own are skipped: a cell of
+  its stair's path, a cell its finished `place` jobs put a block in (seals, plugs: the zone's saved `QuarryPlaced`, kept through
+  merges and splits, forgotten once the cell is open again), and a block in or beside it that holds back lava or water or walls a
+  cave off from it (cave air outside every quarry beside it, no closed pocket). Any other
+  pawn's block in or beside it is a stray like any other, and when a quarry becomes done its own stray look runs once (any distance
+  from home: "Quarry z3: found 2 stray block(s) the pawns left in or beside it (at …): queued for removal"). On the upgrade the pawns'
+  blocks already in or beside a quarry are taken as its own once (`ColonyMeta.QuarrySealsAdopted`), so no old seal is swept.
 - **Preserved foundations are not strays.** A block currently kept by a Preserve snapshot is excluded from historical scans,
   chest-lid cleanup, and adoption from a pawn's temporary-block ledger. Existing automatic cleanup of that block is canceled and
   retired from both ledgers; manual designations remain. This prevents old placed dirt under a farm from generating repeated digs.
@@ -1131,6 +1148,8 @@ saved as rows at once; a growing zone's single `plant` becomes a one-bill list.
 - Home areas, keep-out areas, drop spots, Preserve zones and Guard zones are **overlay layers** (RimWorld's home area and allowed areas are layers too): painting one never
   overwrites anything and work zones never overwrite them. A house can cover a field; a keep-out area can cover a quarry. Each
   layer merges only with itself.
+- A paint or an erase that would leave a quarry without its stair ring, or merge a quarry with an ores-only zone, is refused with
+  what to do, and nothing changes (see "Quarries"); the drag preview shows the refusal instead of the result.
 
 **Erasing (remove with an area).** The cells leave the zones of the kind given (no kind, or `any`: every kind, overlays included).
 A zone left empty is deleted; a zone cut into parts keeps the largest part and its id, and each other part becomes a zone with the
@@ -1284,6 +1303,65 @@ route are repaired in order before sealing or mining resumes. The repair approac
 step gets one supported temporary scaffold, with material for both placements reserved before work starts. The scaffold is removed
 after the permanent step is placed.
 
+The stair's head room (the 3 cells over each step) is never left blocked (added 2026-11-09). A block of it that stood as a seal
+ended the stair once the pit was a step deeper: "stair blocked at 15,58,12: clearing its headroom" with nothing cleared and nothing
+else offered, for good. Now, on its own layer's look and again whenever the stair repair finds it (`StoryColony.QuarryAccess.cs`):
+- Liquid on a side of it or over it, inside or outside the zone, gets a block first; then the cell is dug. No pawn has a face of a
+  cell behind the wall in view, so this one job is a `place` without `reach`: the pawn walks up to it (to the step before, where
+  the stair is already blocked), and the ordinary placement clicks a face it can't see (the server checks the distance only). The
+  plug outside the zone stays; one inside it is mined later like any plug. Lava outside the zone gets a block too, source or not.
+- Liquid right under it doesn't keep it standing: liquid never flows up, so the cell is dug and what lies under it gets its block
+  or its bucket from above. A liquid in a step cell is a missing step only once the cell over it is open: under rock no pawn could
+  place it, and the repair that was asked for anyway failed for ever ("stair broken at y 54: placing a step").
+- Liquid that got into the head room of a dug step (a pocket blown open) is handed out by the stair repair itself: a block in it,
+  then that block is dug. A lava source there is collected.
+- A cell a pawn met danger at is dug all the same. Sand or gravel standing over the head room is taken from its top down (liquid
+  touching it gets its block first), then the cell under it.
+- A lava source in the quarry's own columns is still never plugged, here either. With an open side it is collected, or waits with
+  the bucket's named hold. Closed in behind the head room it can be neither, and the stair waits and says so: "stair blocked at
+  15,58,12: the lava source at 14,58,12 can't be collected (no open side) and is never plugged".
+- What is not the quarry's to clear holds the stair, by name: "chest in its head room (move it)", "a build's block in its head room
+  (move the build or the quarry)", "bedrock in its head room", "a monster spawner in its head room (break it, or move the quarry)".
+- A stair repair that failed and rests is shown like a resting cell: "stair blocked at 15,58,12: sealing the water at 16,58,12
+  first: resting after failures (cobblestone didn't appear)", "stair broken at y 54: placing a step: resting after failures (…)".
+- A hold by name, and a repair that failed twice, raise one alert per quarry at most every 10 minutes ("Quarry z3 is held up: stair
+  blocked at …. Nothing more is dug there until its stair is clear"); the idle audit carries the same words.
+
+**The stair starts at the ground** (added 2026-11-09). The top is the zone's highest ground, so where the ring starts lower (a bump of
+2 anywhere in the zone, a terrace) its first steps were air: one block lower got a block placed on the surface, two lower found no
+supported scaffold and the quarry never started ("stair broken at y 65: placing a step"). Now leading steps whose cell is open to the
+sky up to the top, with ground 1 or 2 under them, are no part of the stair: a pawn walks from that ground onto the next step. The
+first step is worked out on every look and nothing is saved. A step over a deeper hole at the ring's start is placed as before, and
+only leading steps count, so a step lost in the middle of the stair is still repaired; the ground under a leading step that the
+quarry has dug since still counts. Everything that follows the stair starts at its first step: the steps checked and repaired, the
+cell held under a missing step, the stair's head room, the state's `stair` list, the repair's approach (`quarry_access_y`), the ore
+veins kept off the stair, and the walking legs (a miner enters at the first step's height, not at the top).
+The top is found wherever the zone was painted: the web paints at the Controller's working level, not at the ground, and the top was
+looked for only 16 over and under it (a hill more than 16 higher read "done: down to bedrock" at once, ground more than 16 lower as
+nothing seen). Ground at the top of that window is followed up to open air, and a window with no ground is followed down. The top is
+kept only once every column of the zone is loaded; until then the highest ground seen so far is used and looked for again.
+
+**Trees, shape changes, columns out of view** (added 2026-11-10, `StoryColony.QuarryTrees.cs`, `QuarryShapeRefusal`):
+- A tree whose trunk stands in the zone's columns and reaches over the top is felled first, by a `chop` job of Mine work that walks
+  there on the surface (`quarry_access_y` = top + 1). Logs are no ground, so the trunk was never a cell: the ground under it was dug
+  and the tree was left floating over the pit. While one stands the quarry digs nothing ("felling 1 tree(s) on it first"); one
+  resting after failures doesn't hold it.
+- A paint or an erase (another work zone painted into a quarry too) that would leave a quarry without its stair ring (an L, a T, a
+  notch: the ring walk ends at the inner corner; every cell was then dug, the old steps too, and "no stair: the zone is too narrow"),
+  or that would merge a quarry with an ores-only zone, is refused and nothing changes: "Quarry z3 would lose its stair: … Nothing
+  changed: paint the new part as a quarry of its own, a column apart, …" (or "only whole rows or columns can come off its sides"),
+  "Quarry z3 and ores-only zone z5 would merge into one. …". A rectangle grown or cut by whole rows keeps a ring and is allowed.
+- A column out of every pawn's view reads as air, so it read as dug: with no body near, the quarry was "done: down to bedrock" (a
+  zone never seen too), and a done quarry sends nobody to load it. Now such columns are counted: the quarry is never done and its
+  layer never passes one with cells in them (above the layer reached they were passed in view), no step is placed in them, and the
+  status says "36 column(s) not in view". With nothing else to do there a pawn walks to the top of the stair (a `go`, one at a time,
+  never to a pawn standing there already, so it can't repeat in place); a zone never seen gets the same walk to its painted level.
+  The Quarries window shows such a quarry's progress and status too (a zone never seen: its painted level and the status alone).
+  A column out of view has no bedrock to read: it takes the quarry's lowest bottom kept when every column was last in view (the
+  zone's saved `QuarryBottom`), else the lowest of the columns in view, so a finished quarry stays done when its pawns leave. Until
+  a top is kept, the look's top is the highest ground seen so far and never goes down (digging that cell moved the stair), and the
+  quarry's columns, not that height, decide that a lava source is its own (collected, never plugged).
+
 **Walking the stair.** A pit with a floor is no "edge" to sneak at: a path step sneaked only because of such an edge is walked (the
 pathfinder keeps its edge costs, so routes don't change; fields and growing zones stay sneaked), and the edge guard forces sneak and
 stops sprint only beside a fatal drop (the void, lava, water over the void: `Safety.IsFatalColumn`). Beside a quarry's pit the stair is walked normally (live 11-04: "they crouch-walk when the stairs get high on the
@@ -1320,6 +1398,17 @@ and lava and other dangerous things." Each cell of the working layer is judged a
   quarry's pit is no cave) is walled off: the zone's edge cell beside it is left standing; an edge cell already open (the cave runs
   through it) gets a block placed. Where the edge cell is the stair's head room (up to 3 over a step) it is dug and the cave's cell
   beside it gets the block instead, so the stair stays walkable. Sealing walls mobs out too.
+- **Ore holes are no caves** (added 2026-11-10). Ore followed out of the pit's wall leaves a hole with natural rock over it, which read
+  as cave air: its edge cell got a block placed in the pit and "breached a cave" was alerted for every wall ore deeper than 3. A closed
+  pocket is no cave now: the open cells joined to the one beside the zone (6 sides, no liquid, outside every quarry) end within 64 and
+  reach no unloaded column. Then nothing is placed, left standing or said. The answer is kept for every cell of the flood for that
+  look. The block for a real cave's opening goes into the cave's own cell wherever it can attach there (the cave's rock on a side),
+  so the pit keeps its edge cell; a cave cell with nothing to attach to falls back to the edge cell as before.
+- **Vein work obeys the quarry** (added 2026-11-10). Ore followed from a quarry (in its wall, outside the zone's columns too) needs
+  what a dig of the quarry needs: no spawner stop, the stair whole, no seal to place first. Its mark waits meanwhile ("waits for
+  quarry z3: its stair comes first", or the quarry's own hazard wait). A wall ore with cave air beside it (not the zone, not a closed
+  pocket) waits too ("would open the quarry to a cave at …"): vein jobs come before quarry work, and digging it let the cave into
+  the pit. Wall ore beside rock, or beside an ore hole dug before, is still followed when it is safe.
 - **Lava and water.** A cell with lava or water on any of its 6 sides (flowing down from over it too) is never dug: it stands as a
   seal. Lava sources inside the quarry, including stair cells, are scooped into empty buckets from dry ground. Empty buckets are
   fetched from storage or requested as an immediate craft task (3 iron ingots at a crafting table). Carried empty buckets are filled
@@ -1327,16 +1416,47 @@ and lava and other dangerous things." Each cell of the working layer is judged a
   pending across interruptions and restarts. No empty bucket or accepting storage means waiting, never plugging a lava source.
   Water and flowing lava get a nonburning block placed in them (cobblestone, stone or dirt). The plug is mined once no liquid remains
   beside it; a refilling water pool is plugged before its plugs are removed, so its sources cannot regenerate between digs.
+- **Contained liquid** (added 2026-11-09). Only liquid an open cell touches is a job: a liquid cell is a seal to place (or a lava
+  source to collect) while one of its 6 neighbours is loaded, open and no liquid itself. A pocket closed in by rock, the water under a
+  capped pool and the lava under its lid have none: the cells round a liquid stand, so it never spills, and no pawn has a face in view
+  to plug or scoop it by (such seals failed "out of reach even from a pillar" for ever and held the quarry between tries; a buried lava
+  source with no bucket stopped it for good). It is counted with the hazards, said once, and left; a cell opened beside it later makes
+  it a job again. So a pool or lake deeper than one block is capped and left: its top layer is plugged (water, flowing lava) or
+  collected (lava sources), the caps stand, and what lies under them stays.
+- **The wait for a bucket is named** (added 2026-11-09). A lava source is still never plugged, so while one can't be collected the
+  quarry stands still, and it says why instead of "collecting a lava source" with nobody collecting: the status reads "lava source at
+  y 40: needs storage accepting lava buckets" (on the stair: "stair broken at y 40: lava source on the step: …") and the pawn's idle
+  reason "waiting: quarry z3: needs storage accepting lava buckets". The holds: no chest takes the filled bucket; no empty bucket
+  carried or stored ("needs an empty bucket to collect lava (3 iron ingots at a crafting table)", and what holds its craft when
+  something does: "…: no crafting table to craft one at", "…: its craft waits (no iron ingot: checked 2 chests …)", "…: no pawn does
+  craft work"); no free slot ("needs a free slot for the bucket (pockets full)": a bucket fetched from a chest takes one, and on
+  1.12.2, where empty buckets stack, so does filling one of a stack). The wait ends when its hold does: the bucket is crafted, stored,
+  fetched and filled with nothing to retry by hand. The bucket's craft is asked for once a chest takes the filled bucket (a bucket is
+  a tool a pawn keeps: crafted with nowhere to store it, it would stay in its crafter's pockets and the next ask would make another).
+  A seal that can't be started now (a lava source waiting, no block to seal with) doesn't hide the others: they are placed meanwhile.
+- **The stair's head room is the exception** (added 2026-11-09). A block in the 3 cells over a step is never left standing for a
+  liquid beside it, a danger or sand over it: the liquid behind it is plugged with a block placed against a hidden face, then the
+  block is dug, so the stair always gets through (see "The stair"). Everywhere else the rules of this list stand.
 - **Falling blocks.** A cell under sand or gravel left standing (beside water) is left standing too: nothing falls into the pit.
 - **Monster spawners** in or beside the working layer (the zone's box and 4 round it, 4 under to 1 over) stop the quarry ("stopped:
   a monster spawner at …"), with one alert, until the spawner is gone.
 - **A pawn in danger** at a quarry cell (in lava, suffocating) leaves that cell standing from then on.
 - **Walled-in cells.** A cell no dig can reach (closed in by steps, seals and the outside, no cell to dig on the way: a corner under a
   step behind a cave's wall) is left standing, or the layer would wait for it for ever.
+- **What is left, said** (added 2026-11-10; `StoryColony.QuarrySweep.cs`). Each full look from the top (every 30 s, and once more when
+  a look from the working layer finds the quarry done) classes every cell still standing down to the working layer: `step`, `lava`,
+  `water` (left standing beside it), `cave` (a cave's wall), `sand`, `danger`, `protected`, `kept`, `walled` (walled in) and `pool`
+  (liquid closed in by rock). The state's `quarry.left` has the count by kind, `quarry.leftovers` up to 64 of those cells (no steps,
+  top-most first, `{at, kind}`), `quarry.sealed` how many stand apart from the stair, and the status ends "…; left standing: 6 water,
+  1 cave (breached a cave at y 52)". All of it comes from that look, not from what the process once met (a plug long since mined
+  stayed in the summary, and `sealed` was the working layer's count, 0 once done). The owner's rule: natural seals, capped pools and
+  kept cells stay, and are listed. A quarry that becomes done says so once ("Quarry z3 is done: dug down to bedrock; 9 cell(s) left
+  standing apart from its stair (listed in the Quarries window)"); the Quarries window shows the counts by kind and, opened, the
+  cells.
 
 A seal to place comes before any more digging (like a missing step; one resting after failures doesn't hold the quarry). Each hazard
 is alerted once, not once a look: cells near a hazard already said (a cave within 8, a pool of lava or water within 4) are the same
-one ("Quarry z3: breached a cave at y 52: 4 opening cell(s) walled off"). The status ends with what was sealed ("…; sealed: 4 cave,
+one ("Quarry z3: breached a cave at y 52: 4 opening cell(s) walled off"). The status ends with what was left ("…; left standing: 4 cave,
 2 lava (breached a cave at y 52)"), and the state's `quarry.hazards` has the counts by kind, `spawner_at` and `to_seal`.
 
 An opening found above an already-dug floor can require temporary access: the pawn walks to a reachable base, places from a
@@ -1348,11 +1468,72 @@ Quarry jobs carry short walking legs along the existing perimeter stair. A miner
 working floor, and stays there between nearby jobs. A storage or supply trip follows the same stair back up before opening a chest.
 The route uses standing steps with clear headroom; it never digs or places a shortcut to a chest.
 
+**Full pockets** (added 2026-11-09). A miner with no free slot gets no dig: no quarry cell, no head room of the stair, no ore vein.
+Its script's dig batch needs a free slot for every block and ended "0/12 dug; inventory full" as a success, so the same batch was
+handed out again at once: a full pick and a fresh quarry scan per round, several a second, for as long as storage stayed full. The
+gate is the body's free slots, never the report's text. A pawn unloads before it works, so one that asks for a dig with full pockets
+could not: with no chest taking what it carries its idle reason is "waiting: quarry z3: pockets full, no storage has room" and the
+storage-full alert (the farm's, at most every 10 minutes) names the item, the pawn and the quarry; after a failed delivery it waits
+for the retry ("pockets full, storing its load first"). Stair steps and seals are still placed from what it carries.
+A step or seal whose block is in a chest waits the same way ("quarry z3: a block for y 62: pockets full, …"): a fetch into full
+pockets takes nothing, fails, and rested the cell for every pawn.
+
+**Rests and silent holds** (added 2026-11-09). A layer waits for every cell, so a cell that rests holds the quarry, and a quarry that
+offers nothing says why:
+- A quarry dig refused "not now" (someone standing on it, "busy: fighting …", "interrupted: …", "critical hp …", "low health …", a fall
+  not landed, a death, a body out of game, a column not loaded) rests 15 s, like a designation's, and counts as a failure only the
+  5th time in a row. It rested 30 s, 1 min, then 10 min, and the layer waited for it. Only quarry digs get the longer list.
+- A cell its pawn reports failed while its own view (or the colony's) shows it open is credited as dug.
+- A cell no pawn may break ("protected", "preserved", "unbreakable") is left standing, said in one alert per quarry at most every
+  10 minutes (up to 5 cells: "Quarry z3: 2 cell(s) left standing: no pawn may break them (…)"), counted in the status ("left standing: 2
+  protected") and forgotten once it is open. In the stair's head room it holds the stair by name.
+- Cells whose pickaxe the colony doesn't have wait (the colony makes one when it can) and say so: "1 cell(s) waiting for a tool
+  (needs an iron pickaxe — …)" in the status and the idle audit, and "stair blocked at …: clearing its headroom: waiting for a tool
+  (…)" for the stair.
+- Temporary blocks: a pawn's own leftover block (its reach pillar's stub beside it) is a quarry cell it may dig, unless it stands on
+  that pillar; in a small pit it never got 8 blocks away from it, so it was never "left behind" and held the layer for good. Another
+  pawn's block that isn't left behind yet is named ("waiting for Bob's temporary block at …"). One whose removal the owner cancelled
+  is his: it stands (said once, like a hazard) and doesn't hold the layer.
+- A seal resting after failures doesn't hold the quarry; the status now shows it with its last failure ("sealing water at …: resting
+  after failures (…)"), as it shows a resting stair repair.
+
 Tests: `StoryQuarryHazardTests` (a breached cave walled off and never walked into, the quarry to bedrock; a cave by the stair's head
 room sealed outside; a cave inside the zone already dug with its steps placed; lava sources bucketed and stored, water and flowing lava covered with cobblestone,
 never planks, never a cell dug beside them, said once a hazard; nothing dug from under standing sand; a spawner stops the quarry
 until it is gone; a cell where a pawn met lava left standing) and `StoryFakeServerTests.A_quarry_walls_off_a_breached_cave_and_leaves_a_seal_by_lava_and_moves_on`
 (a pawn, both versions).
+Added 2026-11-09: `StoryQuarryHazardTests` (a liquid pocket closed in by rock left and never asked for; a buried lava source no stop
+without a bucket; a two-deep pool capped, the water under the cap no job; a waiting lava source not hiding other seals; the bucket
+wait named on the seal and the stair, and over once a bucket can be made; 1.12.2 stacked buckets and a full pawn) and
+`StoryQuarryStallTests` (full pockets: no dig, the wait named and alerted once, storing first, steps still placed).
+Added 2026-11-10: `StoryQuarryStallTests` (a full miner fetches no step block) and `StoryQuarryHazardTests` (head room waiting for
+a tool names it, and is dug once one is at hand).
+Added 2026-11-09 (the stair gets through): `StoryQuarryHazardTests` (liquid behind the head room plugged without `reach`, the cell
+dug and the stair walkable; a liquid step under rock no missing step until the cell over it is dug, a lava source step collected
+from above; water and a lava source that got into head room; a block over liquid in head room; the quarry's own lava behind head
+room never plugged, the hold named, collected once opened; a danger cell in head room dug; sand over head room taken from its top;
+a chest named with one alert per 10 minutes; a plug refused twice named with its failure and tried again) and
+`StoryFakeServerTests.A_pawn_plugs_lava_behind_the_stairs_head_room_by_its_hidden_face` (a pawn, both versions, the pit dug past
+the block and its layer still to dig: the placement against a face the pawn can't see, done by the real client).
+Added 2026-11-09 (ground and holds): `StoryQuarryTerrainTests` (a bump: no block in the air, the bump dug, a way out; lower ground at
+the ring's start gets no block; a step over a deep hole still placed; a step lost in the middle still repaired; the top found far over
+and under the painted level; the top kept only once every column is loaded) and `StoryQuarryStallTests` (a transient refusal rests
+15 s, never 10 minutes; a dug cell reported failed is credited; a protected cell left standing and said once; cells waiting for a tool
+named; a pawn's own leftover pillar block offered to it, another pawn's named; a cancelled temporary block kept; a resting seal shown).
+Added 2026-11-10 (ore holes, lost and stuck): `StoryQuarryHazardTests` (an ore hole in the wall no breached cave; a cave opening
+sealed in the cave's cell; the cave fixtures are real caves, a tunnel past 64 cells or into an unloaded column), `StoryOreVeinTests`
+(a quarry vein that would open a cave waits; a vein stops while a spawner stops the quarry), `StoryStuckPawnTests` (a miner under the
+stair of a deep small quarry, or under three standing cells of a large one, is not lost; a pawn in a cave beside the pit is sent out
+after one miss).
+Added 2026-11-10 (trees, shapes, out of view): `StoryQuarryTerrainTests` (a tree felled before the ground under it; a paint that
+would leave no ring or merge with an ores-only zone refused, with why; a notch erased refused), `StoryQuarryStallTests` (columns out of
+view never dug or done, one walk there), contracts `storyQuarryShape.test.ts` (the mock refuses the same) and the web's
+`storyZones.test.ts` (the drag preview shows the refusal).
+Added 2026-11-10 (review fixes): `StoryQuarryStallTests` (a finished quarry out of view stays done and sends nobody; a quarry never
+seen says so in the Quarries window), `StoryQuarryTerrainTests` (the top seen so far never goes down), `StoryQuarryHazardTests` (a lava
+source over the painted level of a partly seen quarry collected, never plugged), `StoryStuckPawnTests` (a miner tunnelling far off,
+or in the quarry's wall-ore tunnel, not sent out after one quarry miss) and `StoryTempBlocksTests` (a block walling a cave off from a
+quarry is never a stray).
 
 **Quarries win over builds.** Live 11-05 (Fox: "The pawns are broken at the quarry. They keep placing and deleting blocks on the top
 level"): a dirt floor build (b11401, 432 blocks at y 63) covered the top layer of quarry z17860. The quarry dug its cells, the 5-second

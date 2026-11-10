@@ -104,6 +104,8 @@ public sealed partial class StoryColony
             var tool = PlanTool(p, live, d.Ore);
             if (tool is { Wait: { } why }) { NoteWait(d, why); continue; }
             NoteWait(d, null);
+            // No free slot: its dig batch would dig nothing and ask again at once (StoryColony.StorageFull.cs).
+            if (live.FreeSlots <= 0) { PocketsFullNote(p, live, $"ore vein at {at}"); return null; }
             var j = WithTool(tool, Job(type, "dig", d.Label!, at, "b:" + at, "designation", d.Id));
             j.OreOrigin = d.OreOrigin;
             j.DigDesignations[at] = d.Id;
@@ -125,7 +127,30 @@ public sealed partial class StoryColony
             NoteWait(d, "ore waits for loaded, safe access without liquids or falling blocks");
             return false;
         }
+        if (QuarryVeinWait(w, origin, at) is { } wait)
+        {
+            NoteWait(d, wait);
+            return false;
+        }
         return true;
+    }
+
+    /// <summary>
+    /// Why ore followed from a quarry waits, else null (any other origin: null). It needs what a dig of the quarry itself needs (no
+    /// spawner stop, its stair whole, no seal to place first), and never opens the pit to a cave: vein jobs come before quarry work, so
+    /// they dug past all three, and a wall ore beside a cave let the cave into the pit. Wall ore beside rock or a closed pocket (an ore
+    /// hole dug before) is still followed out of the zone's columns.
+    /// </summary>
+    private string? QuarryVeinWait(IStoryWorld w, OreWorkOrigin origin, P3 at)
+    {
+        if (origin.Source != "zone" || Zones.FirstOrDefault(z => z.Id == origin.Id) is not { } z || !IsQuarry(z)
+            || Quarry(z) is not { } q) return null;
+        if (!q.Done && (q.Spawner != null || StairBroken(q) || SealPending(q)))
+            return $"waits for quarry {ZoneName(z)}: " + (q.Spawner == null && StairBroken(q) ? "its stair comes first" : HazardWait(z, q));
+        foreach (var n in Neighbours(at))
+            if (!z.Cells.Contains(n.X, n.Z) && w.Loaded(n.X, n.Z) && CaveAir(w, n) && QuarryAt(n) == null && !ClosedPocket(w, q, n))
+                return $"would open the quarry to a cave at {n}";
+        return null;
     }
 
     private bool OreParentActive(OreWorkOrigin origin) => origin.Source switch
@@ -144,9 +169,10 @@ public sealed partial class StoryColony
         foreach (var z in Zones.Where(IsQuarry))
             if (z.Contains(at.X, at.Z) && StoryQuarry.Ring(z.Cells) is { } ring)
             {
-                int top = QuarryTopOf(z), k = top - at.Y;
-                if (k >= 0 && StoryQuarry.Step(ring, top, k) == at) return true;
-                if (k > 0 && StoryQuarry.Step(ring, top, k - 1) == at.Add(0, 1, 0)
+                var (top, first) = QuarryStairStart(z); // the leading steps over lower ground are no part of the stair
+                int k = top - at.Y;
+                if (k >= first && StoryQuarry.Step(ring, top, k) == at) return true;
+                if (k > first && StoryQuarry.Step(ring, top, k - 1) == at.Add(0, 1, 0)
                     && World is { } w && StepNeedsBlock(w, at.Add(0, 1, 0)) != null) return true;
             }
         return false;

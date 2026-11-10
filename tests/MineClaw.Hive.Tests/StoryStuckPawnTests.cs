@@ -198,6 +198,122 @@ public sealed class StoryStuckPawnTests
         Assert.NotEqual("escape", Kind(c.Next()));
     }
 
+    /// <summary>A quarry pit carved from y 63 down to <paramref name="floor"/> + 1 over a stone floor, its stair of natural stone.</summary>
+    private static List<(int X, int Z)> Pit(StoryColony c, FakeStoryWorld w, Area area, int floor)
+    {
+        Assert.Null(c.ZoneOp("add", "mine", area).Error);
+        var zone = c.Zones.Single();
+        zone.QuarryTop = 63;
+        var ring = StoryQuarry.Ring(zone.Cells)!;
+        for (int x = area.X1; x <= area.X2; x++)
+            for (int z = area.Z1; z <= area.Z2; z++)
+                for (int y = floor + 1; y <= 63; y++) w.Set(x, y, z, 0);
+        for (int k = 0; k < 63 - floor; k++)
+        {
+            var s = StoryQuarry.Step(ring, 63, k);
+            w.Set(s.X, s.Y, s.Z, 1);
+        }
+        return ring;
+    }
+
+    [Fact]
+    public void A_miner_under_the_stair_of_a_deep_small_quarry_is_not_lost()
+    {
+        // The stair's own steps over a miner read as ground over it, and the quarry was "near" only within 16 + its size of the level
+        // it was painted at: deep in a small pit every pick sent its miners home (C6).
+        var (c, h, w) = StoryRig.Make(1, time: NewClock());
+        Only(c, WorkTypes.Mine);
+        var ring = Pit(c, w, Area.Of(10, 63, 10, 13, 63, 13), floor: 30);
+        var feet = new P3(ring[2].X, 31, ring[2].Z); // its steps at y 61, 49 and 37 over it
+        Assert.True(StoryWander.Underground(w, feet));
+        h.Lives[c.P()] = FakeStoryHost.Live(feet.X, feet.Y, feet.Z);
+        Assert.NotEqual("escape", Kind(c.Next()));
+        Assert.False(c.IsStuck(c.P()));
+    }
+
+    [Fact]
+    public void A_miner_under_three_standing_cells_of_a_large_quarry_is_not_lost()
+    {
+        var (c, h, w) = StoryRig.Make(1, time: NewClock());
+        Only(c, WorkTypes.Mine);
+        Pit(c, w, Area.Of(10, 63, 10, 25, 63, 25), floor: 29);
+        var feet = new P3(10, 30, 18); // the west edge, far from the stair
+        for (int y = 40; y <= 42; y++) w.Set(feet.X, y, feet.Z, 1); // cells left standing over it (a seal three high)
+        Assert.True(StoryWander.Underground(w, feet));
+        h.Lives[c.P()] = FakeStoryHost.Live(feet.X, feet.Y, feet.Z);
+        Assert.NotEqual("escape", Kind(c.Next()));
+        Assert.False(c.IsStuck(c.P()));
+    }
+
+    [Fact]
+    public void A_pawn_in_a_cave_beside_the_pit_is_sent_out_after_one_miss()
+    {
+        // Beside a quarry a pawn is "near mining", so a cave there was left only after three targets failed within a minute, and one
+        // failed walk can take longer than that.
+        var (c, h, w) = StoryRig.Make(1, time: NewClock());
+        Only(c, WorkTypes.Mine);
+        Assert.Null(c.ZoneOp("add", "mine", Area.Of(10, 63, 10, 15, 63, 15)).Error);
+        c.Zones.Single().QuarryTop = 63;
+        for (int x = 18; x <= 21; x++) { w.Set(x, 58, 12, 0); w.Set(x, 59, 12, 0); } // a cave east of the pit, 4 under the ground
+        h.Lives[c.P()] = FakeStoryHost.Live(19, 58, 12);
+        var j = c.Next();
+        Assert.Contains(Kind(j), new[] { "dig", "place" }); // the quarry's work: being near it, the pawn is not lost
+        Assert.False(c.IsStuck(c.P()));
+        c.Report(c.P(), Id(j), "failed", NoPath, null);
+        Assert.True(c.IsStuck(c.P()));
+        Assert.Equal("escape", Kind(c.Next()));
+    }
+
+    [Fact]
+    public void A_miner_tunnelling_far_from_the_quarry_is_not_sent_out_after_one_quarry_miss()
+    {
+        // The one-miss rule never asked whether the pawn was beside the quarry: a miner in a tunnel 60 blocks off, for other digging,
+        // was taken for stuck and sent home after one failed quarry pick.
+        var (c, h, w) = StoryRig.Make(1, time: NewClock());
+        Only(c, WorkTypes.Mine);
+        Assert.Null(c.ZoneOp("add", "mine", Area.Of(10, 63, 10, 15, 63, 15)).Error);
+        c.Zones.Single().QuarryTop = 63;
+        for (int x = 72; x <= 79; x++) { w.Set(x, 58, 12, 0); w.Set(x, 59, 12, 0); }
+        w.Set(80, 58, 12, 4);
+        c.Designate("add", "deconstruct", null, [new P3(80, 58, 12)], null); // other digging there (no mine work for this pawn)
+        h.Lives[c.P()] = FakeStoryHost.Live(75, 58, 12);
+        var j = c.Next();
+        Assert.Contains(Kind(j), new[] { "dig", "place" });
+        c.Report(c.P(), Id(j), "failed", NoPath, null);
+        Assert.False(c.IsStuck(c.P()));
+    }
+
+    [Fact]
+    public void A_miner_in_the_quarrys_wall_ore_tunnel_is_not_sent_out_after_one_quarry_miss()
+    {
+        // Wall ore is followed outside the quarry's columns, under ground: its miner's next pick is usually a quarry cell, and one miss
+        // there took it for lost in a cave beside the pit.
+        var (c, h, w) = StoryRig.Make(1, time: NewClock());
+        Only(c, WorkTypes.Mine);
+        h.Lives[c.P()] = FakeStoryHost.Live(0, 64, 0, inv: [new Stack(274, 0, 1)]);
+        Assert.Null(c.ZoneOp("add", "mine", Area.Of(10, 63, 10, 15, 63, 15)).Error);
+        var zone = c.Zones.Single();
+        zone.QuarryTop = 63;
+        var ore = new P3(16, 63, 12);
+        w.Set(ore.X, ore.Y, ore.Z, 15);
+        c.Designations.Add(new DesignationState
+        {
+            Id = "d-vein", Kind = "mine", At = ore, Auto = true, Ore = 15, OreOrigin = new OreWorkOrigin("zone", zone.Id, WorkTypes.Mine),
+            Label = "following iron ore vein", Created = DateTimeOffset.Parse("2026-11-04T10:00:00Z"),
+        });
+        var vein = c.Next();
+        Assert.Equal(("dig", ore), (Kind(vein), At(vein)));
+        w.Set(ore.X, ore.Y, ore.Z, 0);
+        c.Report(c.P(), Id(vein), "done", null, null);
+        for (int x = 17; x <= 19; x++) { w.Set(x, 58, 12, 0); w.Set(x, 59, 12, 0); } // where the vein led it, 5 under the ground
+        h.Lives[c.P()] = FakeStoryHost.Live(18, 58, 12, inv: [new Stack(274, 0, 1)]);
+        var j = c.Next();
+        Assert.Contains(Kind(j), new[] { "dig", "place" });
+        Assert.NotEqual(Id(vein), Id(j));
+        c.Report(c.P(), Id(j), "failed", NoPath, null);
+        Assert.False(c.IsStuck(c.P()));
+    }
+
     [Fact]
     public void Idle_pawns_never_wander_into_a_cave_and_cave_plants_are_not_cut()
     {

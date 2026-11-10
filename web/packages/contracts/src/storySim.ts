@@ -22,10 +22,12 @@ import {
   cellZ,
   eraseZones,
   paintZones,
+  quarryPaintRefusal,
   quarryRing,
   quarryStep,
   rectCells,
   zoneCellSet,
+  type ZonePaintOut,
 } from './storyZones.js';
 import { applyPreserveOp, preserveWarnings, preserveZoneFields, withPreserveState } from './storySimPreserve.js';
 import { guardedMobs, guardVisible } from './storySimGuard.js';
@@ -1493,6 +1495,7 @@ export class StorySim {
     const newId = () => `z${c.seq++}`;
     if (body.op === 'remove') {
       const out = eraseZones(list, body.kind, rect, newId);
+      refuseQuarryChange(list, out);
       this.setZones(c, out.zones);
       return { ...out.result, removed: out.result.deleted, rev: c.rev };
     }
@@ -1524,6 +1527,7 @@ export class StorySim {
       make,
       newId,
     );
+    refuseQuarryChange(list, out);
     this.setZones(c, out.zones);
     return { ...out.result, removed: out.result.deleted, rev: c.rev };
   }
@@ -4210,6 +4214,12 @@ function checkNewZone(body: ZoneAdd, kind: string, list: readonly StoryZone[], r
     !list.some((z) => z.kind === 'mine' && z.mode === 'quarry' && cellsTouch(zoneCellSet(z), rectCells(...rect)))
   )
     throw Object.assign(new Error(QUARRY_TOO_NARROW), { status: 400 });
+}
+
+/** A paint or an erase that would leave a quarry without its stair ring, or merge it with an ores-only zone: 400, nothing changed. */
+function refuseQuarryChange(list: readonly StoryZone[], out: ZonePaintOut<StoryZone>): void {
+  const why = quarryPaintRefusal(list, out);
+  if (why) throw Object.assign(new Error(why), { status: 400 });
 }
 
 function checkGrowFields(plant: string | undefined, kind: string): void {

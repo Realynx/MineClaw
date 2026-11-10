@@ -1033,9 +1033,9 @@ public sealed class StoryFakeServerTests(ITestOutputHelper output)
     /// <summary>
     /// Fox 11-05: "the quarry will also need to take into consideration natural caves that it can come into, and lava and other dangerous
     /// things" (docs/web/story-mode.md "Quarry hazards"). The 5×5 quarry dug 10 layers deep; its layer 10 (y 53) is whole. Beside its
-    /// east edge a cave tunnel runs at y 53..54 (already open to the dug layer 9) and still lava sits at y 53. The pawn walls the cave's
-    /// opening on layer 9 with a block, digs layer 10 but for the cell beside the lava and the cell between the pit and the cave, and
-    /// never steps into either; the quarry moves on.
+    /// east edge a cave tunnel runs at y 53..54 (already open to the dug layer 9) out to the island's side, and still lava sits at y 53.
+    /// The pawn walls the cave's opening on layer 9 with a block in the cave's own cell, digs layer 10 but for the cell beside the lava
+    /// and the cell between the pit and the cave, and never steps into either; the quarry moves on.
     /// </summary>
     [Theory]
     [InlineData("b1.8.1")]
@@ -1051,7 +1051,8 @@ public sealed class StoryFakeServerTests(ITestOutputHelper output)
         string Failures() { lock (x.Log) return string.Join(" | ", x.Log.Where(l => l.Contains(" failed: ")).TakeLast(6)); }
         Assert.True(await Until(() => zone.QuarryLayer > QuarryLayer, 120_000), "layer 10 is dug and the quarry moves on: " + Failures() + " | " + x.Diag());
         int Id(P3 p) => srv.Blocks.GetValueOrDefault((p.X, p.Y, p.Z));
-        Assert.NotEqual(0, Id(HazardSeal)); // the cave's opening on layer 9, walled
+        Assert.NotEqual(0, Id(HazardCave.Add(0, 1, 0))); // the cave's opening on layer 9, walled in the cave's own cell
+        Assert.Equal(0, Id(HazardSeal)); // the pit keeps its edge cell
         Assert.NotEqual(0, Id(HazardLava.Add(-1, 0, 0))); // the seal by the lava
         Assert.NotEqual(0, Id(HazardCave.Add(-1, 0, 0))); // the wall to the cave
         Assert.Equal(Blocks.Lava, Id(HazardLava));
@@ -1075,11 +1076,93 @@ public sealed class StoryFakeServerTests(ITestOutputHelper output)
             for (int qx = QuarryX; qx < QuarryX + QuarrySize; qx++)
                 for (int qz = QuarryZ; qz < QuarryZ + QuarrySize; qz++)
                     if (new P3(qx, 63 - k, qz) != QuarryStep(k)) s.Blocks.Remove((qx, 63 - k, qz));
-        for (int cx = HazardCave.X; cx <= HazardCave.X + 2; cx++)
+        // Out to the island's side (x 22 is its last column): a real cave, not a closed pocket like an ore hole.
+        for (int cx = HazardCave.X; cx <= 22; cx++)
             for (int y = HazardCave.Y; y <= HazardCave.Y + 1; y++) s.Blocks.Remove((cx, y, HazardCave.Z));
         s.Blocks[(HazardLava.X, HazardLava.Y, HazardLava.Z)] = Blocks.Lava;
         s.Inventory[36] = new ItemStack((short)Items.StonePickaxe, 1, 0);
     });
+
+    /// <summary>
+    /// The stair gets through liquid (docs/web/story-mode.md "Quarry hazards", the stair's head room). The 5×5 quarry dug 10 layers but
+    /// for one block of the stair's head room, two over step 8 in its south-east corner: left standing, because still lava sits right
+    /// behind it outside the zone, closed in by rock, and the stair ended there ("stair blocked at …: clearing its headroom", for
+    /// good). No face of the lava's cell is in view from anywhere in the pit, so the block that goes into it is clicked against a
+    /// face the pawn can't see (the server checks the distance only). The pawn walks down to the step before, plugs the lava, digs
+    /// the head room, and never moves into the lava's column. <paramref name="dug"/> 6: the same block met in time, its layer the
+    /// next one to dig: plugged from that layer's floor before anything of the layer is dug.
+    /// </summary>
+    [Theory]
+    [InlineData("b1.8.1", 10)]
+    [InlineData("1.12.2", 10)]
+    [InlineData("b1.8.1", 6)]
+    [InlineData("1.12.2", 6)]
+    public Task A_pawn_plugs_lava_behind_the_stairs_head_room_by_its_hidden_face(string version, int dug) => Colony(version, 1, async x =>
+    {
+        var c = x.C;
+        var srv = x.Servers[x.Pawns[0]];
+        Only(x, WorkTypes.Mine);
+        int Id(P3 p) => srv.Blocks.GetValueOrDefault((p.X, p.Y, p.Z));
+        Assert.Equal(Blocks.Lava, Id(HeadLava));
+        P3[] around = [HeadBlock, HeadLava.Add(1, 0, 0), HeadLava.Add(0, 0, 1), HeadLava.Add(0, 0, -1), HeadLava.Add(0, 1, 0), HeadLava.Add(0, -1, 0)];
+        Assert.All(around, n => Assert.Equal(Blocks.Stone, Id(n))); // closed in: every face a block could be clicked against is hidden
+        var (res, err) = c.ZoneOp("add", "mine", Area.Of(QuarryX, 63, QuarryZ, QuarryX + QuarrySize - 1, 63, QuarryZ + QuarrySize - 1));
+        Assert.True(err == null, err);
+        var zone = c.Zones.Single(z => z.Id == res!["id"]!.GetValue<string>());
+        string Failures() { lock (x.Log) return string.Join(" | ", x.Log.Where(l => l.Contains(" failed: ")).TakeLast(6)); }
+        Assert.True(await Until(() => Id(HeadLava) == Blocks.Cobblestone && Id(HeadBlock) == 0, 120_000),
+            "the lava is plugged and the head room dug: " + zone.QuarryLayer + " | " + Failures() + " | " + x.Diag());
+        // The plug went in before the block in front of the lava came out, by a click on one of the blocks round the lava.
+        var packets = srv.Snapshot();
+        int plugged = packets.FindIndex(p => p is MineClaw.Protocol.Packets.PlayerBlockPlacementPacket { Direction: <= 5 } place && Into(place) == HeadLava);
+        int cleared = packets.FindIndex(p => p is MineClaw.Protocol.Packets.PlayerDiggingPacket { Status: MineClaw.Protocol.Packets.PlayerDiggingPacket.StatusFinished } d
+            && new P3(d.X, d.Y, d.Z) == HeadBlock);
+        Assert.True(plugged >= 0 && cleared > plugged, $"plug packet {plugged}, dig packet {cleared}");
+        Assert.DoesNotContain(packets.Take(plugged), p => p is MineClaw.Protocol.Packets.PlayerDiggingPacket
+            { Status: MineClaw.Protocol.Packets.PlayerDiggingPacket.StatusFinished }); // the plug came before any digging
+        var click = (MineClaw.Protocol.Packets.PlayerBlockPlacementPacket)packets[plugged];
+        Assert.Contains(new P3(click.X, click.Y, click.Z), around);
+        // Clicked from inside the pit, the lava's cell behind the wall: from the step before the blocked one when the pit is dug past
+        // it, from the floor of the layer over the block when that layer is still to dig.
+        var stood = packets.Take(plugged).Select(p => p switch
+        {
+            MineClaw.Protocol.Packets.PlayerPositionPacket m => new P3((int)Math.Floor(m.X), (int)Math.Floor(m.Y + 0.01), (int)Math.Floor(m.Z)),
+            MineClaw.Protocol.Packets.PlayerPositionLookPacket l => new P3((int)Math.Floor(l.X), (int)Math.Floor(l.Y + 0.01), (int)Math.Floor(l.Z)),
+            _ => (P3?)null,
+        }).Last(p => p != null)!.Value;
+        output.WriteLine($"{version}, {dug} layers dug: plug clicked at {click.X},{click.Y},{click.Z} face {click.Direction} from {stood}");
+        if (dug == QuarryLayer) Assert.Equal(QuarryStep(7).Add(0, 1, 0), stood);
+        else Assert.True(stood.Y == HeadBlock.Y + 1 && stood.X is >= QuarryX and < QuarryX + QuarrySize && stood.Z is >= QuarryZ and < QuarryZ + QuarrySize, $"stood at {stood}");
+        Assert.DoesNotContain(srv.Dug, d => (d.X, d.Y, d.Z) == (HeadLava.X, HeadLava.Y, HeadLava.Z)); // the plug stays: it is outside the quarry
+        // Never into the lava's cell, nor anywhere else behind the pit's east wall.
+        bool Behind(double px, double py) => px >= QuarryX + QuarrySize && py < 60;
+        Assert.DoesNotContain(packets, p => p is MineClaw.Protocol.Packets.PlayerPositionPacket m && Behind(m.X, m.Y)
+            || p is MineClaw.Protocol.Packets.PlayerPositionLookPacket l && Behind(l.X, l.Y));
+        for (int k = 0; k <= QuarryLayer; k++) // the stair stands
+            Assert.NotEqual(0, Id(QuarryStep(k)));
+        Assert.DoesNotContain(c.Alerts, a => a.Text.Contains("is held up")); // the stair got through by itself
+    }, s =>
+    {
+        for (int qx = -4; qx <= 22; qx++)
+            for (int qz = -4; qz <= 22; qz++)
+                for (int y = 40; y < 58; y++) s.Blocks[(qx, y, qz)] = Blocks.Stone;
+        for (int k = 0; k < dug; k++)
+            for (int qx = QuarryX; qx < QuarryX + QuarrySize; qx++)
+                for (int qz = QuarryZ; qz < QuarryZ + QuarrySize; qz++)
+                {
+                    var at = new P3(qx, 63 - k, qz);
+                    if (at != QuarryStep(k) && at != HeadBlock) s.Blocks.Remove((qx, 63 - k, qz));
+                }
+        s.Blocks[(HeadLava.X, HeadLava.Y, HeadLava.Z)] = Blocks.Lava;
+        s.Inventory[36] = new ItemStack((short)Items.StonePickaxe, 1, 0);
+    });
+
+    /// <summary>The cell a block placement lands in: beside the clicked block, on the clicked face.</summary>
+    private static P3 Into(MineClaw.Protocol.Packets.PlayerBlockPlacementPacket place)
+    {
+        var (dx, dy, dz) = place.Direction switch { 0 => (0, -1, 0), 1 => (0, 1, 0), 2 => (0, 0, -1), 3 => (0, 0, 1), 4 => (-1, 0, 0), _ => (1, 0, 0) };
+        return new P3(place.X + dx, place.Y + dy, place.Z + dz);
+    }
 
     [Theory]
     [InlineData(true)]
@@ -1123,10 +1206,15 @@ public sealed class StoryFakeServerTests(ITestOutputHelper output)
         }
     });
 
-    /// <summary>The cave tunnel's first cell beside the quarry's east edge (y 53..54), the lava beside it, the opening walled on layer 9.</summary>
+    /// <summary>The cave tunnel's first cell beside the quarry's east edge (y 53..54), the lava beside it, the pit's edge cell beside the
+    /// cave's opening on layer 9.</summary>
     private static readonly P3 HazardCave = new(QuarryX + QuarrySize, 63 - QuarryLayer, QuarryZ + 3);
     private static readonly P3 HazardLava = new(QuarryX + QuarrySize, 63 - QuarryLayer, QuarryZ + 1);
     private static readonly P3 HazardSeal = new(QuarryX + QuarrySize - 1, 64 - QuarryLayer, QuarryZ + 3);
+
+    /// <summary>The block of the stair's head room two over step 8 (the south-east corner, y 57), and the lava behind it, east of the zone.</summary>
+    private static readonly P3 HeadBlock = QuarryStep(8).Add(0, 2, 0);
+    private static readonly P3 HeadLava = HeadBlock.Add(1, 0, 0);
 
     /// <summary>The quarry's west column on its top layer (y 63) but for step 0: grass left on the pit's rim.</summary>
     private static IEnumerable<P3> QuarryEdge() =>
