@@ -254,7 +254,7 @@ export function SavedBar(p: {
   redstone?: boolean;
 }) {
   const { saved } = p;
-  if (p.redstone) return <RedstoneSavedBar saved={saved} />;
+  if (p.redstone) return <RedstoneSavedBar saved={saved} dirty={p.dirty} />;
   return (
     <div
       className="flex flex-wrap items-center gap-2 border-b border-border bg-ok-soft px-3 py-1.5 text-xs text-ok"

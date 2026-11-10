@@ -135,6 +135,12 @@ describe('a saved design’s bar', () => {
     expect(screen.getByTestId('redstone-build-note')).toHaveTextContent("Pawns can't build circuits yet");
     expect(screen.getByRole('link', { name: 'Open in Designs' })).toHaveAttribute('href', '/designs?id=12');
   });
+
+  it('says a redstone design was edited since its save, like the other kinds', () => {
+    render(<SavedBar saved={{ ...saved, text: 'Saved as design #12' }} mineRange={null} canChat mainBot="alice" askBot={vi.fn()} redstone dirty />);
+    expect(screen.getByTestId('saved-bar')).toHaveTextContent('Design #12 r3 · edited since');
+    expect(screen.getByTestId('saved-bar')).not.toHaveTextContent('Saved as design #12');
+  });
 });
 
 describe('the clear question', () => {
