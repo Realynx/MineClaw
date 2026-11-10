@@ -131,4 +131,11 @@ public sealed class SupervisorPublicationPerfTests
         Assert.Matches(@"story \d+ picks \d+ ms, \d+ ticks \d+ ms, longest pick \d+ ms tick \d+ ms, lock-wait \d+x \d+ ms max \d+ ms "
             + @"\(busy: \d+ commands \d+ reads\), state-build \d+x \d+ ms max \d+ ms, save \d+x \d+ ms max \d+ ms, seen-chest \d+x \d+ ms max \d+ ms", line);
     }
+
+    [Fact]
+    public void The_story_clause_says_how_long_picks_and_ticks_waited_for_the_lock_and_where_the_tick_went()
+    {
+        var line = new SupervisorPerf().Summary();
+        Assert.Matches(@"seen-chest \d+x \d+ ms max \d+ ms, pick lock-wait \d+x \d+ ms max \d+ ms, tick lock-wait \d+x \d+ ms max \d+ ms, tick phases: ", line);
+    }
 }

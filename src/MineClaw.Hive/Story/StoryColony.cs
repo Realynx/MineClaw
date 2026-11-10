@@ -252,7 +252,7 @@ public sealed partial class StoryColony : IStoryPort
 
     public JsonObject? Next(string body)
     {
-        long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
+        long t0 = StoryPerf.PickStarted = System.Diagnostics.Stopwatch.GetTimestamp();
         try { return NextCore(body); }
         finally { StoryPerf.Note(ref StoryPerf.Picks, ref StoryPerf.PickTicks, ref StoryPerf.PickMax, t0); }
     }
@@ -261,6 +261,7 @@ public sealed partial class StoryColony : IStoryPort
     {
         lock (_lock)
         {
+            StoryPerf.PickLockWait.Note(StoryPerf.PickStarted);
             if (!Pawns.TryGetValue(body, out var p)) return null;
             if (_current.TryGetValue(body, out var cur) && (cur.Lease == null || HoldsLease(cur.Lease, body))) return cur.Json;
             var live = Host.Live(body);
@@ -446,35 +447,55 @@ public sealed partial class StoryColony : IStoryPort
     public void Tick()
     {
         List<string> restart = new(), joined = new(), departing;
+        // Each phase is timed for the perf line (StoryPerf.TakeInside): live, the tick held the colony lock for many seconds.
+        long t = System.Diagnostics.Stopwatch.GetTimestamp();
         lock (_lock)
         {
+            StoryPerf.TickLockWait.Note(t);
+            t = System.Diagnostics.Stopwatch.GetTimestamp();
             departing = ReadyToGo();
             RenewHeldLeases();
             ExpireLeases();
             ReleaseOffline();
+            t = StoryPerf.Phase("leases", t);
             ReconcileStorageSigns();
+            t = StoryPerf.Phase("signs", t);
             OreTick();
+            t = StoryPerf.Phase("ore", t);
             if (Meta.Active) CollectRestarts(restart);
+            t = StoryPerf.Phase("restarts", t);
             if (Now - _benchScan > TimeSpan.FromSeconds(30)) { _benchScan = Now; ScanBenches(); RefreshSeen(Storages); RetrySuspended(); } // missing ingredients may be stored by now
+            t = StoryPerf.Phase("benches", t);
             _pickEnts = null; // the tick's searches read the world's entities once (and never a pick's old list)
             GuardTick(); // automatic guards stop pursuing a target hidden by the world
+            t = StoryPerf.Phase("guard", t);
             WakeWanderers(); // idle legs: real work takes them back at once (StoryColony.Idle.cs)
             WakeNow();
+            t = StoryPerf.Phase("wake", t);
             HaulTick(); // a drop about to despawn may take a hauler off lesser work (StoryColony.Hauling.cs)
+            t = StoryPerf.Phase("haul", t);
             ReconcileTick(); // every build cell against the world: drift reopens, wrong blocks are cleared (StoryColony.Reconcile.cs)
+            t = StoryPerf.Phase("reconcile", t);
             PruneEntityMarks(); // haul, hunt, forbid marks whose entity is gone go (StoryColony.EntityMarks.cs)
             PruneGoneHarvestMarks(); // saved no-tree errors retire without waiting through their old backoff
+            t = StoryPerf.Phase("prune", t);
             TempTick(); // blocks pawns put down for themselves: left behind -> a cleanup job (StoryColony.TempBlocks.cs)
+            t = StoryPerf.Phase("temp", t);
             AuditIdle(); // why a pawn is idle in its work hours with work about (StoryColony.IdleAudit.cs)
+            t = StoryPerf.Phase("idle-audit", t);
             _pickEnts = null;
             NoteJoined(joined);
             PublishLedger(); // the chest panel's copy: deposits and looks since the last tick (StoryColony.Containers.cs)
+            t = StoryPerf.Phase("ledger", t);
         }
         SpeedTick(); // Fast / Faster on the pawn bodies, the Speed effects (StoryColony.Speed.cs)
+        t = StoryPerf.Phase("speed", t);
         foreach (var name in departing) Depart(name); // removed pawns: logged out and their accounts released
         if (joined.Count > 0 && Meta.Active) BringHome("joined", joined);
         StartPawns(restart);
+        t = StoryPerf.Phase("start-pawns", t);
         Save();
+        StoryPerf.Phase("save", t);
     }
 
     /// <summary>

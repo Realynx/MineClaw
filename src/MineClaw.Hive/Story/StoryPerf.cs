@@ -87,6 +87,35 @@ public static class StoryPerf
         return $"idle-with-work {n}: " + text;
     }
 
+    // ---------------------------------------------------------------- inside the pick and the tick
+
+    /// <summary>How long picks and ticks waited for the colony lock before their work began. A pick's time minus its wait is its hold.</summary>
+    internal static readonly Meter PickLockWait = new(), TickLockWait = new();
+
+    /// <summary>When the running pick on this thread started (its wait for the lock is noted once it has the lock).</summary>
+    [ThreadStatic] internal static long PickStarted;
+
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, Meter> TickPhases = new(StringComparer.Ordinal);
+
+    /// <summary>One phase of the tick ended: its time since <paramref name="since"/> is noted under <paramref name="name"/>. Returns now.</summary>
+    internal static long Phase(string name, long since)
+    {
+        TickPhases.GetOrAdd(name, static _ => new Meter()).Note(since);
+        return Stopwatch.GetTimestamp();
+    }
+
+    /// <summary>"pick lock-wait …, tick lock-wait …, tick phases: reconcile 9x 12000 ms max 5000 ms, …" (costliest first), and starts over.</summary>
+    public static string TakeInside()
+    {
+        static string S(string name, Sample s) => string.Create(System.Globalization.CultureInfo.InvariantCulture,
+            $"{name} {s.Count}x {s.Total.TotalMilliseconds:0} ms max {s.Longest.TotalMilliseconds:0} ms");
+        var phases = TickPhases.Select(kv => (kv.Key, S: kv.Value.Take())).Where(p => p.S.Count > 0)
+            .OrderByDescending(p => p.S.Total).ThenBy(p => p.Key, StringComparer.Ordinal)
+            .Select(p => S(p.Key, p.S));
+        return string.Create(System.Globalization.CultureInfo.InvariantCulture,
+            $"{S("pick lock-wait", PickLockWait.Take())}, {S("tick lock-wait", TickLockWait.Take())}, tick phases: {string.Join(", ", phases)}");
+    }
+
     /// <summary>The counters since the last call, and starts them over.</summary>
     public static Stats Take() => new(Interlocked.Exchange(ref Picks, 0), TimeSpan.FromTicks(Interlocked.Exchange(ref PickTicks, 0)),
         Interlocked.Exchange(ref Ticks, 0), TimeSpan.FromTicks(Interlocked.Exchange(ref TickTicks, 0)));

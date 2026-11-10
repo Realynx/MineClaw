@@ -166,6 +166,20 @@ public sealed class StoryCommandLockTests
     }
 
     [Fact]
+    public void A_tick_reports_its_wait_for_the_lock_and_each_phase_and_a_pick_its_wait()
+    {
+        using var db = AgentDb.Open(null);
+        using var colonies = Colony(out var c, out var host, new StoryStore(db));
+        StoryPerf.TakeInside(); // start over
+        colonies.Tick();
+        c.Next("nobody"); // a pick: it waits for the lock like any other
+        var line = StoryPerf.TakeInside();
+        Assert.Matches(@"^pick lock-wait [1-9]\d*x \d+ ms max \d+ ms, tick lock-wait [1-9]\d*x \d+ ms max \d+ ms, tick phases: ", line);
+        var phases = line[line.IndexOf("tick phases:", StringComparison.Ordinal)..];
+        foreach (var phase in new[] { "leases", "reconcile", "idle-audit", "start-pawns", "save" }) Assert.Matches($@"\b{phase} [1-9]\d*x \d+ ms max \d+ ms", phases);
+    }
+
+    [Fact]
     public void A_meter_keeps_the_count_the_total_and_the_longest_and_starts_over_when_taken()
     {
         var meter = new StoryPerf.Meter();

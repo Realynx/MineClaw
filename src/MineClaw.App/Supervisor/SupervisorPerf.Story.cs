@@ -35,6 +35,8 @@ public sealed partial class SupervisorPerf
         AppendSample(text, "state-build", s.StateBuilds);
         AppendSample(text, "save", s.Saves);
         AppendSample(text, "seen-chest", s.SeenChest);
+        // Inside the pick and the tick: how long each waited for the lock, and where the tick's own time goes.
+        text.Append(", ").Append(StoryPerf.TakeInside());
     }
 
     private static void AppendSample(StringBuilder text, string name, StoryPerf.Sample s) => text.Append(CultureInfo.InvariantCulture,
