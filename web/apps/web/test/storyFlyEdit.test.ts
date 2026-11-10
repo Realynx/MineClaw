@@ -11,6 +11,7 @@ import {
   pickEditMaterial,
   FlyEditQueue,
   type EditReply,
+  type EditSend,
 } from '@/features/story/flyEdit';
 
 const entry = { id: 134, meta: 0, name: 'Spruce stairs', facing: true };
@@ -127,6 +128,114 @@ it('retains a failed edit and dependent additions until retry, without silently 
   expect(q.overlays).toHaveLength(2);
   q.reconcile({ rev: 9 } as StoryColonyState);
   expect(q.overlays).toHaveLength(0);
+});
+
+/** A send whose first request waits until the test answers it; later requests answer at once. */
+function heldSend(later: EditReply | Error) {
+  let answer!: (reply: EditReply) => void;
+  const send = vi.fn<EditSend>().mockImplementationOnce(
+    () =>
+      new Promise<EditReply>((r) => {
+        answer = r;
+      }),
+  );
+  if (later instanceof Error) send.mockRejectedValueOnce(later);
+  send.mockResolvedValue(later instanceof Error ? { buildId: 'plan', rev: 30 } : later);
+  return { send, answer: (reply: EditReply) => answer(reply) };
+}
+
+it('sends the queued edits of one owner as one request, the later edit of a cell winning', async () => {
+  const { send, answer } = heldSend({ buildId: 'plan', rev: 21 });
+  const q = new FlyEditQueue(send, vi.fn());
+  q.enqueue([[0, 64, 3, 4, 0]]);
+  const owner = q.owner([0, 64, 3])!;
+  q.enqueue([[0, 65, 3, 4, 0]], owner); // clicks made while the first edit is out
+  q.enqueue([[0, 66, 3, 5, 0]], owner);
+  q.enqueue([[0, 65, 3, 0, 0]], owner); // takes back the block placed two clicks ago
+  expect(send).toHaveBeenCalledTimes(1);
+  answer({ buildId: 'plan', rev: 20 });
+  await vi.waitFor(() => expect(q.pending).toBe(0));
+  expect(send).toHaveBeenCalledTimes(2);
+  expect(send.mock.calls[1]).toEqual([
+    [
+      [0, 66, 3, 5, 0],
+      [0, 65, 3, 0, 0],
+    ],
+    'plan',
+  ]);
+  q.reconcile({ rev: 20 } as StoryColonyState);
+  expect(q.overlays).toHaveLength(2); // (0,65,3) and (0,66,3)
+  q.reconcile({ rev: 21 } as StoryColonyState);
+  expect(q.overlays).toHaveLength(0);
+});
+
+it('merges only consecutive edits of one owner; another owner goes in its own request', async () => {
+  const { send, answer } = heldSend({ rev: 5 });
+  const q = new FlyEditQueue(send, vi.fn());
+  const a = { id: 'a', token: 'a' };
+  const b = { id: 'b', token: 'b' };
+  q.enqueue([[0, 64, 0, 4, 0]], a);
+  q.enqueue([[1, 64, 0, 4, 0]], a);
+  q.enqueue([[2, 64, 0, 4, 0]], a);
+  q.enqueue([[3, 64, 0, 4, 0]], b);
+  q.enqueue([[4, 64, 0, 4, 0]], a);
+  answer({ buildId: 'a', rev: 4 });
+  await vi.waitFor(() => expect(q.pending).toBe(0));
+  expect(send.mock.calls.map((c) => [c[0].map((cell) => cell[0]), c[1]])).toEqual([
+    [[0], 'a'],
+    [[1, 2], 'a'],
+    [[3], 'b'],
+    [[4], 'a'],
+  ]);
+});
+
+it('a new plan learns its id from its first edit before later edits merge', async () => {
+  const { send, answer } = heldSend({ buildId: 'fresh', rev: 9 });
+  const q = new FlyEditQueue(send, vi.fn());
+  const owner = { token: 'new' };
+  q.enqueue([[0, 64, 0, 4, 0]], owner);
+  q.enqueue([[1, 64, 0, 4, 0]], owner);
+  q.enqueue([[2, 64, 0, 4, 0]], owner);
+  answer({ buildId: 'fresh', rev: 8 });
+  await vi.waitFor(() => expect(q.pending).toBe(0));
+  expect(send).toHaveBeenCalledTimes(2);
+  expect(send.mock.calls[0]?.[1]).toBeUndefined();
+  expect(send.mock.calls[1]?.[1]).toBe('fresh');
+  expect(send.mock.calls[1]?.[0]).toHaveLength(2);
+});
+
+it('a merged request that fails keeps every edit in it for Retry', async () => {
+  const { send, answer } = heldSend(new Error('503 busy'));
+  const q = new FlyEditQueue(send, vi.fn());
+  const owner = { id: 'p', token: 'p' };
+  q.enqueue([[0, 64, 0, 4, 0]], owner);
+  q.enqueue([[1, 64, 0, 4, 0]], owner);
+  q.enqueue([[2, 64, 0, 4, 0]], owner);
+  answer({ buildId: 'p', rev: 2 });
+  await vi.waitFor(() => expect(q.error).toBe('503 busy'));
+  expect(send).toHaveBeenCalledTimes(2);
+  expect(q.pending).toBe(2);
+  expect(q.overlays.filter((c) => c.failed).map((c) => c.cell[0])).toEqual([1, 2]);
+  q.retry();
+  await vi.waitFor(() => expect(q.pending).toBe(0));
+  expect(send).toHaveBeenCalledTimes(3);
+  expect(send.mock.calls[2]?.[0]).toEqual([
+    [1, 64, 0, 4, 0],
+    [2, 64, 0, 4, 0],
+  ]);
+});
+
+it('a merged request stays within the 4096 cells one edit takes', async () => {
+  const { send, answer } = heldSend({ buildId: 'big', rev: 3 });
+  const q = new FlyEditQueue(send, vi.fn());
+  const owner = { id: 'big', token: 'big' };
+  const row = (z: number): Array<[number, number, number, number, number]> =>
+    Array.from({ length: 1500 }, (_, x) => [x, 64, z, 4, 0]);
+  q.enqueue([[0, 70, 0, 4, 0]], owner);
+  for (const z of [1, 2, 3]) q.enqueue(row(z), owner);
+  answer({ buildId: 'big', rev: 2 });
+  await vi.waitFor(() => expect(q.pending).toBe(0));
+  expect(send.mock.calls.map((c) => c[0].length)).toEqual([1, 3000, 1500]);
 });
 
 it('retargets distinct queued owners and pinned aliases when an emptied original plan becomes a dedicated edit plan', async () => {

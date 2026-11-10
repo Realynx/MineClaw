@@ -16,6 +16,8 @@ namespace MineClaw.App.Supervisor;
 /// <item><c>GET /api/story</c> → <c>{colonies:[…], ai:[…], directives:[…]}</c>; <c>GET /api/story/recipes?workbench=</c> → <c>[Recipe]</c></item>
 /// <item><c>POST /api/story/colonies</c> <c>{name, pawns, home?}</c> → <c>{id}</c>; <c>GET /api/story/colonies/{id}?since=rev</c> → the state (delta with since)</item>
 /// <item><c>POST /api/story/colonies/{id}/release|resume|online|pause|home|priorities|roles|schedule|draft|orders|zones|designations|builds|storage|bills|workbenches|options|policies|material-rules|gear</c></item>
+/// <item>designations, zones, builds, orders, draft, storage, bills, workbenches and beds, the state and the list wait for the colony at
+/// most <see cref="LockBudget"/>, then answer 503 busy with Retry-After (a busy command was not applied); a 200 of those nine carries <c>rev</c></item>
 /// <item><c>GET /api/story/colonies/{id}/architect</c> → <c>{entries:[…], benches, tabs}</c> (the Architect palette with tiers)</item>
 /// <item><c>POST /api/story/time</c> <c>{time}</c> → <c>{time, by}</c> (409 no op account, 429 over one a second)</item>
 /// <item><c>POST /api/story/directives</c> → <c>{id, delivered}</c>; <c>GET /api/story/directives[/{id}]</c></item>
@@ -25,8 +27,18 @@ public sealed partial class SupervisorStoryRoutes(SupervisorOptions o, StoryColo
     Func<IReadOnlyList<BodyRow>>? ai = null, IViewerData? viewer = null, TimeProvider? time = null, StoryTimeControl? timeControl = null)
 {
     public const string Prefix = "/api/story";
-    public const int MaxBodyBytes = 64 * 1024;
+    /// <summary>The bridge's own JSON body limit (256 KB) plus room for the <c>who</c> it adds after measuring, so the bridge stays
+    /// the only gate a sender meets. A full 4096-cell <c>blocks</c> list far from the origin is 70 to 100 KB; a big design or mine
+    /// arrives as several requests.</summary>
+    public const int MaxBodyBytes = 256 * 1024 + 8 * 1024;
     private readonly TimeProvider _time = time ?? TimeProvider.System;
+
+    /// <summary>
+    /// How long a colony command or read waits for the colony's lock before it answers 503 busy (a pick, the tick, a save or a state
+    /// build may hold it). With the supervisor's 2 s slot wait and the bridge's 4 s queue for a command, still under the 14 s the
+    /// bridge gives a story command (8 s for a read), so the caller hears the answer: a busy command was not applied and never will be.
+    /// </summary>
+    public TimeSpan LockBudget { get; set; } = TimeSpan.FromSeconds(6);
 
     public StoryColonies Colonies => colonies;
     public void StopTimeControl() => timeControl?.Dispose();
@@ -113,7 +125,7 @@ public sealed partial class SupervisorStoryRoutes(SupervisorOptions o, StoryColo
         switch (parts)
         {
             case []:
-                return GetOnly(get, () => Reply(200, Index()));
+                return GetOnly(get, IndexWithinBudget);
             case ["time"]:
                 return await PostOnlyAsync(get, () => SetTimeAsync(body)).ConfigureAwait(false);
             case ["time-range"]:
@@ -148,11 +160,31 @@ public sealed partial class SupervisorStoryRoutes(SupervisorOptions o, StoryColo
 
     private JsonArray DirectivesJson() => directives?.Json() ?? new JsonArray();
 
-    private JsonObject Index() => new()
+    private JsonObject Index() => Index(new JsonArray(colonies.All.Select(c => (JsonNode)c.Row()).ToArray()));
+
+    private JsonObject Index(JsonArray rows) => new()
     {
-        ["colonies"] = new JsonArray(colonies.All.Select(c => (JsonNode)c.Row()).ToArray()), ["ai"] = Ai(), ["directives"] = DirectivesJson(),
+        ["colonies"] = rows, ["ai"] = Ai(), ["directives"] = DirectivesJson(),
         ["time_control"] = TimeControl(),
     };
+
+    /// <summary>
+    /// The list for the HTTP route: every colony's row within <see cref="LockBudget"/> in all, else 503 busy. The bridge asks every
+    /// few seconds and gives up after 3 s; a handler that waited on would keep one of the server's request slots for nobody.
+    /// The colony_control tool reads <see cref="Index()"/> itself, as before.
+    /// </summary>
+    private SupervisorReply IndexWithinBudget()
+    {
+        long started = System.Diagnostics.Stopwatch.GetTimestamp();
+        var rows = new JsonArray();
+        foreach (var c in colonies.All)
+        {
+            JsonObject? row = null;
+            if (!c.TryRead(LockBudget - System.Diagnostics.Stopwatch.GetElapsedTime(started), () => row = c.Row())) return Busy(ReadBusy);
+            rows.Add(row);
+        }
+        return Reply(200, Index(rows));
+    }
 
     private SupervisorReply Recipes(SupervisorRequest r)
     {
@@ -172,7 +204,7 @@ public sealed partial class SupervisorStoryRoutes(SupervisorOptions o, StoryColo
             since = s;
         }
         NoteMainNotOp(c);
-        var st = c.State(since);
+        if (StateWithinBudget(c, since) is not { } st) return Busy(ReadBusy);
         st["ai"] = Ai(c);
         st["time_control"] = TimeControl();
         st["directives"] = DirectivesJson();
@@ -187,8 +219,66 @@ public sealed partial class SupervisorStoryRoutes(SupervisorOptions o, StoryColo
         return Reply(200, c.Architect());
     }
 
-    private SupervisorReply ColonyAction(string id, string action, JsonObject body) =>
-        colonies.Get(id) is { } c ? Colony(c, action.ToLowerInvariant(), body) : NoColony();
+    /// <summary>The colony's state built within <see cref="LockBudget"/>; null = the colony stayed busy (the bridge's 2 Hz poll gives
+    /// up after 3 s: a build that waited on would run for nobody and hold a request slot meanwhile).</summary>
+    private JsonObject? StateWithinBudget(StoryColony c, long? since)
+    {
+        JsonObject? st = null;
+        return c.TryRead(LockBudget, () => st = c.State(since)) ? st : null;
+    }
+
+    /// <summary>
+    /// The actions that wait for the colony at most <see cref="LockBudget"/> and answer its revision. Their ops reach the host only
+    /// under the colony lock (reading the world view apart, which every holder of the lock does), so the route may hold it around
+    /// them. Not release, resume, pawns, online, home or options: those call the host outside the lock on purpose (a spawn, a
+    /// teleport, a speed effect), and holding it across such a call would add a lock order.
+    /// </summary>
+    private static readonly HashSet<string> BoundedActions = new(StringComparer.Ordinal)
+    {
+        "designations", "zones", "builds", "orders", "draft", "storage", "bills", "workbenches", "beds",
+    };
+
+    /// <summary>The busy answers (docs/web/story-mode.md "The command wire"): by the word "busy" the bridge names the code.</summary>
+    internal const string CommandBusy = "busy: the colony did not take the change";
+    internal const string ReadBusy = "busy: the colony could not be read in time";
+
+    /// <summary>
+    /// A colony action over HTTP. One of <see cref="BoundedActions"/> runs inside a bounded wait for the colony: past it the answer
+    /// is 503 busy and nothing was applied, so a caller that stopped waiting is never told "failed" about a change the colony then
+    /// makes all the same. Its 200 answer carries <c>rev</c>, read in the same lock section: a state whose rev has reached it holds
+    /// the change. Only here, never in <see cref="Colony"/> or the ops: the colony_control tool calls those and its output is the same.
+    /// </summary>
+    private SupervisorReply ColonyAction(string id, string action, JsonObject body)
+    {
+        if (colonies.Get(id) is not { } c) return NoColony();
+        action = action.ToLowerInvariant();
+        if (!BoundedActions.Contains(action)) return Colony(c, action, body);
+        SupervisorReply? reply = null;
+        long rev = 0;
+        bool cut = false;
+        if (!c.TryCommand(LockBudget, () =>
+            {
+                long cuts = c.Cuts;
+                reply = Colony(c, action, body);
+                rev = c.RevHint;
+                cut = c.Cuts != cuts;
+            })) return Busy(CommandBusy);
+        // A direct order that cut pawns' scripts: they start again in about 150 ms, not at the next tick. Only orders: a draft, a
+        // pause or a designation never restarts anyone from here.
+        if (cut && action == "orders") colonies.Nudge(c);
+        return WithRev(reply!, rev);
+    }
+
+    /// <summary>A 200 object answer with the revision added, outside the lock (an answer that has a <c>rev</c>, a plan edit's, keeps it).</summary>
+    private static SupervisorReply WithRev(SupervisorReply reply, long rev)
+    {
+        if (reply.Status != 200 || JsonNode.Parse(reply.Body) is not JsonObject o || o.ContainsKey("rev")) return reply;
+        o["rev"] = rev;
+        return Reply(200, o, reply.Headers);
+    }
+
+    private static SupervisorReply Busy(string error) =>
+        Reply(503, new JsonObject { ["error"] = error }, new Dictionary<string, string> { ["Retry-After"] = "1" });
 
     private SupervisorReply Directive(string id)
     {

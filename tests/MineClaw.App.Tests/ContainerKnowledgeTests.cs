@@ -143,6 +143,100 @@ public class ContainerKnowledgeTests
         Assert.Empty(k.GetForViewer(0, B)!.Slots); // an explicitly observed empty chest replaces cached contents
     }
 
+    [Fact]
+    public async Task An_unknown_chest_asked_again_and_again_reads_memory_once_within_three_seconds()
+    {
+        var w = World((A, Blocks.Chest));
+        var clock = new ManualClock(T0);
+        int reads = 0;
+        var k = new ContainerKnowledge(new ContainerSightings(), () => [w], () => { Interlocked.Increment(ref reads); return null; },
+            () => "b1.8.1", clock, () => new Ledger());
+        for (int i = 0; i < 5; i++)
+        {
+            var v = k.GetForViewer(0, A)!;
+            Assert.Equal(("unknown", "chest"), (v.Source, v.Kind));
+            Assert.Empty(v.Slots);
+            clock.Now += TimeSpan.FromMilliseconds(500); // the open panel polls every 3 s; a few viewers or a restart make it more
+        }
+        Assert.Equal(1, Volatile.Read(ref reads)); // the first read only: the unknown answer is cached like any other
+        clock.Now += TimeSpan.FromSeconds(1);
+        Assert.Equal("unknown", k.GetForViewer(0, A)!.Source); // stale: answered from the cache, refreshed in the background
+        await WaitFor(() => Volatile.Read(ref reads) == 2);
+    }
+
+    /// <summary>Counts the SQL statements the database runs (SQLite's trace hook on the store's one connection).</summary>
+    private sealed class Statements : IDisposable
+    {
+        private readonly SQLitePCL.sqlite3 _handle;
+        public int Count;
+
+        public Statements(AgentDb db)
+        {
+            using var probe = db.Command("SELECT 1");
+            _handle = probe.Connection!.Handle!;
+            SQLitePCL.raw.sqlite3_trace(_handle, new SQLitePCL.strdelegate_trace((_, _) => Interlocked.Increment(ref Count)), null);
+        }
+
+        public void Dispose() => SQLitePCL.raw.sqlite3_trace(_handle, (SQLitePCL.strdelegate_trace?)null, null);
+    }
+
+    [Fact]
+    public void The_box_reads_fifty_remembered_chests_in_one_statement_and_a_first_click_in_one()
+    {
+        using var db = AgentDb.Open(null);
+        var obs = new ObservationStore(new RagIndex(db, backgroundEmbedding: false));
+        var chests = new List<(BlockPos P, int Count)>();
+        for (int i = 0; i < 50; i++) chests.Add((new BlockPos(i % 8 * 2, 64 + i / 32, i / 8 % 4 * 2), i + 1));
+        foreach (var (p, n) in chests)
+            obs.Upsert(Remembered("chest", p, n, T0 - TimeSpan.FromMinutes(100 - n)));
+        // What no memory answer comes from: a tree, a chest nobody looked into, a removed chest, the same place in the nether, and
+        // a chest outside the box.
+        obs.Upsert(new Observation("tree", ObservationStore.KeyFor(1, 64, 1), "oak") { Bounds = Box.Of(1, 64, 1, 1, 64, 1), Dimension = 0 });
+        obs.Upsert(new Observation("chest", ObservationStore.KeyFor(1, 64, 3), "chest") { Bounds = Box.Of(1, 64, 3, 1, 64, 3), Dimension = 0 });
+        obs.Upsert(Remembered("chest", new BlockPos(3, 64, 1), 7, T0));
+        Assert.True(obs.Remove("chest", ObservationStore.KeyFor(3, 64, 1), dimension: 0));
+        obs.Upsert(Remembered("chest", chests[0].P, 99, T0) with { Dimension = -1 });
+        obs.Upsert(Remembered("chest", new BlockPos(40, 64, 40), 5, T0));
+        var w = World([.. chests.Select(c => (c.P, Blocks.Chest)), (new BlockPos(1, 64, 3), Blocks.Chest), (new BlockPos(3, 64, 1), Blocks.Chest)]);
+        var (k, _, _, _) = Make(w, obs);
+
+        IReadOnlyList<ContainerSummary> items;
+        using (var sql = new Statements(db))
+        {
+            (items, var capped) = k.InBox(0, new BlockPos(0, 0, 0), new BlockPos(15, 127, 15), 100);
+            Assert.False(capped);
+            Assert.Equal(1, sql.Count); // it was one scan of every observation, then one items query per chest
+        }
+        // The same summaries as the old reads gave: newest look first, each with its own items, nothing from the other rows.
+        Assert.Equal(chests.OrderByDescending(c => c.Count).Select(c => new[] { c.P.X, c.P.Y, c.P.Z }), items.Select(s => s.Pos));
+        foreach (var s in items)
+        {
+            int n = chests.Single(c => c.P == new BlockPos(s.Pos[0], s.Pos[1], s.Pos[2])).Count;
+            Assert.Equal(("memory", "chest", 27, n, "maid_chan_109"), (s.Source, s.Kind, s.Size, s.Total, s.SeenBy));
+            Assert.Equal(("iron_ingot", n), (Assert.Single(s.Top).Name, s.Top[0].Count));
+            Assert.Equal((T0 - TimeSpan.FromMinutes(100 - n)).ToUnixTimeMilliseconds(), s.SeenAt);
+        }
+
+        using (var sql = new Statements(db))
+        {
+            var first = k.GetForViewer(0, chests[9].P)!;
+            Assert.Equal(("memory", 10), (first.Source, first.Slots.Sum(x => x.Count)));
+            Assert.Equal(1, sql.Count); // the first click on a remembered chest: one statement with its items (it was two)
+        }
+        Assert.Equal("unknown", k.GetForViewer(0, new BlockPos(1, 64, 3))!.Source);
+        Assert.Equal("unknown", k.GetForViewer(0, new BlockPos(3, 64, 1))!.Source);
+    }
+
+    private static Observation Remembered(string kind, BlockPos p, int ingots, DateTimeOffset at) =>
+        new(kind, ObservationStore.KeyFor(p.X, p.Y, p.Z), kind)
+        {
+            Bounds = Box.Of(p.X, p.Y, p.Z, p.X, p.Y, p.Z),
+            Contents = [new ItemCount(265, "iron_ingot", ingots)],
+            ContentsAt = at,
+            ContentsBy = "maid_chan_109",
+            Dimension = 0,
+        };
+
     private static async Task WaitFor(Func<bool> ready)
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(3));

@@ -1,9 +1,11 @@
-import type { StoryColonyState, StoryStorage } from '@mineclaw/contracts';
+import { StoryColonyState, type StoryStorage } from '@mineclaw/contracts';
 import { act, fireEvent, render, screen } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { Track } from '@/features/story/optimistic';
 import { StorageInspector } from '@/features/story/StoryInspector';
 import type { StoryWrite } from '@/features/story/useStory';
 import { storageEntriesBody } from '@/features/story/storage';
+import { harnessDown, harnessUp, mountInspector, network, posted, settle } from './storyInspectorHarness';
 
 vi.mock('@/features/world/ContainerPanel', () => ({ ContainerContents: () => null }));
 
@@ -135,5 +137,121 @@ describe('chest sign filter inspector', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('unrecognized filter entry');
     expect(screen.getByText(/Active filter from attached signs: Food/)).toBeInTheDocument();
     expect(storageEntriesBody([chest], 'add', 'wood,\n food,wood').filter.allow).toEqual(['wood', 'food']);
+  });
+});
+
+describe('chest inspector on the shown colony state', () => {
+  beforeEach(harnessUp);
+  afterEach(harnessDown);
+
+  const plain: StoryStorage = { chest, priority: 'normal', filter: { allow: ['food'], deny: [] }, contents: [] };
+  const colony = (storages: StoryStorage[], rev = 10) =>
+    StoryColonyState.parse({ rev, at: rev, since: null, full: true, storages });
+  const inspector =
+    (chests: [number, number, number][], onError = vi.fn()) =>
+    ({ state, track }: { state: StoryColonyState | undefined; track: Track }) => (
+      <StorageInspector
+        chests={chests}
+        state={state}
+        canWrite
+        write={vi.fn()}
+        track={track}
+        onError={onError}
+        clip={null}
+        onClip={vi.fn()}
+        onClose={vi.fn()}
+      />
+    );
+  const checked = (name: string) => screen.getByRole('checkbox', { name }).getAttribute('aria-checked');
+
+  it('an unsigned chest shows the chosen priority before the colony answers, and the select stays usable', async () => {
+    const calls = network();
+    const page = mountInspector('inspect-priority', colony([plain]), inspector([chest]));
+    fireEvent.change(screen.getByLabelText('Storage priority'), { target: { value: 'important' } });
+    expect(screen.getByLabelText('Storage priority')).toHaveValue('important');
+    expect(screen.getByLabelText('Storage priority')).not.toBeDisabled();
+    expect(screen.queryByRole('status')).toBeNull();
+    await settle();
+    expect(posted(calls).map((c) => c.body)).toEqual([{ op: 'set', chests: [chest], priority: 'important' }]);
+    posted(calls)[0]!.reply({ chests: [chest], rev: 11 });
+    await settle();
+    expect(screen.getByLabelText('Storage priority')).toHaveValue('important');
+    await page.server(colony([{ ...plain, priority: 'important' }], 11));
+    expect(screen.getByTestId('storage-inspector')).toHaveTextContent('Storage · Important · Food');
+  });
+
+  it('two quick filter clicks both register, the second built on the first', async () => {
+    const calls = network();
+    mountInspector('inspect-filter', colony([plain]), inspector([chest]));
+    fireEvent.click(screen.getByRole('button', { name: 'Clear' }));
+    expect(checked('Food')).toBe('false');
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Wood' }));
+    expect(checked('Wood')).toBe('true');
+    expect(checked('Food')).toBe('false');
+    await settle();
+    // One request at a time for these chests: the second waits for the first.
+    expect(posted(calls).map((c) => c.body)).toEqual([{ op: 'set', chests: [chest], filter: { allow: [], deny: [] } }]);
+    posted(calls)[0]!.reply({ chests: [chest], rev: 11 });
+    await settle();
+    expect(posted(calls).map((c) => c.body)).toEqual([
+      { op: 'set', chests: [chest], filter: { allow: [], deny: [] } },
+      { op: 'set', chests: [chest], filter: { allow: ['wood'], deny: [] } },
+    ]);
+  });
+
+  it('a signed chest shows the requested priority at once and keeps the effective line', async () => {
+    const calls = network();
+    mountInspector('inspect-signed', colony([storage]), inspector([chest]));
+    fireEvent.change(screen.getByLabelText('Storage priority'), { target: { value: 'low' } });
+    expect(screen.getByLabelText('Storage priority')).toHaveValue('low');
+    expect(screen.getByText(/Waiting for a pawn to remove the signs/)).toHaveTextContent(
+      'Requested priority (not active): Low',
+    );
+    expect(screen.getByTestId('storage-inspector')).toHaveTextContent('Storage · Critical · Food');
+    await settle();
+    expect(posted(calls).map((c) => c.body)).toEqual([{ op: 'set', chests: [chest], priority: 'low' }]);
+  });
+
+  it.each([
+    { name: '400', status: 400, body: { error: 'unrecognized filter entry' }, text: 'unrecognized filter entry' },
+    {
+      name: '503 busy',
+      status: 503,
+      body: { error: 'busy; retry shortly', code: 'busy', retryAfterMs: 1000 },
+      text: 'The colony is busy; the change was not saved.',
+    },
+  ])('a refused change ($name) puts the tree back and says why', async ({ status, body, text }) => {
+    const calls = network();
+    mountInspector('inspect-refused', colony([plain]), inspector([chest]));
+    fireEvent.click(screen.getByRole('button', { name: 'Clear' }));
+    expect(checked('Food')).toBe('false');
+    await settle();
+    posted(calls)[0]!.reply(body, status);
+    await settle();
+    expect(checked('Food')).toBe('true');
+    expect(screen.getByRole('alert')).toHaveTextContent(text);
+    expect(posted(calls)).toHaveLength(1);
+  });
+
+  it('another chest shows its own label and none of the last chest’s error', async () => {
+    const calls = network();
+    const other: [number, number, number] = [6, 64, 2];
+    const state = colony([
+      { ...plain, label: 'Ores' },
+      { ...plain, chest: other, label: 'Kitchen' },
+    ]);
+    const page = mountInspector('inspect-switch', state, inspector([chest]));
+    expect(screen.getByLabelText('Chest label')).toHaveValue('Ores');
+    fireEvent.click(screen.getByRole('button', { name: 'Clear' }));
+    await settle();
+    posted(calls)[0]!.reply({ error: 'unrecognized filter entry' }, 400);
+    await settle();
+    expect(screen.getByRole('alert')).toBeInTheDocument();
+    page.show(inspector([other]));
+    expect(screen.getByLabelText('Chest label')).toHaveValue('Kitchen');
+    expect(screen.queryByRole('alert')).toBeNull();
+    // Back on the first chest, its error is still its own.
+    page.show(inspector([chest]));
+    expect(screen.getByRole('alert')).toHaveTextContent('unrecognized filter entry');
   });
 });

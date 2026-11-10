@@ -7,14 +7,19 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   buildItem,
   contextMenu,
+  designationBody,
   designBlocks,
   designItems,
   failedCells,
   FURNITURE_TOOLS,
   heightTargets,
   HEIGHT_MODES,
+  MAX_DRAG_CELLS,
   mineItems,
   NOT_GROUND_IDS,
+  PREVIEW_HITS,
+  scanIds,
+  scanTruncated,
   STRUCTURE_TOOLS,
   WATER_TOOLS,
   type BuildOpts,
@@ -252,5 +257,34 @@ describe('designs', () => {
       designBlocksOnly: designItems(blocksOnly, 'Hut'),
       designBig: shape(designItems(placed, 'Big')),
     }).toMatchSnapshot();
+  });
+});
+
+describe('designationBody', () => {
+  it('Cut and Harvest by the previewed cells unless the scan was cut short or the cells are too many; the rest by area', () => {
+    const area: [number, number, number, number, number, number] = [0, 56, 0, 9, 104, 9];
+    const cells: V3[] = [
+      [1, 64, 1],
+      [2, 65, 3],
+    ];
+    const tooMany: V3[] = Array.from({ length: MAX_DRAG_CELLS + 1 }, (_, i) => [i % 64, 64, Math.floor(i / 64)] as V3);
+    const shape = (body: Record<string, unknown>) =>
+      Array.isArray(body.blocks) && body.blocks.length > 4 ? { ...body, blocks: body.blocks.length } : body;
+    const out: Record<string, unknown> = {};
+    for (const tool of ['cut', 'harvest', 'chop', 'mine', 'haul', 'hunt', 'forbid', 'allow', 'cancel'] as const) {
+      out[`${tool} cells`] = shape(designationBody(tool, area, 'ores', { cells }));
+      out[`${tool} truncated`] = shape(designationBody(tool, area, 'all', { cells, truncated: true }));
+    }
+    out['cut none'] = designationBody('cut', area, undefined, { cells: [] });
+    out['cut no preview'] = designationBody('cut', area);
+    out['cut 4096'] = shape(designationBody('cut', area, undefined, { cells: tooMany.slice(0, MAX_DRAG_CELLS) }));
+    out['cut 4097'] = shape(designationBody('cut', area, undefined, { cells: tooMany }));
+    out['scan cut'] = scanIds('cut');
+    out['scan harvest'] = scanIds('harvest');
+    out['truncated at the cap'] = [
+      scanTruncated(new Array(PREVIEW_HITS * 6 - 6)),
+      scanTruncated(new Array(PREVIEW_HITS * 6)),
+    ];
+    expect(out).toMatchSnapshot();
   });
 });

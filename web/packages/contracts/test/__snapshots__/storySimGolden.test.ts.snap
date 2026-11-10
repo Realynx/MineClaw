@@ -4,23 +4,23 @@ exports[`the mock director: a golden run > bills: every op, refused and accepted
 [
   [
     "designate -2,64,-2",
-    "251e57a70805520f",
+    "7fb2f8bef5f3e179",
   ],
   [
     "designate -3,64,-2",
-    "74d7c25cff050f09",
+    "5c5ddd5ae6656c21",
   ],
   [
     "designate -10,64,-6",
-    "04715c777d0f4c2c",
+    "6f3ba40107d6cea3",
   ],
   [
     "designate -14,64,-6",
-    "75b0d450cb16fefe",
+    "2d25ddd7f20b2e03",
   ],
   [
     "designate -16,64,-6",
-    "cbdc7bb6f757350b",
+    "6ad91f81491bda05",
   ],
   [
     "benches",
@@ -256,7 +256,7 @@ exports[`the mock director: a golden run > bills: every op, refused and accepted
   ],
   [
     "workbench fuel",
-    "f984c40b956f844e",
+    "4d50cba683d7835d",
   ],
   [
     "add after fuel",
@@ -442,7 +442,7 @@ exports[`the mock director: a golden run > materials: builds without benches, au
 [
   [
     "release table",
-    "3ba5a136a3f62236",
+    "6c22acdca31ef9dd",
   ],
   [
     "add",
@@ -470,7 +470,7 @@ exports[`the mock director: a golden run > materials: builds without benches, au
   ],
   [
     "designate table",
-    "251e57a70805520f",
+    "c94915889e010d10",
   ],
   [
     "builds",
@@ -482,7 +482,7 @@ exports[`the mock director: a golden run > materials: builds without benches, au
   ],
   [
     "designate furnace",
-    "74d7c25cff050f09",
+    "72fed175bd9c5e33",
   ],
   [
     "builds",
@@ -795,15 +795,15 @@ exports[`the mock director: a golden run > records every request and the colony 
   ],
   [
     "bench designate",
-    "251e57a70805520f",
+    "1194aa9fdcddfdb0",
   ],
   [
     "furnace designate",
-    "74d7c25cff050f09",
+    "c405cf936d0dbd8f",
   ],
   [
     "bench fuel",
-    "42a3c0bd7f208843",
+    "d53a6b13cf170fa9",
   ],
   [
     "recipes",
@@ -907,7 +907,7 @@ exports[`the mock director: a golden run > records every request and the colony 
   ],
   [
     "beds assign",
-    "160ac4369244ef50",
+    "96471b92a4b51e28",
   ],
   [
     "beds bad",

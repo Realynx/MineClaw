@@ -10,6 +10,7 @@ import { attackSpec, gearBody, isConfirmed, needsConfirm, type AttackWho } from 
 import type { GrowBillChange } from '../GrowingZones';
 import { EMPTY_SELECTION, type Selection } from '../model';
 import type { Condition } from '../notices';
+import { storyWriteError } from '../optimistic';
 import type { JumpTarget } from '../StoryNotices';
 import type { FormationMove } from '../StoryMap';
 import { failedCells, stalledIn } from '../tools';
@@ -21,11 +22,11 @@ type Xyz = { x: number; y: number; z: number };
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
 
-/** The handler that shows a failed write as a warning toast. */
+/** The handler that shows a failed write as a warning toast (a 503 `busy` says the colony did not save it). */
 export const warnOn =
   (c: Pick<Story, 'say'>) =>
   (e: unknown): void =>
-    c.say(errorText(e), 'warn');
+    c.say(storyWriteError(e).text, 'warn');
 
 /** "Bring online"'s toast. */
 function onlineText(started: number, blocked: StoryOnlineBlocked[], overCap: boolean): [string, 'ok' | 'warn'] {
@@ -146,9 +147,31 @@ export async function gear(c: Story, op: StoryGearOp, pawns: string[], item?: [n
   }
 }
 
-/** A right-drag line: each drafted pawn moves to its own cell on it (drafted pawns then hold there). */
+/** A bot from before `moves` refuses them so (the formation then goes one order per pawn). */
+const oldBotRefusal = (e: unknown) => e instanceof ApiError && e.status === 400 && /pawns required/.test(e.message);
+
+/** A right-drag line: each drafted pawn moves to its own cell on it (drafted pawns then hold there). One request gives every
+ * pawn its move, all or none, so the gesture is one write, one catch-up and one toast. */
 export async function formation(c: Story, moves: FormationMove[], queue: boolean, ignored: number) {
   if (!c.canWrite) return c.say('Needs the story role', 'warn');
+  const note = ignored ? ` · ${plural(ignored, 'undrafted pawn')} not in it (draft with R)` : '';
+  try {
+    await c.write('story.orders', {
+      moves: moves.map((mv) => ({ pawn: mv.pawn, target: { x: mv.target[0], y: mv.target[1], z: mv.target[2] } })),
+      ...(queue ? { queue: true } : {}),
+    });
+  } catch (e) {
+    if (oldBotRefusal(e)) return formationPerPawn(c, moves, queue, note);
+    const why = storyWriteError(e);
+    // An unknown outcome (a 502, a lost connection) may still have reached the colony: the pawns may walk to the line.
+    if (why.kind === 'unknown')
+      return c.say(`Could not confirm the formation (${why.text}); the pawns may still take it.`, 'warn');
+    return c.say(`The formation was not given: ${why.text}`, 'warn');
+  }
+  c.say(`${queue ? 'Queued a formation' : 'Formation'}: ${plural(moves.length, 'pawn')} along the line${note}`);
+}
+
+async function formationPerPawn(c: Story, moves: FormationMove[], queue: boolean, note: string) {
   const res = await Promise.allSettled(
     moves.map((mv) =>
       c.write('story.orders', {
@@ -159,7 +182,6 @@ export async function formation(c: Story, moves: FormationMove[], queue: boolean
     ),
   );
   const bad = res.filter((r) => r.status === 'rejected');
-  const note = ignored ? ` · ${plural(ignored, 'undrafted pawn')} not in it (draft with R)` : '';
   if (bad.length)
     c.say(
       `${bad.length} of ${moves.length} formation orders failed: ${errorText((bad[0] as PromiseRejectedResult).reason)}`,

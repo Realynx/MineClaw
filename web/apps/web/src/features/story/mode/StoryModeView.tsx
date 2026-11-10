@@ -87,6 +87,7 @@ export function StoryMapSlot({ c }: Props) {
       build={matHover ? { ...build, material: matHover.material } : build}
       previewHold={matHover !== null}
       holoPreview={holo}
+      pending={c.pendingView}
       mineFilter={c.mineFilter}
       heightMode={c.heightMode}
       layers={c.layers}

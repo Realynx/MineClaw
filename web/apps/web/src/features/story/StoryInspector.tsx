@@ -46,7 +46,6 @@ import {
 import { useMemo, useRef, useState, type ReactNode } from 'react';
 import { Dialog } from '@/components/ui/overlays';
 import { Button, Input } from '@/components/ui/primitives';
-import { errorText } from '@/lib/api/client';
 import { cn } from '@/lib/utils';
 import { ContainerContents } from '@/features/world/ContainerPanel';
 import { InventorySection } from '@/features/live/inventory/InventoryPanel';
@@ -55,8 +54,29 @@ import { benchTaskLine } from './CraftNeeds';
 import { retryIn, shortReason } from './failedLabels';
 import { BillRow } from './inspector/BillRow';
 import { BillPrioritySelect } from './inspector/BillPrioritySelect';
+import { ledgerKnown, LedgerSummary } from './inspector/LedgerSummary';
 import { StorageEntryActions, StorageSigns } from './inspector/StorageSigns';
 import { WORK_LABELS, WORK_TYPES } from './model';
+import {
+  bedKey,
+  benchKey,
+  billKey,
+  ignoreError,
+  mergeFields,
+  patchBedOwner,
+  patchBenchFuel,
+  patchBillRemove,
+  patchBillsReorder,
+  patchStorageSet,
+  patchStorageStop,
+  patchStorageUse,
+  storageKey,
+  storyWriteError,
+  trackOrWrite,
+  type Patch,
+  type StorageSet,
+  type TrackedWrites,
+} from './optimistic';
 import { panel } from './StoryHud';
 import { DirectiveList } from './StoryPanels';
 import {
@@ -655,6 +675,8 @@ export function BedInspector({
   state,
   canWrite,
   write,
+  track,
+  onError = ignoreError,
   onClose,
 }: {
   bed: StoryBed;
@@ -662,12 +684,13 @@ export function BedInspector({
   canWrite: boolean;
   write: StoryWrite;
   onClose: () => void;
-}) {
-  const [busy, setBusy] = useState(false);
+} & TrackedWrites) {
   const pos = { x: bed.pos[0], y: bed.pos[1], z: bed.pos[2] };
-  const run = (body: Parameters<StoryWrite>[1]) => {
-    setBusy(true);
-    void write('story.beds', body as never).finally(() => setBusy(false));
+  /** Gives the bed to `pawn` (null: nobody); shown at once when the page tracks it. */
+  const run = (pawn: string | null) => {
+    const body = pawn ? { op: 'assign', bed: pos, pawn } : { op: 'unassign', bed: pos };
+    const spec = { key: bedKey(bed.pos), apply: patchBedOwner(bed.pos, pawn) };
+    void trackOrWrite(track, write, spec, 'story.beds', body as never).catch(onError);
   };
   const beds = state?.beds ?? [];
   return (
@@ -685,11 +708,9 @@ export function BedInspector({
           <select
             aria-label="Set owner"
             className="h-7 min-w-0 flex-1 rounded border border-border bg-surface px-1"
-            disabled={!canWrite || busy}
+            disabled={!canWrite}
             value={bed.pawn ?? ''}
-            onChange={(e) =>
-              e.target.value ? run({ op: 'assign', bed: pos, pawn: e.target.value }) : run({ op: 'unassign', bed: pos })
-            }
+            onChange={(e) => run(e.target.value || null)}
           >
             <option value="">nobody</option>
             {(state?.pawns ?? []).map((p) => (
@@ -699,12 +720,7 @@ export function BedInspector({
             ))}
           </select>
         </label>
-        <Button
-          size="sm"
-          variant="ghost"
-          disabled={!canWrite || busy || !bed.pawn}
-          onClick={() => run({ op: 'unassign', bed: pos })}
-        >
+        <Button size="sm" variant="ghost" disabled={!canWrite || !bed.pawn} onClick={() => run(null)}>
           Clear
         </Button>
       </div>
@@ -952,7 +968,7 @@ function StorageSettings({
   onClip,
   set,
   entries,
-  write,
+  onStop,
 }: {
   first: StoryStorage | undefined;
   single: boolean;
@@ -964,7 +980,7 @@ function StorageSettings({
   onClip: (c: StorageClip) => void;
   set: (patch: StoragePatch) => void;
   entries: (op: 'add' | 'remove_entries', entries: string) => void;
-  write: StoryWrite;
+  onStop: () => void;
 }) {
   return (
     <>
@@ -1005,6 +1021,8 @@ function StorageSettings({
       </div>
       {single ? (
         <Input
+          // Another chest is another field: its own label, never the last chest's text written to it on blur.
+          key={k3(keys[0]!)}
           aria-label="Chest label"
           defaultValue={first?.label ?? ''}
           placeholder="Label (optional)"
@@ -1015,12 +1033,7 @@ function StorageSettings({
       ) : null}
       <FilterTree tree={tree} filter={filter} onChange={(f) => canWrite && set({ filter: f })} />
       <StorageEntryActions tree={tree} canWrite={canWrite} apply={entries} />
-      <Button
-        size="sm"
-        variant="ghost"
-        disabled={!canWrite}
-        onClick={() => void write('story.storage', { op: 'remove', chests: keys } as never)}
-      >
+      <Button size="sm" variant="ghost" disabled={!canWrite} onClick={onStop}>
         Stop using as storage
       </Button>
     </>
@@ -1032,6 +1045,8 @@ export function StorageInspector({
   state,
   canWrite,
   write,
+  track,
+  onError = ignoreError,
   clip,
   onClip,
   onClose,
@@ -1043,28 +1058,37 @@ export function StorageInspector({
   clip: StorageClip | null;
   onClip: (c: StorageClip) => void;
   onClose: () => void;
-}) {
+} & TrackedWrites) {
   const categories = state?.categories;
   const tree = useMemo(() => buildTree(categories), [categories]);
   const storages = state?.storages ?? [];
   const list = chests.map((c) => storageOf(storages, c));
   const first = list.find((s): s is StoryStorage => !!s);
-  const [pending, setPending] = useState<StoryFilter | null>(null);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const filter = pending ?? first?.pendingFilter ?? first?.filter ?? CLEAR_FILTER;
+  const filter = first?.pendingFilter ?? first?.filter ?? CLEAR_FILTER;
   const registered = list.every(Boolean);
   const keys = [...new Map(chests.map((c, i) => { const at = list[i]?.chest ?? c; return [k3(at), at] as const; })).values()];
   const selected = [...new Map(list.filter((s): s is StoryStorage => !!s).map((s) => [k3(s.chest), s])).values()];
+  // An error and a save in flight belong to the chests they were made for: other chests show neither.
+  const key = storageKey(keys);
+  const [error, setError] = useState<{ key: string; text: string } | null>(null);
+  const [saving, setSaving] = useState<string | null>(null);
+  const fail = (e: unknown) => setError({ key, text: storyWriteError(e).text });
+  /** Not shown at once: the colony normalises free-text entries and may reject them, so the form says it is saving. */
   const send = (body: ReturnType<typeof storageSetBody> | ReturnType<typeof storageEntriesBody>) => {
-    setSaving(true);
+    setSaving(key);
     setError(null);
-    void write('story.storage', body as never).catch((e: unknown) => setError(errorText(e)))
-      .finally(() => { setPending(null); setSaving(false); });
+    void write('story.storage', body as never)
+      .catch(fail)
+      .finally(() => setSaving((s) => (s === key ? null : s)));
+  };
+  /** Shown at once through `track` (a refusal puts the old value back and says why). */
+  const commit = (apply: Patch, body: object, merge?: typeof mergeFields) => {
+    setError(null);
+    void trackOrWrite(track, write, { key, apply, merge }, 'story.storage', body as never).catch(fail);
   };
   const set = (patch: StoragePatch) => {
-    if (patch.filter) setPending(patch.filter);
-    send(storageSetBody(keys, patch));
+    if (!track) return send(storageSetBody(keys, patch));
+    commit(patchStorageSet(keys, patch as StorageSet), storageSetBody(keys, patch), mergeFields);
   };
   return (
     <Shell
@@ -1076,18 +1100,27 @@ export function StorageInspector({
     >
       <div className="space-y-2 text-xs">
         {chests.length === 1 ? (
-          <ContainerContents target={{ dim: 0, x: keys[0]![0], y: keys[0]![1], z: keys[0]![2] }} heading />
+          <ContainerContents
+            target={{ dim: 0, x: keys[0]![0], y: keys[0]![1], z: keys[0]![2] }}
+            heading
+            placeholder={ledgerKnown(first) ? <LedgerSummary storage={first} /> : undefined}
+          />
         ) : null}
         <ReservationList
           reservations={state?.reservations}
           items={new Set(list.flatMap((st) => (st?.contents ?? []).map(([i, m]) => `${i}:${m}`)))}
           canWrite={canWrite}
           write={write}
+          onError={onError}
         />
         <StorageSigns storages={selected} tree={tree} />
-        {saving ? <p role="status">Saving requested settings…</p> : null}
-        {error ? <p role="alert" className="text-red-300">{error}</p> : null}
-        {pending || first?.pendingFilter ? <p className="font-medium">Requested filter (not active yet)</p> : null}
+        {saving === key ? <p role="status">Saving requested settings…</p> : null}
+        {error?.key === key ? (
+          <p role="alert" className="text-red-300">
+            {error.text}
+          </p>
+        ) : null}
+        {first?.pendingFilter ? <p className="font-medium">Requested filter (not active yet)</p> : null}
         {registered ? (
           <StorageSettings
             first={first}
@@ -1095,12 +1128,12 @@ export function StorageInspector({
             keys={keys}
             tree={tree}
             filter={filter}
-            canWrite={canWrite && !saving}
+            canWrite={canWrite}
             clip={clip}
             onClip={onClip}
             set={set}
             entries={(op, text) => send(storageEntriesBody(keys, op, text))}
-            write={write}
+            onStop={() => commit(patchStorageStop(keys), { op: 'remove', chests: keys })}
           />
         ) : (
           <Button
@@ -1108,12 +1141,7 @@ export function StorageInspector({
             variant="primary"
             disabled={!canWrite}
             onClick={() =>
-              void write('story.storage', {
-                op: 'set',
-                chests: keys,
-                priority: 'normal',
-                filter: allowAll(tree),
-              } as never)
+              commit(patchStorageUse(keys), { op: 'set', chests: keys, priority: 'normal', filter: allowAll(tree) })
             }
           >
             Use as storage
@@ -1134,6 +1162,8 @@ function AutoBillRow({
   state,
   canWrite,
   write,
+  track,
+  onError = ignoreError,
 }: {
   bill: StoryBill;
   label: string;
@@ -1141,8 +1171,12 @@ function AutoBillRow({
   state: StoryColonyState | undefined;
   canWrite: boolean;
   write: StoryWrite;
-}) {
+} & TrackedWrites) {
   const build = (state?.builds ?? []).find((b) => String(b.id) === String(bill.forBuild));
+  const cancel = () => {
+    const spec = { key: billKey(bill.id), apply: patchBillRemove(bill.id) };
+    void trackOrWrite(track, write, spec, 'story.bills', { op: 'remove', id: bill.id } as never).catch(onError);
+  };
   return (
     <li
       data-bill={bill.id}
@@ -1170,7 +1204,7 @@ function AutoBillRow({
       <button
         type="button"
         disabled={!canWrite}
-        onClick={() => void write('story.bills', { op: 'remove', id: bill.id } as never)}
+        onClick={cancel}
         aria-label={
           String(bill.forBuild) === 'tools' ? `Cancel ${label} for tools` : `Cancel ${label} for build ${String(bill.forBuild)}`
         }
@@ -1207,6 +1241,17 @@ export function UndesignatedBench({
   onClose: () => void;
 }) {
   const [err, setErr] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  // Not shown at once: the colony checks the block first. The button says it is saving until the answer.
+  const designate = () => {
+    setSaving(true);
+    void write('story.workbenches', { op: 'designate', pos } as never)
+      .then(
+        () => setErr(null),
+        (e: unknown) => setErr(storyWriteError(e).text),
+      )
+      .finally(() => setSaving(false));
+  };
   return (
     <Shell
       title="Workbench"
@@ -1219,18 +1264,8 @@ export function UndesignatedBench({
           The colony only uses benches it was given: designated ones take bills, receive the builds' crafts and unlock
           the Architect&apos;s tiers. Other players&apos; benches are left alone.
         </p>
-        <Button
-          size="sm"
-          variant="primary"
-          disabled={!canWrite}
-          onClick={() =>
-            void write('story.workbenches', { op: 'designate', pos } as never).then(
-              () => setErr(null),
-              (e: unknown) => setErr(e instanceof Error ? e.message : 'failed'),
-            )
-          }
-        >
-          Use as colony workbench
+        <Button size="sm" variant="primary" disabled={!canWrite || saving} onClick={designate}>
+          {saving ? 'Saving…' : 'Use as colony workbench'}
         </Button>
         {err ? <p className="text-danger">{err}</p> : null}
       </div>
@@ -1245,14 +1280,18 @@ export function ReservationList({
   items,
   canWrite,
   write,
+  onError = ignoreError,
 }: {
   reservations: readonly StoryReservation[] | null | undefined;
   items: ReadonlySet<string>;
   canWrite: boolean;
   write: StoryWrite;
+  onError?: (e: unknown) => void;
 }) {
   const rows = reservationRows(reservations, items);
   if (rows.length === 0) return null;
+  const release = (build: string, item: string) =>
+    void write('story.bills', { op: 'release_claim', build, item } as never).catch(onError);
   return (
     <div className="space-y-0.5" data-testid="reservations">
       <div className="text-[11px] font-semibold text-muted">Reserved for builds</div>
@@ -1266,7 +1305,7 @@ export function ReservationList({
             <button
               type="button"
               disabled={!canWrite}
-              onClick={() => void write('story.bills', { op: 'release_claim', build: r.build, item: r.forItem } as never)}
+              onClick={() => release(r.build, r.forItem)}
               className="rounded px-1 text-[10.5px] text-accent hover:bg-surface-3"
               title={r.chain ? 'Stop crafting it for the build (the build waits for it)' : 'Pause the build: it lets go of what it holds'}
             >
@@ -1319,8 +1358,22 @@ export function FuelPicker({
 }
 
 /** What a bench says before its bills: an unsupported kind, a furnace's fuel and smelting, station facts, its contents. */
-function BenchFacts({ bench, canWrite, write }: { bench: StoryWorkbench; canWrite: boolean; write: StoryWrite }) {
+function BenchFacts({
+  bench,
+  canWrite,
+  write,
+  track,
+  onError = ignoreError,
+}: { bench: StoryWorkbench; canWrite: boolean; write: StoryWrite } & TrackedWrites) {
   const pos = bench.pos;
+  const fuel = (f: string) =>
+    void trackOrWrite(
+      track,
+      write,
+      { key: benchKey(pos), apply: patchBenchFuel(pos, f) },
+      'story.workbenches',
+      fuelBody(pos, f) as never,
+    ).catch(onError);
   return (
     <>
       {bench.supported === false ? (
@@ -1332,12 +1385,7 @@ function BenchFacts({ bench, canWrite, write }: { bench: StoryWorkbench; canWrit
         </p>
       ) : null}
       {bench.kind === 'furnace' && bench.fuelChoices?.length ? (
-        <FuelPicker
-          value={bench.fuel ?? 'auto'}
-          choices={bench.fuelChoices}
-          disabled={!canWrite}
-          onPick={(f) => void write('story.workbenches', fuelBody(pos, f) as never)}
-        />
+        <FuelPicker value={bench.fuel ?? 'auto'} choices={bench.fuelChoices} disabled={!canWrite} onPick={fuel} />
       ) : null}
       {smeltingLine(bench) ? (
         <p className="rounded-md bg-surface-2 px-2 py-1 text-[11px] text-muted" data-testid="furnace-smelting">
@@ -1374,6 +1422,8 @@ export function BillsInspector({
   state,
   canWrite,
   write,
+  track,
+  onError = ignoreError,
   onPickChest,
   onClose,
 }: {
@@ -1383,9 +1433,12 @@ export function BillsInspector({
   write: StoryWrite;
   onPickChest: () => Promise<V3 | null>;
   onClose: () => void;
-}) {
+} & TrackedWrites) {
   const recipes = useRecipes(bench.kind);
   const [picker, setPicker] = useState(false);
+  // Not shown at once (a new bill's id is the colony's to give): the list says it is saving until the answer.
+  const [savingBill, setSavingBill] = useState(false);
+  const [releasing, setReleasing] = useState(false);
   const [editing, setEditing] = useState<{ bill: StoryBill | null; draft: BillDraft; key: number } | null>(null);
   const [picking, setPicking] = useState(false);
   const dragFrom = useRef<number | null>(null);
@@ -1406,15 +1459,22 @@ export function BillsInspector({
     if (from === null || from === i) return;
     const auto = bench.bills.filter((x) => (x.forBuild ?? null) !== null).length;
     if (from < auto || i < auto) return;
-    void write(
-      'story.bills',
-      reorderBills(
-        pos,
-        bench.bills.filter((x) => (x.forBuild ?? null) === null).map((x) => x.id),
-        from - auto,
-        i - auto,
-      ) as never,
+    const body = reorderBills(
+      pos,
+      bench.bills.filter((x) => (x.forBuild ?? null) === null).map((x) => x.id),
+      from - auto,
+      i - auto,
     );
+    // Its own key: a reorder never replaces a fuel change, and a newer order (built on the shown one) replaces an older.
+    const spec = { key: `${benchKey(pos)}:order`, apply: patchBillsReorder(pos, body.ids) };
+    void trackOrWrite(track, write, spec, 'story.bills', body as never).catch(onError);
+  };
+  const release = () => {
+    setReleasing(true);
+    void write('story.workbenches', { op: 'release', pos } as never).then(onClose, (e: unknown) => {
+      setReleasing(false);
+      onError(e);
+    });
   };
   const label = bench.label ?? bench.kind.replace(/_/g, ' ');
   return (
@@ -1426,7 +1486,7 @@ export function BillsInspector({
       wide
     >
       <div className="space-y-2 text-xs">
-        <BenchFacts bench={bench} canWrite={canWrite} write={write} />
+        <BenchFacts bench={bench} canWrite={canWrite} write={write} track={track} onError={onError} />
         <div className="flex items-center gap-1.5">
           <Button
             size="sm"
@@ -1440,11 +1500,11 @@ export function BillsInspector({
           <Button
             size="sm"
             variant="ghost"
-            disabled={!canWrite}
-            onClick={() => void write('story.workbenches', { op: 'release', pos } as never).then(onClose)}
+            disabled={!canWrite || releasing}
+            onClick={release}
             title="Stop using this bench: its bills go with it, the builds' crafts move to another bench or wait"
           >
-            Release
+            {releasing ? 'Releasing…' : 'Release'}
           </Button>
         </div>
         <BenchTasks tasks={state?.craftTasks} pos={pos} />
@@ -1453,7 +1513,13 @@ export function BillsInspector({
           items={billInputs(recipes.data ?? [], bench.bills)}
           canWrite={canWrite}
           write={write}
+          onError={onError}
         />
+        {savingBill ? (
+          <p role="status" className="text-muted">
+            Saving the bill…
+          </p>
+        ) : null}
         <ol className="space-y-1" data-testid="bills">
           {bench.bills.map((b, i) => {
             const r = recipeOf(b.recipe);
@@ -1467,6 +1533,8 @@ export function BillsInspector({
                   state={state}
                   canWrite={canWrite}
                   write={write}
+                  track={track}
+                  onError={onError}
                 />
               );
             return (
@@ -1478,6 +1546,8 @@ export function BillsInspector({
                 state={state}
                 canWrite={canWrite}
                 write={write}
+                track={track}
+                onError={onError}
                 onDragStart={() => (dragFrom.current = i)}
                 onDrop={() => dropBill(i)}
                 onEdit={() => setEditing({ bill: b, draft: draftOf(b), key: 0 })}
@@ -1508,7 +1578,11 @@ export function BillsInspector({
           onSave={(d) => {
             const body = editing.bill ? updateBillBody(editing.bill, d) : addBillBody(pos, d);
             setEditing(null);
-            if (body) void write('story.bills', body as never);
+            if (!body) return;
+            setSavingBill(true);
+            void write('story.bills', body as never)
+              .catch(onError)
+              .finally(() => setSavingBill(false));
           }}
         />
       ) : null}

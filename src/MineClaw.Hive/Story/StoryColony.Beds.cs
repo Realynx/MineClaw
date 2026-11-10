@@ -123,7 +123,7 @@ public sealed partial class StoryColony
             Touch();
             _bedScan = null;
         }
-        Save(force: true);
+        SaveSoon();
         return (new JsonObject { ["beds"] = BedsJson() }, null, false);
     }
 

@@ -141,6 +141,36 @@ describe('the Story map overlay painter (mapDraw.ts)', () => {
     expect(log).toMatchSnapshot();
   });
 
+  it('a pending Cancel hides its designations; pending marks are the same glyph at 60% opacity, on screen only', () => {
+    const list = [
+      { id: 1, kind: 'mine', block: [0, -1, 0] },
+      { id: 'two', kind: 'mine', block: [-1, -1, 0], status: 'failed', reason: 'no pick' },
+    ] as unknown as StoryColonyState['designations'];
+    const model = designationModel(list);
+    const all = painter();
+    expect(all.pt.drawDesignations(model)).toHaveLength(1);
+    const stamps = (log: string[]) => log.filter((s) => s.startsWith('drawImage(') || s === 'save()').length;
+    expect(stamps(all.log)).toBe(2);
+    // The hidden ids are not drawn (and a hidden failed one reports no ring).
+    const some = painter();
+    expect(some.pt.drawDesignations(model, new Set(['two']))).toEqual([]);
+    expect(stamps(some.log)).toBe(1);
+    // Pending marks: one stamp per on-screen mark, between 60% opacity and back to opaque.
+    const pend = painter();
+    pend.pt.drawPendingMarks([
+      { cell: [0, -1, 0], kind: 'mine' },
+      { cell: [-1, -1, 0], kind: 'chop' },
+      { cell: [9, 9, 0], kind: 'mine' }, // off screen
+    ]);
+    expect(pend.log[0]).toBe('globalAlpha=0.6');
+    expect(pend.log[pend.log.length - 1]).toBe('globalAlpha=1');
+    expect(stamps(pend.log)).toBe(2);
+    expect(pend.log).toMatchSnapshot();
+    const none = painter();
+    none.pt.drawPendingMarks([]);
+    expect(none.log).toEqual([]);
+  });
+
   it('labels and colours', () => {
     expect(inDanger(pawn('a', { hp: 8 }))).toBe(true);
     expect(inDanger(pawn('a', { food: 5 }))).toBe(false);

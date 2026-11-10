@@ -42,8 +42,10 @@ public sealed partial class StoryColony
         _seenAsked[st.Chest] = Now;
         if (st.Missing) return changed;
         (IReadOnlyList<Stack> Contents, DateTimeOffset At)? seen;
+        long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
         try { seen = Host.SeenChest(st.Chest); }
         catch (Exception) { return changed; }
+        finally { StoryPerf.SeenChest.Note(t0); } // the bot's chest memory (its db), read under the colony lock: on the perf line
         if (seen is not { } s || st.SeenAt is { } s0 && s.At <= s0) return changed;
         if (st.KnownAt is { } k && s.At <= k) return changed; // the record's own last change is newer than that look
         st.SeenAt = s.At;

@@ -10,10 +10,12 @@ import type { RouteId, StoryColonyState, StoryRecipe } from '@mineclaw/contracts
 import { useCallback, useEffect } from 'react';
 import { api, ApiError, type RouteBody } from '@/lib/api/client';
 import { qk } from '@/lib/api/query';
+import { catchingUp, catchUp, colonyKey, readColony } from './colonySync';
 import { storyFramesFlowing } from './frames';
-import { mergeColony } from './model';
+import { catchUpAfterWrite, sendColonyWrite } from './optimistic';
 
-export const colonyKey = (id: string) => qk('story.get', { id });
+// The colony state's cache key and its catch-up live in colonySync.ts (the stream uses them too).
+export { catchUp, colonyKey };
 
 export function useColonies() {
   return useQuery({
@@ -22,13 +24,6 @@ export function useColonies() {
     staleTime: 10_000,
     refetchInterval: 15_000,
   });
-}
-
-/** Catches the colony up from its revision (merged like a stream frame). */
-export async function catchUp(qc: ReturnType<typeof useQueryClient>, id: string): Promise<void> {
-  const prev = qc.getQueryData<StoryColonyState>(colonyKey(id));
-  const d = await api('story.get', { params: { id }, query: prev ? { since: prev.rev } : {} });
-  qc.setQueryData<StoryColonyState>(colonyKey(id), (p) => mergeColony(p, prev ? d : { ...d, full: true }));
 }
 
 /** Colony queries whose missing state is being asked for again: one request each at a time (it may wait a while). */
@@ -59,18 +54,20 @@ export function useColony(id: string | null) {
   const qc = useQueryClient();
   const q = useQuery<StoryColonyState>({
     queryKey: colonyKey(id ?? ''),
-    queryFn: async ({ signal }) => ({ ...(await api('story.get', { params: { id: id! }, signal })), full: true }),
+    queryFn: ({ signal }) => readColony(qc, id!, signal),
     enabled: !!id,
     staleTime: Infinity,
     refetchOnWindowFocus: false,
   });
   // The stream's `story` frames keep it current; this catch-up covers a quiet or reconnecting stream (it skips while frames
   // flow), and a full refetch every minute is the backstop for anything a delta could miss.
+  // The catch-up also skips while an earlier one is still on the wire: a slow bot must not collect one more read every 3 s.
   useEffect(() => {
     if (!id) return;
     const t = setInterval(() => {
       if (refetchMissing(qc, id)) return;
-      if (document.visibilityState === 'visible' && !storyFramesFlowing(id)) void catchUp(qc, id).catch(() => undefined);
+      if (document.visibilityState === 'visible' && !storyFramesFlowing(id) && !catchingUp(qc, id))
+        void catchUp(qc, id).catch(() => undefined);
     }, 3000);
     const full = setInterval(() => void qc.invalidateQueries({ queryKey: colonyKey(id) }), 60_000);
     return () => {
@@ -91,7 +88,7 @@ export function useRecipes(workbench: string | null) {
   });
 }
 
-type ColonyWrite =
+export type ColonyWrite =
   | 'story.release'
   | 'story.resume'
   | 'story.online'
@@ -138,16 +135,10 @@ export function useStoryWrite(id: string | null) {
   return useCallback(
     async <K extends ColonyWrite>(route: K, body: RouteBody<K>) => {
       if (!id) throw new Error('no colony');
-      const out = await api(route, { params: { id }, body });
-      void catchUp(qc, id).catch(() => undefined);
-      // What the colony can make changes with its benches, its storage and its queue: the Architect's tiers follow.
-      if (
-        route === 'story.workbenches' ||
-        route === 'story.options' ||
-        route === 'story.builds' ||
-        route === 'story.storage'
-      )
-        void qc.invalidateQueries({ queryKey: qk('story.architect', { id }) });
+      // The request, its line in the command ring and the Architect palette: `sendColonyWrite` (optimistic.ts).
+      const out = await sendColonyWrite(qc, id, route, body);
+      // With `rev` while frames flow, the stream brings the change (one read only if it does not); else one read now.
+      void catchUpAfterWrite(qc, id, out);
       return out;
     },
     [qc, id],

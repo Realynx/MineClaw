@@ -1168,7 +1168,7 @@ export const StoryBedsRequest = z.discriminatedUnion('op', [
 ]);
 export type StoryBedsRequest = z.infer<typeof StoryBedsRequest>;
 
-export const StoryBedsResponse = z.object({ beds: z.array(StoryBed) });
+export const StoryBedsResponse = z.object({ beds: z.array(StoryBed), rev: z.number().int().nullish() });
 export type StoryBedsResponse = z.infer<typeof StoryBedsResponse>;
 
 /** POST /api/story/colonies/{id}/home: moves the colony's home; the director brings pawns far from it there. */
@@ -1260,9 +1260,23 @@ export const StoryOrderSpec = z
   .strict();
 export type StoryOrderSpec = z.infer<typeof StoryOrderSpec>;
 
-export const StoryOrderRequest = z
-  .object({ pawns: PawnList, order: StoryOrderSpec, queue: z.boolean().optional() })
+/** One pawn's place in a formation: a plain move to its own cell. */
+export const StoryOrderMove = z
+  .object({
+    pawn: z.string().min(1).max(64),
+    target: z.object({ x: z.number().int(), y: z.number().int(), z: z.number().int() }).strict(),
+  })
   .strict();
+export type StoryOrderMove = z.infer<typeof StoryOrderMove>;
+
+/**
+ * One order for a pawn or a group, or `moves`: a formation in one request, each pawn sent to its own cell. `moves` is all or
+ * none: a pawn the colony does not have refuses the whole request (400) and no pawn is moved.
+ */
+export const StoryOrderRequest = z.union([
+  z.object({ pawns: PawnList, order: StoryOrderSpec, queue: z.boolean().optional() }).strict(),
+  z.object({ moves: z.array(StoryOrderMove).min(1).max(512), queue: z.boolean().optional() }).strict(),
+]);
 export type StoryOrderRequest = z.infer<typeof StoryOrderRequest>;
 
 /** `remove` with an area erases those cells from zones of the kind (no kind or `any`: every kind). */
@@ -1366,6 +1380,10 @@ export const StoryDesignationRequest = z
     entities: z.array(z.number().int()).max(512).optional(),
     design: z.union([z.string().max(64), z.number().int()]).optional(),
     filter: StoryMineFilter.optional(),
+    includeTargets: z
+      .boolean()
+      .optional()
+      .describe('add: false leaves the targets out of the answer (the count and the warnings stay)'),
   })
   .strict();
 export type StoryDesignationRequest = z.infer<typeof StoryDesignationRequest>;
@@ -1655,6 +1673,7 @@ export const StoryWorkbenchesResponse = z.object({
   kind: z.string(),
   designated: z.boolean(),
   fuel: z.string().nullish(),
+  rev: z.number().int().nullish(),
 });
 export type StoryWorkbenchesResponse = z.infer<typeof StoryWorkbenchesResponse>;
 
@@ -2121,6 +2140,8 @@ export function expandBuildItem(item: StoryBuildItem): Array<[number, number, nu
 
 export const LOG_IDS: ReadonlySet<number> = new Set([17, 162]);
 export const PLANT_IDS: ReadonlySet<number> = new Set([6, 31, 32, 37, 38, 175]);
+/** What Cut takes: the plants, and mushrooms, vines and lily pads (the colony cuts those too). Mine keeps reading `PLANT_IDS`. */
+export const CUT_IDS: ReadonlySet<number> = new Set([...PLANT_IDS, 39, 40, 106, 111]);
 export const ORE_IDS: ReadonlySet<number> = new Set([14, 15, 16, 21, 56, 73, 74, 129, 153]);
 export const STONE_IDS: ReadonlySet<number> = new Set([1, 4, 48, 87, 98, 24]);
 export const SOIL_IDS: ReadonlySet<number> = new Set([2, 3, 12, 13, 82, 88]);
@@ -2193,7 +2214,7 @@ function minable(id: number, filter: StoryMineFilter): boolean {
 }
 const TOOL_MATCHES: ReadonlyMap<string, ToolMatch> = new Map<string, ToolMatch>([
   ['chop', inSet(LOG_IDS)],
-  ['cut', inSet(PLANT_IDS)],
+  ['cut', inSet(CUT_IDS)],
   ['harvest', (id, meta, below) => harvestable(id, meta, below)],
   ['mine', (id, _meta, _below, filter) => minable(id, filter)],
   ['deconstruct', inSet(STRUCTURE_IDS)],

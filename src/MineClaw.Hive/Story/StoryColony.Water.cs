@@ -386,7 +386,7 @@ public sealed partial class StoryColony
                 WakeIdle();
             }
         }
-        Save(force: true);
+        SaveSoon();
         lock (_lock) return OptionsJson();
     }
 

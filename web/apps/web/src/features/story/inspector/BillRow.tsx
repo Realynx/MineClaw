@@ -5,6 +5,16 @@
 import type { StoryBill, StoryColonyState, StoryRecipe, StoryWorkbench } from '@mineclaw/contracts';
 import { GripVertical, Pause, Play, Trash2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import {
+  billKey,
+  ignoreError,
+  mergeBillBodies,
+  patchBill,
+  patchBillRemove,
+  trackOrWrite,
+  type Patch,
+  type TrackedWrites,
+} from '../optimistic';
 import { billProgress, billSummary, enchantLabel, fuelLabel, fuelLine } from '../storage';
 import type { StoryWrite } from '../useStory';
 import { ItemIcon } from '../visuals';
@@ -56,13 +66,13 @@ function BillFuelSelect({
   name,
   bench,
   canWrite,
-  write,
+  update,
 }: {
   b: StoryBill;
   name: string;
   bench: StoryWorkbench;
   canWrite: boolean;
-  write: StoryWrite;
+  update: (fields: Partial<StoryBill>, body: Record<string, unknown>) => void;
 }) {
   if (bench.kind !== 'furnace' || !bench.fuelChoices?.length) return null;
   return (
@@ -71,9 +81,7 @@ function BillFuelSelect({
       title="Fuel for this bill (the furnace's unless set)"
       disabled={!canWrite}
       value={b.fuel ?? ''}
-      onChange={(e) =>
-        void write('story.bills', { op: 'update', id: b.id, fuel: e.target.value || 'inherit' } as never)
-      }
+      onChange={(e) => update({ fuel: e.target.value || null }, { fuel: e.target.value || 'inherit' })}
       className={cn(
         'h-6 max-w-[6.5rem] rounded border border-border bg-surface px-0.5 text-[10.5px]',
         b.fuel && 'border-accent',
@@ -90,7 +98,7 @@ function BillFuelSelect({
   );
 }
 
-export interface BillRowProps {
+export interface BillRowProps extends TrackedWrites {
   bill: StoryBill;
   recipe: StoryRecipe | undefined;
   bench: StoryWorkbench;
@@ -110,11 +118,21 @@ export function BillRow({
   state,
   canWrite,
   write,
+  track,
+  onError = ignoreError,
   onDragStart,
   onDrop,
   onEdit,
 }: BillRowProps) {
   const name = r?.label ?? b.recipe;
+  // Priority, fuel and delete share the bill's key (two updates merge, a delete replaces them); pause has its own, so a
+  // quick pause after a priority change never replaces it.
+  const send = (key: string, apply: Patch, body: Record<string, unknown>) => {
+    const spec = { key, apply, merge: mergeBillBodies };
+    void trackOrWrite(track, write, spec, 'story.bills', body as never).catch(onError);
+  };
+  const update = (fields: Partial<StoryBill>, body: Record<string, unknown>) =>
+    send(billKey(b.id), patchBill(b.id, fields), { op: 'update', id: b.id, ...body });
   return (
     <li
       data-bill={b.id}
@@ -133,12 +151,17 @@ export function BillRow({
         <BillText b={b} name={name} state={state} />
       </button>
       <BillPrioritySelect value={b.priority ?? 3} label={`Priority for ${name}`} disabled={!canWrite}
-        onChange={(priority) => void write('story.bills', { op: 'update', id: b.id, priority } as never)} />
-      <BillFuelSelect b={b} name={name} bench={bench} canWrite={canWrite} write={write} />
+        onChange={(priority) => update({ priority }, { priority })} />
+      <BillFuelSelect b={b} name={name} bench={bench} canWrite={canWrite} update={update} />
       <button
         type="button"
         disabled={!canWrite}
-        onClick={() => void write('story.bills', { op: b.paused ? 'resume' : 'pause', id: b.id } as never)}
+        onClick={() =>
+          send(`${billKey(b.id)}:pause`, patchBill(b.id, { paused: !b.paused }), {
+            op: b.paused ? 'resume' : 'pause',
+            id: b.id,
+          })
+        }
         aria-label={b.paused ? `Resume ${name}` : `Pause ${name}`}
         className="rounded p-0.5 hover:bg-surface-3"
       >
@@ -147,7 +170,7 @@ export function BillRow({
       <button
         type="button"
         disabled={!canWrite}
-        onClick={() => void write('story.bills', { op: 'remove', id: b.id } as never)}
+        onClick={() => send(billKey(b.id), patchBillRemove(b.id), { op: 'remove', id: b.id })}
         aria-label={`Delete ${name}`}
         className="rounded p-0.5 text-danger hover:bg-danger-soft"
       >

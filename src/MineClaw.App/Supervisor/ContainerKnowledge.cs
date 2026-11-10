@@ -125,19 +125,23 @@ public sealed class ContainerKnowledge(ContainerSightings store, Func<IReadOnlyL
 
         var key = (dim, look?.Cells[0] ?? cells[0], id);
         List<Candidate> previous;
+        bool known;
         lock (_refreshGate)
-            previous = _refreshed.TryGetValue(key, out var previousEntry) ? previousEntry.Items : [];
+        {
+            known = _refreshed.TryGetValue(key, out var previousEntry);
+            previous = known ? previousEntry.Items : [];
+        }
         var candidates = previous.Where(c => id <= 0 || Fits(id, c)).ToList();
         if (look != null) candidates.Add(look);
         var best = Choose(candidates);
-        if (best == null)
+        if (best == null && !known)
         {
-            // No honest cached answer: keep the first-read behavior, including a genuinely unknown container.
+            // The first read of this container is synchronous (a remembered chest shows on the first click after a restart). An
+            // unknown answer is cached too: the next polls read the cache and refresh it in the background at most every 3 s.
             var stored = StoredCandidates(dim, pos).Where(c => id <= 0 || Fits(id, c)).ToList();
-            best = Choose(stored);
-            if (best == null) return Unknown(dim, id, cells);
             CacheStored(key, stored);
-            return View(dim, id, cells, best);
+            best = Choose(stored);
+            return best == null ? Unknown(dim, id, cells) : View(dim, id, cells, best);
         }
 
         bool refresh;
@@ -147,7 +151,7 @@ public sealed class ContainerKnowledge(ContainerSightings store, Func<IReadOnlyL
             refresh = (!found || Now - cached.At >= RefreshMs) && _refreshing.Count < RefreshConcurrency && _refreshing.Add(key);
         }
         if (refresh) _ = Task.Run(() => Refresh(key));
-        return View(dim, id, cells, best);
+        return best == null ? Unknown(dim, id, cells) : View(dim, id, cells, best);
     }
 
     private void CacheStored((int Dim, BlockPos Pos, int Id) key, List<Candidate> items)
@@ -304,19 +308,21 @@ public sealed class ContainerKnowledge(ContainerSightings store, Func<IReadOnlyL
                 : new Candidate(s.Cells, s.BlockId, null, s.Slots, null, s.Size, s.At, s.By, "memory"));
     }
 
-    /// <summary>The world memory's containers with contents near the box's centre that have a cell in the box, at most twice the limit.</summary>
+    /// <summary>The world memory's containers with contents that have a cell in the box, nearest the box's centre first, at most twice
+    /// the limit: one indexed statement with their items (<see cref="ObservationStore.ContainersIn"/>).</summary>
     private static void AddMemoryInBox(List<Candidate> cands, ObservationStore obs, int dim, BlockPos min, BlockPos max, int limit)
     {
         double cx = (min.X + max.X) / 2.0, cy = (min.Y + max.Y) / 2.0, cz = (min.Z + max.Z) / 2.0;
-        double r = Math.Sqrt(Math.Pow(max.X - min.X, 2) + Math.Pow(max.Y - min.Y, 2) + Math.Pow(max.Z - min.Z, 2)) / 2 + 1;
+        // A cell is a unit cube: bounds that start anywhere inside the box's last cell still put a cell in the box.
+        var region = new Box(min.X, min.Y, min.Z, max.X + 1, max.Y + 1, max.Z + 1);
         int n = 0;
-        foreach (var (row, _) in obs.Nearest(null, cx, cy, cz, 4000, r, dim))
+        foreach (var (row, items) in obs.ContainersIn(MemoryKinds, region, dim, 4000).OrderBy(t => t.Row.Bounds!.Value.Distance(cx, cy, cz)))
         {
             if (!HasContents(row, out var b)) continue;
             var rc = CellsOf(b);
             if (!rc.Any(c => In(c, min, max))) continue;
             if (++n > limit * 2) break;
-            cands.Add(FromRow(obs, row, rc));
+            cands.Add(FromRow(row, items, rc));
         }
     }
 
@@ -434,17 +440,20 @@ public sealed class ContainerKnowledge(ContainerSightings store, Func<IReadOnlyL
         if (memory() is not { } obs) return null;
         try
         {
-            foreach (var (row, _) in obs.Nearest(null, pos.X, pos.Y, pos.Z, 8, 0.01, dim))
-                if (Array.IndexOf(MemoryKinds, row.Kind) >= 0 && row.Bounds is { } b && row.ContentsAt != null)
-                    return FromRow(obs, row, CellsOf(b));
+            // One indexed statement with the items (it used to scan every observation, then read the items apart).
+            const double near = 0.01;
+            var nearest = obs.ContainersIn(MemoryKinds, Box.Around(pos.X, pos.Y, pos.Z, near), dim, 8)
+                .Select(t => (t.Row, t.Items, Distance: t.Row.Bounds!.Value.Distance(pos.X, pos.Y, pos.Z)))
+                .Where(t => t.Distance <= near).OrderBy(t => t.Distance).FirstOrDefault();
+            if (nearest.Row is { Bounds: { } b } row) return FromRow(row, nearest.Items, CellsOf(b));
         }
         catch (Exception) { }
         return null;
     }
 
-    private static Candidate FromRow(ObservationStore obs, ObservationRow row, BlockPos[] cells)
+    private static Candidate FromRow(ObservationRow row, IReadOnlyList<ItemCount> items, BlockPos[] cells)
     {
-        var counts = obs.Contents(row.Id).Select(c => (c.ItemId, c.Damage, c.Count)).ToList();
+        var counts = items.Select(c => (c.ItemId, c.Damage, c.Count)).ToList();
         int size = row.Kind == "chest" && cells.Length > 1 ? ChestPairs.DoubleSlots : ContainerSightings.SizeOf(row.Kind);
         return new Candidate(cells, -1, row.Kind, null, counts, size, row.ContentsAt?.ToUnixTimeMilliseconds(), row.ContentsBy, "memory");
     }

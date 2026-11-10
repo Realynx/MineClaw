@@ -15,8 +15,8 @@ import type {
   WorldBlockDeltas,
   WorldEntities,
 } from '@mineclaw/contracts';
+import { applyColonyFrame } from '@/features/story/colonySync';
 import { noteStoryFrame } from '@/features/story/frames';
-import { mergeColony } from '@/features/story/model';
 import { publishBlocks } from '@/features/world/blocks';
 import { publishEntityFrame } from '@/features/world/entityFrames';
 import { publishFeed } from '@/features/world/chatBubbles';
@@ -64,9 +64,10 @@ const LIVE_HANDLERS: Partial<Record<LiveEventName, (qc: QueryClient, data: unkno
   blocks: (_qc, data) => publishBlocks(data as WorldBlockDeltas),
   story: (qc, data) => {
     // One colony's delta: merged into that colony's state query (fetched once by the Story Mode page).
+    // A delta that starts after the revision the query holds is not merged: a catch-up closes the gap (colonySync.ts).
     const f = data as StoryColonyFrame;
     noteStoryFrame(f.id);
-    qc.setQueryData(qk('story.get', { id: f.id }), (prev: StoryColonyFrame | undefined) => (prev ? mergeColony(prev, f) : prev));
+    applyColonyFrame(qc, f);
   },
 };
 

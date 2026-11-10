@@ -117,6 +117,49 @@ describe('story contracts', () => {
     ).toBe(true);
   });
 
+  it('a formation is one orders request: moves, 1 to 512, strict, never mixed with a group order', () => {
+    const move = (pawn: string, x: number) => ({ pawn, target: { x, y: 64, z: 3 } });
+    const ok = (body: unknown) => C.StoryOrderRequest.safeParse(body).success;
+    expect(ok({ moves: [move('a', 1), move('b', 2)] })).toBe(true);
+    expect(ok({ moves: [move('a', 1)], queue: true })).toBe(true);
+    expect(ok({ moves: Array.from({ length: 512 }, (_, i) => move(`p${i}`, i)) })).toBe(true);
+    expect(ok({ moves: Array.from({ length: 513 }, (_, i) => move(`p${i}`, i)) })).toBe(false);
+    expect(ok({ moves: [] })).toBe(false);
+    expect(ok({ moves: [{ ...move('a', 1), kind: 'move' }] })).toBe(false);
+    expect(ok({ moves: [{ pawn: 'a', target: { x: 1.5, y: 64, z: 3 } }] })).toBe(false);
+    expect(ok({ moves: [{ pawn: 'a', target: { entity: 7 } }] })).toBe(false);
+    expect(ok({ moves: [{ pawn: '', target: { x: 1, y: 64, z: 3 } }] })).toBe(false);
+    expect(ok({ moves: [move('a', 1)], pawns: ['a'] })).toBe(false);
+    expect(ok({ moves: [move('a', 1)], pawns: ['a'], order: { kind: 'hold' } })).toBe(false);
+    // The bridge's form: nothing in a move is renamed on the way to the bot.
+    expect(C.toSnake({ moves: [move('a', 1)], queue: true }, { opaque: C.REQUEST_OPAQUE_KEYS })).toEqual({
+      moves: [move('a', 1)],
+      queue: true,
+    });
+  });
+
+  it('a designation can ask for an answer without its targets (include_targets on the way to the bot)', () => {
+    const add = { op: 'add', kind: 'mine', blocks: [[1, 2, 3]] };
+    expect(C.StoryDesignationRequest.safeParse({ ...add, includeTargets: false }).success).toBe(true);
+    expect(C.StoryDesignationRequest.safeParse({ ...add, includeTargets: true }).success).toBe(true);
+    expect(C.StoryDesignationRequest.safeParse(add).success).toBe(true);
+    expect(C.StoryDesignationRequest.safeParse({ ...add, includeTargets: 'no' }).success).toBe(false);
+    expect(C.StoryDesignationRequest.safeParse({ ...add, include_targets: false }).success).toBe(false);
+    expect(C.toSnake({ ...add, includeTargets: false }, { opaque: C.REQUEST_OPAQUE_KEYS })).toEqual({
+      ...add,
+      include_targets: false,
+    });
+  });
+
+  it('bed and workbench answers carry the revision; an answer without one (an older bot) still parses', () => {
+    const bench = { pos: [1, 2, 3], kind: 'furnace', designated: true };
+    expect(C.StoryBedsResponse.parse(C.toCamel({ beds: [], rev: 41 })).rev).toBe(41);
+    expect(C.StoryWorkbenchesResponse.parse(C.toCamel({ ...bench, fuel: 'coal', rev: 42 })).rev).toBe(42);
+    expect(C.StoryBedsResponse.parse({ beds: [] }).rev).toBeUndefined();
+    expect(C.StoryWorkbenchesResponse.parse(bench).rev).toBeUndefined();
+    expect(C.StoryBedsResponse.safeParse({ beds: [], rev: 1.5 }).success).toBe(false);
+  });
+
   it('hours and clock labels', () => {
     // The clock hour (the bot's StoryCharacter.Hour): tick 0 = 06:00, a schedule is indexed by it.
     expect(C.storyHour(0)).toBe(6);
@@ -220,6 +263,20 @@ describe('tool matching', () => {
     expect(C.matchesTool('mine', 3, 0, 1, 'soil')).toBe(true);
     expect(C.matchesTool('mine', 7, 0, 1)).toBe(false);
     expect(C.matchesTool('cut', 31, 1, 2)).toBe(true);
+  });
+
+  it('cut takes what the colony cuts but leaves: the plants, mushrooms, vines and lily pads; mine is as it was', () => {
+    const sorted = (s: ReadonlySet<number>) => [...s].sort((a, b) => a - b);
+    expect(sorted(C.PLANT_IDS)).toEqual([6, 31, 32, 37, 38, 175]);
+    expect(sorted(C.CUT_IDS)).toEqual([6, 31, 32, 37, 38, 39, 40, 106, 111, 175]);
+    const cut = Array.from({ length: 256 }, (_, id) => id).filter((id) => C.matchesTool('cut', id, 0, 2));
+    expect(cut).toEqual(sorted(C.CUT_IDS));
+    // Leaves are no Cut target: the tool designates what its preview shows, and the preview never showed leaves.
+    expect(C.matchesTool('cut', 18, 0, 2)).toBe(false);
+    expect(C.matchesTool('cut', 161, 0, 2)).toBe(false);
+    // Mine reads PLANT_IDS, not CUT_IDS: mushrooms, vines and lily pads are still mined, tall grass still is not.
+    for (const id of [39, 40, 106, 111]) expect(C.matchesTool('mine', id, 0, 2), String(id)).toBe(true);
+    expect(C.matchesTool('mine', 31, 1, 2)).toBe(false);
   });
 
   it('storage filters: categories, item keys, deny wins', () => {
@@ -551,6 +608,75 @@ describe('the mock director', () => {
     });
     expect(sim.options(id, { keepDisallowed: true }).keepDisallowed).toBe(true);
     expect(sim.state(id).options?.autoPlaceBenches).toBe(false);
+  });
+
+  it('a formation moves each pawn to its own cell in one request, all or none', () => {
+    const sim = new StorySim({ world: world(), defaultHome: [0, 63, 0], now: () => 1_762_000_000_000 });
+    const { id } = sim.create({ name: 'Test', pawns: 3 });
+    const [a, b, c] = sim.state(id).pawns.map((p) => p.name) as [string, string, string];
+    const queues = () => Object.fromEntries(sim.state(id).pawns.map((p) => [p.name, p.queue.map((o) => o.target)]));
+    const at = (x: number) => ({ x, y: 64, z: 9 });
+    const to = (pawn: string, x: number) => ({ pawn, target: at(x) });
+    const out = C.StoryAck.parse(sim.orders(id, { moves: [to(a, 4), to(b, 6)] }));
+    expect(out.ids).toHaveLength(2);
+    expect(out.rev).toBe(sim.state(id).rev);
+    // Each pawn its own cell (a group order would fan them out around one spot); the third pawn got nothing.
+    expect(queues()).toEqual({ [a]: [at(4)], [b]: [at(6)], [c]: [] });
+    expect(sim.state(id).orders.map((o) => [o.id, o.pawn, o.kind])).toEqual([
+      [out.ids![0], a, 'move'],
+      [out.ids![1], b, 'move'],
+    ]);
+    // A pawn the colony does not have refuses the whole request: nobody moves, nothing is stamped.
+    const rev = sim.state(id).rev;
+    expect(() => sim.orders(id, { moves: [to(c, 8), to('nobody', 9)] })).toThrow(
+      expect.objectContaining({ status: 400, message: "no pawn 'nobody'" }),
+    );
+    expect(sim.state(id).rev).toBe(rev);
+    expect(queues()).toEqual({ [a]: [at(4)], [b]: [at(6)], [c]: [] });
+    // queue: the move joins the pawn's queue; without it the move replaces the queue.
+    sim.orders(id, { moves: [to(a, 1)], queue: true });
+    expect(queues()[a]).toEqual([at(4), at(1)]);
+    sim.orders(id, { moves: [to(a, 2)] });
+    expect(queues()[a]).toEqual([at(2)]);
+  });
+
+  it('an add answers without its targets when asked to; the count and the revision stay', () => {
+    const sim = new StorySim({ world: world(), defaultHome: [0, 63, 0], now: () => 1_762_000_000_000 });
+    const { id } = sim.create({ name: 'Test', pawns: 1 });
+    const grove: C.StoryArea = [8, 60, -2, 16, 80, 6];
+    const quiet = sim.designations(id, { op: 'add', kind: 'chop', area: grove, includeTargets: false });
+    expect(quiet).toEqual({ ok: true, count: 3, rev: sim.state(id).rev });
+    expect(sim.state(id).designations.filter((d) => d.kind === 'chop')).toHaveLength(3);
+    const haul = sim.designations(id, { op: 'add', kind: 'haul', area: [0, 60, 0, 8, 70, 8], includeTargets: false });
+    expect(haul).toEqual({ ok: true, count: 1, rev: sim.state(id).rev });
+    // Left out or true: the targets come back as before.
+    const wheat = sim.designations(id, { op: 'add', kind: 'harvest', area: [0, 60, 8, 4, 70, 8] });
+    expect(wheat.targets).toHaveLength(3);
+    const hunt = sim.designations(id, { op: 'add', kind: 'hunt', area: [0, 60, 0, 8, 70, 8], includeTargets: true });
+    expect(hunt.entities).toEqual([8]);
+  });
+
+  it('bed and workbench answers carry the revision the change was stamped with', () => {
+    const w = world();
+    const inner = w.blockAt.bind(w);
+    w.blockAt = (x, y, z) => (x === 3 && y === 64 && (z === 3 || z === 4) ? [26, z === 3 ? 0 : 8] : inner(x, y, z));
+    const sim = new StorySim({ world: w, defaultHome: [0, 63, 0], now: () => 1_762_000_000_000 });
+    const { id } = sim.create({ name: 'Test', pawns: 1 });
+    const pawn = sim.state(id).pawns[0]!.name;
+    const before = sim.state(id).rev;
+    const bed = C.StoryBedsResponse.parse(sim.beds(id, { op: 'assign', bed: { x: 3, y: 64, z: 3 }, pawn }));
+    expect(bed.rev).toBeGreaterThan(before);
+    expect(bed.rev).toBe(sim.state(id).rev);
+    // A delta from just before that revision holds the change the answer acknowledges.
+    expect(sim.state(id, bed.rev! - 1).beds?.[0]?.pawn).toBe(pawn);
+    const released = C.StoryWorkbenchesResponse.parse(sim.workbenches(id, { op: 'release', pos: [-2, 64, -2] }));
+    expect(released.rev).toBe(sim.state(id).rev);
+    expect(sim.state(id, released.rev! - 1).removed?.workbenches).toContainEqual([-2, 64, -2]);
+    const back = C.StoryWorkbenchesResponse.parse(sim.workbenches(id, { op: 'designate', pos: [-2, 64, -2] }));
+    expect(back.rev).toBe(sim.state(id).rev);
+    expect(back.rev).toBeGreaterThan(released.rev!);
+    // Already the colony's: nothing changes, and the answer names the revision the colony is at.
+    expect(sim.workbenches(id, { op: 'designate', pos: [-2, 64, -2] }).rev).toBe(back.rev);
   });
 });
 

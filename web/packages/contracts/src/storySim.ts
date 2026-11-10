@@ -76,7 +76,9 @@ import {
   type StoryDirectiveRequest,
   type StoryFilter,
   type StoryOrder,
+  type StoryOrderMove,
   type StoryOrderRequest,
+  type StoryOrderSpec,
   type StoryOnlineBlocked,
   type StoryOnlineRequest,
   type StoryOnlineResponse,
@@ -1247,7 +1249,7 @@ export class StorySim {
     } else if (body.op === 'unassign') bed.pawn = null;
     else throw Object.assign(new Error('op must be assign|unassign'), { status: 400 });
     c.bedsRev = this.bump(c);
-    return { beds: this.bedList(c) };
+    return { beds: this.bedList(c), rev: c.rev };
   }
 
   /** Moves home (as the director does): pawns farther than 48 blocks from the new home are brought next to it. */
@@ -1348,8 +1350,9 @@ export class StorySim {
     return { ok: true, rev: c.rev };
   }
 
-  orders(id: string, body: StoryOrderRequest) {
+  orders(id: string, body: StoryOrderRequest): OrdersAck {
     const c = this.colony(id);
+    if ('moves' in body) return this.moveOrders(c, body.moves, !!body.queue);
     const pawns = this.pawnsOf(c, body.pawns);
     if (body.order.kind === 'attack') checkAttack(this.attackTarget(c, body.order.target), body.order.confirm);
     pawns.forEach((p, i) => {
@@ -1388,6 +1391,40 @@ export class StorySim {
       p.rev = c.rev;
     });
     return { ok: true, rev: c.rev };
+  }
+
+  /**
+   * A formation in one request: each pawn moves to its own cell (no fan-out). All or none, as the director does it: every
+   * pawn is found before any order is given, so a pawn the colony does not have refuses the whole request.
+   */
+  private moveOrders(c: Colony, moves: readonly StoryOrderMove[], queue: boolean): OrdersAck {
+    const pawns = moves.map((m) => {
+      const p = c.pawns.get(m.pawn);
+      if (!p) throw Object.assign(new Error(`no pawn '${m.pawn}'`), { status: 400 });
+      return p;
+    });
+    const ids: Key[] = [];
+    moves.forEach((m, i) => {
+      const p = pawns[i]!;
+      const o: StoryOrder = {
+        id: `o${c.seq++}`,
+        kind: 'move',
+        target: m.target,
+        design: null,
+        pawn: p.p.name,
+        state: 'queued',
+        at: this.iso(),
+      };
+      if (!queue) {
+        p.p.queue = [];
+        this.drop(c, p);
+      }
+      p.p.queue.push(o);
+      c.orders.set(o.id!, { rev: this.bump(c), v: o });
+      p.rev = c.rev;
+      ids.push(o.id!);
+    });
+    return { ok: true, ids, rev: c.rev };
   }
 
   zones(id: string, body: StoryZoneRequest): ZonesAnswer {
@@ -1815,8 +1852,11 @@ export class StorySim {
     const held = new Set(
       [...c.designations.values()].flatMap((f) => (f.v.targets ?? (f.v.block ? [f.v.block] : [])).map(keyOf)),
     );
-    if (designatesEntities(kind, body)) return this.designateEntities(c, body, kind, a, held);
-    return this.designateBlocks(c, body, kind, a, held);
+    const out = designatesEntities(kind, body)
+      ? this.designateEntities(c, body, kind, a, held)
+      : this.designateBlocks(c, body, kind, a, held);
+    // `includeTargets: false`: the answer names no target (cells or entities), as the director leaves them out.
+    return body.includeTargets === false ? { ok: out.ok, count: out.count, rev: out.rev } : out;
   }
 
   /** The failed designations named by `ids` are tried again now (their rest is over). */
@@ -2908,7 +2948,7 @@ export class StorySim {
     c.benches.delete(keyOf(pos));
     c.removed.push({ rev: this.bump(c), kind: 'workbenches', key: pos });
     this.plan(c);
-    return { pos, kind: f.v.kind, designated: false };
+    return { pos, kind: f.v.kind, designated: false, rev: c.rev };
   }
 
   /** workbenches fuel: a furnace's fuel choice (the sim's version is b1.8.1: no blaze rods); its bills' fuel follows. */
@@ -2919,13 +2959,13 @@ export class StorySim {
     f.v.fuel = fuel;
     for (const b of f.v.bills) if (!b.fuel) b.fuelNeed = this.fuelNeedOf(b, fuel);
     f.rev = this.bump(c);
-    return { pos, kind: f.v.kind, designated: true, fuel };
+    return { pos, kind: f.v.kind, designated: true, fuel, rev: c.rev };
   }
 
   /** workbenches designate: the bench block there becomes the colony's (already is: as it is). */
   private designateBench(c: Colony, pos: [number, number, number]): StoryWorkbenchesResponse {
     const have = c.benches.get(keyOf(pos));
-    if (have) return { pos, kind: have.v.kind, designated: true };
+    if (have) return { pos, kind: have.v.kind, designated: true, rev: c.rev };
     const [bid] = this.opts.world.blockAt(pos[0], pos[1], pos[2]);
     const kind = BENCH_KIND[bid];
     if (!kind) throw Object.assign(new Error('no workbench there'), { status: 400 });
@@ -2934,7 +2974,7 @@ export class StorySim {
       v: { pos, kind, label: null, supported: true, station: this.stationOf(kind, pos), ...this.fuelOf(kind), bills: [] },
     });
     this.plan(c);
-    return { pos, kind, designated: true };
+    return { pos, kind, designated: true, rev: c.rev };
   }
 
 
@@ -2972,7 +3012,7 @@ export class StorySim {
   }
 
   /** Who an attack order is on: a player or bot (confirm needed), one of the colony's pawns (refused), or a mob. */
-  private attackTarget(c: Colony, t: StoryOrderRequest['order']['target']): AttackTarget | null {
+  private attackTarget(c: Colony, t: StoryOrderSpec['target']): AttackTarget | null {
     if (!t || typeof t !== 'object') return null;
     const ai = this.aiBodies();
     const kindOf = (name: string) => this.attackKind(c, ai, name);
@@ -4030,6 +4070,9 @@ function fuelFields(recipe: SimRecipe, spec: BillSpec): Partial<StoryBill> {
 }
 
 // ------------------------------------------------------------------ designations, builds, storage
+
+/** What an orders request answers: `ids` (the new orders, one per pawn) for a formation's `moves`. */
+type OrdersAck = { ok: boolean; ids?: Key[]; rev: number };
 
 type DesignationsAck = {
   ok: boolean;

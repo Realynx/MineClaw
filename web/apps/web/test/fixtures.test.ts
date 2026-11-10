@@ -105,6 +105,32 @@ describe('mock fixtures satisfy the contracts', () => {
     if (!res.success) throw new Error(`${id}: ${JSON.stringify(res.error.issues.slice(0, 3), null, 2)}`);
   });
 
+  it('the command wire: formation moves, an add without targets and stamped bed and bench answers pass the route schemas', () => {
+    const call = <T>(id: RouteId, body: unknown): T => {
+      const r: RouteDef = ROUTES[id];
+      const out = resolvers[id]!({ params: { id: 'story-1' }, query: {}, body: r.body!.parse(body) });
+      return r.response!.parse(out) as T;
+    };
+    const rev = () => storySim.state('story-1').rev;
+    const moved = call<{ ids?: unknown[]; rev?: number }>('story.orders', {
+      moves: [{ pawn: 'maid_s1_dara', target: { x: 0, y: 70, z: 0 } }],
+    });
+    expect(moved.ids).toHaveLength(1);
+    expect(moved.rev).toBe(rev());
+    const quiet = call<{ count: number; targets?: unknown; rev?: number }>('story.designations', {
+      op: 'add',
+      kind: 'mine',
+      blocks: [[200, 60, 200]],
+      includeTargets: false,
+    });
+    expect(quiet).toMatchObject({ count: 1, rev: rev() });
+    expect(quiet.targets).toBeUndefined();
+    const bed = call<{ rev?: number }>('story.beds', { op: 'unassign', bed: bedPos() });
+    expect(bed.rev).toBe(rev());
+    const bench = call<{ rev?: number }>('story.workbenches', { op: 'designate', pos: benchPos() });
+    expect(bench.rev).toBe(rev());
+  });
+
   it('first-run setup: no users → setup.create signs in → login, enrol and verify work for the new account', () => {
     mockSetupMode(true);
     try {

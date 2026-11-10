@@ -7,6 +7,7 @@ import {
   ANIMAL_TYPES,
   CHEST_IDS,
   countTrees,
+  CUT_IDS,
   expandBuildItem,
   isWaterTool,
   LOG_IDS,
@@ -339,6 +340,59 @@ export class DragGate {
 }
 
 /**
+ * Releases still waiting for the worker (a click's scan, a pick in the angled view) before they act. A new press does not
+ * cancel them, so quick clicks each send their command; Esc, a press of the other button (never the middle one), leaving
+ * full screen, and a tool, view, level or build change do. Each waiting release keeps what it drew (its rectangle) until
+ * it has acted or was cancelled. Pure, so the map and the tests share it.
+ */
+export class ReleaseGuard<T = unknown> {
+  private seq = 0;
+  private readonly held = new Map<number, { button: number; shown: T | null }>();
+
+  /** A button came up: the release starts waiting. `shown` is what it keeps drawn meanwhile. */
+  begin(button: number, shown: T | null = null): number {
+    const ticket = ++this.seq;
+    this.held.set(ticket, { button, shown });
+    return ticket;
+  }
+
+  /** The release may still act. */
+  current(ticket: number): boolean {
+    return this.held.has(ticket);
+  }
+
+  /** The release acted (or ended without acting): it no longer waits or draws. */
+  finish(ticket: number): void {
+    this.held.delete(ticket);
+  }
+
+  get waiting(): boolean {
+    return this.held.size > 0;
+  }
+
+  /** Every waiting release ends without acting. True when one was waiting. */
+  cancel(): boolean {
+    if (!this.held.size) return false;
+    this.held.clear();
+    return true;
+  }
+
+  /** A new press: it cancels the waiting releases only when it is the other button. True when it cancelled them. */
+  press(button: number): boolean {
+    if (button === 1) return false;
+    for (const h of this.held.values()) if (h.button !== button && h.button !== 1) return this.cancel();
+    return false;
+  }
+
+  /** What the waiting releases draw, oldest first. */
+  shown(): T[] {
+    const out: T[] = [];
+    for (const h of this.held.values()) if (h.shown !== null) out.push(h.shown);
+    return out;
+  }
+}
+
+/**
  * Whether a released drag does nothing: a zone or storage box needs a real drag (a click, under the drag threshold, paints
  * nothing), and a designate drag with nothing under it posts nothing.
  */
@@ -353,13 +407,19 @@ export function toolArea(rect: readonly [number, number, number, number], y: rea
   return [rect[0], y[0], rect[1], rect[2], y[1], rect[3]];
 }
 
+/** The most hits a designate preview scans for; a scan that reaches it may have missed targets. */
+export const PREVIEW_HITS = 6000;
+
+/** Whether a preview scan ([x, y, z, id, meta, below, …]) stopped at {@link PREVIEW_HITS}. */
+export const scanTruncated = (scan: readonly number[]): boolean => scan.length >= PREVIEW_HITS * 6;
+
 /** Block ids a tool's preview scans for (empty = every non-air block, filtered by `matchesTool`). */
 export function scanIds(tool: DesignateId): number[] {
   switch (tool) {
     case 'chop':
       return [...LOG_IDS];
     case 'cut':
-      return [6, 31, 32, 37, 38, 175];
+      return [...CUT_IDS];
     case 'harvest':
       return [59, 141, 142, 207, 115, 103, 86, 83, 81, 127];
     case 'forbid':
@@ -410,10 +470,33 @@ export function entitiesIn(tool: DesignateTool, rect: readonly [number, number, 
   });
 }
 
-/** The designations request a released drag sends. */
-export function designationBody(tool: DesignateId, area: StoryArea, filter?: StoryMineFilter): Record<string, unknown> {
+/** What a designate drag's preview found: its cells, and whether its scan stopped at the hit cap. */
+export interface DragPreview {
+  cells: readonly V3[];
+  truncated?: boolean;
+}
+
+/** Tools that send exactly the cells their preview showed. Chop keeps its area (whole trees, found once each by the
+ * colony's area scan); Haul, Hunt and Forbid act on entities. */
+const BY_CELLS: ReadonlySet<DesignateId> = new Set(['cut', 'harvest']);
+
+/** The designations request a released drag sends: Cut and Harvest by the previewed cells when the preview holds all of
+ * them (1 to {@link MAX_DRAG_CELLS}, scan not cut short), any other tool by the area. */
+export function designationBody(
+  tool: DesignateId,
+  area: StoryArea,
+  filter?: StoryMineFilter,
+  preview?: DragPreview,
+): Record<string, unknown> {
   if (tool === 'cancel') return { op: 'remove', area };
-  return { op: 'add', kind: tool, area, ...(tool === 'mine' && filter && filter !== 'all' ? { filter } : {}) };
+  const n = preview?.cells.length ?? 0;
+  const exact = BY_CELLS.has(tool) && !preview?.truncated && n >= 1 && n <= MAX_DRAG_CELLS;
+  return {
+    op: 'add',
+    kind: tool,
+    ...(exact ? { blocks: preview!.cells.map((c) => [c[0], c[1], c[2]]) } : { area }),
+    ...(tool === 'mine' && filter && filter !== 'all' ? { filter } : {}),
+  };
 }
 
 /** The same task as a directive for AI bodies. */

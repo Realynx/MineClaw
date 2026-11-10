@@ -122,7 +122,7 @@ There is one per colony. It holds:
 They sit behind `Supervisor:Viewer:Enabled` (else 404) and the token in the `X-Supervisor-Token` header (else 403). Writes
 (every POST) also need `Supervisor:Viewer:AllowStory`, which defaults to true when the viewer is on (false → 403; GETs still
 work, so viewers can watch). JSON is snake_case with nulls written. Errors are `{error}` with 400 (validation), 403, 404
-(no such colony or route), 405, 413 (body over 64 KB) or 503 (no world view yet).
+(no such colony or route), 405, 413 (body over 256 KB) or 503 (no world view yet).
 
 | Method | Path | Body / result |
 |---|---|---|
@@ -178,6 +178,21 @@ watches. Every answer also carries `architect_key` (the Architect palette's inpu
 moves). The page's own `since=rev` catch-up (every 3 s) runs only while no `story` frame arrived for 5 s (a quiet colony or a
 reconnecting stream); while frames flow it would fetch the same delta again.
 
+The page merges a delta only into a state that already holds everything up to the delta's `since` (added 2026-11-09; the
+code is `web/apps/web/src/features/story/colonySync.ts`):
+- A `story` frame whose `since` is past the revision the page holds is not merged. One catch-up from the held revision
+  closes the gap, and frames that arrive while it is on its way are applied after its answer. Such a gap opens when frames
+  were published before the page had its first state, when the bridge restarted, or when a full read came back older.
+- A full read (the first load, every minute, after a stream resync) never puts the page back. When frames moved the page
+  past the revision the full read carries, the page asks for the delta since that revision and merges it before it uses
+  the read. Before this, a setting or a mark that had just arrived could flip back for up to a minute. The first load is
+  followed by one catch-up, for the frames published before it.
+- Catch-ups run one at a time per colony. A caller that arrives while one is on its way waits for the single one that
+  follows: the earlier read may have left before that caller's own change was applied. The 3 s catch-up skips while one is
+  on its way, so a slow bot does not collect waiting reads.
+- A write to the builds, storage, workbenches or options leaves the Architect palette alone when the state carries
+  `architect_key`: the key already fetches the palette again when its inputs move.
+
 The **Pawn** object:
 
 ```
@@ -192,6 +207,100 @@ The **Pawn** object:
 - Traits are `night_owl`, `brave`, `skittish`, `industrious`, `green_thumb`, `steady_hands` and `quick_study`.
 - Skills grow with each finished job: passion gives ×1.5 and some traits multiply it. The experience to the next level is
   `100 + 50 × level`.
+
+### The command wire (frozen 2026-11-09)
+
+What a colony command (`POST /api/story/colonies/{id}/{action}`) and its answer agree on, so the page can show a change at
+once and know when the colony has it. The web contracts (`web/packages/contracts/src/story.ts`), the mock director and the
+bot all follow it.
+
+- **`rev` on answers.** A 200 answer of `designations`, `zones`, `builds`, `orders`, `draft`, `storage`, `bills`,
+  `workbenches` or `beds` carries `rev`: the colony's revision, read after the change was applied. A state whose `rev` has
+  reached it holds the change, so the page then drops its own pending mark or shown value without a second read. The route
+  adds it, not the colony op: the `colony_control` tool calls the same ops and its output does not change. `rev` is
+  optional: an answer without one (an older bot, or another action) is valid, and the page then waits for a state read that
+  started after the answer.
+- **The busy answer.** A command that cannot take the colony within its wait (a few seconds, under the 8 s the bridge gives
+  a command) answers `503 {"error":"busy: the colony did not take the change"}` with `Retry-After: 1`. It means **not
+  applied**: nothing changed, and nothing will change later. The bridge names it `busy` (by that word in the text) and the
+  browser gets `503 {error:"busy; retry shortly", code:"busy", retryAfterMs:1000}`. The page puts the old value back and says
+  so; it never sends the command again by itself. Any other 503 (`upstream_unavailable`), a 502 or a lost connection says
+  nothing about the outcome: the command may still have been applied.
+  The bridge gives a command 14 s, enough for its own queue (at most 4 s, past which it answers busy without sending it), the
+  bot's request slot and the colony wait, so a busy colony is answered busy rather than timed out.
+- **`include_targets`** (`designations`, `op: add`): `false` leaves `targets` out of the answer; the count and the warnings
+  stay. Left out or `true`, the answer is as before. The page sends `false`: it reads only the count and the warnings.
+- **`moves`** (`orders`): `{moves:[{pawn, target:{x,y,z}}], queue?:bool}` with 1 to 512 moves is a formation in one
+  request. Each pawn gets a plain move order to its own cell → `{ids:[order id]}`, one per move, in the order given. All or
+  none: a pawn the colony does not have answers 400 `no pawn '<name>'` and nobody is moved. It is not mixed with `pawns` and
+  `order` in one body.
+- **Body size.** A colony command's body may be up to 256 KB, the bridge's own limit; over it the answer is 413. A full
+  4096-cell `blocks` list is about 70 KB far from the origin, and a large design is sent as several requests under the limit.
+
+In mock mode the page's mock server can hold or refuse colony commands for tests: `window.__mockStory.hold()`, `release()`
+and `failNext(status, message)` (`web/apps/web/src/mocks/storyHold.ts`). A held command is neither applied nor answered until
+it is released; a refused one is not applied, and a 503 whose message says "busy" is answered in the browser's busy form above.
+
+**Shown at once** (added 2026-11-09; `web/apps/web/src/features/story/optimistic.ts`). A setting the owner changes is drawn
+over the colony state the page holds from the moment of the click; the page's cache only ever holds what the bot sent, and
+the shown changes lie beside it per colony. The page's `state` is that state with the changes over it, and `track(...)` is
+the write that shows one. Each tracked change goes through one lifecycle:
+- While its request is on the wire it is shown. One request per setting is on the wire at a time; a newer change of the same
+  setting waits behind it and replaces any change already waiting, so three quick clicks send at most two requests and the
+  last value wins. A change that waited more than 10 s is not sent.
+- Answered with `rev`, it stays shown until the page holds a state at that revision, and again if the state steps back below
+  it (a whole read, a restarted bot), for up to a minute. While stream frames flow the page reads nothing more: the frames
+  bring the revision, and one catch-up follows after 1.5 s only if they have not. An answer without `rev` (an older bot) is
+  followed by one catch-up that starts after the answer, and its revision is the one that counts.
+- Refused (a 4xx, the busy answer, offline), it goes at once: the old value is back and the page says why. For the busy
+  answer it says "The colony is busy; the change was not saved." It is not sent again.
+  A change waiting behind it on the same setting goes with it, unsent and with the same message: it was built on the
+  refused value.
+- With an unknown outcome (a lost connection, a 502, another 503) it stays shown while the state is read again, until a later
+  state shows it (then it was applied) or 10 s have passed. Then the page follows the colony and says "Could not confirm the
+  change; showing what the colony reports." It is never sent again. A state "shows it" when it already looks as the change
+  would make it (the row compared by content), so a change that did reach the colony is not reported as lost.
+
+Every colony write, tracked or not, is also kept in `window.__storyCommands`: the last 50 as `{colony, route, sentAt,
+repliedAt, confirmedAt, status, http, rev}`, where `confirmedAt` is when the page first held a state at the answer's `rev`
+(without one: the first state after the answer). One that took over 500 ms is logged with `console.debug`. The toasts of
+failed map tools, orders, drafts and tab-panel commands use the busy wording above for the busy answer, not the renderer's
+"busy" text.
+Any colony write answered with `rev` while frames flow reads nothing more either (one read after 1.5 s if the frames have not
+reached it); one answered without `rev` starts one read, and the map marks it drew settle by that same read.
+A formation whose outcome is unknown says "Could not confirm the formation (…); the pawns may still take it.", not that it
+was not given.
+
+**The inspector on it** (added 2026-11-09). The storage, bills, bench and bed inspectors read the shown state and send through
+`track`, one setting per key: `storage:<chests>` for a chest's priority, filter tree, label, "Use as storage" and "Stop using
+as storage"; `bill:<id>` for a bill's priority, fuel and delete (two queued updates combine, a delete replaces them) and
+`bill:<id>:pause` for pause and resume; `bench:<pos>` for a furnace's fuel and `bench:<pos>:order` for a dragged bill order;
+`bed:<pos>` for a bed's owner (the pawn's other bed is shown freed). None of these controls is disabled while a change is on
+the wire, so quick filter clicks each count, each built on the last. A refused change puts the old value back: the storage
+form shows why in its own alert line, the others in the toast. Not shown at once, only "saving": filter entries typed as text
+(the colony normalises them and may refuse them), saving the bill dialog, and designating or releasing a bench; their failures
+are shown too. The chest's label field, its alert and its "saving" line belong to the chests they were made for: selecting
+other chests shows that chest's label and none of the last one's messages, and a field left on blur never writes one chest's
+text to another.
+
+**Map commands at once** (added 2026-11-10; `web/apps/web/src/features/story/pending.ts`). A map command is drawn from the
+moment its drag is released, before the colony answers: a designation's marks (the same glyph at 60% opacity: Mine and
+Deconstruct on their height cells, Cut and Harvest on the previewed cells, Chop one mark per tree on its top log, Haul, Hunt
+and Forbid on the picked entities), a Cancel's designations hidden, a zone paint or erase as the colony will make it, and a
+structure's or design's holograms. Its toast is said at once from the preview's count and is replaced only when the answer
+counts otherwise, warns, or fails. These pending ops lie beside the colony state, one store per colony (another colony starts
+empty), and follow the write lifecycle above: answered with `rev`, an op goes when the page holds a state at that revision (so
+the colony's own marks replace it without a gap); without `rev`, once the catch-up started after the answer has merged. A
+refusal (a 4xx, the busy answer, offline) takes it away at once and the toast says why. An unknown outcome keeps it while the
+state is checked: a designation of its kind on one of its cells, a build cell on one of its holograms, or the cancelled
+designations gone count as applied; otherwise it goes after 10 s with "Could not confirm the change; showing what the colony
+reports." No op is drawn longer than 15 s, and nothing is ever sent again by itself. Limits: Cancel acts on the colony's
+confirmed designations only, so a pending mark can be cancelled once the colony has it; the marks come from the browser's
+preview, which can differ briefly from what the colony designates when their views of the world differ (unloaded columns,
+trees grouped otherwise, targets already designated, a Cut whose preview stopped at its 6000-hit cap or over 4096 cells and so
+went as an area, which also takes leaves); a fishing zone is not drawn before the answer (its still water is the colony's to
+find); with Build holograms off, a pending placement is not drawn. In mock mode `window.__story.pending()` gives the counts
+(`marks`, `hidden`, `zones`, `holo`) beside the colony's own `designations`.
 
 ### Job picking (as built)
 
@@ -950,7 +1059,7 @@ Saved terminal no-tree failures are checked every five seconds, so existing stal
 | kind | targets | work type |
 |---|---|---|
 | chop | Each tree, a log whose block below isn't a log. One job per tree, with `blocks` = its logs; leaves are left to decay | chop |
-| cut | Tall grass, flowers, ferns, dead bushes, saplings, mushrooms, vines, lily pads and leaves | chop |
+| cut | Tall grass, flowers, ferns, dead bushes, saplings, mushrooms, vines, lily pads and leaves. A map drag sends the cells its preview shows (up to 4096), so it designates exactly those and no leaves; a larger or capped preview goes as an area | chop |
 | harvest | Ripe crops only: wheat, carrots and potatoes at age 7, beetroot and nether wart at 3, cocoa at stage 2, melon and pumpkin blocks, sugar cane and cactus above their base. Replants the version's seed item | farm |
 | mine | Blocks that match the filter (all = anything diggable; never bedrock, liquids or portals) | mine |
 | haul | Item entities in the area, into storage chests | haul |
@@ -1418,6 +1527,9 @@ holograms and work orders: pawns fetch materials, clear replaced blocks and buil
 change Minecraft blocks. **Inspect** restores the normal chest, furnace and workbench selection controls.
 Doors, beds, signs and rails continue to use the Architect tools; their paired blocks or special placement rules are not
 offered as independent exact-state placements in this editor.
+Clicks made while an edit is on the wire wait, and the waiting edits of one plan then go as one `edit` request (at most 4096
+cells; a later edit of a cell wins). A new plan's first edit goes alone, so the rest join the plan it made. When a request
+fails, every edit in it stays shown as failed until **Retry** sends them again or they are dismissed.
 
 An edit to an existing building joins that building's group, including when construction is still in progress or already
 finished. Select a building explicitly to attach an extension to it. Original cells outside the edit remain unchanged;
@@ -1941,7 +2053,15 @@ Web (added 2026-11-03): clicking a chest opens its inspector with the storage se
 opened yet by any bot"), from `GET /api/world/container` (api.md §6: a bot's live window, its last look, the world memory or this
 ledger, whichever is freshest); a furnace's bills inspector shows its input, fuel and output the same way. Zoomed in, every chest
 on the map carries a badge: its category (the label, else the filter's summary) and a fill bar from the hive's container
-knowledge (`GET /api/world/containers`, polled every 10 s over the chests in view) or, when that is older, from `free_slots`.
+knowledge (`GET /api/world/containers`, polled every 30 s over the chests in view, and only while the map is zoomed in far
+enough to draw the badges) or, when that is older, from `free_slots`.
+
+Contents at once (added 2026-11-09): a clicked storage chest shows the colony's own ledger immediately, from the state the
+page already holds: the item totals, "Story storage ledger · 40 s ago · counts only" and the slots in use. It stands where
+the loading skeleton was, and the exact grid replaces it when `GET /api/world/container` answers. A chest that is not
+storage, or that the colony has not counted yet, keeps the skeleton. A container's last answer is kept for 30 minutes after
+its panel closes, so opening it again shows the grid at once while it is read again; a kept answer that said "Open right
+now" reads as "Seen … ago" until the new one arrives.
 
 Categories come in the full state as `categories`: `{id, label, children:[Category], items:[[id,meta]]}`, where meta −1 = any.
 - They are built per version from the item data plus a curated name list. Every item, and each dye colour, is in exactly one
@@ -2707,11 +2827,13 @@ The design grew while it was built. The wire forms are in `docs/web/api.md` §6 
   screen also cancels the drag. Right-click cancel works the same in full screen.
 - **Draft.** A draft toggle, with R as the hotkey. Shift queues orders.
 - **Formations.** With drafted pawns selected, a right-drag draws a line; on release every drafted pawn gets its own move
-  order (`POST .../orders`, one pawn each) to a distinct standable cell spread evenly along it, at least a cell apart. Pawns
+  order (one `POST .../orders` with `moves`, all or none) to a distinct standable cell spread evenly along it, at least a cell apart. Pawns
   and slots are paired in order along the line, so their paths do not cross. While dragging, the line and a ghost token
   per slot (the pawn's colour and initials) show where they go; a slot on an unstandable cell (water, a wall, no headroom)
   moves to the nearest standable one within 3 cells, never two pawns on one cell. Undrafted pawns in the selection are left
   out (the genre's rule; the toast says so). A right-click without a drag (under 5 px) is the order menu as before.
+  The whole line is one request and one toast; a refusal is one warning and moves nobody. A bot from before `moves` refuses
+  them with 400 `pawns required`, and the page then sends one order per pawn as it used to.
 - **Time of day.** A slider under the clock over one day (06:00 at tick 0; dawn, noon, dusk and midnight marked) follows
   the page's one world clock (see "Time of day") and sets the world time on release, through the bot's op account. Without one it is disabled with "No op account — op the main bot
   to change time". Needs the `story` role.

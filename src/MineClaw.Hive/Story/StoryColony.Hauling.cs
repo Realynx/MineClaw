@@ -54,7 +54,7 @@ public sealed partial class StoryColony
             if (keepDisallowed is { } k) Meta.KeepDisallowed = k;
             if (rescueTeleport != null || unfiltered != null || keepDisallowed != null) { Touch(); WakeIdle(); }
         }
-        Save(force: true);
+        SaveSoon();
         lock (_lock) return OptionsJson();
     }
 

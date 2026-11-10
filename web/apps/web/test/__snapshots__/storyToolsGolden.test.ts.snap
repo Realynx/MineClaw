@@ -11415,6 +11415,303 @@ exports[`contextMenu > every target kind and selection 1`] = `
 }
 `;
 
+exports[`designationBody > Cut and Harvest by the previewed cells unless the scan was cut short or the cells are too many; the rest by area 1`] = `
+{
+  "allow cells": {
+    "area": [
+      0,
+      56,
+      0,
+      9,
+      104,
+      9,
+    ],
+    "kind": "allow",
+    "op": "add",
+  },
+  "allow truncated": {
+    "area": [
+      0,
+      56,
+      0,
+      9,
+      104,
+      9,
+    ],
+    "kind": "allow",
+    "op": "add",
+  },
+  "cancel cells": {
+    "area": [
+      0,
+      56,
+      0,
+      9,
+      104,
+      9,
+    ],
+    "op": "remove",
+  },
+  "cancel truncated": {
+    "area": [
+      0,
+      56,
+      0,
+      9,
+      104,
+      9,
+    ],
+    "op": "remove",
+  },
+  "chop cells": {
+    "area": [
+      0,
+      56,
+      0,
+      9,
+      104,
+      9,
+    ],
+    "kind": "chop",
+    "op": "add",
+  },
+  "chop truncated": {
+    "area": [
+      0,
+      56,
+      0,
+      9,
+      104,
+      9,
+    ],
+    "kind": "chop",
+    "op": "add",
+  },
+  "cut 4096": {
+    "blocks": 4096,
+    "kind": "cut",
+    "op": "add",
+  },
+  "cut 4097": {
+    "area": [
+      0,
+      56,
+      0,
+      9,
+      104,
+      9,
+    ],
+    "kind": "cut",
+    "op": "add",
+  },
+  "cut cells": {
+    "blocks": [
+      [
+        1,
+        64,
+        1,
+      ],
+      [
+        2,
+        65,
+        3,
+      ],
+    ],
+    "kind": "cut",
+    "op": "add",
+  },
+  "cut no preview": {
+    "area": [
+      0,
+      56,
+      0,
+      9,
+      104,
+      9,
+    ],
+    "kind": "cut",
+    "op": "add",
+  },
+  "cut none": {
+    "area": [
+      0,
+      56,
+      0,
+      9,
+      104,
+      9,
+    ],
+    "kind": "cut",
+    "op": "add",
+  },
+  "cut truncated": {
+    "area": [
+      0,
+      56,
+      0,
+      9,
+      104,
+      9,
+    ],
+    "kind": "cut",
+    "op": "add",
+  },
+  "forbid cells": {
+    "area": [
+      0,
+      56,
+      0,
+      9,
+      104,
+      9,
+    ],
+    "kind": "forbid",
+    "op": "add",
+  },
+  "forbid truncated": {
+    "area": [
+      0,
+      56,
+      0,
+      9,
+      104,
+      9,
+    ],
+    "kind": "forbid",
+    "op": "add",
+  },
+  "harvest cells": {
+    "blocks": [
+      [
+        1,
+        64,
+        1,
+      ],
+      [
+        2,
+        65,
+        3,
+      ],
+    ],
+    "kind": "harvest",
+    "op": "add",
+  },
+  "harvest truncated": {
+    "area": [
+      0,
+      56,
+      0,
+      9,
+      104,
+      9,
+    ],
+    "kind": "harvest",
+    "op": "add",
+  },
+  "haul cells": {
+    "area": [
+      0,
+      56,
+      0,
+      9,
+      104,
+      9,
+    ],
+    "kind": "haul",
+    "op": "add",
+  },
+  "haul truncated": {
+    "area": [
+      0,
+      56,
+      0,
+      9,
+      104,
+      9,
+    ],
+    "kind": "haul",
+    "op": "add",
+  },
+  "hunt cells": {
+    "area": [
+      0,
+      56,
+      0,
+      9,
+      104,
+      9,
+    ],
+    "kind": "hunt",
+    "op": "add",
+  },
+  "hunt truncated": {
+    "area": [
+      0,
+      56,
+      0,
+      9,
+      104,
+      9,
+    ],
+    "kind": "hunt",
+    "op": "add",
+  },
+  "mine cells": {
+    "area": [
+      0,
+      56,
+      0,
+      9,
+      104,
+      9,
+    ],
+    "filter": "ores",
+    "kind": "mine",
+    "op": "add",
+  },
+  "mine truncated": {
+    "area": [
+      0,
+      56,
+      0,
+      9,
+      104,
+      9,
+    ],
+    "kind": "mine",
+    "op": "add",
+  },
+  "scan cut": [
+    6,
+    31,
+    32,
+    37,
+    38,
+    175,
+    39,
+    40,
+    106,
+    111,
+  ],
+  "scan harvest": [
+    59,
+    141,
+    142,
+    207,
+    115,
+    103,
+    86,
+    83,
+    81,
+    127,
+  ],
+  "truncated at the cap": [
+    false,
+    true,
+  ],
+}
+`;
+
 exports[`designs > designBlocks over shapes of JSON 1`] = `
 {
   "allAir": [],

@@ -52,7 +52,7 @@ short key exits with code 2 (the unit does not restart it).
 | `Bridge:DataDir` | `/var/lib/mineclaw` | the bot's data dir (it runs with `--data-dir`, which the config file doesn't carry) |
 | `Bridge:DbPath` | `<DataDir>/<Agent:Rag:DbFile>` | the agent db |
 | `Bridge:SupervisorUrl` | `http://127.0.0.1:{Supervisor:Port}` | |
-| `Bridge:SupervisorConnections` | `4` | total pooled connections to the Supervisor (its `MaxConnections` is 8); two of the default four are reserved for entity/block updates and status so chunk loads cannot stall motion; a limit of one remains shared |
+| `Bridge:SupervisorConnections` | `6` | total pooled connections to the Supervisor (its `MaxConnections` is 8; 1 to 7 are taken). The default six: two for entity/block updates and status so chunk loads cannot stall motion, two for what a click waits on (story commands, one chest's contents, a body's inventory, recipes), two for everything else. Seven also gives the story reads that wait on the colony (the list, a colony's state and Architect) one of their own. Five or fewer have no interactive lane: a pinned `MINECLAW_Bridge__SupervisorConnections=4` keeps the old split (two reserved, two ordinary). A limit of one remains shared |
 | `Bridge:PacksDir` | `/opt/mineclaw/current/shards/defaults` | default knowledge packs |
 | `Bridge:AuditLog` | `/var/log/mineclaw-bridge/audit.jsonl` | one line per write (no bodies) |
 | `Bridge:ServerVersion` | `server-version.txt` beside the db, else `b1.8.1` | block names |

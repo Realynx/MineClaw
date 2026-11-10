@@ -45,6 +45,64 @@ public sealed class StoryTickSchedulingTests
         Assert.True(reads > before);
     }
 
+    /// <summary>A clock whose timers run only when the test says so (no real waiting).</summary>
+    private sealed class StepClock : TimeProvider
+    {
+        public sealed class Pending(TimerCallback run, object? state, TimeSpan due) : ITimer
+        {
+            public TimeSpan Due { get; private set; } = due;
+            public bool Disposed { get; private set; }
+            public void Fire() { if (!Disposed) run(state); }
+            public bool Change(TimeSpan dueTime, TimeSpan period) { Due = dueTime; return true; }
+            public void Dispose() => Disposed = true;
+            public ValueTask DisposeAsync() { Dispose(); return ValueTask.CompletedTask; }
+        }
+
+        public List<Pending> Timers { get; } = new();
+
+        public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
+        {
+            var t = new Pending(callback, state, dueTime);
+            Timers.Add(t);
+            return t;
+        }
+    }
+
+    [Fact]
+    public void A_superseded_pawn_is_restarted_by_the_nudge_before_the_next_tick()
+    {
+        var clock = new StepClock();
+        var host = new FakeStoryHost(new FakeStoryWorld());
+        using var colonies = new StoryColonies(host, time: clock);
+        var (c, err) = colonies.Create("Nudge", 2, new P3(0, 64, 0));
+        Assert.Null(err);
+        string mover = c!.PawnNames()[0], other = c.PawnNames()[1];
+        c.Next(mover); // at a job: the order cuts its script
+        host.Lives[other] = host.Lives[other] with { ScriptRunning = false }; // its script ended on its own: the tick's to restart
+        host.Started.Clear();
+
+        long cuts = c.Cuts;
+        var order = new System.Text.Json.Nodes.JsonObject { ["kind"] = "move", ["target"] = new P3(5, 64, 5).Json() };
+        Assert.Null(c.GiveOrder(c.Resolve([mover]).Pawns, order, queue: false).Error);
+        Assert.Equal(cuts + 1, c.Cuts);
+        host.Lives[mover] = host.Lives[mover] with { ScriptRunning = false }; // the interrupt stopped the script
+
+        colonies.Nudge(c);
+        colonies.Nudge(c); // a second order inside the window shares the one pass
+        var timer = Assert.Single(clock.Timers);
+        Assert.Equal(StoryColonies.NudgeDelay, timer.Due);
+        Assert.Empty(host.Started); // nothing restarts inside the request
+
+        timer.Fire(); // about 150 ms later; no tick has run
+        Assert.Contains(mover, host.Started);
+        Assert.True(timer.Disposed);
+        // The restart pass is the watchdog's own: a pawn whose script ended is started too, and never one twice within 5 s.
+        Assert.Equal(2, host.Started.Count);
+        colonies.Nudge(c);
+        clock.Timers[^1].Fire();
+        Assert.Equal(2, host.Started.Count);
+    }
+
     [Fact]
     public void A_failed_reconciliation_releases_the_tick_gate_for_the_next_pass()
     {

@@ -1,3 +1,6 @@
+using System.Net;
+using System.Net.Sockets;
+using System.Text;
 using System.Text.Json.Nodes;
 using MineClaw.App.Supervisor;
 using MineClaw.Data.Versioning;
@@ -106,6 +109,194 @@ public sealed class SupervisorStoryRouteTests
         var (s, j) = await Call(r, "POST", "/api/story/colonies", new { name = "Riverside", pawns = 2, home = new { x = 0, y = 64, z = 0 } });
         Assert.Equal(200, s);
         return j!["id"]!.GetValue<string>();
+    }
+
+    [Fact]
+    public async Task Map_command_replies_carry_a_revision()
+    {
+        var (r, _, w, _, _) = Make();
+        var id = await Colony(r);
+        var colony = r.Colonies.Get(id)!;
+        var b = $"/api/story/colonies/{id}/";
+        var pawn = colony.Pawns.Keys.First();
+        w.Blocks[new P3(1, 64, 1)] = (54, 0);                                       // a chest
+        w.Blocks[new P3(5, 64, 5)] = (58, 0);                                       // a crafting table
+        w.Blocks[new P3(7, 64, 5)] = (61, 0);                                       // a furnace
+        w.Blocks[new P3(3, 64, 3)] = (26, 0); w.Blocks[new P3(3, 64, 4)] = (26, 8); // a bed: foot, head
+
+        // The answer's rev is the colony's revision once the change is in, so a reader at any earlier revision finds the change in
+        // the delta that reaches it. (What the web's simulator answers too: the page relies on it to drop its own pending mark.)
+        async Task<JsonNode> Stamped(string action, object body, Func<JsonNode, JsonNode, bool> holdsTheChange)
+        {
+            long before = colony.Rev;
+            var (status, json) = await Call(r, "POST", b + action, body);
+            Assert.True(status == 200, $"{action}: {status} {json?.ToJsonString()}");
+            Assert.True(json!["rev"] is JsonValue v && v.TryGetValue<long>(out var stamp) && stamp == colony.Rev, $"{action}: rev {json["rev"]?.ToJsonString()}, the colony is at {colony.Rev}");
+            long rev = json["rev"]!.GetValue<long>();
+            Assert.True(rev > before, $"{action}: rev {rev} did not move past {before}");
+            var (_, delta) = await Call(r, "GET", b.TrimEnd('/'), query: new() { ["since"] = before.ToString() });
+            Assert.True(delta!["rev"]!.GetValue<long>() >= rev, $"{action}: the state is at {delta["rev"]}, behind the answer's {rev}");
+            Assert.True(holdsTheChange(json, delta), $"{action}: the delta since {before} lacks the change");
+            return json;
+        }
+        static bool Has(JsonNode? list, Func<JsonNode, bool> match) => list is JsonArray a && a.Any(x => x != null && match(x));
+        static string? Text(JsonNode? n) => n is JsonValue v && v.TryGetValue<string>(out var s) ? s : null;
+
+        await Stamped("designations", new { op = "add", kind = "mine", blocks = new[] { new[] { 1, 60, 1 } } },
+            (_, d) => Has(d["designations"], x => x["target"]?.ToJsonString() == "[1,60,1]"));
+        await Stamped("zones", new { op = "add", kind = "home", area = new[] { -8, 60, -8, 8, 70, 8 } },
+            (j, d) => Has(d["zones"], x => Text(x["id"]) == Text(j["id"])));
+        await Stamped("builds", new { op = "add", items = new object[] { new { kind = "wall", area = new[] { 10, 64, 10, 12, 64, 12 }, material = "cobblestone", height = 2 } } },
+            (j, d) => Has(d["builds"], x => Text(x["id"]) == Text(j["ids"]![0])));
+        await Stamped("orders", new { pawns = new[] { pawn }, order = new { kind = "move", target = new { x = 4, y = 64, z = 4 } }, queue = true },
+            (j, d) => Has(d["orders"], x => Text(x["id"]) == Text(j["ids"]![0])));
+        var drafted = await Stamped("draft", new { pawns = new[] { pawn }, drafted = true },
+            (_, d) => Has(d["pawns"], x => Text(x["name"]) == pawn && x["drafted"]!.GetValue<bool>()));
+        Assert.True(drafted["ok"]!.GetValue<bool>());
+        await Stamped("storage", new { op = "set", chests = new[] { new[] { 1, 64, 1 } }, filter = new { allow = new[] { "wood" } } },
+            (_, d) => Has(d["storages"], x => x["chest"]?.ToJsonString() == "[1,64,1]"));
+        await Stamped("bills", new { op = "add", bench = new[] { 5, 64, 5 }, bill = new { recipe = "craft:stick", mode = "count", target = 8 } },
+            (j, d) => Has(d["workbenches"], x => Has(x["bills"], bill => Text(bill["id"]) == Text(j["id"]))));
+        await Stamped("workbenches", new { op = "designate", pos = new[] { 7, 64, 5 } },
+            (_, d) => Has(d["workbenches"], x => x["pos"]?.ToJsonString() == "[7,64,5]"));
+        await Stamped("beds", new { op = "assign", bed = new { x = 3, y = 64, z = 4 }, pawn },
+            (_, d) => Has(d["beds"], x => Text(x["pawn"]) == pawn));
+
+        // A refusal carries none, and neither does an action outside the nine: those are not run inside the bounded wait.
+        var (bad, why) = await Call(r, "POST", b + "storage", new { op = "set" });
+        Assert.Equal(400, bad);
+        Assert.Equal("""{"error":"chests required"}""", why!.ToJsonString());
+        Assert.Equal("""{"ok":true}""", (await Call(r, "POST", b + "priorities", new { pawns = new[] { pawn }, work = new { chop = 1 } })).Json!.ToJsonString());
+        Assert.Equal("""{"paused":true}""", (await Call(r, "POST", b + "pause", new { paused = true })).Json!.ToJsonString());
+    }
+
+    [Fact]
+    public async Task A_full_drag_far_from_the_origin_fits_in_a_command_body()
+    {
+        var (r, _, _, _, _) = Make();
+        var id = await Colony(r);
+        // 4096 cells with eight-digit coordinates: 100 KB, over the 64 KB a command body was once cut off at and well inside the
+        // 256 KB the bridge passes on. The cap applies where the listener reads the body, so this request goes through a real
+        // listener on the loopback.
+        var cells = string.Join(",", Enumerable.Range(0, 4096).Select(i => $"[-{20_000_000 + i},60,-20000000]"));
+        var body = $$"""{"op":"add","kind":"mine","blocks":[{{cells}}]}""";
+        Assert.InRange(Encoding.UTF8.GetByteCount(body), 100_000, 256 * 1024);
+
+        int port;
+        using (var probe = new TcpListener(IPAddress.Loopback, 0)) { probe.Start(); port = ((IPEndPoint)probe.LocalEndpoint).Port; probe.Stop(); }
+        await using var server = new SupervisorServer(new SupervisorOptions { Bind = "localhost", Port = port, Token = Token, Viewer = { Enabled = true } },
+            new FakeSupervisorData()) { Story = r };
+        server.Start();
+        using var http = new HttpClient { BaseAddress = new Uri($"http://localhost:{port}/") };
+        using var post = new HttpRequestMessage(HttpMethod.Post, $"api/story/colonies/{id}/designations") { Content = new StringContent(body, Encoding.UTF8, "application/json") };
+        post.Headers.Add("X-Supervisor-Token", Token);
+        using var reply = await http.SendAsync(post);
+        var text = await reply.Content.ReadAsStringAsync();
+        Assert.True(reply.StatusCode == HttpStatusCode.OK, $"{(int)reply.StatusCode} {text[..Math.Min(200, text.Length)]}");
+        Assert.Equal(4096, JsonNode.Parse(text)!["count"]!.GetValue<int>());
+        Assert.Equal(4096, r.Colonies.Get(id)!.Designations.Count);
+    }
+
+    [Fact]
+    public async Task A_designation_add_leaves_its_targets_out_when_asked()
+    {
+        var (r, _, _, _, _) = Make();
+        var id = await Colony(r);
+        var b = $"/api/story/colonies/{id}/designations";
+        var (s, j) = await Call(r, "POST", b, new { op = "add", kind = "mine", blocks = new[] { new[] { 1, 60, 1 }, new[] { 2, 60, 1 } }, include_targets = false });
+        Assert.Equal(200, s);
+        Assert.Equal(2, j!["count"]!.GetValue<int>());
+        Assert.False(j.AsObject().ContainsKey("targets"), j.ToJsonString());
+        Assert.Equal(r.Colonies.Get(id)!.Rev, j["rev"]!.GetValue<long>());
+        // Absent or true: the echo as before (what the colony_control tool and older pages read).
+        (s, j) = await Call(r, "POST", b, new { op = "add", kind = "mine", blocks = new[] { new[] { 3, 60, 1 } } });
+        Assert.Equal(200, s);
+        Assert.Equal("[[3,60,1]]", j!["targets"]!.ToJsonString());
+        (s, j) = await Call(r, "POST", b, new { op = "add", kind = "mine", blocks = new[] { new[] { 4, 60, 1 } }, include_targets = true });
+        Assert.Equal("[[4,60,1]]", j!["targets"]!.ToJsonString());
+        Assert.Equal(4, r.Colonies.Get(id)!.Designations.Count);
+    }
+
+    [Fact]
+    public async Task A_formation_is_one_orders_request_all_or_none_with_a_revision()
+    {
+        var (r, _, _, _, _) = Make();
+        var id = await Colony(r);
+        var colony = r.Colonies.Get(id)!;
+        var (first, second) = (colony.Pawns.Keys.First(), colony.Pawns.Keys.Last());
+        var path = $"/api/story/colonies/{id}/orders";
+
+        var (s, j) = await Call(r, "POST", path, new
+        {
+            moves = new[] { new { pawn = first, target = new { x = 5, y = 64, z = 5 } }, new { pawn = second, target = new { x = 6, y = 64, z = 5 } } },
+        });
+        Assert.Equal(200, s);
+        Assert.Equal(2, j!["ids"]!.AsArray().Count);
+        Assert.Equal(colony.Rev, j["rev"]!.GetValue<long>());
+        Assert.Equal(new P3(5, 64, 5), Assert.Single(colony.Pawns[first].Queue).At);
+        Assert.Equal(new P3(6, 64, 5), Assert.Single(colony.Pawns[second].Queue).At);
+
+        // A pawn the colony doesn't have refuses the whole request: the first pawn keeps its order.
+        (s, j) = await Call(r, "POST", path, new
+        {
+            moves = new[] { new { pawn = first, target = new { x = 9, y = 64, z = 9 } }, new { pawn = "nobody", target = new { x = 1, y = 64, z = 1 } } },
+        });
+        Assert.Equal((400, "no pawn 'nobody'"), (s, j!["error"]!.GetValue<string>()));
+        Assert.Equal(new P3(5, 64, 5), Assert.Single(colony.Pawns[first].Queue).At);
+        foreach (var bad in new object[] { new { moves = 3 }, new { moves = new[] { new { pawn = first } } }, new { moves = new[] { new { target = new { x = 1, y = 64, z = 1 } } } } })
+            Assert.Equal(400, (await Call(r, "POST", path, bad)).Status);
+        Assert.Equal(new P3(5, 64, 5), Assert.Single(colony.Pawns[first].Queue).At);
+    }
+
+    /// <summary>A host whose bodies' scripts stop when an order cuts them, and whose timers run when the test says so.</summary>
+    private sealed class RestartRig : TimeProvider, IStoryHost
+    {
+        private readonly World _world = new();
+        private int _n = 101;
+        public readonly HashSet<string> Stopped = new(StringComparer.OrdinalIgnoreCase);
+        public readonly List<string> Started = new();
+        public readonly List<(TimerCallback Run, object? State)> Timers = new();
+        public IStoryWorld? World => _world;
+        public (IReadOnlyList<string> Accounts, string? Why) Spawn(string colony, int n, IReadOnlyList<string>? prefer) =>
+            (Enumerable.Range(0, n).Select(_ => "maid_chan_" + _n++).ToList(), null);
+        public int Release(string colony) => 1;
+        public PawnLive Live(string account) => new(true, 20, 20, 0.5, 64, 0.5, 0, null, [], !Stopped.Contains(account));
+        public string? StartPawn(string account, string colony) { Started.Add(account); Stopped.Remove(account); return null; }
+        public void Interrupt(string account, string why) => Stopped.Add(account);
+        public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
+        {
+            Timers.Add((callback, state));
+            return TimeProvider.System.CreateTimer(_ => { }, null, Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan); // never fires by itself
+        }
+    }
+
+    [Fact]
+    public async Task An_order_that_cuts_a_pawn_restarts_it_soon_and_a_draft_never_does()
+    {
+        var rig = new RestartRig();
+        var r = new SupervisorStoryRoutes(new SupervisorOptions { Token = Token, Viewer = { Enabled = true } }, new StoryColonies(rig, time: rig));
+        var id = await Colony(r);
+        var colony = r.Colonies.Get(id)!;
+        var pawn = colony.Pawns.Keys.First();
+        var path = $"/api/story/colonies/{id}/";
+
+        colony.Next(pawn); // at a job
+        rig.Started.Clear();
+        Assert.Equal(200, (await Call(r, "POST", path + "draft", new { pawns = new[] { pawn }, drafted = true })).Status);
+        Assert.Empty(rig.Timers); // a draft cuts the job too, and the tick restarts it as before
+        Assert.Equal(200, (await Call(r, "POST", path + "draft", new { pawns = new[] { pawn }, drafted = false })).Status);
+
+        colony.Next(pawn);
+        var (s, _) = await Call(r, "POST", path + "orders", new { pawns = new[] { pawn }, order = new { kind = "move", target = new { x = 4, y = 64, z = 4 } } });
+        Assert.Equal(200, s);
+        var (run, state) = Assert.Single(rig.Timers);
+        Assert.Empty(rig.Started); // not inside the request
+        run(state); // about 150 ms later, before any tick
+        Assert.Equal(new[] { pawn }, rig.Started);
+
+        // A queued order cuts nothing: no restart is due.
+        Assert.Equal(200, (await Call(r, "POST", path + "orders", new { pawns = new[] { pawn }, order = new { kind = "hold" }, queue = true })).Status);
+        Assert.Single(rig.Timers);
     }
 
     [Fact]
@@ -618,7 +809,7 @@ public sealed class SupervisorStoryRouteTests
         var pawn = r.Colonies.Get(id)!.Pawns.Keys.First();
         var (s, j) = await Call(r, "POST", b + "beds", new { op = "assign", bed = new { x = 3, y = 64, z = 4 }, pawn });
         Assert.Equal(200, s);
-        Assert.Equal($$"""{"beds":[{"pos":[3,64,3],"dim":0,"pawn":"{{pawn}}","zone":null}]}""", j!.ToJsonString());
+        Assert.Equal($$"""{"beds":[{"pos":[3,64,3],"dim":0,"pawn":"{{pawn}}","zone":null}],"rev":{{r.Colonies.Get(id)!.Rev}}}""", j!.ToJsonString());
         var (_, st) = await Call(r, "GET", b.TrimEnd('/'));
         Assert.Equal(pawn, st!["beds"]![0]!["pawn"]!.GetValue<string>());
         (s, j) = await Call(r, "POST", b + "beds", new { op = "unassign", bed = new { x = 3, y = 64, z = 3 } });

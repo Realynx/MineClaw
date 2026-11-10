@@ -180,7 +180,7 @@ public sealed partial class LiveHub : IDisposable
         _ = StreamWorld(ct);
         _ = Loop("hive", TimeSpan.FromSeconds(3), PollChanged("api/hive/tree", "hive", "hive", TimeSpan.FromSeconds(3)), ct);
         _ = Loop("memoryActivity", TimeSpan.FromSeconds(1), PollMemory(), ct);
-        _ = Loop("story", TimeSpan.FromMilliseconds(500), PollStory(), ct);
+        _ = Loop("story", TimeSpan.FromMilliseconds(500), PollStory(), ct, StoryBackoff);
     }
 
     /// <summary>The back-off after a failed poll: first, and the cap it doubles up to.</summary>
@@ -191,6 +191,18 @@ public sealed partial class LiveHub : IDisposable
 
     internal static readonly BackoffPolicy SlowBackoff = new(TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(15));
     internal static readonly BackoffPolicy FastBackoff = new(TimeSpan.FromMilliseconds(100), TimeSpan.FromMilliseconds(500));
+    /// <summary>The colony poll: a colony that did not answer (busy, or held past the timeout) is not asked again at once, which would
+    /// add a waiter on its lock; with the 500 ms period the next ask comes within 2 s, so frames resume soon after it frees. One
+    /// held past the 3 s timeout is asked again 0.5, 1, then 1.5 s after the bridge gave up on it (<see cref="NextWait"/>).</summary>
+    internal static readonly BackoffPolicy StoryBackoff = new(TimeSpan.FromMilliseconds(500), TimeSpan.FromMilliseconds(1500));
+
+    /// <summary>The pause before the next round: the period less the round's own time; after a failure at least the back-off,
+    /// however long the failed round took (a poll that timed out has already spent more than period plus back-off).</summary>
+    internal static TimeSpan NextWait(TimeSpan every, TimeSpan backoff, TimeSpan elapsed)
+    {
+        var wait = every + backoff - elapsed;
+        return wait < backoff ? backoff : wait;
+    }
 
     private async Task Loop(string name, TimeSpan every, Func<CancellationToken, Task> poll, CancellationToken ct, BackoffPolicy? policy = null)
     {
@@ -210,7 +222,7 @@ public sealed partial class LiveHub : IDisposable
                 backoff = p.Next(backoff);
                 _log.LogDebug("live poll {Name} failed: {Message}", name, ex.Message);
             }
-            var wait = every + backoff - (DateTimeOffset.UtcNow - started);
+            var wait = NextWait(every, backoff, DateTimeOffset.UtcNow - started);
             try { if (wait > TimeSpan.Zero) await Task.Delay(wait, ct); }
             catch (OperationCanceledException) { break; }
         }
@@ -378,7 +390,8 @@ public sealed partial class LiveHub : IDisposable
     /// Story Mode (<c>/api/story</c> every 5 s for the colony list, then <c>/api/story/colonies/{id}?since=rev</c> per colony at
     /// 2 Hz): the first look at a colony only takes its revision (clients fetch the REST state); then every reply whose
     /// <c>rev</c> moved is emitted as a <c>story</c> frame with the colony <c>id</c> added. A bot without the routes (404) is
-    /// skipped quietly (the loop backs off). A colony that left the list is forgotten.
+    /// skipped quietly (the loop backs off). A colony that left the list is forgotten. A colony that did not answer fails the
+    /// round once the others were asked, so the loop backs off (<see cref="StoryBackoff"/>) instead of asking it again at once.
     /// </summary>
     private Func<CancellationToken, Task> PollStory()
     {
@@ -386,7 +399,13 @@ public sealed partial class LiveHub : IDisposable
         return async ct =>
         {
             if (DateTimeOffset.UtcNow - state.ListedAt >= TimeSpan.FromSeconds(5)) await ListColoniesAsync(state, ct);
-            foreach (var id in state.Colonies) await PollColonyAsync(state, id, ct);
+            SupervisorUnavailableException? failed = null;
+            foreach (var id in state.Colonies)
+            {
+                try { await PollColonyAsync(state, id, ct); }
+                catch (SupervisorUnavailableException ex) { failed ??= ex; }
+            }
+            if (failed != null) throw failed;
         };
     }
 
@@ -409,13 +428,8 @@ public sealed partial class LiveHub : IDisposable
     private async Task PollColonyAsync(StoryCursor state, string id, CancellationToken ct)
     {
         bool known = state.Revs.TryGetValue(id, out var since);
-        JsonNode? node;
-        try
-        {
-            var q = known ? $"?since={since.ToString(CultureInfo.InvariantCulture)}" : "";
-            node = await GetJson($"api/story/colonies/{Uri.EscapeDataString(id)}{q}", TimeSpan.FromSeconds(3), ct);
-        }
-        catch (SupervisorUnavailableException) { return; }
+        var q = known ? $"?since={since.ToString(CultureInfo.InvariantCulture)}" : "";
+        var node = await GetJson($"api/story/colonies/{Uri.EscapeDataString(id)}{q}", TimeSpan.FromSeconds(3), ct);
         if (node is not JsonObject o || o["rev"] is not JsonValue rv || !rv.TryGetValue<long>(out var rev)) return;
         state.Revs[id] = rev;
         if (!known || rev == since) return;

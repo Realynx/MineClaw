@@ -198,6 +198,7 @@ public sealed partial class SupervisorStoryRoutes
 
     private static SupervisorReply OrdersAction(StoryColony c, JsonObject b)
     {
+        if (b["moves"] != null) return MovesAction(c, b);
         var (ps, err) = PawnsOf(c, b);
         if (err != null) return Bad(err);
         if (b["order"] is not JsonObject order) return Bad("order must be {kind, target?, design?}");
@@ -206,6 +207,20 @@ public sealed partial class SupervisorStoryRoutes
         if (given.Error is { } oe && oe.StartsWith(StoryColony.ConfirmError + ":", StringComparison.Ordinal))
             return Reply(409, new JsonObject { ["error"] = oe, ["confirm"] = given.Result?["confirm"]?.DeepClone() });
         return Result(given);
+    }
+
+    // {moves:[{pawn, target:{x,y,z}}], queue?} → {ids}: a formation in one request, all or none (StoryColony.GiveMoves)
+    private static SupervisorReply MovesAction(StoryColony c, JsonObject b)
+    {
+        if (b["moves"] is not JsonArray a) return Bad("moves must be [{pawn, target:{x,y,z}}, ...]");
+        var moves = new List<(string Pawn, P3 Target)>(a.Count);
+        foreach (var m in a)
+        {
+            if (m is not JsonObject o || S(o, "pawn") is not { Length: > 0 } pawn || P3.Parse(o["target"]) is not { } at)
+                return Bad("moves must be [{pawn, target:{x,y,z}}, ...]");
+            moves.Add((pawn, at));
+        }
+        return Result(c.GiveMoves(moves, b["queue"] is JsonValue q && q.TryGetValue<bool>(out var qq) && qq));
     }
 
     // {op: arm|armor|pickup|return|tools, pawns:[name], item?, count?} → {results:[{pawn, display, got, missing}], summary}
@@ -230,7 +245,11 @@ public sealed partial class SupervisorStoryRoutes
         if (badArea) return Bad("area must be [x1,y1,z1,x2,y2,z2]");
         var blocks = Points(b["blocks"], out var badBlocks);
         if (badBlocks) return Bad("blocks must be [[x,y,z], ...]");
-        return Result(c.Designate(S(b, "op") ?? "", S(b, "kind"), area, blocks, S(b, "filter"), Names(b["ids"])));
+        var done = c.Designate(S(b, "op") ?? "", S(b, "kind"), area, blocks, S(b, "filter"), Names(b["ids"]));
+        // include_targets:false (the web, which reads only count and warnings): the echo of up to 4096 cells is not sent. Absent or
+        // true keeps the answer as the colony_control tool has it.
+        if (b["include_targets"] is JsonValue it && it.TryGetValue<bool>(out var include) && !include && done.Result is JsonObject o) o.Remove("targets");
+        return Result(done);
     }
 
     // retry {id|ids, cells?} | retry_all: failed build cells start over (StoryColony.BuildRetry.cs)

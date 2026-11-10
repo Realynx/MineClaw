@@ -48,6 +48,62 @@ public class LiveTests
         // Live 11-04: one busy answer on the entity poll froze every body for 1, 2, 4… s.
         Assert.Equal([100, 200, 400, 500, 500, 500], Seq(LiveHub.FastBackoff));
         Assert.Equal([1000, 2000, 4000, 8000, 15000, 15000], Seq(LiveHub.SlowBackoff));
+        // The colony poll (every 500 ms): a busy colony is asked again within 2 s, never at once.
+        Assert.Equal([500, 1000, 1500, 1500, 1500, 1500], Seq(LiveHub.StoryBackoff));
+    }
+
+    [Fact]
+    public void A_poll_that_timed_out_still_waits_its_back_off_before_the_next_round()
+    {
+        static double Wait(int backoffMs, int elapsedMs) =>
+            LiveHub.NextWait(TimeSpan.FromMilliseconds(500), TimeSpan.FromMilliseconds(backoffMs), TimeSpan.FromMilliseconds(elapsedMs)).TotalMilliseconds;
+        // A quick busy answer: period plus back-off less the round's time, as before.
+        Assert.Equal(950, Wait(500, 50));
+        Assert.Equal(1450, Wait(1000, 50));
+        // A colony held past the poll's 3 s: the round already took longer than period plus back-off. It used to be asked
+        // again at once, every 3 s, each time leaving one more handler waiting on its lock.
+        Assert.Equal(new double[] { 500, 1000, 1500 }, new[] { 500, 1000, 1500 }.Select(b => Wait(b, 3000)));
+        // A round that went well waits out the rest of its period only.
+        Assert.Equal(400, Wait(0, 100));
+        Assert.Equal(0, Wait(0, 3000));
+    }
+
+    [Fact]
+    public async Task A_colony_that_does_not_answer_is_asked_again_only_after_a_back_off_while_the_others_still_publish()
+    {
+        await using var h = await BridgeHost.StartAsync();
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        var busyAsks = new System.Collections.Concurrent.ConcurrentQueue<TimeSpan>();
+        int fine = 0;
+        h.Sup.Routes["/api/story"] = _ => FakeSupervisor.Json("""{"colonies":[{"id":"story-busy","name":"Busy","pawns":[]},{"id":"story-ok","name":"Fine","pawns":[]}]}""");
+        h.Sup.Routes["/api/story/colonies/story-busy"] = _ =>
+        {
+            busyAsks.Enqueue(clock.Elapsed);
+            return FakeSupervisor.Json("""{"error":"busy: the colony could not be read in time"}""", 503);
+        };
+        h.Sup.Routes["/api/story/colonies/story-ok"] = _ =>
+        {
+            int n = Interlocked.Increment(ref fine);
+            return FakeSupervisor.Json($$"""{"rev":{{n}},"at":"2026-11-03T10:00:00+00:00","full":{{(n == 1 ? "true" : "false")}}}""");
+        };
+        var hub = h.Services.GetRequiredService<LiveHub>();
+        var (client, _, _) = hub.Subscribe(null);
+        try
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+            // The colony that answers is asked in the same rounds and its moved revisions are published.
+            while (true)
+            {
+                var frame = await client.Reader.ReadAsync(timeout.Token);
+                if (frame.Event == "story" && frame.Text.Contains("\"story-ok\"")) break;
+            }
+            while (busyAsks.Count < 3) await Task.Delay(50, timeout.Token);
+            var at = busyAsks.ToArray();
+            // Without the back-off the busy colony was asked every 500 ms; now 500 ms + 500, then 500 ms + 1000.
+            Assert.True(at[1] - at[0] >= TimeSpan.FromMilliseconds(900), $"asked again after {(at[1] - at[0]).TotalMilliseconds} ms");
+            Assert.True(at[2] - at[1] >= TimeSpan.FromMilliseconds(1400), $"asked again after {(at[2] - at[1]).TotalMilliseconds} ms");
+        }
+        finally { hub.Unsubscribe(client); }
     }
 
     [Fact]

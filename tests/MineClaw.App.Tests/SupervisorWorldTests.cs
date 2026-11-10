@@ -13,6 +13,12 @@ internal sealed class FakeSupervisorWorld : ISupervisorWorld
     public Func<ContainerView?>? ReadContainer;
     public ContainerView? Container(int dim, BlockPos pos) => ReadContainer?.Invoke();
     public IReadOnlyList<WorldChestState> Chests() => OpenChests;
+    public int BoxCalls;
+    public (IReadOnlyList<ContainerSummary> Items, bool Capped) Containers(int dim, BlockPos min, BlockPos max, int limit)
+    {
+        Interlocked.Increment(ref BoxCalls);
+        return ([], false);
+    }
     public readonly ChunkSnapshot Snap;
 
     public FakeSupervisorWorld()
@@ -205,6 +211,22 @@ public class SupervisorWorldTests
         Assert.Equal(200, (await s.HandleAsync(Get("/api/world/overlays"))).Status);
         clock.Now += TimeSpan.FromSeconds(1.1);
         Assert.Equal(200, (await s.HandleAsync(q)).Status);
+    }
+
+    [Fact]
+    public async Task A_badge_box_asked_again_within_ten_seconds_reads_no_memory()
+    {
+        var clock = new ManualClock(DateTimeOffset.UnixEpoch);
+        var (s, w) = Server(time: clock);
+        await using var _ = s;
+        var box = Get("/api/world/containers", "dim=0&x0=0&z0=0&x1=15&z1=15&limit=5");
+        Assert.Equal(200, (await s.HandleAsync(box)).Status);
+        clock.Now += TimeSpan.FromSeconds(9); // the badges poll every 10 s: another viewer, or a pan back, within that time
+        Assert.Equal(200, (await s.HandleAsync(box)).Status);
+        Assert.Equal(1, w.BoxCalls);
+        clock.Now += TimeSpan.FromSeconds(2);
+        Assert.Equal(200, (await s.HandleAsync(box)).Status);
+        Assert.Equal(2, w.BoxCalls);
     }
 
     [Fact]
