@@ -283,7 +283,7 @@ public sealed class DesignHistory(BlueprintService service, DesignRevisions revi
         var air = InteriorAir(next);
         air.UnionWith(clear);
         var res = Save(rec, next, air, by!, RevisionAuthor.Player, target.Rev == head.Rev ? $"restore r{target.Rev}" : $"revert to r{target.Rev}", null,
-            r => $"reverting #{rec.Id} {rec.Name} to r{target.Rev} (now r{r.Rev}): {work.Text()}", accept: by);
+            r => $"reverting #{rec.Id} {rec.Name} to r{target.Rev} (now r{r.Rev}): {work.Text()}", accept: by, from: target.Dsl);
         if (!res.Ok) return res;
         // Turned blocks (stairs facing another way): the job takes them down first, the plan puts them back facing right.
         service.Refit(rec.Id, d.Changed.Where(c => c.FromId == c.ToId).Select(c => c.Pos));
@@ -394,14 +394,14 @@ public sealed class DesignHistory(BlueprintService service, DesignRevisions revi
     /// <summary>Draws the new HEAD, saves the design (DSL, origin, a reset gate transform: it is drawn as built), adds the revision,
     /// moves the linked structure's box and opens the design for editing.</summary>
     private (bool Ok, string Text) Save(BlueprintRecord rec, DesignSnapshot next, HashSet<BlockPos> air, string author, string kind, string message,
-        string? tag, Func<DesignRevision, string> text, string? accept = null)
+        string? tag, Func<DesignRevision, string> text, string? accept = null, string? from = null)
     {
         int height = World()?.WorldHeight ?? ChunkColumn.SizeY;
         // A design dug into the ground keeps its ground level, and its air down there stays dug (not only the interior).
         var grade = DesignerSave.GradeY(service, rec);
         if (grade is { } g && next.Box is { } nb)
             air.UnionWith(next.Air.Where(p => p.Y < g && p.X >= nb.Min.X && p.X <= nb.Max.X && p.Z >= nb.Min.Z && p.Z <= nb.Max.Z));
-        var (dsl, min, bad, why) = DrawRevision(rec, next, air, height, grade);
+        var (dsl, min, bad, why) = DrawRevision(rec, next, air, height, grade, from);
         if (dsl == null) return (false, $"can't save #{rec.Id} as a revision: {why}");
         rec.Dsl = dsl;
         rec.Origin = min;
@@ -419,10 +419,18 @@ public sealed class DesignHistory(BlueprintService service, DesignRevisions revi
     }
 
     /// <summary>The new HEAD drawn as the design's DSL; a mine stays a mine (its dug cells, all its air, as clear boxes, its absolute
-    /// y, entry, seed and preference kept).</summary>
-    private (string? Dsl, BlockPos Min, int Mismatched, string? Why) DrawRevision(BlueprintRecord rec, DesignSnapshot next, HashSet<BlockPos> air, int height, int? grade)
+    /// y, entry, seed and preference kept) and a redstone circuit stays one (its <c># kind redstone</c> line carried over).
+    /// <paramref name="from"/> is the DSL of the revision a revert draws again: when that was a circuit, the new HEAD is that
+    /// circuit (its tag and its editor data's marker), whatever HEAD was before.</summary>
+    private (string? Dsl, BlockPos Min, int Mismatched, string? Why) DrawRevision(BlueprintRecord rec, DesignSnapshot next, HashSet<BlockPos> air, int height, int? grade,
+        string? from = null)
     {
-        if (Mine.MineDesign.HeaderOf(rec.Dsl) is not { } mh) return Draw(rec.Name, next, air, height, grade, DesignVersions.OfDsl(rec.Dsl));
+        if (Mine.MineDesign.HeaderOf(rec.Dsl) is not { } mh)
+        {
+            var drawn = Draw(rec.Name, next, air, height, grade, DesignVersions.OfDsl(rec.Dsl));
+            var source = RedstoneDesign.IsRedstone(from) ? from : rec.Dsl;
+            return drawn.Dsl == null ? drawn : drawn with { Dsl = RedstoneDesign.Carry(source, drawn.Dsl) };
+        }
         var cells = next.Clone();
         var plan0 = service.PlanOf(rec, out _, forWorld: false);
         var entry = plan0?.Blueprint.Entry is { } e && plan0 != null ? new BlockPos(plan0.Origin.X + e.X, plan0.Origin.Y + e.Y, plan0.Origin.Z + e.Z) : (BlockPos?)null;

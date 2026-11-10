@@ -8,11 +8,15 @@
  * A mine plot (`terrain` given) is generated terrain instead of the grassland, the ring of columns around the plot too, at
  * absolute y (canvas y = world y): every column is its terrain chunk (./mine/mineTerrain, generated once per chunk and kept),
  * the canvas's dug cells cut out of it. Only sections near the camera are meshed (the viewer's own draw distance).
+ *
+ * A redstone simulation shows its states through `setDisplay`: cells drawn instead of the canvas's own, pushed as block
+ * deltas like edits and kept through a column refetch. The canvas is never changed by it, and a canvas edit of a cell
+ * takes that cell back.
  */
 import type { BlockDeltas, EntityDelta, Overlays, WorldIndex, WorldSource } from '@mineclaw/world-viewer';
 import { cellIndex } from '@mineclaw/world-viewer';
 import { encodeColumn, encodeMcwc, lightSections, type EncodeEntry } from '@mineclaw/world-viewer/testing';
-import { EARTH, posOf, plotMode, type Canvas, type Cell, type V3 } from './canvas';
+import { EARTH, inside, keyOf, posOf, plotMode, type Canvas, type Cell, type V3 } from './canvas';
 import type { Version } from './facing';
 import type { MineTerrain } from './mine/mineTerrain';
 
@@ -37,6 +41,9 @@ export function groundAt(y: number): number {
 const CLEAR = new Set([
   0, 6, 20, 26, 27, 28, 30, 31, 32, 37, 38, 39, 40, 44, 50, 53, 54, 55, 59, 63, 64, 65, 66, 67, 68, 69, 71, 75, 76, 77,
   78, 81, 83, 85, 96, 101, 102, 104, 106, 107, 108, 109, 113, 114, 128, 134, 135, 136, 160,
+  // The thin redstone parts (plates, repeaters, comparators, tripwire and its hook, wooden buttons, daylight sensors,
+  // hoppers): counted as solid, each stood in the dark on its own cell.
+  70, 72, 93, 94, 131, 132, 143, 147, 148, 149, 150, 151, 154, 178,
 ]);
 
 export class StudioWorld {
@@ -44,6 +51,8 @@ export class StudioWorld {
   private readonly lastColumn: number;
   private rev = 1;
   private listeners = new Set<(d: BlockDeltas) => void>();
+  /** Cells shown as something else than the canvas holds (a running simulation): cell key → id * 16 + meta. */
+  private display = new Map<number, number>();
   readonly source: WorldSource;
 
   /** World y of canvas y 0: 64 over the grassland, 0 on a mine's terrain. */
@@ -127,9 +136,37 @@ export class StudioWorld {
     };
   }
 
+  /**
+   * Shows `cells` (local coordinates) instead of what the canvas holds there, and nothing else: a cell that was shown
+   * differently before and is not listed goes back to its canvas state, and null takes every one back. The viewer gets one
+   * block delta with only the cells whose shown state changed.
+   */
+  setDisplay(cells: ReadonlyArray<Readonly<Cell>> | null): void {
+    const next = new Map<number, number>();
+    const changed: Cell[] = [];
+    for (const [x, y, z, id, meta] of cells ?? []) {
+      // The ground is never a simulated state, and nothing is simulated outside the plot.
+      if (id < 0 || !inside(x, y, z)) continue;
+      const k = keyOf(x, y, z);
+      const v = id * 16 + (meta & 15);
+      next.set(k, v);
+      if (this.display.get(k) !== v) changed.push([x, y, z, id, meta & 15]);
+    }
+    for (const k of this.display.keys()) {
+      if (next.has(k)) continue;
+      const [x, y, z] = posOf(k);
+      changed.push([x, y, z, ...this.canvas.get(x, y, z)]);
+    }
+    // `push` forgets what was shown at the cells it sends, so the new set goes in after it.
+    this.push(changed);
+    this.display = next;
+  }
+
   /** Pushes canvas cells (local coordinates) to the viewer as one block delta. */
   push(cells: readonly Cell[]): void {
     if (cells.length === 0) return;
+    // The canvas always wins: a cell it changes is drawn as it now is, whatever a simulation showed there.
+    if (this.display.size) for (const c of cells) this.display.delete(keyOf(c[0], c[1], c[2]));
     this.rev++;
     const d: BlockDeltas = {
       at: this.now(),
@@ -183,13 +220,13 @@ export class StudioWorld {
         }
   }
 
-  /** The canvas's dug cells and blocks by plot column, each in the canvas's own order. */
+  /** The canvas's dug cells and blocks, and what a simulation shows instead, by plot column, each in its own order. */
   private indexColumns(): ColumnIndex {
     const index: ColumnIndex = new Map();
     const of = (x: number, z: number) => {
       const k = columnKey(x >> 4, z >> 4);
       let column = index.get(k);
-      if (!column) index.set(k, (column = { dug: [], blocks: [] }));
+      if (!column) index.set(k, (column = { dug: [], blocks: [], shown: [] }));
       return column;
     };
     for (const k of this.canvas.dug) {
@@ -200,10 +237,14 @@ export class StudioWorld {
       const p = posOf(k);
       of(p[0], p[2]).blocks.push([p, v]);
     }
+    for (const [k, v] of this.display) {
+      const p = posOf(k);
+      of(p[0], p[2]).shown.push([p, v]);
+    }
     return index;
   }
 
-  /** The canvas's dug cells (air) then its blocks, in a plot column. */
+  /** The canvas's dug cells (air) then its blocks, then what a simulation shows instead, in a plot column. */
   private overlayCanvas(ids: Uint8Array, meta: Uint8Array, column: CanvasColumn | undefined) {
     if (!column) return;
     const base = this.base;
@@ -217,10 +258,15 @@ export class StudioWorld {
       ids[i] = v >> 4;
       meta[i] = v & 15;
     }
+    for (const [[x, y, z], v] of column.shown) {
+      const i = cellIndex(x & 15, y + base, z & 15);
+      ids[i] = v >> 4;
+      meta[i] = v & 15;
+    }
   }
 }
 
-type CanvasColumn = { dug: V3[]; blocks: Array<[V3, number]> };
+type CanvasColumn = { dug: V3[]; blocks: Array<[V3, number]>; shown: Array<[V3, number]> };
 type ColumnIndex = Map<number, CanvasColumn>;
 /** Plot columns only (0 to the last column), so a small multiplier keeps keys distinct. */
 const columnKey = (cx: number, cz: number) => cx * 4096 + cz;

@@ -31,11 +31,21 @@ public readonly record struct CanvasCell(int X, int Y, int Z, int Id, int Meta)
 public sealed class DesignerCanvas
 {
     public const string KindBuild = "build", KindMine = "mine";
+    /// <summary>A redstone circuit: a build plot in every way (<see cref="Mine"/> stays false); the studio simulates what stands on it.</summary>
+    public const string KindRedstone = "redstone";
 
-    /// <summary>"build" (a grassland plot, y relative to the grass) or "mine" (generated terrain, absolute y).</summary>
+    /// <summary>"build" (a grassland plot, y relative to the grass), "redstone" (a circuit on that same plot) or "mine" (generated
+    /// terrain, absolute y).</summary>
     public string Kind { get; set; } = KindBuild;
 
     public bool Mine => Kind == KindMine;
+
+    /// <summary>Both kinds stand on the grassland plot, so one becomes the other with every cell kept (a mine is another plot).</summary>
+    public static bool SamePlot(string a, string b) => a != KindMine && b != KindMine;
+
+    /// <summary>The kind a saved design's DSL says: its <c>kind mine</c> statement, its <c># kind redstone</c> comment line
+    /// (<see cref="RedstoneDesign"/>), else a build.</summary>
+    public static string KindOfDsl(string? dsl) => MineDesign.IsMine(dsl) ? KindMine : RedstoneDesign.IsRedstone(dsl) ? KindRedstone : KindBuild;
 
     /// <summary>A mine canvas's terrain seed (text; a whole number as it is).</summary>
     public string Seed { get; set; } = "0";
@@ -358,7 +368,8 @@ public sealed class DesignerCanvas
 
     public static DesignerCanvas Decode(string? states, int rev = 0, string? kind = null, string? seed = null, string? version = null)
     {
-        var c = new DesignerCanvas { Rev = rev, Kind = kind == KindMine ? KindMine : KindBuild, Seed = MineTerrain.NormalizeSeed(seed) };
+        // A kind this code doesn't know (a row written by a newer bot) opens as a build.
+        var c = new DesignerCanvas { Rev = rev, Kind = kind is KindMine or KindRedstone ? kind : KindBuild, Seed = MineTerrain.NormalizeSeed(seed) };
         if (DesignVersions.Normalize(version) is { } v) c.Version = v;
         foreach (var kv in DesignSnapshot.Decode(states, null).Blocks)
         {

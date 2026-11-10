@@ -79,6 +79,13 @@ public sealed class DesignerStore
         foreach (var col in new[] { "kind TEXT", "seed TEXT", "preferred_for TEXT", "mine_authoring TEXT", "design_revision INTEGER" })
             lock (_db.Gate)
                 try { _db.Exec("ALTER TABLE designer_sessions ADD COLUMN " + col); } catch (Microsoft.Data.Sqlite.SqliteException) { /* already there */ }
+        // Redstone designs (added 2026-11-09): a circuit's editor data, one row per saved revision. A session keeps no copy of its
+        // own: what it holds is its design revision's row (RedstoneAuthoringOf).
+        lock (_db.Gate)
+            _db.Exec("""
+                CREATE TABLE IF NOT EXISTS designer_redstone_authoring(design_id INTEGER NOT NULL, rev INTEGER NOT NULL, data TEXT NOT NULL,
+                    PRIMARY KEY(design_id, rev));
+                """);
     }
 
     private const string Cols = "id,owner,model,design_id,name,rev,blocks,ox,oy,oz,ax,ay,az,cost_usd,calls,pending,created,updated,version,kind,seed,preferred_for,mine_authoring,design_revision";
@@ -155,6 +162,51 @@ public sealed class DesignerStore
         lock (_db.Gate)
             return _db.Query("SELECT data FROM designer_mine_authoring WHERE design_id=$d AND rev=$r", r => r.GetString(0),
                 ("$d", designId), ("$r", rev)).FirstOrDefault();
+    }
+
+    /// <summary>A redstone revision's editor data (<see cref="DesignerRedstoneAuthoring"/>): written once, like the mine's. A changed
+    /// text always saves as a new revision (its marker is in the DSL), so a revision's row never needs replacing.</summary>
+    public void SaveRedstoneAuthoring(long designId, int rev, string? data)
+    {
+        lock (_db.Gate)
+        {
+            // Rev 0 is no revision (the history kept none for this save): there the newest save stands in for the last one.
+            if (rev == 0) _db.Exec("DELETE FROM designer_redstone_authoring WHERE design_id=$d AND rev=$r", ("$d", designId), ("$r", rev));
+            if (data != null)
+                _db.Exec("INSERT OR IGNORE INTO designer_redstone_authoring(design_id,rev,data) VALUES($d,$r,$v)", ("$d", designId), ("$r", rev), ("$v", data));
+        }
+    }
+
+    public string? RedstoneAuthoring(long designId, int rev)
+    {
+        lock (_db.Gate)
+            return _db.Query("SELECT data FROM designer_redstone_authoring WHERE design_id=$d AND rev=$r", r => r.GetString(0),
+                ("$d", designId), ("$r", rev)).FirstOrDefault();
+    }
+
+    /// <summary>The editor data a redstone session holds: that of the design revision it opened or last saved (none before its first
+    /// save, and none for another kind of canvas). <paramref name="revisionDsl"/> is that revision's DSL, when the caller has it.</summary>
+    public string? RedstoneAuthoringOf(DesignerSessionRecord s, string? revisionDsl = null) =>
+        s.Canvas.Kind == DesignerCanvas.KindRedstone && s.DesignId is { } design && s.DesignRevision is { } rev ? RedstoneAuthoringFor(design, rev, revisionDsl) : null;
+
+    /// <summary>
+    /// A revision's editor data, also for a revision the bot drew itself (a commit, a revert, the brain's revise), which writes
+    /// no row of its own: then the newest earlier row whose text the DSL's marker names (a revert's target, a commit's HEAD),
+    /// else the newest earlier row. The studio checks every component against the cells before it uses one, so data older
+    /// than the cells is safe.
+    /// </summary>
+    public string? RedstoneAuthoringFor(long designId, int rev, string? revisionDsl)
+    {
+        if (RedstoneAuthoring(designId, rev) is { } own) return own;
+        List<int> older;
+        lock (_db.Gate)
+            older = _db.Query("SELECT rev FROM designer_redstone_authoring WHERE design_id=$d AND rev<$r ORDER BY rev DESC", r => r.GetInt32(0),
+                ("$d", designId), ("$r", rev));
+        if (older.Count == 0) return null;
+        if (RedstoneDesign.LayoutLineOf(revisionDsl) is { } marker)
+            foreach (var r in older)
+                if (RedstoneAuthoring(designId, r) is { } data && DesignerRedstoneAuthoring.Marker(data) == marker) return data;
+        return RedstoneAuthoring(designId, older[0]);
     }
 
     public DesignerMessageRecord AddMessage(long session, string role, string text, string? model = null, decimal cost = 0,

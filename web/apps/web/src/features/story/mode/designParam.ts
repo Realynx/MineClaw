@@ -1,9 +1,10 @@
 /**
  * `/story?design=N` (from the design pages): the design is picked up as a placement ghost on the map. Its block list comes
  * from the saved blueprint or build plan; else, when the account may design, from the Design Studio's newest revision.
+ * A redstone design is refused: pawns cannot build a working circuit yet, and its saved plan would give them part of one.
  */
 import { useEffect, useRef } from 'react';
-import { api } from '@/lib/api/client';
+import { api, errorText } from '@/lib/api/client';
 import type { MapTool } from '../StoryMap';
 import { designBlocks, designCells, mineCheck, type DesignBlock } from '../tools';
 import type { Story } from './commands';
@@ -17,12 +18,14 @@ interface DesignEnv {
   setTool: (t: MapTool) => void;
 }
 
-/** The design's name (`design #N` when it can't be read). */
-const designName = (id: number) =>
+/** The design's name and kind, or why it can't be read. */
+const designInfo = (id: number) =>
   api('designs.get', { params: { id } }).then(
-    (d) => d.design.name,
-    () => `design #${id}`,
+    (d) => ({ name: d.design.name, kind: d.design.kind ?? null }),
+    (e: unknown) => ({ unread: errorText(e) }),
   );
+
+const redstoneRefusal = (name: string) => `${name} is a redstone circuit: pawns can't build those yet`;
 
 /** The blocks of the saved blueprint, else of the saved build plan. */
 async function savedBlocks(id: number): Promise<DesignBlock[]> {
@@ -71,11 +74,17 @@ function pickUpMine(env: DesignEnv, id: number, name: string, blocks: DesignBloc
 
 /** Picks design `id` up as the map's design tool (or says why it can't). */
 export async function pickUpDesign(env: DesignEnv, id: number) {
-  const name = await designName(id);
+  const info = await designInfo(id);
+  // A design whose kind is unknown may be a circuit, and a circuit's saved plan holds only part of it: nothing is read.
+  if ('unread' in info) return env.say(`Design #${id} could not be read: ${info.unread}`, 'warn');
+  const name = info.name;
+  if (info.kind === 'redstone') return env.say(redstoneRefusal(name), 'warn');
   let blocks = await savedBlocks(id);
   let converted = '';
   if (!blocks.length && env.can('design')) {
     const s = await studioSession(id);
+    // The studio session reports the kind too, straight from the bot: a second check in case the summary did not.
+    if (s?.kind === 'redstone') return env.say(redstoneRefusal(name), 'warn');
     const refusal = compatRefusal(name, s);
     if (refusal) return env.say(refusal, 'warn');
     converted = convertedNote(s);

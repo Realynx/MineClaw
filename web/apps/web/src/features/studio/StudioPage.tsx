@@ -21,11 +21,15 @@
  * step the working level (new pieces and pastes go there, the view cuts away two blocks above it).
  * ? (or the ? button) opens the mine's shortcut sheet (StudioShortcuts); the hint line follows what is selected or in hand.
  *
+ * A redstone design is a build plot with one more tool, Configure (C: a repeater's delay, a comparator's mode, a lever on or
+ * off), and a simulator (./redstone): while a simulation is live the mouse uses the circuit instead of editing the canvas.
+ *
  * Leaving with unsaved changes asks first (lib/navGuard: in-app links, back / forward, the command palette; the browser's
  * prompt on reload or close).
  */
 import type { AimTarget, WorldViewerHandle } from '@mineclaw/world-viewer';
 import type { DesignerCompatReport, DesignerModel, DesignerSession, DesignRevision } from '@mineclaw/contracts';
+import type { DesignerKind } from '@mineclaw/contracts';
 import { useQueryClient } from '@tanstack/react-query';
 import {
   Anchor,
@@ -51,6 +55,12 @@ import { EARTH, plotMode, type Selection, selectAll, sizeOf, type V3, type Cell 
 import { PictureControls } from './PictureControls';
 import { ChatPanel, type ChatPanelHandle } from './ChatPanel';
 import { MinePanel } from './MinePanel';
+import { RedstonePanel, SimStageNote } from './redstone/RedstonePanel';
+import { REDSTONE_CATEGORY, redstoneHotbar } from './redstone/redstonePalette';
+import { CONFIGURE_TOOL } from './redstone/redstoneTools';
+import { useRedstoneSim } from './redstone/useRedstoneSim';
+import { LibraryTab } from './redstone/LibraryTab';
+import { useRedstoneComponents } from './redstone/useRedstoneComponents';
 import { minePreview } from './mine/minePreview';
 import { Gesture, useIdleReadout } from './mine/mineReadouts';
 import { visibleMinePreview } from './mine/visiblePreview';
@@ -141,6 +151,9 @@ const MINE_TOOLS: ToolDef[] = TOOLS.filter((t) => ['build', 'select', 'box', 'br
   label: t.id === 'build' ? 'Dig / fill back (left digs, right fills)' : t.id === 'box' ? 'Excavate box (left-drag digs)' : t.id === 'brush' ? 'Excavate brush' : t.label,
 }));
 
+/** A redstone design's rail: the build tools and Configure. */
+const REDSTONE_TOOLS: ToolDef[] = [...TOOLS, CONFIGURE_TOOL];
+
 const LAYERS = {
   bots: false,
   entities: false,
@@ -212,6 +225,8 @@ export function StudioPage() {
   const mineParam = params.get('kind') === 'mine';
   const models = useApi('designer.models');
   const [session, setSession] = useState<DesignerSession | null>(null);
+  /** A build <-> redstone switch: the studio it replaces, whose unsaved work the next body takes over. */
+  const [carried, setCarried] = useState<{ session: DesignerSession; studio: Studio } | null>(null);
   const [loadError, setLoadError] = useState<unknown>(null);
   const [mod, setMod] = useState<Mod | null>(null);
   /** "Open in studio" while another session of the design holds unsaved work here: offered once. */
@@ -260,6 +275,8 @@ export function StudioPage() {
         setResume(null);
         setSession(s);
       }}
+      onCarry={setCarried}
+      carried={carried?.session === session ? carried.studio : null}
       mod={mod}
       {...modelChoice(models.data)}
       canWrite={canWrite}
@@ -275,6 +292,8 @@ function StudioBody({
   pictureTools,
   resume,
   onSession,
+  onCarry,
+  carried,
   mod,
   models,
   defaultModel,
@@ -291,6 +310,10 @@ function StudioBody({
   session: DesignerSession;
   /** A new session state (another version: the body remounts on it). */
   onSession: (s: DesignerSession) => void;
+  /** Hands this studio to the body that the session `s` mounts (a build <-> redstone switch: the same plot). */
+  onCarry: (c: { session: DesignerSession; studio: Studio }) => void;
+  /** The studio this body replaces on the same plot: its unsaved work stays unsaved here. */
+  carried: Studio | null;
   mod: Mod;
   models: DesignerModel[];
   defaultModel: string | null;
@@ -301,8 +324,14 @@ function StudioBody({
 }) {
   const version = versionOf(session);
   const studio = useMemo(() => new Studio(session, realApi), [session]);
+  // A build <-> redstone switch remounts on the bot's copy of the same cells: edits not saved before it stay unsaved.
+  useMemo(() => {
+    if (carried) studio.adoptUnsaved(carried);
+  }, [studio, carried]);
   /** A mine session: generated terrain at absolute y (its ground always editable, the side panel, the X-ray). */
   const mine = studio.terrain !== null;
+  /** A redstone session: a build plot whose circuit the studio simulates (the side panel, the Configure tool). */
+  const redstone = session.kind === 'redstone';
   const surface = useMemo(() => studio.terrain?.surfaceRange(plotMode().size) ?? null, [studio]);
   const world = useMemo(
     () => new mod.StudioWorld(version, studio.canvas, undefined, studio.terrain),
@@ -318,15 +347,20 @@ function StudioBody({
   const [locked, setLocked] = useState(false);
   const [tool, setTool] = useState<Tool>(mine ? 'select' : 'build');
   const chooseTool = useCallback((next: Tool) => {
+    if (next === 'configure' && !redstone) return;
     if (!mine || MINE_TOOLS.some((t) => t.id === next)) setTool(next);
-  }, [mine]);
+  }, [mine, redstone]);
   const [boxMode, setBoxMode] = useState<BoxMode>('fill');
   const [brushShape, setBrushShape] = useState<BrushShape>('sphere');
   const [brushSize, setBrushSize] = useState(3);
   const [brushMode, setBrushMode] = useState<BrushMode>(mine ? 'remove' : 'add');
   const [extrudeN, setExtrudeN] = useState(1);
   const [slots, setSlots] = useState<Array<PaletteEntry | null>>(() =>
-    session.kind === 'mine' ? [GROUND, ...defaultHotbar(session.palette).slice(0, 8)] : defaultHotbar(session.palette),
+    session.kind === 'mine'
+      ? [GROUND, ...defaultHotbar(session.palette).slice(0, 8)]
+      : session.kind === 'redstone'
+        ? redstoneHotbar(session.palette)
+        : defaultHotbar(session.palette),
   );
   const [active, setActive] = useState(0);
   const [facing, setFacing] = useState<Dir | null>(null);
@@ -384,7 +418,7 @@ function StudioBody({
   const [xray, setXray] = useState(mine);
   const [preferred, setPreferred] = useState<string | null>(() => session.preferredFor ?? null);
   /** A kind switch of a full canvas waits for the user's word (the canvas is cleared). */
-  const [kindAsk, setKindAsk] = useState<'build' | 'mine' | null>(null);
+  const [kindAsk, setKindAsk] = useState<DesignerKind | null>(null);
   const bots = useApi('bots.list', {}, { enabled: canChat });
   const mainBot = mainBotOf(bots.data?.bots);
 
@@ -427,7 +461,8 @@ function StudioBody({
   const [versionAsk, setVersionAsk] = useState<{ target: Version; report: DesignerCompatReport } | null>(null);
   const [versionBusy, setVersionBusy] = useState(false);
   // Build <-> mine: an empty canvas switches at once, a full one asks first (it is cleared). A mine's seed: a new terrain.
-  const changeKind = async (kind: 'build' | 'mine', apply = false) => {
+  // Build <-> redstone is the same plot under another name: the bot keeps the canvas and never asks.
+  const changeKind = async (kind: DesignerKind, apply = false) => {
     if (kind === (session.kind ?? 'build') && !apply) return;
     setVersionBusy(true);
     try {
@@ -439,6 +474,7 @@ function StudioBody({
       });
       if (r.changed && r.session) {
         setKindAsk(null);
+        if (kind !== 'mine' && session.kind !== 'mine') onCarry({ session: r.session, studio });
         onSession(r.session);
       } else if (r.needsClear) setKindAsk(kind);
     } catch (e) {
@@ -534,6 +570,22 @@ function StudioBody({
     };
   });
   const [lookNow, setLookNow] = useState<Dir>('north');
+  /** A redstone design's simulation (inert for the other kinds): while it is live the pointer cannot edit the canvas. */
+  const sim = useRedstoneSim({
+    enabled: redstone,
+    studio,
+    version,
+    world,
+    mod,
+    viewer,
+    stage,
+    ready,
+    fps,
+    aim,
+    look: lookNow,
+  });
+  /** A redstone design's placed library components (inert for the other kinds). */
+  const components = useRedstoneComponents({ enabled: redstone, studio, viewer, stage, live: sim.live });
 
   useEffect(() => () => studio.dispose(), [studio]);
   useEffect(() => flushWhenHidden(studio), [studio]);
@@ -777,9 +829,10 @@ function StudioBody({
         placeAt,
         startBrush,
         setNotice: (text) => setNotice(text),
+        inspect: sim.inspect,
       });
     },
-    [studio, pick, placeAt, startBrush, setNotice],
+    [studio, pick, placeAt, startBrush, setNotice, sim.inspect],
   );
 
   const up = useCallback(
@@ -803,7 +856,7 @@ function StudioBody({
 
   useEffect(() => {
     pointerActions.current = {
-      canEdit: canWrite && !snap.busy && !saving && !versionBusy,
+      canEdit: canWrite && !snap.busy && !saving && !versionBusy && !sim.live,
       down, up, move: moveSel, setDrag,
       dragStart: mineDragStart, dragPreview: mineDragPreview, dragCommit: mineDragCommit, dragCancel: mineDragCancel,
       gesture: (held) => gesture.set(held),
@@ -815,7 +868,7 @@ function StudioBody({
       },
       error: (error) => setNotice(errorText(error), { tone: 'error' }),
     };
-  }, [canWrite, snap.busy, saving, versionBusy, down, up, moveSel, setNotice,
+  }, [canWrite, snap.busy, saving, versionBusy, sim.live, down, up, moveSel, setNotice,
     mineDragStart, mineDragPreview, mineDragCommit, mineDragCancel, gesture]);
   useEffect(() => {
     const engine = ready ? viewer.current?.engine() : null;
@@ -1025,6 +1078,7 @@ function StudioBody({
       />
       <StudioBars
         saved={saved}
+        redstone={redstone}
         mineRange={mineRangeOf(mine, bounds, preferred)}
         canChat={canChat}
         mainBot={mainBot}
@@ -1074,6 +1128,7 @@ function StudioBody({
           />
           <StageHints locked={locked} ready={ready} mine={mine}
             hint={mineHint(mineHintState({ placing: !!minePlacement.placing, component: !!minePlacement.selectedId, selection: !!sel }))} />
+          <SimStageNote api={sim.api} />
           {mine && ready && !locked ? <ShortcutsButton onClick={() => setShortcuts(true)} /> : null}
           {minePlacement.placing ? <div data-testid="mine-placement-tip" className="absolute top-3 left-14 rounded border border-purple-400/50 bg-black/80 px-3 py-2 text-xs text-white">
             {minePlacement.refused ? <span className="text-red-300">{minePlacement.refused}</span> : minePlacement.hover ? `Place at ${minePlacement.hover.join(', ')}` : minePlacement.placementSurface ? 'Point at the terrain surface' : `Point inside the plot at Y ${minePlacement.placementY}`}
@@ -1097,7 +1152,7 @@ function StudioBody({
           ) : null}
           {/* Tools */}
           <ToolRail
-            tools={mine ? MINE_TOOLS : TOOLS}
+            tools={mine ? MINE_TOOLS : redstone ? REDSTONE_TOOLS : TOOLS}
             tool={tool}
             setTool={chooseTool}
             studio={studio}
@@ -1140,6 +1195,7 @@ function StudioBody({
               sheet={sheet}
               onChoose={choosePaletteEntry}
               onClose={closePalette}
+              initialCategory={redstone ? REDSTONE_CATEGORY : undefined}
             />
           ) : null}
           <ViewOnlyNote canWrite={canWrite} />
@@ -1194,6 +1250,14 @@ function StudioBody({
             onTopView={minePlacement.topView}
             onFrameAll={minePlacement.frameAll}
             empty={bounds === null && minePlacement.modules.length === 0}
+          />
+        ) : null}
+        {redstone ? (
+          <RedstonePanel
+            sim={sim}
+            serverVersion={session.serverVersion}
+            stage={stage}
+            library={<LibraryTab components={components} studio={studio} version={version} />}
           />
         ) : null}
         <ChatPanel
@@ -1272,7 +1336,8 @@ const tooBig = (mine: boolean, bounds: Bounds | null) => !mine && !!bounds && si
 const selMin = (sel: Selection | null) => (sel ? sel.min : null);
 
 /** The HUD's tool: its name without the hint, then its settings. */
-const toolLabelOf = (t: ToolSettings) => `${TOOLS.find((x) => x.id === t.tool)?.label.split(' (')[0]}${toolSuffix(t)}`;
+const toolLabelOf = (t: ToolSettings) =>
+  `${REDSTONE_TOOLS.find((x) => x.id === t.tool)?.label.split(' (')[0]}${toolSuffix(t)}`;
 
 /** The column right of the stage: the underground slider, the tool's settings, transforms, selection edits, the anchor. */
 function ToolColumn(p: {
@@ -1358,18 +1423,20 @@ function selectionText(sel: Selection | null, blocks: number): string | null {
 /** The saved bar, the notice line and the kind / version dialogs under the header. */
 function StudioBars(p: {
   saved: { designId: number; rev: number; text: string } | null;
+  /** A redstone design: its saved bar offers no build. */
+  redstone: boolean;
   mineRange: string | null;
   canChat: boolean;
   mainBot: string | null;
   askBot: () => void;
   notices: Notices;
   dismissNotice: () => void;
-  kindAsk: 'build' | 'mine' | null;
+  kindAsk: DesignerKind | null;
   versionAsk: { target: Version; report: DesignerCompatReport } | null;
   snap: StudioSnapshot;
   version: Version;
   busy: boolean;
-  changeKind: (k: 'build' | 'mine') => void;
+  changeKind: (k: DesignerKind) => void;
   cancelKind: () => void;
   changeVersion: (v: Version) => void;
   cancelVersion: () => void;
@@ -1385,6 +1452,7 @@ function StudioBars(p: {
           mainBot={p.mainBot}
           askBot={p.askBot}
           dirty={p.snap.dirty}
+          redstone={p.redstone}
         />
       ) : null}
       <NoticeLines notices={p.notices} dismiss={p.dismissNotice} />

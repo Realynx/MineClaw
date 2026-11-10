@@ -81,6 +81,7 @@ export function DesignLibrary({ onPick, onDeleted }: { onPick?: (id: number) => 
               <span className="block px-2 pb-1.5 text-[10px] text-muted">
                 #{d.id} · r{d.rev}
                 {d.kind === 'mine' ? ' · Mine' : ''}
+                {d.kind === 'redstone' ? ' · Redstone' : ''}
               </span>
             </button>
             <Link

@@ -265,7 +265,8 @@ public sealed class BlueprintService
     /// picture and the revision history.</summary>
     private void Adopt(BlueprintRecord rec, DesignVersion best, VoxelPlan plan, string? change)
     {
-        rec.Dsl = best.Dsl;
+        // A revised circuit is still a circuit, whether or not the author kept the comment line that says so.
+        rec.Dsl = RedstoneDesign.Carry(rec.Dsl, best.Dsl);
         rec.Name = plan.Blueprint.Name is { Length: > 0 } n && n != "build" ? n : rec.Name;
         rec.Origin = plan.Origin;
         rec.Rev++;
@@ -783,10 +784,14 @@ public sealed class BlueprintService
 
     /// <summary>
     /// Why a design can't be built in this world: drawn for another version with blocks this one doesn't have ("#12 "hut" is
-    /// drawn for 1.12.2; these blocks don't exist in b1.8.1: 12 White Concrete …"); null = it can (as is, or converted).
+    /// drawn for 1.12.2; these blocks don't exist in b1.8.1: 12 White Concrete …"), or a redstone circuit
+    /// (<see cref="RedstoneRefusal"/>); null = it can (as is, or converted).
     /// </summary>
     public string? WorldRefusal(BlueprintRecord rec)
     {
+        // Every build of a saved design asks here first (the brain's design build, the build tool behind a pawn's blueprint order):
+        // a circuit stops before a plan is made or a body is asked for.
+        if (DesignerCanvas.KindOfDsl(rec.Dsl) == DesignerCanvas.KindRedstone) return RedstoneRefusal(rec);
         var from = DesignVersions.OfDsl(rec.Dsl);
         if (from == null || from == DesignVersions.Server) return null;
         try
@@ -799,6 +804,13 @@ public sealed class BlueprintService
         }
         catch (Exception ex) { _log?.LogDebug(ex, "compatibility of #{Id} unreadable", rec.Id); return null; }
     }
+
+    /// <summary>
+    /// A redstone design is never built by this builder: it leaves out dust, repeaters, levers, buttons, plates and pistons and
+    /// can't set a repeater's delay, a comparator's mode or a lever, so what it placed would be half a circuit.
+    /// </summary>
+    public static string RedstoneRefusal(BlueprintRecord rec) =>
+        $"#{rec.Id} \"{rec.Name}\" is a redstone circuit: the builder can't wire one yet (it would leave out dust and repeaters and set no delays or levers), so it isn't built";
 
     /// <summary>"; converted 1.12.2 → b1.8.1: …; 4 cells the builder can't place yet, left out: 2 Bed, 2 Redstone Wire" ("" = none).</summary>
     public static string CompatNote(VoxelPlan? plan)

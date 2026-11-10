@@ -8,7 +8,8 @@ using MineClaw.World.Designs;
 namespace MineClaw.ViewerBridge.Data;
 
 /// <param name="Version">The game version the design is drawn for (its DSL's <c>version</c> line; none = the server's).</param>
-/// <param name="Kind">"build" or "mine" (its DSL's <c>kind mine</c> line: a mine design at absolute y, docs/web/api.md "Mine designs").</param>
+/// <param name="Kind">"build", "mine" (its DSL's <c>kind mine</c> line: a mine design at absolute y, docs/web/api.md "Mine designs") or
+/// "redstone" (its DSL's <c># kind redstone</c> comment line: a circuit on a build plot).</param>
 public sealed record DesignSummary(long Id, string Name, string Status, string? Requester, int Rev, int Revisions, long? Updated, bool HasPicture,
     string? Version = null, string? Kind = null);
 public sealed record DesignListResponse(long Total, long RevisionsTotal, int Offset, int Limit, IReadOnlyList<DesignSummary> Items);
@@ -48,8 +49,13 @@ public sealed class DesignViews(AgentDb db, string serverVersion)
     private static readonly System.Text.RegularExpressions.Regex MineLine =
         new(@"^\s*kind\s+mine\b", System.Text.RegularExpressions.RegexOptions.Multiline | System.Text.RegularExpressions.RegexOptions.IgnoreCase);
 
-    /// <summary>"mine" for a mine design's DSL, else "build".</summary>
-    private static string KindOf(string? dsl) => dsl != null && MineLine.IsMatch(dsl) ? "mine" : "build";
+    /// <summary>The bot's tag of a redstone design (RedstoneDesign.KindLine, src/MineClaw.Bot/Blueprints/DesignerRedstoneAuthoring.cs):
+    /// a whole comment line, because the DSL's <c>kind</c> statement knows only build and mine. Keep the two in step.</summary>
+    private static readonly System.Text.RegularExpressions.Regex RedstoneLine =
+        new(@"^[ \t]*#[ \t]*kind[ \t]+redstone[ \t]*\r?$", System.Text.RegularExpressions.RegexOptions.Multiline | System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+    /// <summary>"mine" for a mine design's DSL, "redstone" for a circuit's, else "build".</summary>
+    private static string KindOf(string? dsl) => dsl == null ? "build" : MineLine.IsMatch(dsl) ? "mine" : RedstoneLine.IsMatch(dsl) ? "redstone" : "build";
 
     private static readonly System.Text.RegularExpressions.Regex VersionLine =
         new(@"^\s*version\s+(b1\.8\.1|1\.12\.2)\b", System.Text.RegularExpressions.RegexOptions.Multiline | System.Text.RegularExpressions.RegexOptions.IgnoreCase);

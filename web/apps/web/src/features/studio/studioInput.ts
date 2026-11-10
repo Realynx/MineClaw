@@ -9,6 +9,7 @@ import { boxOf, connected, extend, invert, maskSelection, plotMode, selectAll, s
 import type { Tool } from './StudioChrome';
 import type { Version } from './facing';
 import type { PaletteEntry } from './palette';
+import { configurePress } from './redstone/redstoneInput';
 import type { Studio } from './studio';
 import {
   boxCells,
@@ -242,6 +243,7 @@ const TOOL_KEYS: Record<string, Tool> = {
   KeyF: 'face',
   KeyU: 'extrude',
   KeyO: 'anchor',
+  KeyC: 'configure',
 };
 
 const toolKey: KeyRule = (e, a) => {
@@ -311,6 +313,8 @@ export interface PressCtx {
   placeAt: (p: V3, face: number) => void;
   startBrush: (h: Hit, button: number) => void;
   setNotice: (text: string) => void;
+  /** Shows a cell in the redstone inspector (a redstone design's Configure tool). */
+  inspect?: (at: V3) => void;
 }
 
 const entryOf = (s: InputState) => s.slots[s.active];
@@ -370,6 +374,7 @@ const TOOL_PRESS: Record<Tool, (c: PressCtx) => void> = {
   face: facePress,
   extrude: extrudePress,
   anchor: anchorPress,
+  configure: configurePress,
 };
 
 /** A mouse press in the world on the aimed hit: middle picks, a paste places (Shift keeps pasting), else the tool acts. */

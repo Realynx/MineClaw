@@ -27,8 +27,11 @@ export const DESIGNER_PLOT = { size: 64, height: 48, depth: 16 } as const;
 /** A mine session's plot: absolute world y 0..127 (depth 0: the canvas y is the world's). */
 export const DESIGNER_MINE_PLOT = { size: 256, height: 128, depth: 0 } as const;
 
-/** A session's (and a design's) kind: a build stands on the grass; a mine is dug into generated terrain at absolute y. */
-export const DesignerKind = z.enum(['build', 'mine']);
+/**
+ * A session's (and a design's) kind: a build stands on the grass; a mine is dug into generated terrain at absolute y; a
+ * redstone design is a circuit on the same plot as a build (the studio simulates it; everything else treats it as a build).
+ */
+export const DesignerKind = z.enum(['build', 'mine', 'redstone']);
 export type DesignerKind = z.infer<typeof DesignerKind>;
 /** The cell id of undisturbed ground (below y 0 only): a dug cell filled back in. */
 export const DESIGNER_EARTH = -1;
@@ -151,9 +154,18 @@ export const DesignerSession = z.object({
     "drawn for another version than the server's: how it would build there (null = the same version)",
   ),
   plot: z.object({ size: z.number().int(), height: z.number().int(), depth: z.number().int().nullish() }),
-  kind: DesignerKind.nullish().describe('build (default: on the grass) | mine (dug into generated terrain, absolute y)'),
+  kind: DesignerKind.nullish().describe(
+    'build (default: on the grass) | mine (dug into generated terrain, absolute y) | redstone (a circuit on a build plot)',
+  ),
   seed: z.string().nullish().describe("a mine session's terrain seed (the generator is MineClaw's own)"),
   mineAuthoring: z.string().max(2_000_000).nullish().describe('Revision-specific mine components and editor settings; executable work remains in cells'),
+  redstoneAuthoring: z
+    .string()
+    .max(2_000_000)
+    .nullish()
+    .describe(
+      'Revision-specific redstone components, probes, breakpoints and simulator settings: a JSON object marked "redstone": 1 (a redstone session only); the circuit itself remains in cells',
+    ),
   designRevision: z.number().int().nonnegative().nullish().describe('Opened or last saved design revision, separate from the canvas edit revision'),
   preferredFor: z
     .string()
@@ -186,7 +198,9 @@ export type DesignerCreateRequest = z.infer<typeof DesignerCreateRequest>;
 export const DesignerVersionRequest = z
   .object({
     version: z.enum(['b1.8.1', '1.12.2']),
-    kind: DesignerKind.optional().describe('switch build ↔ mine (a full canvas needs apply: it is cleared)'),
+    kind: DesignerKind.optional().describe(
+      'switch kind: to or from a mine a full canvas needs apply (it is cleared); build ↔ redstone keeps the canvas',
+    ),
     seed: z.string().max(32).optional().describe("a mine canvas's terrain seed"),
     preferredFor: z.string().max(16).nullish().describe('tag (or untag: null) the design as preferred for a version'),
     apply: z.boolean().optional().describe('false (default) = the compatibility check only; true = convert (or clear)'),
@@ -275,6 +289,7 @@ export const DesignerSaveRequest = z
       .describe('PNG of the designer camera, at most 1280 by 960 pixels'),
     previewOnly: z.boolean().optional().describe('update the loaded design picture without saving a revision'),
     mineAuthoring: z.string().max(2_000_000).optional(),
+    redstoneAuthoring: z.string().max(2_000_000).optional(),
   })
   .strict();
 export type DesignerSaveRequest = z.infer<typeof DesignerSaveRequest>;
@@ -708,15 +723,20 @@ export interface MockSavedDesign {
   updated: number;
   previewPng?: string;
   mineAuthoring?: string | null;
+  /** A redstone design's components, probes and simulator settings (null for the other kinds). */
+  redstoneAuthoring?: string | null;
   /** The game version it is drawn for. */
   version?: string;
-  /** build | mine, the mine's seed, its version tag, its anchor (a mine's entry). */
+  /** build | mine | redstone, the mine's seed, its version tag, its anchor (a mine's entry). */
   kind?: DesignerKind;
   seed?: string | null;
   preferredFor?: string | null;
   anchor?: [number, number, number] | null;
   /** Each revision's cells (opened with `rev`). */
-  revs?: Record<number, { blocks: DesignerCell[]; dug: string[]; mineAuthoring?: string | null }>;
+  revs?: Record<
+    number,
+    { blocks: DesignerCell[]; dug: string[]; mineAuthoring?: string | null; redstoneAuthoring?: string | null }
+  >;
 }
 
 type MockSession = DesignerSession & { cells: Map<string, DesignerCell>; holes: Set<string> };
@@ -769,12 +789,20 @@ const randomSeed = () => String(Math.floor(Math.random() * 1e9) + 1);
 
 type MakeBody = { model?: string; designId?: number; version?: string; convertTo?: string; rev?: number; kind?: DesignerKind; seed?: string };
 
+/** The kind revision `body.rev` of a saved design was saved as (undefined: no revision asked for, or none recorded). */
+function revisionKind(body: MakeBody, d: MockSavedDesign | undefined): DesignerKind | undefined {
+  if (!d || !body.rev) return undefined;
+  const kind = DesignerKind.safeParse(d.revisions.find((r) => r.rev === body.rev)?.kind);
+  return kind.success ? kind.data : undefined;
+}
+
 /** What a session opened from a saved design takes from it (a fresh one: the request's kind and the defaults). */
 function fromDesign(body: MakeBody, d: MockSavedDesign | undefined) {
   return {
     designId: d?.id ?? null,
     name: d?.name ?? 'new design',
-    kind: d?.kind ?? body.kind ?? 'build',
+    // An older revision opens as the kind it was saved as (the bot reads it from that revision's DSL).
+    kind: revisionKind(body, d) ?? d?.kind ?? body.kind ?? 'build',
     preferredFor: d?.preferredFor ?? null,
   };
 }
@@ -829,6 +857,7 @@ function revisionOf(body: MakeBody, d: MockSavedDesign | undefined) {
 function openDesignCells(s: MockSession, body: MakeBody, d: MockSavedDesign | undefined): DesignerCell[] {
   const at = revisionOf(body, d);
   s.mineAuthoring = body.rev ? at?.mineAuthoring ?? null : d?.mineAuthoring ?? null;
+  s.redstoneAuthoring = body.rev ? (at?.redstoneAuthoring ?? null) : (d?.redstoneAuthoring ?? null);
   if (at) s.holes = new Set(at.dug);
   const blocks = at?.blocks ?? d?.blocks ?? [];
   if (!d || !body.convertTo || body.convertTo === s.version) return blocks;
@@ -850,10 +879,15 @@ function switchMockKind(s: MockSession, body: VersionBody & { kind: DesignerKind
   s.anchor = null;
   s.kind = body.kind;
   s.seed = body.kind === 'mine' ? (body.seed ?? s.seed ?? randomSeed()) : null;
-  if (body.kind === 'build') s.preferredFor = null;
+  if (body.kind !== 'mine') s.preferredFor = null;
   s.rev++;
   if (target !== s.version) setMockVersion(s, target);
   return { version: s.version, target, changed: true, report: null, session: view(s) };
+}
+
+/** Build <-> redstone: the same plot, so the switch is only a new label; the canvas, its dug cells and the anchor stay. */
+function samePlotSwitch(s: MockSession, kind: DesignerKind | undefined): kind is DesignerKind {
+  return !!kind && kind !== (s.kind ?? 'build') && kind !== 'mine' && s.kind !== 'mine';
 }
 
 /** A new mine seed or version tag; true when the request asks for one. */
@@ -884,6 +918,7 @@ function copyIntoDesign(d: MockSavedDesign, s: MockSession, name: string): void 
   d.seed = s.seed ?? null;
   d.preferredFor = s.preferredFor ?? null;
   d.mineAuthoring = s.kind === 'mine' ? s.mineAuthoring ?? null : null;
+  d.redstoneAuthoring = s.kind === 'redstone' ? (s.redstoneAuthoring ?? null) : null;
   d.anchor = s.anchor ?? null;
   d.updated = Date.now();
 }
@@ -963,6 +998,7 @@ export function createDesignerMock(
       messages: [...s.messages],
       kind: s.kind ?? 'build',
       seed: s.kind === 'mine' ? (s.seed ?? '0') : null,
+      redstoneAuthoring: s.kind === 'redstone' ? (s.redstoneAuthoring ?? null) : null,
       preferredFor: s.preferredFor ?? null,
       plot: s.kind === 'mine' ? { ...DESIGNER_MINE_PLOT } : { ...DESIGNER_PLOT },
       serverCompat: s.version !== MOCK_SERVER_VERSION && blocks.length ? mockConvert(blocks, s.version, MOCK_SERVER_VERSION).report : null,
@@ -1022,6 +1058,20 @@ export function createDesignerMock(
     version: (id: number, body: VersionBody): DesignerVersionResponse => {
       const s = get(id);
       const target = body.version;
+      // A version check without apply changes nothing, a relabel sent with it included (the reply has no session).
+      if (samePlotSwitch(s, body.kind) && target !== s.version && (s.cells.size > 0 || s.holes.size > 0) && !body.apply)
+        return {
+          version: s.version,
+          target,
+          changed: false,
+          report: mockConvert([...s.cells.values()], s.version, target).report,
+          session: null,
+        };
+      // Build <-> redstone keeps the canvas: the kind changes here and the version then follows its usual rules.
+      if (samePlotSwitch(s, body.kind)) {
+        s.kind = body.kind;
+        if (target === s.version) return { version: s.version, target, changed: true, report: null, session: view(s) };
+      }
       // The mode first: a kind switch (a full canvas is cleared on apply), a seed, a version tag.
       if (body.kind && body.kind !== (s.kind ?? 'build')) return switchMockKind(s, { ...body, kind: body.kind }, view);
       const retagged = retagMock(s, body);
@@ -1125,10 +1175,12 @@ export function createDesignerMock(
       if (s.cells.size === 0 && s.holes.size === 0) throw new Error('the canvas is empty');
       const { d, created } = designToSave(s, saved, body, owner, () => nextDesign++);
       if (body.mineAuthoring !== undefined) s.mineAuthoring = body.mineAuthoring;
+      if (body.redstoneAuthoring !== undefined) s.redstoneAuthoring = body.redstoneAuthoring;
       copyIntoDesign(d, s, body.name);
       if (body.previewPng) d.previewPng = body.previewPng;
       const rev = (d.revisions[0]?.rev ?? 0) + 1;
       d.revs = { ...(d.revs ?? {}), [rev]: { blocks: [...d.blocks], dug: [...d.dug!], mineAuthoring: d.mineAuthoring } };
+      d.revs[rev]!.redstoneAuthoring = d.redstoneAuthoring;
       d.revisions.unshift({
         rev,
         author: owner,

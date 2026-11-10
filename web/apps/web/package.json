@@ -29,6 +29,7 @@
     "@codemirror/view": "6.43.14",
     "@lezer/highlight": "1.2.5",
     "@mineclaw/contracts": "*",
+    "@mineclaw/redstone": "*",
     "@mineclaw/world-viewer": "*",
     "@tanstack/react-query": "5.104.4",
     "@tanstack/react-virtual": "3.14.21",

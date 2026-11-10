@@ -203,13 +203,14 @@ public sealed class DesignerRoutes
     private sealed record CreateBody(string? Model, long? DesignId, string? Version, string? ConvertTo, string? Kind, string? Seed, int? Rev, string? Player,
         string? Who);
 
-    /// <summary>"build" / "mine" from the body (null = not given; anything else is a 400).</summary>
+    /// <summary>"build" / "mine" / "redstone" from the body (null = not given; anything else is a 400).</summary>
     private static (string? Kind, string? Error) KindOf(string? kind) => kind?.Trim().ToLowerInvariant() switch
     {
         null or "" => (null, null),
         DesignerCanvas.KindBuild => (DesignerCanvas.KindBuild, null),
         DesignerCanvas.KindMine => (DesignerCanvas.KindMine, null),
-        _ => (null, $"kind '{kind}': use build or mine"),
+        DesignerCanvas.KindRedstone => (DesignerCanvas.KindRedstone, null),
+        _ => (null, $"kind '{kind}': use build, mine or redstone"),
     };
 
     private static string Requester(string? player, string? who) =>
@@ -267,6 +268,8 @@ public sealed class DesignerRoutes
     {
         var s = new DesignerSessionRecord { Owner = Requester(b.Player, b.Who), Model = model.Id, Name = "new design" };
         s.Canvas.Version = version ?? DesignVersions.Server;
+        // A circuit starts on the same grassland plot as a build.
+        if (kind == DesignerCanvas.KindRedstone) s.Canvas.Kind = kind;
         if (kind != DesignerCanvas.KindMine) return s;
         s.Canvas.Kind = DesignerCanvas.KindMine;
         s.Canvas.Seed = MineTerrain.NormalizeSeed(b.Seed is { Length: > 0 } seed ? seed : MineTerrain.RandomSeed());
@@ -319,6 +322,8 @@ public sealed class DesignerRoutes
     /// <list type="bullet">
     /// <item><c>kind</c> (build | mine): an empty canvas switches at once; a full one answers <c>needs_clear</c> unless <c>apply</c>,
     /// which clears it and switches (a mine canvas is generated terrain at absolute y: nothing carries over).</item>
+    /// <item><c>kind</c> redstone: a circuit on the build plot. Build ↔ redstone switches at once and keeps the canvas; to or from a
+    /// mine the canvas is cleared like any other switch.</item>
     /// <item><c>seed</c> (a mine): its terrain; <c>preferred_for</c> (a version, or "" / "none" to drop it): the design's preference.</item>
     /// <item><c>version</c>: an empty canvas just switches. Otherwise <c>apply</c> false (the default) is the compatibility check:
     /// <c>{version, target, report}</c> (what stays the same, what is substituted, what doesn't exist there); <c>apply</c> true
@@ -333,6 +338,11 @@ public sealed class DesignerRoutes
         var (kind, kindErr) = KindOf(b!.Kind);
         if (VersionBodyError(b, kindErr) is { } bad) return Reply(400, new { error = bad });
         bool modeChanged = false;
+        // Build <-> redstone is one plot under another name: relabelled here with every cell kept, so the question below (clear
+        // the canvas?) is only ever asked on the way to or from a mine.
+        // A version check without apply changes nothing: a relabel sent with it waits for the apply (the reply has no session).
+        if (target != s.Version && !IsBlank(s) && b.Apply != true && kind != null && DesignerCanvas.SamePlot(kind, s.Canvas.Kind)) kind = null;
+        if (Relabel(s, kind)) modeChanged = true;
         if (kind != null && kind != s.Canvas.Kind)
         {
             if (!IsBlank(s) && b.Apply != true)
@@ -356,6 +366,21 @@ public sealed class DesignerRoutes
 
     private static bool IsBlank(DesignerSessionRecord s) => s.Canvas.Count == 0 && s.Canvas.Dug.Count == 0;
 
+    /// <summary>The DSL of the design revision a redstone session opened or last saved: a revision the bot drew itself names its
+    /// editor data by the marker in it (null for another kind, or without a history).</summary>
+    private string? RevisionDsl(DesignerSessionRecord s) =>
+        s.Canvas.Kind == DesignerCanvas.KindRedstone && s.DesignId is { } did && s.DesignRevision is { } rev
+            && _service()?.History?.Revisions.Get(did, rev) is { } v ? v.Dsl : null;
+
+    /// <summary>Build ↔ redstone: only the canvas's kind changes (its cells, dug cells, anchor and offset stay; the model is told
+    /// nothing, its prompt and tools being a build's either way). True when it changed.</summary>
+    private static bool Relabel(DesignerSessionRecord s, string? kind)
+    {
+        if (kind == null || kind == s.Canvas.Kind || !DesignerCanvas.SamePlot(kind, s.Canvas.Kind)) return false;
+        s.Canvas.Kind = kind;
+        return true;
+    }
+
     /// <summary>A fresh canvas of the other kind (a mine canvas is generated terrain at absolute y: nothing carries over); the
     /// model hears it.</summary>
     private void SwitchKind(DesignerSessionRecord s, string kind, string target, string? seedText)
@@ -371,7 +396,7 @@ public sealed class DesignerRoutes
         if (!mine) s.PreferredFor = null;
         var switched = mine ? $"the canvas is now a mine over generated {target} terrain (seed {s.Canvas.Seed}, absolute y)" : "the canvas is a grassland build plot again";
         s.PendingEdits = s.PendingEdits.Length == 0 ? switched : DesignerText.Clip(s.PendingEdits + "; " + switched, 600);
-        _store.AddMessage(s.Id, "assistant", mine ? $"Switched to a mine design over generated terrain (seed {s.Canvas.Seed})." : "Switched back to a build design.");
+        _store.AddMessage(s.Id, "assistant", mine ? $"Switched to a mine design over generated terrain (seed {s.Canvas.Seed})." : kind == DesignerCanvas.KindRedstone ? "Switched to a redstone design." : "Switched back to a build design.");
     }
 
     /// <summary>A mine's new terrain seed; true when it changed.</summary>
@@ -455,7 +480,7 @@ public sealed class DesignerRoutes
             ? h.List(did, 50).Select(v => (object)new
             {
                 rev = v.Rev, author = v.Author, author_kind = v.AuthorKind, message = v.Message, tag = v.Tag, created = v.At.ToUnixTimeMilliseconds(), n = v.Blocks,
-                version = DesignVersions.OfDsl(v.Dsl), kind = MineDesign.IsMine(v.Dsl) ? DesignerCanvas.KindMine : DesignerCanvas.KindBuild,
+                version = DesignVersions.OfDsl(v.Dsl), kind = DesignerCanvas.KindOfDsl(v.Dsl),
             }).ToList()
             : [];
         var server = DesignVersions.Server;
@@ -467,6 +492,7 @@ public sealed class DesignerRoutes
         {
             id = s.Id, owner = s.Owner, model = s.Model, design_id = s.DesignId, design_revision = s.DesignRevision, name = s.Name, rev = s.Canvas.Rev, blocks = s.Canvas.Wire(), dug = s.Canvas.DugWire(),
             kind = s.Canvas.Kind, seed = s.Canvas.Mine ? s.Canvas.Seed : null, preferred_for = s.PreferredFor, mine_authoring = s.Canvas.Mine ? s.MineAuthoring : null,
+            redstone_authoring = _store.RedstoneAuthoringOf(s, RevisionDsl(s)),
             anchor = s.Anchor is { } a ? new[] { a.X, a.Y, a.Z } : null,
             messages = _store.Messages(s.Id).Select(MessageJson),
             cost_usd = (double)s.CostUsd, calls = s.Calls, version = s.Version, server_version = server, versions = DesignVersions.All,
@@ -501,7 +527,7 @@ public sealed class DesignerRoutes
     private sealed record Selection(int[]? Min, int[]? Max);
     private sealed record MessageBody(string? Text, string? Model, CanvasRef? Canvas, Selection? Selection, string? Player, string? Who);
     private sealed record CanvasBody(int Rev, OpBody[]? Ops, int[]? Anchor, bool? ClearAnchor, string? Player, string? Who);
-    private sealed record SaveBody(string? Name, string? Summary, bool? AsNew, string? Player, string? Who, string? PreviewPng, bool? PreviewOnly, string? MineAuthoring);
+    private sealed record SaveBody(string? Name, string? Summary, bool? AsNew, string? Player, string? Who, string? PreviewPng, bool? PreviewOnly, string? MineAuthoring, string? RedstoneAuthoring);
 
     /// <summary>The user's edits applied in order; null = nothing malformed. Each changed cell is summarised for the AI's next turn.</summary>
     private static string? ApplyEdits(DesignerSessionRecord s, OpBody[]? ops, out int applied) => ApplyEdits(s, ops, out applied, out _);
@@ -632,6 +658,7 @@ public sealed class DesignerRoutes
             return Reply(400, new { error = "this design was removed from the library; use Save as new to keep these edits" });
         if (b.Summary is { Length: > 120 }) return Reply(400, new { error = "summary over 120 chars" });
         if (!DesignerMineAuthoring.Valid(b.MineAuthoring)) return Reply(400, new { error = "mine_authoring must be a valid layout envelope up to 2000000 characters" });
+        if (!DesignerRedstoneAuthoring.Valid(b.RedstoneAuthoring)) return Reply(400, new { error = "redstone_authoring must be a JSON object marked \"redstone\": 1, up to 2000000 characters" });
         if (!TryPicture(b.PreviewPng, out var picture)) return Reply(400, new { error = "preview_png must be a PNG up to 1280 by 960 pixels and 2000000 base64 characters" });
         if (b.PreviewOnly == true)
         {
@@ -641,10 +668,14 @@ public sealed class DesignerRoutes
             return Reply(200, new { design_id = did, rev = existing.Rev, name = existing.Name, blocks = s.Canvas.Count, created = false, text = $"Updated picture for {existing.Name}." });
         }
         s.MineAuthoring = s.Canvas.Mine ? b.MineAuthoring ?? s.MineAuthoring : null;
-        var res = DesignerSave.Save(svc, s, b.Name, b.Summary, Requester(b.Player, b.Who), b.AsNew == true, _bot());
+        // A circuit's editor data: the body's, else what the session holds (the revision it opened: saving that one again is a
+        // revert and keeps its own). Another kind of canvas saves none.
+        var circuit = s.Canvas.Kind == DesignerCanvas.KindRedstone ? b.RedstoneAuthoring ?? _store.RedstoneAuthoringOf(s, RevisionDsl(s)) : null;
+        var res = DesignerSave.Save(svc, s, b.Name, b.Summary, Requester(b.Player, b.Who), b.AsNew == true, _bot(), circuit);
         if (!res.Ok) return Reply(400, new { error = res.Text });
         s.DesignRevision = res.Rev;
         _store.SaveMineAuthoring(res.DesignId, res.Rev, s.MineAuthoring);
+        _store.SaveRedstoneAuthoring(res.DesignId, res.Rev, circuit);
         if (picture != null && svc.Store.Get(res.DesignId) is { } record) svc.Store.Update(record, picture);
         _store.Update(s);
         _store.AddMessage(s.Id, "assistant", res.Text);
