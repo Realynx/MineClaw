@@ -4,7 +4,7 @@
  */
 import type { DesignerMessageResponse, DesignerSession } from '@mineclaw/contracts';
 import { MOCK_DESIGNER_PALETTE } from '@mineclaw/contracts';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   Canvas,
   connected,
@@ -15,11 +15,12 @@ import {
   maskSelection,
   selectAll,
   selected,
+  setPlotMode,
   type Cell,
 } from '@/features/studio/canvas';
 import { dirOfMcYaw, facingOf, mirrorMeta, placeMeta, rotateMeta, turn } from '@/features/studio/facing';
 import { defaultHotbar, searchPalette } from '@/features/studio/palette';
-import { Studio, type StudioApi } from '@/features/studio/studio';
+import { keepNewest, Studio, type StudioApi } from '@/features/studio/studio';
 import {
   boxCells,
   brush,
@@ -360,7 +361,7 @@ describe('studio controller', () => {
     return { api, calls };
   };
 
-  it('sends waiting edits with the message, the selection when asked, applies the AI ops, undoes across both', async () => {
+  it('sends waiting edits ahead of the message, the selection when asked, applies the AI ops, undoes across both', async () => {
     const { api, calls } = fakeApi();
     const s = new Studio(session(), api, 60_000);
     s.edit([[1, 0, 1, 4, 0]], 'place', 'placed cobblestone');
@@ -370,12 +371,15 @@ describe('studio controller', () => {
     await s.send('add a door', { withSelection: true, model: 'worker' });
     const body = calls.find((c) => c[0] === 'message')![1] as {
       text: string;
-      canvas: { rev: number; edits: Array<{ cells: Cell[] }> };
+      canvas: { rev: number; edits?: unknown };
       selection: unknown;
       model: string;
     };
     expect(body.text).toBe('add a door');
-    expect(body.canvas.edits[0]!.cells).toEqual([[1, 0, 1, 4, 0]]);
+    // A canvas call with the waiting edit comes before the message, which carries none (only the rev that call returned).
+    expect(calls.map((c) => c[0])).toEqual(['canvas', 'message']);
+    expect((calls[0]![1] as { ops: Array<{ cells: Cell[] }> }).ops[0]!.cells).toEqual([[1, 0, 1, 4, 0]]);
+    expect(body.canvas).toEqual({ rev: 5 });
     expect(body.selection).toEqual({ min: [0, 0, 0], max: [4, 2, 4] });
     expect(body.model).toBe('worker');
     expect(s.canvas.get(3, 1, 3)).toEqual([64, 9]);
@@ -408,5 +412,137 @@ describe('studio controller', () => {
     expect(calls.filter((c) => c[0] === 'save')[1]![1]).toEqual({ name: 'hut 2', asNew: true });
     expect(s.snapshot().designId).toBe(101);
     s.dispose();
+  });
+
+  describe('saving you can trust', () => {
+    afterEach(() => {
+      localStorage.clear();
+      setPlotMode({ kind: 'build' });
+    });
+
+    it('a reopened session whose canvas rev moved past the saved one starts dirty', async () => {
+      const { api } = fakeApi();
+      const s = new Studio(session({ blocks: [[1, 0, 1, 4, 0]] }), api, 60_000);
+      s.edit([[2, 0, 2, 4, 0]], 'place', 'placed cobblestone');
+      await s.save('hut');
+      // The bot's canvas was at rev 5 (the edit's reply) when it saved.
+      expect(localStorage.getItem('mineclaw.studio.saved:poofimafox:7')).toBe('5');
+      const same = new Studio(session({ designId: 101, rev: 5 }), api, 60_000);
+      expect(same.snapshot().dirty).toBe(false);
+      const moved = new Studio(session({ designId: 101, rev: 6 }), api, 60_000);
+      expect(moved.snapshot().dirty).toBe(true);
+      await moved.save('hut');
+      expect(moved.snapshot().dirty).toBe(false);
+      expect(localStorage.getItem('mineclaw.studio.saved:poofimafox:7')).toBe('6');
+      // Never saved in this browser (another session): unknown, so clean as before.
+      expect(new Studio(session({ id: 8, designId: 101, rev: 9 }), api, 60_000).snapshot().dirty).toBe(false);
+      for (const st of [s, same, moved]) st.dispose();
+    });
+
+    it('differsFrom counts cells; resync sends exactly those', async () => {
+      const { api, calls } = fakeApi();
+      const s = new Studio(
+        session({
+          blocks: [
+            [1, 0, 1, 4, 0],
+            [2, 0, 2, 4, 0],
+          ],
+        }),
+        api,
+        60_000,
+      );
+      // The bot's copy lacks one block and has one the page removed.
+      const bot = {
+        rev: 0,
+        blocks: [
+          [1, 0, 1, 4, 0],
+          [3, 0, 3, 4, 0],
+        ] as Cell[],
+        dug: [],
+      };
+      expect(s.differsFrom(bot)).toBe(2);
+      // A cell an edit still on its way changes is not counted: the copy cannot have it yet.
+      s.edit([[2, 0, 2, 5, 0]], 'place', 'placed stone');
+      expect(s.differsFrom(bot)).toBe(1);
+      await s.flush();
+      // A copy from before the page's last reply (rev 5) cannot tell.
+      expect(s.differsFrom(bot)).toBeNull();
+      calls.length = 0;
+      const undo = s.snapshot().undoLabel;
+      expect(await s.resync({ ...bot, rev: 5 })).toBe(2);
+      expect(calls).toEqual([
+        [
+          'canvas',
+          {
+            rev: 5,
+            ops: [
+              {
+                kind: 'resync',
+                label: 'resync with the page',
+                cells: [
+                  [2, 0, 2, 5, 0],
+                  [3, 0, 3, 0, 0],
+                ],
+              },
+            ],
+          },
+        ],
+      ]);
+      // Nothing changed here: no undo step, the same canvas.
+      expect(s.snapshot().undoLabel).toBe(undo);
+      expect(s.canvas.cells()).toEqual([
+        [1, 0, 1, 4, 0],
+        [2, 0, 2, 5, 0],
+      ]);
+      s.dispose();
+    });
+
+    it('resync in a mine sends dug cells as air and filled-back cells as earth', async () => {
+      const { api, calls } = fakeApi();
+      const mine = session({
+        version: '1.12.2',
+        kind: 'mine',
+        seed: '12345',
+        plot: { size: 256, height: 128, depth: 0 },
+      });
+      const s = new Studio({ ...mine, dug: [[30, 20, 30]] }, api, 60_000);
+      const bot = { rev: 0, blocks: [], dug: [[31, 20, 30]] as Array<[number, number, number]> };
+      expect(await s.resync(bot)).toBe(2);
+      expect((calls[0]![1] as { ops: Array<{ cells: Cell[] }> }).ops[0]!.cells).toEqual([
+        [30, 20, 30, 0, 0],
+        [31, 20, 30, -1, 0],
+      ]);
+      s.dispose();
+    });
+
+    it('refuses to save a component layout the bot would refuse, before sending anything', async () => {
+      const { api, calls } = fakeApi();
+      const s = new Studio(session({ blocks: [[1, 0, 1, 4, 0]] }), api, 60_000);
+      s.edit([[2, 0, 2, 4, 0]], 'place', 'placed cobblestone');
+      s.setMineAuthoring('x'.repeat(2_000_001));
+      await expect(s.save('mine')).rejects.toThrow('The component layout is too large to save.');
+      expect(calls).toEqual([]);
+      expect(s.snapshot()).toMatchObject({ dirty: true, pending: 1 });
+      s.setMineAuthoring('x'.repeat(2_000_000));
+      await s.save('mine');
+      expect(calls.map((c) => c[0])).toEqual(['canvas', 'save']);
+      s.dispose();
+    });
+
+    it('keepNewest keeps the newest of each group, the exception, and keys it does not know', () => {
+      for (let i = 1; i <= 6; i++) localStorage.setItem(`k:a:${i}`, '');
+      localStorage.setItem('k:b:1', '');
+      localStorage.setItem('other', '');
+      const rank = (k: string) => {
+        const m = /^k:(\w):(\d+)$/.exec(k);
+        return m ? { group: m[1]!, order: Number(m[2]) } : null;
+      };
+      keepNewest(localStorage, 3, rank, 'k:a:1');
+      const keys = Array.from({ length: localStorage.length }, (_, i) => localStorage.key(i));
+      expect(keys.sort()).toEqual(['k:a:1', 'k:a:4', 'k:a:5', 'k:a:6', 'k:b:1', 'other']);
+      // A storage that cannot list its keys is left alone.
+      const bare = { getItem: () => null, setItem: () => undefined };
+      expect(() => keepNewest(bare, 0, rank)).not.toThrow();
+    });
   });
 });

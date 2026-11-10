@@ -224,6 +224,79 @@ describe('studio cursor and immersive pointer binding', () => {
     expect(h.actions().down).not.toHaveBeenCalled();
   });
 
+  it('previews a mine component drag, refuses positions the preview rejects, and commits one move on release', () => {
+    const h = mount();
+    h.select(); h.pick.mockReturnValue('x');
+    const dragPreview = vi.fn((delta: V3) => delta[0] <= 2);
+    const dragCommit = vi.fn();
+    const dragCancel = vi.fn();
+    const gesture = vi.fn();
+    h.replaceActions({ ...h.actions(), dragStart: () => true, dragPreview, dragCommit, dragCancel, gesture });
+    h.pointer('pointerdown');
+    expect(gesture).toHaveBeenLastCalledWith(true);
+    h.pointer('pointermove', { clientX: 126 });
+    h.pointer('pointermove', { clientX: 127 });
+    h.pointer('pointermove', { clientX: 152 });
+    h.pointer('pointermove', { clientX: 178 });
+    expect(dragPreview.mock.calls.map(([delta]) => delta)).toEqual([[1, 0, 0], [2, 0, 0], [3, 0, 0]]);
+    expect(h.actions().move).not.toHaveBeenCalled();
+    expect(dragCommit).not.toHaveBeenCalled();
+    expect(h.studio.selection?.min).toEqual([0, 0, 0]);
+    h.pointer('pointerup', { clientX: 178 });
+    expect(dragCommit).toHaveBeenCalledOnce();
+    expect(dragCommit).toHaveBeenCalledWith([2, 0, 0]);
+    expect(dragCancel).not.toHaveBeenCalled();
+    expect(gesture).toHaveBeenLastCalledWith(false);
+    expect(h.release).toHaveBeenCalledWith(1);
+  });
+
+  it('cancels a previewed drag with Escape, a lost pointer or a lost window, and never commits it', () => {
+    const h = mount();
+    h.select(); h.pick.mockReturnValue('x');
+    const dragCommit = vi.fn();
+    const dragCancel = vi.fn();
+    h.replaceActions({ ...h.actions(), dragStart: () => true, dragPreview: () => true, dragCommit, dragCancel });
+    const other = vi.fn();
+    window.addEventListener('keydown', other);
+    h.pointer('pointerdown');
+    h.pointer('pointermove', { clientX: 152 });
+    const escape = new KeyboardEvent('keydown', { key: 'Escape', cancelable: true, bubbles: true });
+    window.dispatchEvent(escape);
+    expect(escape.defaultPrevented).toBe(true);
+    expect(other).not.toHaveBeenCalled();
+    expect(dragCancel).toHaveBeenCalledOnce();
+    h.pointer('pointermove', { clientX: 178 });
+    h.pointer('pointerup');
+    expect(dragCommit).not.toHaveBeenCalled();
+    // Escape without a drag is left to the page.
+    const idle = new KeyboardEvent('keydown', { key: 'Escape', cancelable: true, bubbles: true });
+    window.dispatchEvent(idle);
+    expect(idle.defaultPrevented).toBe(false);
+    expect(other).toHaveBeenCalledOnce();
+    window.removeEventListener('keydown', other);
+    h.pointer('pointerdown');
+    h.pointer('pointercancel');
+    h.pointer('pointerdown');
+    window.dispatchEvent(new Event('blur'));
+    expect(dragCancel).toHaveBeenCalledTimes(3);
+    expect(dragCommit).not.toHaveBeenCalled();
+  });
+
+  it('keeps the per-step path when the press declines a preview (a raw selection, or build mode)', () => {
+    const h = mount();
+    h.select(); h.pick.mockReturnValue('x');
+    const dragPreview = vi.fn(() => true);
+    const dragCommit = vi.fn();
+    h.replaceActions({ ...h.actions(), dragStart: () => false, dragPreview, dragCommit });
+    h.pointer('pointerdown');
+    h.pointer('pointermove', { clientX: 126 });
+    h.pointer('pointerup');
+    expect(h.actions().move).toHaveBeenCalledOnce();
+    expect(h.studio.selection?.min).toEqual([1, 0, 0]);
+    expect(dragPreview).not.toHaveBeenCalled();
+    expect(dragCommit).not.toHaveBeenCalled();
+  });
+
   it('aborts the signal of an in-flight asynchronous press when the window loses focus', async () => {
     const h = mount();
     let resolve!: () => void;

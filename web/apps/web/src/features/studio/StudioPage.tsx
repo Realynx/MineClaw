@@ -15,6 +15,12 @@
  * brush and Delete dig it out (the build digs those cells), and the view cuts away everything above a level (the slider) so
  * the basement can be seen and built from above. Off, the grassland behaves as before (only blocks and dug cells are edited).
  *
+ * A mine: Delete removes the plan inside the selection and never digs (digging is the Box tool's), Esc drops the selection,
+ * and cells a component owns move only with the component. A piece in hand takes [ ] and R (turn it), right click or Esc.
+ * Ctrl+G combines the pieces ticked under Combine, Ctrl+Shift+G ungroups the selected one; with nothing selected, PgUp / PgDn
+ * step the working level (new pieces and pastes go there, the view cuts away two blocks above it).
+ * ? (or the ? button) opens the mine's shortcut sheet (StudioShortcuts); the hint line follows what is selected or in hand.
+ *
  * Leaving with unsaved changes asks first (lib/navGuard: in-app links, back / forward, the command palette; the browser's
  * prompt on reload or close).
  */
@@ -46,13 +52,14 @@ import { PictureControls } from './PictureControls';
 import { ChatPanel, type ChatPanelHandle } from './ChatPanel';
 import { MinePanel } from './MinePanel';
 import { minePreview } from './mine/minePreview';
+import { Gesture, useIdleReadout } from './mine/mineReadouts';
 import { visibleMinePreview } from './mine/visiblePreview';
 import { useMinePlacement } from './useMinePlacement';
 import type { MineCells } from './mine/mineTemplates';
 import type { MinePreset } from './mine/presets';
 import { dirOfMcYaw, type Dir, hasFacing, placeMeta, turn, type Version } from './facing';
 import { defaultHotbar, entryKey, type PaletteEntry, pushRecent } from './palette';
-import { Studio, type StudioApi, type StudioSnapshot } from './studio';
+import { browserStorage, flushWhenHidden, Studio, type StudioApi, type StudioSnapshot } from './studio';
 import type * as ViewerMod from './studio-viewer';
 import { aimHit, type Hit, brush, type BrushMode, type BrushShape, type BoxMode, type Clip, copy, move, pasteCells, underCut, toggleUnder, UNDER_DEFAULT } from './tools';
 import {
@@ -62,6 +69,7 @@ import {
   facingText,
   KindDialog,
   mineRangeText,
+  NoticeLines,
   SavedBar,
   SelectAllBar,
   SelectionEdits,
@@ -77,7 +85,22 @@ import {
   UnderSlider,
   VersionDialog,
 } from './StudioChrome';
+import { mineHint, mineHintState, ShortcutsButton, StudioShortcuts } from './StudioShortcuts';
 import { brushPreview, type Drag, dragPreview, groundEditable, studioKey, studioPress, studioRelease } from './studioInput';
+import {
+  bindSaveKey,
+  clearSaveNotice,
+  dismissSticky,
+  NO_NOTICES,
+  type NoticeOptions,
+  type Notices,
+  resumeHref,
+  type SaveOutcome,
+  saveDesign,
+  trackUnsavedWork,
+  unsavedWorkOn,
+  withNotice,
+} from './studioSave';
 import { bindStudioPointer, type PointerPosition, type StudioPointerActions } from './studioPointer';
 
 type Mod = typeof ViewerMod;
@@ -185,10 +208,14 @@ export function StudioPage() {
   const canWrite = can('design');
   const designParam = numberParam(params.get('id'));
   const sessionParam = numberParam(params.get('session'));
+  /** "New mine" on the Designs page: a fresh session starts as a mine. */
+  const mineParam = params.get('kind') === 'mine';
   const models = useApi('designer.models');
   const [session, setSession] = useState<DesignerSession | null>(null);
   const [loadError, setLoadError] = useState<unknown>(null);
   const [mod, setMod] = useState<Mod | null>(null);
+  /** "Open in studio" while another session of the design holds unsaved work here: offered once. */
+  const [resume, setResume] = useState<{ session: number; designId: number } | null>(null);
   const started = useRef(false);
 
   // Session: reopen ?session=, else a new one (a design's newest revision with ?id=).
@@ -199,7 +226,9 @@ export function StudioPage() {
       try {
         const s = sessionParam
           ? await api('designer.get', { params: { id: sessionParam } })
-          : await api('designer.create', { body: designParam ? { designId: designParam } : {} });
+          : await api('designer.create', { body: designParam ? { designId: designParam } : mineParam ? { kind: 'mine' } : {} });
+        const left = !sessionParam && designParam ? unsavedWorkOn(browserStorage(), s.owner, designParam, s.id) : null;
+        if (left !== null && designParam) setResume({ session: left, designId: designParam });
         setSession(s);
         if (!sessionParam)
           router.replace(`/designs/studio?session=${s.id}${designParam ? `&id=${designParam}` : ''}`, {
@@ -209,7 +238,7 @@ export function StudioPage() {
         setLoadError(e);
       }
     })();
-  }, [designParam, sessionParam, router]);
+  }, [designParam, sessionParam, mineParam, router]);
 
   useEffect(() => {
     let live = true;
@@ -226,7 +255,11 @@ export function StudioPage() {
       key={sessionKey(session)}
       session={session}
       pictureTools={pictureRequested}
-      onSession={setSession}
+      resume={resume}
+      onSession={(s) => {
+        setResume(null);
+        setSession(s);
+      }}
       mod={mod}
       {...modelChoice(models.data)}
       canWrite={canWrite}
@@ -240,6 +273,7 @@ export function StudioPage() {
 function StudioBody({
   session,
   pictureTools,
+  resume,
   onSession,
   mod,
   models,
@@ -252,6 +286,8 @@ function StudioBody({
 }: {
   serverSeed: string | null;
   pictureTools: boolean;
+  /** Another session of this design that this browser left with unsaved work (offered as "Resume it"). */
+  resume: { session: number; designId: number } | null;
   session: DesignerSession;
   /** A new session state (another version: the body remounts on it). */
   onSession: (s: DesignerSession) => void;
@@ -296,6 +332,7 @@ function StudioBody({
   const [facing, setFacing] = useState<Dir | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [hud, setHud] = useState(true);
+  const [shortcuts, setShortcuts] = useState(false);
   // A mine's hills would hide under a grid floating over its highest ground: off there until asked for.
   const [grid, setGrid] = useState(session.kind !== 'mine');
   /** Underground mode: null = off, else the highest layer still shown (canvas y; everything above it is cut away). */
@@ -315,11 +352,33 @@ function StudioBody({
     session.designId ? { designId: session.designId, rev: session.designRevision ?? session.revisions[0]?.rev ?? 0, text: '' } : null,
   );
   const [revisions, setRevisions] = useState<DesignRevision[]>(session.revisions);
-  const [notice, setNotice] = useState<string | null>(null);
+  const [notices, setNotices] = useState<Notices>(() =>
+    resume
+      ? withNotice(NO_NOTICES, 'You have unsaved work on this design in an earlier session.', {
+          tone: 'warn',
+          sticky: true,
+          action: {
+            label: 'Resume it',
+            run: () => window.location.assign(resumeHref(resume.session, resume.designId)),
+          },
+        })
+      : NO_NOTICES,
+  );
+  const setNotice = useCallback(
+    (text: string | null, o?: NoticeOptions) => setNotices((cur) => withNotice(cur, text, o)),
+    [],
+  );
   const [canvasTick, setCanvasTick] = useState(0);
   const minePlacement = useMinePlacement({ studio, mod, viewer, overlay, ready, canEdit: canWrite && !snap.busy && !saving,
-    selecting: tool === 'select', activateSelection: () => chooseTool('select'), notice: setNotice });
+    selecting: tool === 'select', activateSelection: () => chooseTool('select'), notice: setNotice,
+    onWorkLevel: (y) => setUnder(Math.min(plotMode().maxY, y + 2)) });
   const { moveSelected: moveMineSelection, rememberDesign } = minePlacement;
+  const { dragStart: mineDragStart, dragPreview: mineDragPreview, dragCommit: mineDragCommit, dragCancel: mineDragCancel } = minePlacement;
+  const { nudgeSelected } = minePlacement;
+  const { handlesKey: mineHandlesKey, refuseRaw: refuseRawMine } = minePlacement;
+  const stepLevel = mine ? minePlacement.stepLevel : undefined;
+  /** A pointer gesture held on the canvas: the mine's readouts wait for its end. */
+  const [gesture] = useState(() => new Gesture());
   /** Underground's first level: a mine's highest ground, a build's grass layer. */
   const underFirst = useRef(firstUnderLevel(surface));
   const [xray, setXray] = useState(mine);
@@ -372,7 +431,8 @@ function StudioBody({
     if (kind === (session.kind ?? 'build') && !apply) return;
     setVersionBusy(true);
     try {
-      await studio.flush();
+      // The bot switches (or clears) the canvas it holds: edits it has not got would be lost with the remount.
+      await studio.settle();
       const r = await api('designer.version', {
         params: { id: session.id },
         body: { version, kind, ...(apply ? { apply } : {}) },
@@ -382,7 +442,7 @@ function StudioBody({
         onSession(r.session);
       } else if (r.needsClear) setKindAsk(kind);
     } catch (e) {
-      setNotice(`Couldn't switch to ${kind}: ${errorText(e)}`);
+      setNotice(`Couldn't switch to ${kind}: ${errorText(e)}`, { tone: 'error' });
     } finally {
       setVersionBusy(false);
     }
@@ -390,11 +450,11 @@ function StudioBody({
   const changeSeed = async (seed: string) => {
     setVersionBusy(true);
     try {
-      await studio.flush();
+      await studio.settle();
       const r = await api('designer.version', { params: { id: session.id }, body: { version, seed } });
       if (r.session) onSession(r.session);
     } catch (e) {
-      setNotice(`Couldn't change the seed: ${errorText(e)}`);
+      setNotice(`Couldn't change the seed: ${errorText(e)}`, { tone: 'error' });
     } finally {
       setVersionBusy(false);
     }
@@ -409,11 +469,11 @@ function StudioBody({
   const applyPreset = async (p: MinePreset) => {
     if (!minePlacement.insertPreset(p)) return;
     try {
-      await studio.flush();
+      await studio.settle();
       await api('designer.version', { params: { id: session.id }, body: { version, preferredFor: p.version } });
       setPreferred(p.version);
     } catch (e) {
-      setNotice(`Couldn't tag it preferred for ${p.version}: ${errorText(e)}`);
+      setNotice(`Couldn't tag it preferred for ${p.version}: ${errorText(e)}`, { tone: 'error' });
     }
   };
 
@@ -421,14 +481,14 @@ function StudioBody({
     if (target === version && !apply) return;
     setVersionBusy(true);
     try {
-      await studio.flush();
+      await studio.settle();
       const r = await api('designer.version', { params: { id: session.id }, body: { version: target, ...(apply ? { apply } : {}) } });
       if (r.changed && r.session) {
         setVersionAsk(null);
         onSession(r.session);
       } else if (r.report) setVersionAsk({ target, report: r.report });
     } catch (e) {
-      setNotice(`Couldn't change the version: ${errorText(e)}`);
+      setNotice(`Couldn't change the version: ${errorText(e)}`, { tone: 'error' });
     } finally {
       setVersionBusy(false);
     }
@@ -476,6 +536,12 @@ function StudioBody({
   const [lookNow, setLookNow] = useState<Dir>('north');
 
   useEffect(() => () => studio.dispose(), [studio]);
+  useEffect(() => flushWhenHidden(studio), [studio]);
+  // A design's unsaved work can be found again from "Open in studio" in this browser (the offer above).
+  const unsavedUnder = useRef<number | null>(null);
+  useEffect(() => {
+    unsavedUnder.current = trackUnsavedWork(browserStorage(), session.owner, unsavedUnder.current, snap.designId, studio.id, snap.dirty);
+  }, [snap.designId, snap.dirty, studio, session.owner]);
 
   // Mock mode only: the e2e reads the canvas and points the camera (the clicks themselves are real input).
   useEffect(() => {
@@ -531,8 +597,10 @@ function StudioBody({
 
   useEffect(() => overlay.setSelection(snap.selection), [overlay, snap.selection]);
   // Terrain discovery only changes with excavation. Visibility reuses the result without another terrain scan.
-  const excavationPreview = useMemo(() => studio.terrain ? minePreview(studio.terrain, studio.canvas.holes(), studio.canvas.cells()) : null,
-    [studio, canvasTick]); // eslint-disable-line react-hooks/exhaustive-deps -- mutable canvas uses its explicit revision signal
+  // It waits until the canvas is still, so a stroke or a run of moves does not rescan the terrain at every step.
+  const { value: excavationPreview, fresh: freshExcavation } = useIdleReadout(
+    () => studio.terrain ? minePreview(studio.terrain, studio.canvas.holes(), studio.canvas.cells()) : null,
+    [studio, canvasTick], gesture);
   const visiblePreview = useMemo(() => excavationPreview ? visibleMinePreview(excavationPreview, minePlacement.modules) : null,
     [excavationPreview, minePlacement.modules]);
   useEffect(() => {
@@ -585,11 +653,13 @@ function StudioBody({
     (label: string, f: (s: Selection) => { cells: Cell[]; selection: Selection | null }, group?: string) => {
       const s = selOrAll();
       if (!s) return;
+      // In a mine, raw cells under a component move only with the component.
+      if (mine && refuseRawMine(s)) return;
       const t = f(s);
       studio.edit(t.cells, label.split(' ')[0]!, label, group);
       if (studio.selection) studio.setSelection(t.selection);
     },
-    [studio, selOrAll],
+    [studio, selOrAll, mine, refuseRawMine],
   );
 
   const moveSel = useCallback(
@@ -709,7 +779,7 @@ function StudioBody({
         setNotice: (text) => setNotice(text),
       });
     },
-    [studio, pick, placeAt, startBrush],
+    [studio, pick, placeAt, startBrush, setNotice],
   );
 
   const up = useCallback(
@@ -735,15 +805,18 @@ function StudioBody({
     pointerActions.current = {
       canEdit: canWrite && !snap.busy && !saving && !versionBusy,
       down, up, move: moveSel, setDrag,
+      dragStart: mineDragStart, dragPreview: mineDragPreview, dragCommit: mineDragCommit, dragCancel: mineDragCancel,
+      gesture: (held) => gesture.set(held),
       cancel: () => {
         if (stroke.current?.timer) clearInterval(stroke.current.timer);
         stroke.current = null;
         st.current.drag = null;
         setDrag(null);
       },
-      error: (error) => setNotice(errorText(error)),
+      error: (error) => setNotice(errorText(error), { tone: 'error' }),
     };
-  }, [canWrite, snap.busy, saving, versionBusy, down, up, moveSel]);
+  }, [canWrite, snap.busy, saving, versionBusy, down, up, moveSel, setNotice,
+    mineDragStart, mineDragPreview, mineDragCommit, mineDragCancel, gesture]);
   useEffect(() => {
     const engine = ready ? viewer.current?.engine() : null;
     if (!engine) return;
@@ -783,6 +856,9 @@ function StudioBody({
         setPasting,
         setDrag,
         moveSel,
+        nudgeSel: nudgeSelected,
+        handlesKey: mineHandlesKey,
+        stepLevel,
         setActive,
         openChat,
         toggleHud: () => setHud((v) => !v),
@@ -795,10 +871,11 @@ function StudioBody({
         },
         toggleGrid: () => setGrid((v) => !v),
         toggleUnder: () => setUnder((u) => toggleUnder(u, underFirst.current)),
+        toggleShortcuts: () => setShortcuts((v) => !v),
       });
     window.addEventListener('keydown', onKey, true);
     return () => window.removeEventListener('keydown', onKey, true);
-  }, [studio, moveSel, applyTransform, openChat, doCopy, chooseTool, look]);
+  }, [studio, moveSel, nudgeSelected, mineHandlesKey, stepLevel, applyTransform, openChat, doCopy, chooseTool, look]);
 
   // ------------------------------------------------------------------ chat, save, build
 
@@ -812,10 +889,12 @@ function StudioBody({
   const capturePicture = useCallback(async () => {
     const engine = viewer.current?.engine();
     if (!engine) throw new Error('The designer is still loading. Try again when the view is ready.');
-    if (mine && !xray) overlay.setMinePreview(visiblePreview);
+    // The plan as it is now: the shown one may still wait for the canvas to be still.
+    const plan = mine ? freshExcavation() : null;
+    if (plan) overlay.setMinePreview(visibleMinePreview(plan, minePlacement.modules));
     try { return await overlay.withoutGuides(() => engine.capturePng(), mine); }
     finally { if (mine && !xray) overlay.setMinePreview(null); }
-  }, [overlay, mine, visiblePreview, xray]);
+  }, [overlay, mine, xray, freshExcavation, minePlacement.modules]);
 
   const doSave = useCallback(
     async (asNew: boolean): Promise<boolean> => {
@@ -825,28 +904,53 @@ function StudioBody({
       }
       setSaving(true);
       setNotice(null);
+      const flow = { studio, capture: capturePicture, reload: () => api('designer.get', { params: { id: studio.id } }) };
+      // One save (or the resync's second one) and what the page keeps of it; the resync is offered once (studioSave).
+      const run = async (step: () => Promise<SaveOutcome>): Promise<boolean> => {
+        try {
+          const o = await step();
+          rememberDesign(o.saved.designId, o.saved.rev);
+          setSaved({ designId: o.saved.designId, rev: o.saved.rev, text: o.saved.text });
+          setSaveSummary('');
+          invalidate();
+          if (o.session) setRevisions(o.session.revisions);
+          // What an earlier save said no longer holds (a stale resync offer included).
+          setNotices(clearSaveNotice);
+          const retry = o.retry;
+          const resync = () => {
+            setNotices(dismissSticky);
+            setSaving(true);
+            void run(retry!).finally(() => setSaving(false));
+          };
+          if (o.notice)
+            setNotice(o.notice.text, {
+              tone: o.notice.tone,
+              fromSave: true,
+              ...(retry ? { action: { label: 'Resync and save again', run: resync } } : {}),
+            });
+          return true;
+        } catch (e) {
+          setNotice(errorText(e), { tone: 'error', fromSave: true });
+          return false;
+        }
+      };
       try {
-        const previewPng = await capturePicture();
-        const r = await studio.save(saveName, saveSummary, asNew, previewPng);
-        rememberDesign(r.designId, r.rev);
-        setSaved({ designId: r.designId, rev: r.rev, text: r.text });
-        setSaveSummary('');
-        invalidate();
-        const fresh = await api('designer.get', { params: { id: studio.id } }).catch(() => null);
-        if (fresh) setRevisions(fresh.revisions);
-        return true;
-      } catch (e) {
-        setNotice(errorText(e));
-        return false;
+        return await run(() => saveDesign(flow, saveName, saveSummary, asNew));
       } finally {
         setSaving(false);
       }
     },
-    [studio, saveName, saveSummary, invalidate, capturePicture, rememberDesign],
+    [studio, saveName, saveSummary, invalidate, capturePicture, rememberDesign, setNotice],
   );
   useEffect(() => {
     saveRef.current = () => (canWrite ? doSave(false) : Promise.resolve(false));
   }, [canWrite, doSave]);
+  const canSave = canSaveNow(canWrite, saving, snap);
+  const saveKey = useRef<(() => void) | null>(null);
+  useEffect(() => {
+    saveKey.current = canSave ? () => void doSave(false) : null;
+  }, [canSave, doSave]);
+  useEffect(() => bindSaveKey(() => saveKey.current?.()), []);
 
   const askBot = useCallback(async () => {
     if (!saved || !mainBot) return;
@@ -862,9 +966,9 @@ function StudioBody({
         r.accepted ? `Asked ${mainBot} to build design #${saved.designId}.` : `${mainBot} did not take the line.`,
       );
     } catch (e) {
-      setNotice(errorText(e));
+      setNotice(errorText(e), { tone: 'error' });
     }
-  }, [saved, mainBot, snap.name]);
+  }, [saved, mainBot, snap.name, setNotice]);
 
   const choosePaletteEntry = useCallback((entry: PaletteEntry) => {
     pushRecent(version, entry);
@@ -913,10 +1017,11 @@ function StudioBody({
         setSaveName={setSaveName}
         saveSummary={saveSummary}
         setSaveSummary={setSaveSummary}
-        canSave={canSaveNow(canWrite, saving, snap)}
+        canSave={canSave}
         saving={saving}
         doSave={(asNew) => void doSave(asNew)}
         revisions={revisions}
+        retrySync={() => void studio.retrySync()}
       />
       <StudioBars
         saved={saved}
@@ -924,7 +1029,8 @@ function StudioBody({
         canChat={canChat}
         mainBot={mainBot}
         askBot={() => void askBot()}
-        notice={notice}
+        notices={notices}
+        dismissNotice={() => setNotices(dismissSticky)}
         kindAsk={kindAsk}
         versionAsk={versionAsk}
         snap={snap}
@@ -943,6 +1049,8 @@ function StudioBody({
           setNotice(result.text);
           invalidate();
         }} />
+      {/* Outside the stage: with the focus in the sheet, the studio's keys leave Esc and ? to it. */}
+      {mine && shortcuts ? <StudioShortcuts onClose={() => { setShortcuts(false); backToWorld(); }} /> : null}
       <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
         <div ref={stage} className="relative min-h-[420px] min-w-0 flex-1 bg-black" data-testid="studio-stage"
           onDragOver={minePlacement.dragOver} onDrop={minePlacement.drop}>
@@ -964,10 +1072,15 @@ function StudioBody({
             onStats={(s) => setFps(Math.round(s.fps))}
             className="absolute inset-0"
           />
-          <StageHints locked={locked} ready={ready} mine={mine} />
-          {minePlacement.placing ? <div className="absolute top-3 left-14 rounded border border-purple-400/50 bg-black/80 px-3 py-2 text-xs text-white">
-            {minePlacement.hover ? `Place at ${minePlacement.hover.join(', ')}` : minePlacement.placementSurface ? 'Point at the terrain surface' : `Point inside the plot at Y ${minePlacement.placementY}`}
+          <StageHints locked={locked} ready={ready} mine={mine}
+            hint={mineHint(mineHintState({ placing: !!minePlacement.placing, component: !!minePlacement.selectedId, selection: !!sel }))} />
+          {mine && ready && !locked ? <ShortcutsButton onClick={() => setShortcuts(true)} /> : null}
+          {minePlacement.placing ? <div data-testid="mine-placement-tip" className="absolute top-3 left-14 rounded border border-purple-400/50 bg-black/80 px-3 py-2 text-xs text-white">
+            {minePlacement.refused ? <span className="text-red-300">{minePlacement.refused}</span> : minePlacement.hover ? `Place at ${minePlacement.hover.join(', ')}` : minePlacement.placementSurface ? 'Point at the terrain surface' : `Point inside the plot at Y ${minePlacement.placementY}`}
             <button type="button" onClick={minePlacement.cancel} className="ml-3 underline">Cancel</button>
+            <div className="mt-1 text-white/60">Click to place · [ ] or R turn it · Right-click or Esc cancels</div>
+          </div> : minePlacement.refused ? <div data-testid="mine-placement-tip" className="absolute top-3 left-14 rounded border border-red-400/50 bg-black/80 px-3 py-2 text-xs text-red-300">
+            {minePlacement.refused}
           </div> : null}
           {hud ? (
             <StudioHud
@@ -999,6 +1112,7 @@ function StudioBody({
           <ToolColumn
             mine={mine}
             moduleSelected={minePlacement.selectedId !== null}
+            components={minePlacement.modules.length > 0}
             under={under}
             setUnder={setUnder}
             settings={toolSettings}
@@ -1039,6 +1153,7 @@ function StudioBody({
             preferredFor={preferred}
             dug={() => studio.canvas.holes()}
             rev={canvasTick}
+            gesture={gesture}
             level={under}
             onLevel={(y) => setUnder(y)}
             xray={xray}
@@ -1071,7 +1186,14 @@ function StudioBody({
             onDuplicateModule={minePlacement.duplicate}
             onPasteModule={minePlacement.paste}
             onCombineModules={minePlacement.combine}
+            onUngroupModule={minePlacement.ungroup}
+            checkedModules={minePlacement.checked}
+            onCheckModules={minePlacement.setChecked}
             onVisibilityModule={minePlacement.setVisible}
+            workLevel={minePlacement.workLevel}
+            onTopView={minePlacement.topView}
+            onFrameAll={minePlacement.frameAll}
+            empty={bounds === null && minePlacement.modules.length === 0}
           />
         ) : null}
         <ChatPanel
@@ -1156,6 +1278,8 @@ const toolLabelOf = (t: ToolSettings) => `${TOOLS.find((x) => x.id === t.tool)?.
 function ToolColumn(p: {
   mine: boolean;
   moduleSelected: boolean;
+  /** A mine with components: the whole design is not turned or mirrored as raw cells. */
+  components: boolean;
   under: number | null;
   setUnder: (y: number) => void;
   settings: ToolSettings;
@@ -1193,7 +1317,8 @@ function ToolColumn(p: {
         moveSel={(d) => p.moveSel(d)}
         doCopy={p.doCopy}
         startPaste={p.startPaste}
-      /> : <span className="rounded bg-black/55 px-2 py-1">Drag an axis · Arrow keys move · PgUp / PgDn changes Y</span>}
+        whole={!(mine && p.components)}
+      /> : <span className="rounded bg-black/55 px-2 py-1">Drag it or an axis · Arrow keys move · PgUp / PgDn changes Y</span>}
       {sel && !mine ? (
         <SelectionEdits
           studio={studio}
@@ -1212,12 +1337,12 @@ function ToolColumn(p: {
 }
 
 /** The crosshair while the mouse is locked; the controls hint once the world is up and it isn't. */
-function StageHints({ locked, ready, mine }: { locked: boolean; ready: boolean; mine: boolean }) {
+function StageHints({ locked, ready, mine, hint }: { locked: boolean; ready: boolean; mine: boolean; hint: string }) {
   if (locked) return <Crosshair />;
   if (!ready) return null;
   return (
-    <div className="pointer-events-none absolute right-3 bottom-24 left-14 mx-auto w-fit max-w-full rounded bg-black/55 px-2.5 py-1 text-center font-mono text-[11px] text-white">
-      {mine ? 'Middle drag: orbit · Shift + middle: pan · Wheel: zoom · Alt + left drag also orbits · F: frame selection'
+    <div data-testid="stage-hint" className="pointer-events-none absolute right-12 bottom-24 left-14 mx-auto w-fit max-w-full rounded bg-black/55 px-2.5 py-1 text-center font-mono text-[11px] text-white">
+      {mine ? hint
         : 'Click to build · WASD fly · Space/E up · Q down · B blocks · T chat · Ctrl+Z undo'}
     </div>
   );
@@ -1237,7 +1362,8 @@ function StudioBars(p: {
   canChat: boolean;
   mainBot: string | null;
   askBot: () => void;
-  notice: string | null;
+  notices: Notices;
+  dismissNotice: () => void;
   kindAsk: 'build' | 'mine' | null;
   versionAsk: { target: Version; report: DesignerCompatReport } | null;
   snap: StudioSnapshot;
@@ -1252,13 +1378,16 @@ function StudioBars(p: {
   return (
     <>
       {p.saved?.designId ? (
-        <SavedBar saved={p.saved} mineRange={p.mineRange} canChat={p.canChat} mainBot={p.mainBot} askBot={p.askBot} />
+        <SavedBar
+          saved={p.saved}
+          mineRange={p.mineRange}
+          canChat={p.canChat}
+          mainBot={p.mainBot}
+          askBot={p.askBot}
+          dirty={p.snap.dirty}
+        />
       ) : null}
-      {p.notice ? (
-        <p className="border-b border-border bg-info-soft px-3 py-1 text-xs text-info" role="status">
-          {p.notice}
-        </p>
-      ) : null}
+      <NoticeLines notices={p.notices} dismiss={p.dismissNotice} />
       {kindAsk ? (
         <KindDialog
           kind={kindAsk}

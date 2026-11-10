@@ -14,6 +14,10 @@ public sealed class BridgeAuthMiddleware(RequestDelegate next, BridgeConfig conf
 {
     public const string IdentityKey = "mcx.identity";
     public const string BodyKey = "mcx.body";
+    /// <summary>
+    /// Any JSON body. The web contracts state the same number as <c>DESIGNER_CANVAS_BODY_CAP</c> and keep the Design Studio's
+    /// canvas requests under it (<c>DESIGNER_CANVAS_BATCH_BYTES</c>, web/packages/contracts/src/designer.ts): change them together.
+    /// </summary>
     public const long JsonBodyLimit = 256 * 1024;
     /// <summary>A saved designer camera PNG and bounded mine-component metadata.</summary>
     public const long DesignerSaveBodyLimit = 8L * 1024 * 1024;

@@ -1,10 +1,10 @@
 'use client';
-import { Copy, CopyPlus, Move, RotateCw, Trash2 } from 'lucide-react';
+import { Copy, CopyPlus, Move, RotateCw, Trash2, Ungroup } from 'lucide-react';
 import { useState } from 'react';
 import { cn } from '@/lib/utils';
 import { plotMode, type V3 } from '../canvas';
 import type { PlacementHeightMode } from './placementHeight';
-import { defaultModule, encodeModule, MINE_MODULE_MAX_BRANCH, MINE_MODULE_MAX_LENGTH, MINE_MODULE_MAX_ROOM, MINE_MODULE_MIME, MINE_MODULES, moduleName, type MineModuleInstance, type MineModuleKind, type MineModuleSpec } from './modules';
+import { defaultModule, encodeModule, MINE_MODULE_MAX_BRANCH, MINE_MODULE_MAX_LENGTH, MINE_MODULE_MAX_ROOM, MINE_MODULE_MIME, MINE_MODULES, moduleCells, moduleName, type MineModuleInstance, type MineModuleKind, type MineModuleSpec } from './modules';
 
 export interface ModulePaletteProps {
   modules?: readonly MineModuleInstance[];
@@ -29,6 +29,10 @@ export interface ModulePaletteProps {
   onDuplicateModule?: (id: string) => void;
   onPasteModule?: () => void;
   onCombineModules?: (ids: string[]) => void;
+  onUngroupModule?: (id: string) => void;
+  /** The Combine checklist's ticked pieces (null: closed). Given with `onCheckModules`, the outliner does not keep its own. */
+  checkedModules?: string[] | null;
+  onCheckModules?: (ids: string[] | null) => void;
   onVisibilityModule?: (id: string, visible: boolean) => void;
 }
 const icons: Record<MineModuleKind, string> = {
@@ -51,6 +55,21 @@ function Field({ label, compactLabel, value, min, max, onChange, disabled }: { l
     onBlur={(e) => { const raw = e.target.value.trim(), number = Number(raw); if (raw && Number.isFinite(number)) { const next = Math.max(min, Math.min(max, Math.round(number))); if (next !== value) onChange(next); } setDraft(null); }}
     onKeyDown={(e) => { if (e.key === 'Escape') { e.currentTarget.value = String(value); setDraft(null); e.currentTarget.blur(); } if (e.key === 'Enter') e.currentTarget.blur(); }}
     className={cn('h-7 min-w-0 rounded border border-border bg-surface px-1.5 text-right font-mono text-fg', compactLabel ? 'w-full' : 'w-16')} /></label>;
+}
+
+/** "1 cell to dig", "1,240 cells to dig": every cell the piece excavates (its torches stand in dug cells). */
+function digCount(spec: MineModuleSpec, at: V3): string {
+  const n = moduleCells(spec, at).cells.length;
+  return `${n.toLocaleString('en-US')} ${n === 1 ? 'cell' : 'cells'} to dig`;
+}
+
+/** Every piece can be named. Emptied, a layout goes back to its kind's name and a group to "Custom component". */
+function ComponentName({ spec, disabled, onLabel }: { spec: MineModuleSpec; disabled: boolean; onLabel: (label: string | undefined) => void }) {
+  const shown = moduleLabel(spec);
+  return <label className="mb-2 block text-[11px] text-muted">Component name<input key={shown} defaultValue={shown} placeholder={moduleName(spec.kind)} aria-label="Component name" maxLength={48} disabled={disabled}
+    className="mt-1 h-7 w-full rounded border border-border bg-surface px-1.5 text-fg"
+    onBlur={(event) => { const label = event.target.value.trim() || (spec.kind === 'custom' ? 'Custom component' : undefined); if ((label ?? moduleName(spec.kind)) !== shown) onLabel(label); }}
+    onKeyDown={(event) => { if (event.key === 'Enter') event.currentTarget.blur(); }} /></label>;
 }
 
 export function ModulePalette(p: ModulePaletteProps & { disabled: boolean }) {
@@ -104,9 +123,12 @@ export function ModuleSettings(p: ModulePaletteProps & { disabled: boolean }) {
       {selected && !p.placingModule ? <fieldset className="mb-3 space-y-1.5 border-b border-border pb-2">
         <legend className="mb-1 text-[10px] text-muted">Position · entrance centre</legend>
         <div className="grid grid-cols-3 gap-2">{(['X', 'Y', 'Z'] as const).map((axis, index) => <Field key={`${selected.id}-${axis}`} label={`Position ${axis}`} compactLabel={axis} value={selected.at[index]!} min={index === 1 ? plotMode().minY + 1 : 0} max={index === 1 ? plotMode().maxY : plotMode().size - 1} disabled={p.disabled || !p.onPositionModule} onChange={(value) => position(index, value)} />)}</div>
-        <p className="text-[10px] text-subtle">Drag an axis or use arrow keys; PgUp/PgDn changes height.</p>
+        <p className="text-[10px] text-subtle">Drag it across its level (it snaps to an opening), drag an axis, or use arrow keys; PgUp/PgDn changes height.</p>
       </fieldset> : null}
-      {spec.kind === 'custom' ? <><label className="mb-2 block text-[11px] text-muted">Component name<input key={spec.label} defaultValue={spec.label ?? 'Custom component'} aria-label="Component name" maxLength={48} disabled={p.disabled} className="mt-1 h-7 w-full rounded border border-border bg-surface px-1.5 text-fg" onBlur={(event) => { const label = event.target.value.trim() || 'Custom component'; if (label !== spec.label) update({ label }); }} onKeyDown={(event) => { if (event.key === 'Enter') event.currentTarget.blur(); }} /></label><p className="mb-2 text-[10px] text-subtle">{spec.parts?.length ?? 0} combined parts. Move, rotate or copy them together.</p></> : null}
+      <ComponentName spec={spec} disabled={p.disabled} onLabel={(label) => update({ label })} />
+      <p className="mb-2 text-[10px] text-subtle" data-testid="module-cells">{digCount(spec, selected && !p.placingModule ? selected.at : [0, 0, 0])}</p>
+      {spec.kind === 'custom' ? <div className="mb-2 flex items-center gap-1.5"><p className="flex-1 text-[10px] text-subtle">{spec.parts?.length ?? 0} combined parts. Move, rotate or copy them together.</p>
+        {selected && !p.placingModule ? <button type="button" disabled={p.disabled || !p.onUngroupModule} onClick={() => p.onUngroupModule?.(selected.id)} title="Split into its parts, where they stand (Ctrl+Shift+G)" className="flex shrink-0 items-center gap-1 rounded border border-border px-1.5 py-1 text-[10px] disabled:opacity-40"><Ungroup className="size-3" />Ungroup</button> : null}</div> : null}
       <div className="grid gap-1.5">
         {['tunnel', 'branches', 'chamber', 'junction'].includes(spec.kind) ? <Field label={spec.kind === 'chamber' ? 'Room length' : 'Length'} value={spec.length} min={3} max={MINE_MODULE_MAX_LENGTH} disabled={p.disabled} onChange={(length) => update({ length })} /> : null}
         {spec.kind !== 'spiral' && spec.kind !== 'custom' ? <Field label="Width" value={spec.width} min={1} max={spec.kind === 'chamber' ? MINE_MODULE_MAX_ROOM : 2} disabled={p.disabled} onChange={(width) => update({ width })} /> : null}

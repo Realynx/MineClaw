@@ -30,7 +30,11 @@ namespace MineClaw.App.Supervisor;
 public sealed class DesignerRoutes
 {
     public const string Prefix = "/api/designer";
-    /// <summary>A message with a canvas edit batch, or a canvas post (the bridge caps JSON bodies at 256 KB too).</summary>
+    /// <summary>
+    /// A message with a canvas edit batch, or a canvas post (the bridge caps JSON bodies at 256 KB too). The web contracts state
+    /// the same number as <c>DESIGNER_CANVAS_BODY_CAP</c> and keep the browser's canvas requests under it
+    /// (<c>DESIGNER_CANVAS_BATCH_BYTES</c>, web/packages/contracts/src/designer.ts): change them together.
+    /// </summary>
     public const int MaxBodyBytes = 256 * 1024;
     public const int MaxSaveBodyBytes = 8 * 1024 * 1024;
     public const int MaxText = 2000;

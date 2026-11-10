@@ -2,7 +2,7 @@
 
 import type { DesignDiffCell } from '@mineclaw/contracts';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { Boxes, Copy, Eye, Plus, Search, Sparkles } from 'lucide-react';
+import { Boxes, Copy, Eye, Pickaxe, Plus, Search, Sparkles } from 'lucide-react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Suspense, useDeferredValue, useEffect, useRef, useState } from 'react';
@@ -248,6 +248,13 @@ function DesignsInner() {
               aria-label="New design"
             >
               <Plus className="size-3.5" /> New design
+            </Link>
+            <Link
+              href="/designs/studio?kind=mine"
+              className="inline-flex h-7 items-center gap-1 rounded-md border border-border px-2.5 text-xs font-medium text-fg hover:bg-surface-2"
+              aria-label="New mine"
+            >
+              <Pickaxe className="size-3.5" /> New mine
             </Link>
           </div>
           <div className="relative">

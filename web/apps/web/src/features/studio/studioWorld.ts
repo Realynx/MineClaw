@@ -12,7 +12,7 @@
 import type { BlockDeltas, EntityDelta, Overlays, WorldIndex, WorldSource } from '@mineclaw/world-viewer';
 import { cellIndex } from '@mineclaw/world-viewer';
 import { encodeColumn, encodeMcwc, lightSections, type EncodeEntry } from '@mineclaw/world-viewer/testing';
-import { EARTH, posOf, plotMode, type Canvas, type Cell } from './canvas';
+import { EARTH, posOf, plotMode, type Canvas, type Cell, type V3 } from './canvas';
 import type { Version } from './facing';
 import type { MineTerrain } from './mine/mineTerrain';
 
@@ -78,6 +78,9 @@ export class StudioWorld {
         });
       },
       chunks: (dim: number, cols: Array<[number, number]>): Promise<ArrayBuffer> => {
+        // One pass over the canvas for the whole request, not one per column (a big mine has many columns and cells).
+        let index: ColumnIndex | null = null;
+        const columns = () => (index ??= this.indexColumns());
         const entries: EncodeEntry[] = cols.map(([cx, cz]) => {
           if (dim !== 0 || cx < C0 || cx > last || cz < C0 || cz > last)
             return {
@@ -90,7 +93,7 @@ export class StudioWorld {
               data: new Uint8Array(0),
               light: null,
             };
-          const e = this.encode(cx, cz);
+          const e = this.encode(cx, cz, columns);
           return {
             cx,
             cz,
@@ -147,13 +150,14 @@ export class StudioWorld {
   }
 
   /** One column: bedrock, stone, dirt and grass up to y 63 (or the mine's terrain chunk), plus the canvas blocks over it. */
-  private encode(cx: number, cz: number) {
+  private encode(cx: number, cz: number, columns: () => ColumnIndex) {
     const n = 16 * this.height * 16;
     const ids = new Uint8Array(n),
       meta = new Uint8Array(n);
     if (this.terrain) this.fillTerrain(ids, meta, this.terrain, cx, cz);
     else fillGrassland(ids);
-    if (cx >= 0 && cx <= this.lastColumn && cz >= 0 && cz <= this.lastColumn) this.overlayCanvas(ids, meta, cx, cz);
+    if (cx >= 0 && cx <= this.lastColumn && cz >= 0 && cz <= this.lastColumn)
+      this.overlayCanvas(ids, meta, columns().get(columnKey(cx, cz)));
     const tops = skyTops(ids, this.height);
     const light = lightSections(
       this.height,
@@ -179,25 +183,47 @@ export class StudioWorld {
         }
   }
 
-  /** The canvas's dug cells (air) then its blocks, in a plot column. */
-  private overlayCanvas(ids: Uint8Array, meta: Uint8Array, cx: number, cz: number) {
-    const base = this.base;
+  /** The canvas's dug cells and blocks by plot column, each in the canvas's own order. */
+  private indexColumns(): ColumnIndex {
+    const index: ColumnIndex = new Map();
+    const of = (x: number, z: number) => {
+      const k = columnKey(x >> 4, z >> 4);
+      let column = index.get(k);
+      if (!column) index.set(k, (column = { dug: [], blocks: [] }));
+      return column;
+    };
     for (const k of this.canvas.dug) {
-      const [x, y, z] = posOf(k);
-      if (x >> 4 !== cx || z >> 4 !== cz) continue;
+      const p = posOf(k);
+      of(p[0], p[2]).dug.push(p);
+    }
+    for (const [k, v] of this.canvas.blocks) {
+      const p = posOf(k);
+      of(p[0], p[2]).blocks.push([p, v]);
+    }
+    return index;
+  }
+
+  /** The canvas's dug cells (air) then its blocks, in a plot column. */
+  private overlayCanvas(ids: Uint8Array, meta: Uint8Array, column: CanvasColumn | undefined) {
+    if (!column) return;
+    const base = this.base;
+    for (const [x, y, z] of column.dug) {
       const i = cellIndex(x & 15, y + base, z & 15);
       ids[i] = 0;
       meta[i] = 0;
     }
-    for (const [k, v] of this.canvas.blocks) {
-      const [x, y, z] = posOf(k);
-      if (x >> 4 !== cx || z >> 4 !== cz) continue;
+    for (const [[x, y, z], v] of column.blocks) {
       const i = cellIndex(x & 15, y + base, z & 15);
       ids[i] = v >> 4;
       meta[i] = v & 15;
     }
   }
 }
+
+type CanvasColumn = { dug: V3[]; blocks: Array<[V3, number]> };
+type ColumnIndex = Map<number, CanvasColumn>;
+/** Plot columns only (0 to the last column), so a small multiplier keeps keys distinct. */
+const columnKey = (cx: number, cz: number) => cx * 4096 + cz;
 
 /** The grassland column: bedrock at 0, stone, three dirt layers, grass at y 63. */
 function fillGrassland(ids: Uint8Array) {

@@ -18,6 +18,7 @@ import { WebSocketServer } from 'ws';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import {
+  DESIGNER_CANVAS_BODY_CAP,
   ROUTES,
   SSE_EVENTS,
   createDesignerMock,
@@ -339,10 +340,39 @@ export interface MockBridge {
   close(): Promise<void>;
 }
 
-async function readAll(req: IncomingMessage): Promise<Buffer> {
+/**
+ * The bridge's body caps, as `BridgeAuthMiddleware.BodyLimitFor` (tools/ViewerBridge/Security): the two shard uploads, a
+ * Design Studio save (its picture and its component layout), and every other body. A test here then gets the 413 that
+ * production gives, where Nest alone would have let the body through.
+ */
+const UPLOAD_BODY_LIMIT = 50 * 1024 * 1024;
+const DESIGNER_SAVE_BODY_LIMIT = 8 * 1024 * 1024;
+const JSON_BODY_LIMIT = DESIGNER_CANVAS_BODY_CAP;
+const UPLOAD_PATHS = ['/v1/shards/import/preview', '/v1/sup/admin/shard/import'];
+const DESIGNER_SAVE = /^\/v1\/sup\/designer\/sessions\/([0-9]+)\/save$/;
+const MAX_INT64 = '9223372036854775807';
+
+/** A session id as the bridge reads it: digits only, above zero, within a 64-bit integer. */
+function positiveInt64(digits: string): boolean {
+  const n = digits.replace(/^0+/, '');
+  return n.length > 0 && (n.length < MAX_INT64.length || (n.length === MAX_INT64.length && n <= MAX_INT64));
+}
+
+export function bodyLimitFor(path: string): number {
+  if (UPLOAD_PATHS.includes(path.toLowerCase())) return UPLOAD_BODY_LIMIT;
+  const save = DESIGNER_SAVE.exec(path);
+  return save && positiveInt64(save[1]!) ? DESIGNER_SAVE_BODY_LIMIT : JSON_BODY_LIMIT;
+}
+
+/** The body, or null when it is over `limit` (still read to its end, so the 413 reaches a client that is mid-upload). */
+async function readAll(req: IncomingMessage, limit: number): Promise<Buffer | null> {
   const chunks: Buffer[] = [];
-  for await (const c of req) chunks.push(c as Buffer);
-  return Buffer.concat(chunks);
+  let size = 0;
+  for await (const c of req) {
+    size += (c as Buffer).length;
+    if (size <= limit) chunks.push(c as Buffer);
+  }
+  return size > limit ? null : Buffer.concat(chunks);
 }
 
 function send(res: ServerResponse, r: Reply): void {
@@ -479,8 +509,10 @@ export async function startMockBridge(key: string, opts: { streamIntervalMs?: nu
     return replyFor(env, { ...route, req, identity, query: url.searchParams, body });
   };
   const serve = async (req: IncomingMessage, res: ServerResponse) => {
-    const body = await readAll(req);
     const rawTarget = req.url ?? '/';
+    // Like the bridge: the size is refused before the signature is looked at.
+    const body = await readAll(req, bodyLimitFor(rawTarget.split('?', 1)[0]!));
+    if (!body) return send(res, { status: 413, json: { error: 'body too large', code: 'payload_too_large' } });
     const v = verifier.verify({ method: req.method ?? 'GET', rawTarget, headers: req.headers, body });
     if (!v.ok) return send(res, { status: 401, json: { error: 'unauthorized', code: 'unauthorized' } });
     const url = new URL(rawTarget, 'http://mock');

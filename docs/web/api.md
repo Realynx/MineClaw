@@ -837,6 +837,14 @@ and tools in src/MineClaw.Bot/Blueprints/Designer*.cs). Never the live world. Be
   The exact `/v1/sup/designer/sessions/{positive integer id}/save` path accepts up to 8 MiB of signed JSON for the picture
   and mine-component metadata, matching the gateway and supervisor save limits. Other designer routes retain the normal
   256 KiB bridge JSON limit; invalid save paths do not receive the exception. Shard upload limits are separate.
+- **Canvas batches (added 2026-11-10).** The studio sends its edits through `POST sessions/{id}/canvas` in bodies of at most
+  `DESIGNER_CANVAS_BATCH_BYTES` (200 000 bytes, an upper-bound estimate that counts non-ASCII label characters as 6 bytes),
+  inside `DESIGNER_CANVAS_BODY_CAP` (256 KiB, the bridge's and the supervisor's limit; both in contracts `designer.ts`). One
+  request at a time per session, in edit order: canvas batches, the anchor, a message and a save share that line. A message
+  carries `canvas: {rev}` without edits (they went through the canvas route first, which still tells the model about them). A
+  413 halves the batch (down to 16 000 bytes), 429 / 409 (session busy) / 5xx / network errors retry after 2, 4, 8 … 30 s (or the reply's
+  retry-after, at most 60 s), and any other 4xx stops the sync until the user retries. A save is refused in the browser while
+  edits are unsent, and when the mine layout is over 2 000 000 characters. The mock bridge enforces the same caps.
 - **Persistence.** `designer_sessions` and `designer_messages` in the agent db (a session's `kind`, `seed` and `preferred_for`
   columns were added for mine designs; older rows are builds).
 

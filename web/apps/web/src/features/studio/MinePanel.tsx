@@ -12,6 +12,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Button, Input } from '@/components/ui/primitives';
 import { cn } from '@/lib/utils';
 import { levelOres, mineStats, oreColour, seenPer100 } from './mine/mineStats';
+import { useIdleReadout, type Gesture } from './mine/mineReadouts';
 import type { MineCells } from './mine/mineTemplates';
 import { ModulePalette, ModuleSettings, type ModulePaletteProps } from './mine/ModulePalette';
 import { MineComponents } from './mine/MineComponents';
@@ -27,8 +28,10 @@ export interface MinePanelProps extends ModulePaletteProps {
   preferredFor: string | null;
   /** The dug cells now (recomputed on every canvas revision). */
   dug: () => Array<readonly [number, number, number]>;
-  /** Changes whenever the canvas does (the studio's snapshot): the estimate is recomputed. */
+  /** Changes whenever the canvas does (the studio's snapshot): the estimate is recomputed once the canvas is still. */
   rev: unknown;
+  /** A pointer gesture held on the canvas: the estimate waits for its end. */
+  gesture?: Gesture | null;
   /** The underground level (null: the cut is off). */
   level: number | null;
   onLevel: (y: number) => void;
@@ -41,6 +44,12 @@ export interface MinePanelProps extends ModulePaletteProps {
   onSeed: (seed: string) => void;
   onInsert: (cells: MineCells) => void;
   onPreset: (p: MinePreset) => void;
+  /** The working level new pieces go to (an ore chip or PgUp / PgDn sets it), or null when placement height is automatic. */
+  workLevel?: number | null;
+  onTopView?: () => void;
+  onFrameAll?: () => void;
+  /** Nothing dug or placed yet: the presets and how to start come first. */
+  empty?: boolean;
 }
 
 function Section({ title, children }: { title: string; children: ReactNode }) {
@@ -137,16 +146,31 @@ export function MinePanel(p: MinePanelProps) {
     if (inspectedId && properties.current) properties.current.scrollTop = 0;
   }, [inspectedId]);
   const readout = useMemo(() => p.level === null ? null : levelOres(terrain, p.level), [terrain, p.level]);
-  const stats = useMemo(() => mineStats(terrain, p.dug()), [terrain, p.rev]); // eslint-disable-line react-hooks/exhaustive-deps
+  const stats = useIdleReadout(() => mineStats(terrain, p.dug()), [terrain, p.rev], p.gesture).value;
   const disabled = !p.canWrite || p.busy;
+  const start = !!p.empty && !p.modules?.length;
   return <aside className="flex min-h-0 w-full shrink-0 flex-col overflow-hidden border-l border-border bg-surface text-xs lg:w-72" aria-label="Mine designer" data-testid="mine-panel">
     <MineComponents modules={p.modules} selectedModule={p.selectedModule} onSelectModule={p.onSelectModule} onFrameModule={p.onFrameModule}
-      onCopyModule={p.onCopyModule} onDuplicateModule={p.onDuplicateModule} onPasteModule={p.onPasteModule} canPasteModule={p.canPasteModule} onCombineModules={p.onCombineModules} onVisibilityModule={p.onVisibilityModule} disabled={disabled} />
+      onCopyModule={p.onCopyModule} onDuplicateModule={p.onDuplicateModule} onRemoveModule={p.onRemoveModule} onPasteModule={p.onPasteModule} canPasteModule={p.canPasteModule} onCombineModules={p.onCombineModules}
+      checkedModules={p.checkedModules} onCheckModules={p.onCheckModules} onVisibilityModule={p.onVisibilityModule} disabled={disabled} />
     <div ref={properties} className="min-h-0 flex-1 overflow-y-auto" data-testid="mine-properties">
+    {start ? <section className="border-b border-border p-3" aria-label="Start a mine" data-testid="mine-start">
+      <ol className="mb-2 list-decimal space-y-0.5 pl-4 text-[11px] text-muted">
+        <li>Use a preset below for a complete mine, or pick a layout and click the mine to place it.</li>
+        <li>Choose an ore level to work at: new pieces go there and the view cuts away above it.</li>
+        <li>Select a piece to move, turn ([ ]) or resize it; tick pieces under Combine and press Ctrl+G to join them.</li>
+      </ol>
+      <Presets version={version} disabled={disabled} onPreset={p.onPreset} preferredFor={p.preferredFor} />
+    </section> : null}
     {p.selectedModule && !p.placingModule ? <section className="border-b border-border px-3 pb-3"><ModuleSettings key={p.selectedModule} {...p} disabled={disabled} /></section> : null}
     <section className="border-b border-border p-3"><ModulePalette {...p} disabled={disabled} /></section>
     <Section title={`Ore levels · ${version}`}>
-      <p className="mb-2 text-[10px] text-subtle">Choose a fixed mining height. The cutaway below controls only the view.</p>
+      <div className="mb-2 flex items-center gap-1.5" data-testid="work-level">
+        <span className="flex-1 text-[11px] text-fg">{typeof p.workLevel === 'number' ?<>Work at <span className="font-mono">Y{p.workLevel}</span></> : <span className="text-muted">No working level</span>}</span>
+        <button type="button" disabled={!p.onTopView} onClick={p.onTopView} title="Look straight down at the working level" className="rounded border border-border px-1.5 py-0.5 text-[10px] hover:bg-surface-2 disabled:opacity-40">Top view</button>
+        <button type="button" disabled={!p.onFrameAll} onClick={p.onFrameAll} title="Fit the whole design in view" className="rounded border border-border px-1.5 py-0.5 text-[10px] hover:bg-surface-2 disabled:opacity-40">Frame all</button>
+      </div>
+      <p className="mb-2 text-[10px] text-subtle">Choose a level to work at: new pieces and pastes go there, and the view cuts away above it. PgUp / PgDn step it when nothing is selected.</p>
       <div className="mb-2 grid grid-cols-3 gap-1">
         {terrain.table.ores.filter((o) => o.veins > 0).map((o) => <button key={o.id} type="button" title={`${o.name}: preferred feet Y ${o.best}`} disabled={disabled}
           onClick={() => p.onPlacementY?.(o.best)} className={cn('rounded border px-1.5 py-1 text-left', (p.placementY ?? 11) === o.best ? 'border-accent bg-accent/10' : 'border-border hover:bg-surface-2')}>
@@ -159,12 +183,9 @@ export function MinePanel(p: MinePanelProps) {
       </div></details>
     </Section>
     <Section title="Dig estimate"><DigEstimate stats={stats} /></Section>
-    <section className="border-b border-border px-3 py-2"><details><summary className="cursor-pointer text-[11px] font-medium text-muted">Version presets · {version}</summary>
-      <p className="mt-2 text-[10px] text-subtle">Complete reference mines, inserted as editable components. Select the shaft or branches above to move, configure or remove them.</p>
-      <ul className="mt-2 space-y-2">{presetsFor(version).map((pr) => <li key={pr.id}><div className="flex items-center gap-2"><span className="flex-1 text-[11px]">{pr.name}</span>
-        <Button size="sm" variant="secondary" disabled={disabled} data-testid={`preset-${pr.id}`} onClick={() => p.onPreset(pr)}>Use</Button></div><p className="mt-0.5 text-[10px] text-subtle">{pr.notes}</p></li>)}</ul>
-      <PreferredNote preferredFor={p.preferredFor} />
-    </details></section>
+    {start ? null : <section className="border-b border-border px-3 py-2"><details><summary className="cursor-pointer text-[11px] font-medium text-muted">Version presets · {version}</summary>
+      <Presets version={version} disabled={disabled} onPreset={p.onPreset} preferredFor={p.preferredFor} />
+    </details></section>}
     <section className="px-3 py-2"><details><summary className="cursor-pointer text-[11px] font-medium text-muted">Terrain &amp; seed</summary>
       <p className="my-2 text-[10px] text-subtle">Simulated {version} terrain, ground Y{range.min}–{range.max}. Real-world ore locations differ; mine plans keep absolute heights.</p>
       <form className="flex items-center gap-1" onSubmit={(e) => { e.preventDefault(); if (seedText.trim() && seedText.trim() !== p.seed) p.onSeed(seedText.trim()); }}>
@@ -300,6 +321,16 @@ function DigEstimate({ stats }: { stats: ReturnType<typeof mineStats> }) {
     </p>
     </>
   );
+}
+
+/** The version's reference mines, each inserted as editable components. */
+function Presets(p: { version: string; disabled: boolean; onPreset: (preset: MinePreset) => void; preferredFor: string | null }) {
+  return <>
+    <p className="mt-2 text-[10px] text-subtle">Complete reference mines, inserted as editable components. Select the shaft or branches above to move, configure or remove them.</p>
+    <ul className="mt-2 space-y-2">{presetsFor(p.version).map((pr) => <li key={pr.id}><div className="flex items-center gap-2"><span className="flex-1 text-[11px]">{pr.name}</span>
+      <Button size="sm" variant="secondary" disabled={p.disabled} data-testid={`preset-${pr.id}`} onClick={() => p.onPreset(pr)}>Use</Button></div><p className="mt-0.5 text-[10px] text-subtle">{pr.notes}</p></li>)}</ul>
+    <PreferredNote preferredFor={p.preferredFor} />
+  </>;
 }
 
 function PreferredNote({ preferredFor }: { preferredFor: string | null | undefined }) {

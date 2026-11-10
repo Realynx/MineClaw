@@ -1,10 +1,16 @@
 /**
  * The Design Studio's state outside React: the canvas, one undo/redo history for AI and user ops, the user's edits waiting
- * to reach the bot (`POST …/canvas`, debounced; or carried by the next message), the selection, and the calls to the
- * designer routes. The page renders from `snapshot()` and calls the methods; the world and the 3D overlay listen to `onCells`.
+ * to reach the bot (`POST …/canvas`, debounced), the selection, and the calls to the designer routes. The page renders from
+ * `snapshot()` and calls the methods; the world and the 3D overlay listen to `onCells`.
  *
  * Unsaved work (`dirty`): every cell whose state differs from what it was at the last successful save (or when the session
  * opened: a new design's empty plot, a loaded revision). Tracked per cell, so an undo back to the saved state is clean again.
+ * A session this browser saved at an older canvas rev than it reopens with starts dirty, until the next save.
+ *
+ * Sync: the bot's canvas has to equal this one whenever it is saved, talked about or converted, so every request for the
+ * session goes out one at a time and in order (`onWire`): the edits in batches sized to the bridge's body cap, then the
+ * anchor, a message or a save. A failed batch waits and is tried again (`snapshot().sync`); a save or a message refuses to
+ * go ahead of edits that could not be sent (`settle`).
  */
 import type {
   DesignerEdit,
@@ -17,6 +23,8 @@ import type {
   DesignerCanvasRequest,
   DesignerCanvasResponse,
 } from '@mineclaw/contracts';
+import { DESIGNER_CANVAS_BATCH_BYTES } from '@mineclaw/contracts';
+import { errorText } from '@/lib/api/client';
 import {
   Canvas,
   type Cell,
@@ -25,6 +33,7 @@ import {
   History,
   keyOf,
   type OpGroup,
+  posOf,
   type Selection,
   setPlotMode,
   type V3,
@@ -47,7 +56,15 @@ export interface StudioSnapshot {
   canRedo: boolean;
   undoLabel: string | null;
   redoLabel: string | null;
+  /** Cells of the user's edits the bot has not confirmed yet: waiting, or in the request on its way. */
   pending: number;
+  /**
+   * Where those edits stand: nothing waits, they are on their way, the last request failed and is tried again shortly, or
+   * the bot refused them and nothing more is sent until `retrySync()`.
+   */
+  sync: 'idle' | 'sending' | 'retrying' | 'blocked';
+  /** Why the last canvas request failed (null once one succeeds). The chat's own failure is `error`. */
+  syncError: string | null;
   busy: boolean;
   messages: DesignerMessage[];
   costUsd: number;
@@ -64,18 +81,107 @@ export interface StudioSnapshot {
 const stateOf = (c: Cell): number => (c[3] === EARTH ? -1 : c[3] * 16 + (c[4] & 15));
 
 const MAX_CELLS_PER_EDIT = 20_000;
+/** More than any cell takes in a request body (the longest, "[255,127,255,252,15],", is 21 bytes). */
+const CELL_BYTES = 22;
+/** As small as a 413 makes the requests (about 700 cells); a request refused at this size is not refused for its size. */
+const MIN_BATCH_BYTES = 16_000;
+/** The waits after failed canvas requests: 2, 4, 8, 16 and then 30 s. */
+const RETRY_MS = 2000;
+const RETRY_MAX_MS = 30_000;
+/**
+ * Refusals that pass, tried again like a 5xx: 409 is the bot's "the session is busy" (another request held its session
+ * lock past a second), then a timeout, a lock and "too early"; 429 is too many requests.
+ */
+const PASSING_4XX = new Set([408, 409, 423, 425, 429]);
 
-/** A chat message's request: the text, the canvas rev with the waiting edits, and the selection and model when given. */
+/**
+ * An upper bound on an edit's bytes in the body the bot reads. The bridge writes the body again on its way there, with
+ * quotes, plus signs and non-ASCII letters as 6-byte escapes, so every character of the kind and the label counts as 6.
+ */
+const editBytes = (kind: string, label: string, cells: number): number =>
+  CELL_BYTES * cells + 6 * (kind.length + label.length) + 64;
+
+/** A failed request's HTTP status (0 = the server was not reached), when what was thrown has one. */
+function statusOf(e: unknown): number | undefined {
+  const status = (e as { status?: unknown } | null | undefined)?.status;
+  return typeof status === 'number' ? status : undefined;
+}
+
+/** How long the server asked to be left alone (0 = it did not say; a minute at most). */
+function retryAfterOf(e: unknown): number {
+  const ms = (e as { retryAfterMs?: unknown } | null | undefined)?.retryAfterMs;
+  return typeof ms === 'number' && ms > 0 ? Math.min(ms, 60_000) : 0;
+}
+
+/** What a failed request says to the reader: the client's wording for its own errors, else the message it came with. */
+function reasonOf(e: unknown): string {
+  if (e instanceof Error) return errorText(e);
+  const said = (e as { message?: unknown } | null | undefined)?.message;
+  if (typeof said === 'string' && said) return said;
+  const status = statusOf(e);
+  return status === undefined ? 'the request failed' : `the request failed with status ${status}`;
+}
+
+const noop = (): void => undefined;
+
+/** What the bot accepts as a mine's component layout (the save request's `mineAuthoring`). */
+export const MINE_AUTHORING_MAX_CHARS = 2_000_000;
+
+/** Browser storage as the studio uses it: reads and writes always, listing and removing where the storage allows. */
+export type StorageLike = Pick<Storage, 'getItem' | 'setItem'> &
+  Partial<Pick<Storage, 'removeItem' | 'key' | 'length'>>;
+
+export function browserStorage(): StorageLike | null {
+  try {
+    return typeof localStorage === 'undefined' ? null : localStorage;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Removes all but the newest `keep` keys of each group: `rank` says which keys take part (null = leave it alone), their group
+ * and how new each is (higher = newer). `except` always stays and is not counted. Does nothing where the storage cannot list
+ * or remove keys.
+ */
+export function keepNewest(
+  storage: StorageLike | null,
+  keep: number,
+  rank: (key: string) => { group: string; order: number } | null,
+  except?: string,
+): void {
+  if (!storage?.removeItem || !storage.key || typeof storage.length !== 'number') return;
+  try {
+    const groups = new Map<string, Array<{ key: string; order: number }>>();
+    for (let i = 0; i < storage.length; i++) {
+      const key = storage.key(i);
+      const r = key === null || key === except ? null : rank(key);
+      if (key === null || !r) continue;
+      const list = groups.get(r.group) ?? [];
+      list.push({ key, order: r.order });
+      groups.set(r.group, list);
+    }
+    for (const list of groups.values())
+      for (const old of list.sort((a, b) => b.order - a.order).slice(keep)) storage.removeItem(old.key);
+  } catch {
+    /* Storage that refuses is only left fuller. */
+  }
+}
+
+/** The key holding the canvas rev a session was last saved at, in this browser. */
+const savedRevKey = (owner: string, sessionId: number) => `mineclaw.studio.saved:${owner}:${sessionId}`;
+const SAVED_REV_KEY = /^mineclaw\.studio\.saved:(.*):(\d+)$/;
+
+/** A chat message's request: the text, the canvas rev, and the selection and model when given. */
 function messageRequest(
   text: string,
   rev: number,
-  edits: DesignerEdit[],
   sel: DesignerMessageRequest['selection'] | null,
   model: string | undefined,
 ): DesignerMessageRequest {
   return {
     text,
-    canvas: { rev, ...(edits.length ? { edits } : {}) },
+    canvas: { rev },
     ...(sel ? { selection: sel } : {}),
     ...(model ? { model } : {}),
   };
@@ -85,7 +191,27 @@ export class Studio {
   readonly canvas = new Canvas();
   readonly history = new History();
   private pending: DesignerEdit[] = [];
+  /** The debounce after an edit, or the wait before a failed request is tried again. */
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
+  /** The tail of the session's requests: the next one starts when this settles (`onWire`). */
+  private wire: Promise<unknown> = Promise.resolve();
+  /** The drain `flush` started, until it ends. */
+  private draining: Promise<void> | null = null;
+  /** Cells of the canvas request on its way. */
+  private inFlight = 0;
+  /** The edits of the canvas request on its way. */
+  private sending: DesignerEdit[] = [];
+  /** What one canvas request may hold, in bytes of the body the bot reads (a 413 halves it). */
+  private budget = DESIGNER_CANVAS_BATCH_BYTES;
+  /** Canvas requests that failed in a row. */
+  private failures = 0;
+  /** The bot refused a canvas request: nothing more is sent until `retrySync()`. */
+  private blocked = false;
+  /** The page let go of this studio (`dispose`): a failed request is not tried again. A new subscriber takes it back. */
+  private disposed = false;
+  private syncError: string | null = null;
+  /** The anchor changed here and the bot does not have it yet. */
+  private anchorUnsent = false;
   private listeners = new Set<() => void>();
   private cellListeners = new Set<(cells: Cell[], by: 'ai' | 'user') => void>();
   private snap: StudioSnapshot;
@@ -105,6 +231,11 @@ export class Studio {
   private diverged = new Set<number>();
   private mineAuthoring: string | undefined;
   private savedMineAuthoring: string | undefined;
+  /**
+   * The session was saved from this browser at an older canvas rev than it opened with: what changed since is unsaved,
+   * though no cell here says which. Cleared by the next save.
+   */
+  private changedSinceSave = false;
   /** A mine session's generated terrain (null for a build). */
   readonly terrain: MineTerrain | null;
 
@@ -123,7 +254,39 @@ export class Studio {
     this.anchor = session.anchor ?? null;
     this.designId = session.designId ?? null;
     this.name = session.name;
+    this.changedSinceSave = this.savedRevDiffers();
     this.snap = this.build();
+  }
+
+  /** Whether this browser saved the session's design at another canvas rev than the session has now (unknown = no). */
+  private savedRevDiffers(): boolean {
+    if (this.session.designId === null || this.session.designId === undefined) return false;
+    try {
+      const at = browserStorage()?.getItem(savedRevKey(this.session.owner, this.id));
+      return at !== null && at !== undefined && Number(at) !== this.session.rev;
+    } catch {
+      return false;
+    }
+  }
+
+  /** Remembers the canvas rev a save holds, so a reload of this session knows whether anything changed after it. */
+  private rememberSavedRev(): void {
+    const storage = browserStorage();
+    const key = savedRevKey(this.session.owner, this.id);
+    try {
+      storage?.setItem(key, String(this.rev));
+    } catch {
+      return;
+    }
+    keepNewest(
+      storage,
+      50,
+      (k) => {
+        const m = SAVED_REV_KEY.exec(k);
+        return m ? { group: m[1]!, order: Number(m[2]) } : null;
+      },
+      key,
+    );
   }
 
   get id(): number {
@@ -138,6 +301,8 @@ export class Studio {
   // ------------------------------------------------------------------ subscriptions (useSyncExternalStore)
 
   subscribe = (fn: () => void): (() => void) => {
+    // React's development build disposes a live studio once and subscribes again: it is still in use then.
+    this.disposed = false;
     this.listeners.add(fn);
     return () => this.listeners.delete(fn);
   };
@@ -159,7 +324,9 @@ export class Studio {
       canRedo: this.history.canRedo,
       undoLabel: this.history.peekUndo()?.label ?? null,
       redoLabel: this.history.peekRedo()?.label ?? null,
-      pending: this.pending.reduce((n, e) => n + e.cells.length, 0),
+      pending: this.pending.reduce((n, e) => n + e.cells.length, this.inFlight),
+      sync: this.sync,
+      syncError: this.syncError,
       busy: this.busy,
       messages: this.messages,
       costUsd: this.costUsd,
@@ -174,7 +341,12 @@ export class Studio {
 
   /** Whether leaving now would lose canvas changes. */
   get dirty(): boolean {
-    return this.diverged.size > 0 || this.mineAuthoring !== this.savedMineAuthoring;
+    return this.changedSinceSave || this.diverged.size > 0 || this.mineAuthoring !== this.savedMineAuthoring;
+  }
+
+  /** The mine layout the bot holds: what the last save sent, or before one, what the session opened with. */
+  get savedAuthoring(): string | undefined {
+    return this.savedMineAuthoring;
   }
 
   /** Includes metadata-only edits (grouping, settings and visibility) in Save and the navigation guard. */
@@ -203,6 +375,7 @@ export class Studio {
   markSaved(): void {
     this.saved.clear();
     this.diverged.clear();
+    this.changedSinceSave = false;
     this.changed();
   }
 
@@ -259,12 +432,26 @@ export class Studio {
     this.changed();
   }
 
+  /**
+   * The bot's corrections that still stand: one for a cell that an edit still waiting to be sent changes again is dropped.
+   * The bot decided it from an older canvas than this one, and looks at that cell again when the waiting edit arrives.
+   */
+  private stillCurrent(fixed: readonly Cell[]): Cell[] {
+    const kept = new Map(fixed.map((c) => [keyOf(c[0], c[1], c[2]), c] as const));
+    for (const e of this.pending) {
+      if (kept.size === 0) break;
+      for (const c of e.cells) kept.delete(keyOf(c[0], c[1], c[2]));
+    }
+    return [...kept.values()];
+  }
+
   /** The AI's ops from a reply (the bot applied them already): applied here, recorded for undo, never sent back. */
   applyAi(ops: DesignerMessageResponse['ops']): Cell[] {
     const all: Cell[] = [];
     this.lastGroup = null;
     for (const op of ops) {
-      const ch = this.canvas.apply(op.cells, false);
+      // A "fix" op holds the bot's corrections of the user's own cells: the same rule as for a canvas reply's.
+      const ch = this.canvas.apply(op.kind === 'fix' ? this.stillCurrent(op.cells) : op.cells, false);
       if (ch.forward.length === 0) continue;
       this.track(ch);
       this.history.push({ label: op.label, by: 'ai', forward: ch.forward, backward: ch.backward });
@@ -303,70 +490,237 @@ export class Studio {
   }
 
   private queue(kind: string, label: string, cells: Cell[]): void {
-    for (let i = 0; i < cells.length; i += MAX_CELLS_PER_EDIT)
-      this.pending.push({
-        kind: kind.slice(0, 32),
-        label: label.slice(0, 200),
-        cells: cells.slice(i, i + MAX_CELLS_PER_EDIT),
-      });
+    if (cells.length === 0) return;
+    this.pending.push(...this.pieces({ kind: kind.slice(0, 32), label: label.slice(0, 200), cells }));
     this.schedule();
   }
 
+  /** An edit cut into pieces that each fit one request of the current size (and the contract's cells per edit). */
+  private pieces(e: DesignerEdit): DesignerEdit[] {
+    const room = Math.floor((this.budget - editBytes(e.kind, e.label ?? '', 0)) / CELL_BYTES);
+    const size = Math.max(1, Math.min(MAX_CELLS_PER_EDIT, room));
+    const out: DesignerEdit[] = [];
+    for (let i = 0; i < e.cells.length; i += size) out.push({ ...e, cells: e.cells.slice(i, i + size) });
+    return out;
+  }
+
   private schedule(): void {
-    if (this.flushTimer || this.busy) return;
+    if (this.flushTimer || this.busy || this.blocked) return;
     this.flushTimer = setTimeout(() => {
       this.flushTimer = null;
       void this.flush();
     }, this.flushMs);
   }
 
+  /** The next request's edits: the waiting ones in order, as many as fit its size (at most 64, always the first). */
   private take(): DesignerEdit[] {
     const out: DesignerEdit[] = [];
     let cells = 0;
-    while (this.pending.length && out.length < 64 && cells + this.pending[0]!.cells.length <= MAX_CELLS_PER_EDIT * 2) {
-      const e = this.pending.shift()!;
+    let bytes = 0;
+    while (this.pending.length && out.length < 64) {
+      const e = this.pending[0]!;
+      const size = editBytes(e.kind, e.label ?? '', e.cells.length);
+      if (out.length && (cells + e.cells.length > MAX_CELLS_PER_EDIT * 2 || bytes + size > this.budget)) break;
+      this.pending.shift();
       cells += e.cells.length;
+      bytes += size;
       out.push(e);
     }
     return out;
   }
 
-  /** Sends the waiting edits now (held while a message runs: the bot's session is busy then). */
-  async flush(): Promise<void> {
-    if (this.busy) return;
-    while (this.pending.length) {
-      const ops = this.take();
-      try {
-        const r = await this.api.canvas(this.id, { rev: this.rev, ops });
-        this.rev = r.rev;
-        this.error = null;
-        if (r.fixed?.length) this.correct(r.fixed);
-      } catch (e) {
-        this.pending.unshift(...ops);
-        this.error = e instanceof Error ? e.message : String(e);
-        this.changed();
-        if (this.flushTimer === null)
-          this.flushTimer = setTimeout(() => ((this.flushTimer = null), void this.flush()), 2000);
-        return;
-      }
-    }
-    this.changed();
+  /** Something the bot does not have yet: edits waiting or on their way, or the anchor. */
+  private get unsent(): boolean {
+    return this.pending.length > 0 || this.inFlight > 0 || this.anchorUnsent;
   }
 
+  private get sync(): StudioSnapshot['sync'] {
+    if (this.blocked) return 'blocked';
+    if (!this.unsent) return 'idle';
+    return this.syncError === null ? 'sending' : 'retrying';
+  }
+
+  /**
+   * One request at a time for this session, in the order asked: a batch of edits, the anchor, a message, a save. The bot
+   * applies cell states as they arrive, so two requests in flight could land out of order and leave older cells on top.
+   * A task holds the wire until its promise settles; whatever has to happen before the next request belongs inside it.
+   */
+  private onWire<T>(task: () => Promise<T>): Promise<T> {
+    const run = this.wire.then(task);
+    this.wire = run.then(noop, noop);
+    return run;
+  }
+
+  /**
+   * Sends the waiting edits now. Held while a message runs (the bot's session is busy then) and after the bot refused a
+   * request (`retrySync`). A second call while one drain is under way gets that one: it never starts another.
+   */
+  flush(): Promise<void> {
+    if (this.busy || this.blocked) return Promise.resolve();
+    this.draining ??= this.onWire(() => this.drain());
+    return this.draining;
+  }
+
+  /**
+   * Sends what waits, one request after another, until nothing waits or a request fails (`failed`): the edits in order,
+   * then the anchor in a request of its own. Runs with the wire held; a failed request never makes it reject. It does not
+   * look at `busy` (`flush` does, for everyone else): a message's own task runs it before the message goes out.
+   */
+  private async drain(): Promise<void> {
+    try {
+      if (this.blocked) return;
+      this.stopFlushTimer();
+      while (this.pending.length || this.anchorUnsent) {
+        const ops = this.take();
+        const anchor = this.anchor;
+        this.inFlight = ops.reduce((n, e) => n + e.cells.length, 0);
+        this.sending = ops;
+        let r: DesignerCanvasResponse;
+        try {
+          r = await this.api.canvas(this.id, {
+            rev: this.rev,
+            ops,
+            ...(ops.length ? {} : anchor ? { anchor } : { clearAnchor: true }),
+          });
+        } catch (e) {
+          this.inFlight = 0;
+          this.sending = [];
+          this.pending.unshift(...ops);
+          if (this.failed(e)) continue;
+          return;
+        }
+        this.inFlight = 0;
+        this.sending = [];
+        this.rev = r.rev;
+        this.failures = 0;
+        this.syncError = null;
+        // An anchor moved again while this one was on its way is still to send.
+        if (!ops.length && this.anchor === anchor) this.anchorUnsent = false;
+        if (r.fixed?.length) this.correct(this.stillCurrent(r.fixed));
+        this.changed();
+      }
+    } finally {
+      // What is queued from here on has not been looked at: `flush` starts another drain for it.
+      this.draining = null;
+    }
+  }
+
+  /**
+   * A canvas request failed and its edits wait again. True = go on at once: a 413 halves the request size (the waiting
+   * edits are cut to it), down to `MIN_BATCH_BYTES`. Otherwise the drain ends here. A refusal (a 4xx but `PASSING_4XX`)
+   * stops the sync until `retrySync()`, because asking again cannot change the answer. Everything else (the bot away or
+   * busy, the network) is tried again after 2, 4, 8 … 30 s, or as much later as the server asked; a disposed studio does
+   * not try again.
+   */
+  private failed(e: unknown): boolean {
+    const status = statusOf(e);
+    if (status === 413 && this.budget > MIN_BATCH_BYTES) {
+      this.budget = Math.max(MIN_BATCH_BYTES, Math.floor(this.budget / 2));
+      this.pending = this.pending.flatMap((waiting) => this.pieces(waiting));
+      return true;
+    }
+    this.stopFlushTimer();
+    this.syncError = reasonOf(e);
+    if (status !== undefined && status >= 400 && status < 500 && !PASSING_4XX.has(status)) this.blocked = true;
+    else if (!this.disposed) {
+      const wait = Math.min(RETRY_MAX_MS, RETRY_MS * 2 ** Math.min(this.failures, 4));
+      this.failures++;
+      this.flushTimer = setTimeout(
+        () => {
+          this.flushTimer = null;
+          void this.flush();
+        },
+        Math.max(wait, retryAfterOf(e)),
+      );
+    }
+    this.changed();
+    return false;
+  }
+
+  /** Tries again now: after the bot refused a request, or instead of waiting for the next retry. */
+  retrySync(): Promise<void> {
+    this.blocked = false;
+    this.failures = 0;
+    this.changed();
+    return this.flush();
+  }
+
+  /**
+   * Waits until the bot holds every edit, and throws when it does not: its canvas is then older than this page, and
+   * whatever came next (a save, a message, a version change) would work on that older canvas. `then` says what did not
+   * happen because of it ("Nothing was saved.").
+   */
+  async settle(then = ''): Promise<void> {
+    await this.flush();
+    this.mustBeSettled(then);
+  }
+
+  private mustBeSettled(then = ''): void {
+    if (!this.unsent && !this.blocked) return;
+    const waiting = this.busy ? 'a message to the assistant is still running' : 'they are still on their way';
+    const why = (this.syncError ?? waiting).replace(/\.$/, '');
+    throw new Error(`The latest edits have not reached the designer (${why}).${then ? ` ${then}` : ''}`);
+  }
+
+  /**
+   * How many cells of this canvas differ from a copy of the bot's (the session as `designer.get` returns it), leaving out
+   * the cells of edits still on their way, which that copy cannot hold yet. Null when the copy is older than what this page
+   * has already heard from the bot (a lower rev): it cannot tell then.
+   */
+  differsFrom(session: Pick<DesignerSession, 'rev' | 'blocks' | 'dug'>): number | null {
+    return this.differing(session)?.length ?? null;
+  }
+
+  private differing(session: Pick<DesignerSession, 'rev' | 'blocks' | 'dug'>): number[] | null {
+    if (session.rev < this.rev) return null;
+    const theirs = new Canvas();
+    theirs.load(session.blocks, session.dug ?? []);
+    const unsent = new Set<number>();
+    for (const e of [...this.sending, ...this.pending]) for (const c of e.cells) unsent.add(keyOf(c[0], c[1], c[2]));
+    const keys = new Set([...this.canvas.blocks.keys(), ...this.canvas.dug, ...theirs.blocks.keys(), ...theirs.dug]);
+    return [...keys].filter((k) => !unsent.has(k) && this.canvas.authoredState(k) !== theirs.authoredState(k));
+  }
+
+  /**
+   * Sends this page's state of every cell the bot's copy has otherwise (`differsFrom`), as one edit without an undo step,
+   * and waits until the bot holds it. Returns how many cells went; throws as `settle` does when they could not be sent.
+   */
+  async resync(session: Pick<DesignerSession, 'rev' | 'blocks' | 'dug'>): Promise<number> {
+    const cells = (this.differing(session) ?? []).map((k): Cell => {
+      const v = this.canvas.authoredState(k);
+      return [...posOf(k), v < 0 ? EARTH : v >> 4, v < 0 ? 0 : v & 15];
+    });
+    this.queue('resync', 'resync with the page', cells);
+    await this.settle();
+    return cells.length;
+  }
+
+  /** Runs a request once the bot holds every edit made before it; the wire is held until `task` has dealt with the reply. */
+  private afterEdits<T>(then: string, task: () => Promise<T>): Promise<T> {
+    return this.onWire(async () => {
+      await this.drain();
+      this.mustBeSettled(then);
+      return task();
+    });
+  }
+
+  /**
+   * Moves (or clears) the anchor. It follows the edits to the bot and, like them, is sent again when that fails; the
+   * promise rejects when it could not be sent now.
+   */
   async setAnchor(p: V3 | null): Promise<void> {
     this.anchor = p;
+    this.anchorUnsent = true;
     this.changed();
-    await this.flush();
-    const r = await this.api.canvas(
-      this.id,
-      p ? { rev: this.rev, ops: [], anchor: p } : { rev: this.rev, ops: [], clearAnchor: true },
-    );
-    this.rev = r.rev;
+    await this.settle();
   }
 
   // ------------------------------------------------------------------ talking to the model
 
-  /** Sends a message (with the waiting edits and, if asked, the selection) and applies the AI's ops. */
+  /**
+   * Sends a message (with the selection, if asked) and applies the AI's ops. The waiting edits go first, through the canvas
+   * route, where the bot notes them for the model: the message carries none, so it shares no size limit with them.
+   */
   async send(
     text: string,
     opts: { model?: string; withSelection?: boolean } = {},
@@ -374,7 +728,6 @@ export class Studio {
     const t = text.trim();
     if (!t || this.busy) return null;
     this.stopFlushTimer();
-    const edits = this.take();
     const sel = opts.withSelection && this.selection ? { min: this.selection.min, max: this.selection.max } : null;
     const optimistic: DesignerMessage = {
       seq: -1,
@@ -390,22 +743,25 @@ export class Studio {
     this.error = null;
     this.changed();
     try {
-      const r = await this.api.message(this.id, messageRequest(t, this.rev, edits, sel, opts.model));
-      this.busy = false;
-      this.messages = [...this.messages.filter((m) => m !== optimistic), r.userMessage, r.message];
-      this.costUsd = r.sessionCostUsd;
-      this.applyAi(r.ops);
-      this.rev = r.rev;
-      this.changed();
+      const r = await this.afterEdits('The message was not sent.', async () => {
+        const reply = await this.api.message(this.id, messageRequest(t, this.rev, sel, opts.model));
+        this.busy = false;
+        this.messages = [...this.messages.filter((m) => m !== optimistic), reply.userMessage, reply.message];
+        this.costUsd = reply.sessionCostUsd;
+        this.applyAi(reply.ops);
+        this.rev = reply.rev;
+        this.changed();
+        return reply;
+      });
       void this.flush();
       return r;
     } catch (e) {
       this.busy = false;
-      this.pending.unshift(...edits);
       this.error = e instanceof Error ? e.message : String(e);
       this.messages = this.messages.filter((m) => m !== optimistic);
       this.changed();
-      void this.flush();
+      // Edits made during the turn go now; a failed batch already has its retry set.
+      if (!this.flushTimer) void this.flush();
       throw e;
     }
   }
@@ -416,9 +772,28 @@ export class Studio {
     this.flushTimer = null;
   }
 
-  /** Saves the canvas as a design (a new one with `asNew`, else the next revision of the loaded one). */
+  /**
+   * Saves the canvas as a design (a new one with `asNew`, else the next revision of the loaded one). The bot saves the
+   * canvas it holds, so every edit has to be there first: when one could not be sent, nothing is saved and it says why.
+   */
   async save(name: string, summary?: string, asNew = false, previewPng?: string): Promise<DesignerSaveResponse> {
-    await this.flush();
+    // The bot answers a save during a message "busy": say so now instead of waiting behind the model.
+    if (this.busy) throw new Error('The assistant is still answering. Nothing was saved.');
+    // The bot would refuse it after the edits went out; say so before anything is sent.
+    if ((this.mineAuthoring?.length ?? 0) > MINE_AUTHORING_MAX_CHARS)
+      throw new Error(
+        'The component layout is too large to save. Remove or combine fewer components. Nothing was saved.',
+      );
+    return this.afterEdits('Nothing was saved.', () => this.saveNow(name, summary, asNew, previewPng));
+  }
+
+  /** The save request and what it leaves saved here; the wire is held throughout, so no edit goes out in between. */
+  private async saveNow(
+    name: string,
+    summary: string | undefined,
+    asNew: boolean,
+    previewPng: string | undefined,
+  ): Promise<DesignerSaveResponse> {
     const body: DesignerSaveRequest = {
       name: name.trim(),
       ...(summary?.trim() ? { summary: summary.trim() } : {}),
@@ -430,6 +805,8 @@ export class Studio {
     const at = new Map([...this.diverged].map((k) => [k, this.stateAt(k)]));
     const r = await this.api.save(this.id, body);
     this.savedMineAuthoring = body.mineAuthoring;
+    this.changedSinceSave = false;
+    this.rememberSavedRev();
     for (const [k, v] of at) {
       const now = this.stateAt(k);
       this.saved.set(k, v);
@@ -453,9 +830,37 @@ export class Studio {
     return r;
   }
 
+  /**
+   * The page lets go of the studio: edits still waiting for the debounce go now (once: a failure is not tried again), so
+   * leaving within the debounce loses nothing a "Resume it" offer would point at.
+   */
   dispose(): void {
-    if (this.flushTimer) clearTimeout(this.flushTimer);
+    this.disposed = true;
+    void this.flush();
+    this.stopFlushTimer();
     this.listeners.clear();
     this.cellListeners.clear();
   }
+}
+
+/**
+ * Sends the waiting edits the moment the page is hidden or about to go (a tab switched away, reloaded or closed) instead of
+ * after the debounce, which such a page may never reach. Best effort: a request cut off by the page closing is lost.
+ * Returns the unbind.
+ */
+export function flushWhenHidden(
+  studio: Pick<Studio, 'flush'>,
+  doc: Document = document,
+  win: Window = window,
+): () => void {
+  const hidden = (): void => {
+    if (doc.visibilityState === 'hidden') void studio.flush();
+  };
+  const leaving = (): void => void studio.flush();
+  doc.addEventListener('visibilitychange', hidden);
+  win.addEventListener('pagehide', leaving);
+  return () => {
+    doc.removeEventListener('visibilitychange', hidden);
+    win.removeEventListener('pagehide', leaving);
+  };
 }

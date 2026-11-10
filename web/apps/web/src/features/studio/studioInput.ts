@@ -17,7 +17,7 @@ import {
   type BrushMode,
   type BrushShape,
   type Clip,
-  erase,
+  deleteSelection,
   extrude,
   floodFace,
   type Hit,
@@ -59,6 +59,12 @@ export interface KeyActions {
   setPasting: (v: boolean) => void;
   setDrag: Dispatch<SetStateAction<Drag | null>>;
   moveSel: (d: V3) => void;
+  /** Arrow keys on a selected mine component: true when it took the move (see `keyMoves`), else `moveSel` does. */
+  nudgeSel?: (d: V3) => boolean;
+  /** The mine placement's own key listener takes this key (a piece in hand, a selected component): leave it alone. */
+  handlesKey?: (e: KeyboardEvent) => boolean;
+  /** PgUp / PgDn with nothing selected (a mine): the working level up or down by `by`. */
+  stepLevel?: (by: number) => boolean;
   setActive: (i: number) => void;
   openChat: () => void;
   toggleHud: () => void;
@@ -69,6 +75,8 @@ export interface KeyActions {
   togglePalette: () => void;
   toggleGrid: () => void;
   toggleUnder: () => void;
+  /** ? in a mine: the shortcut sheet open or closed. */
+  toggleShortcuts?: () => void;
 }
 
 const stopKey = (e: KeyboardEvent) => {
@@ -116,15 +124,59 @@ const moveSelectionKey: KeyRule = (e, a, s) => {
   stopKey(e);
   const n = e.shiftKey ? 5 : 1;
   const unit = MOVE_KEYS[e.key] ?? [0, -1, 0];
-  a.moveSel([unit[0] * n, unit[1] * n, unit[2] * n]);
+  const d: V3 = [unit[0] * n, unit[1] * n, unit[2] * n];
+  if (!a.nudgeSel?.(d)) a.moveSel(d);
   return true;
 };
+
+/** Presses closer together than this share one undo step: a held arrow key is one step, a pause starts the next. */
+export const KEY_MOVE_GROUP_MS = 600;
+
+/**
+ * Arrow key moves for a mine component: the presses of one animation frame are summed into one `move`, and presses less than
+ * KEY_MOVE_GROUP_MS apart pass the same undo group. Summing is exact for a component (it moves to an absolute position); a raw
+ * cell selection is not given this, since moving cells twice by one is not the same as once by two.
+ */
+export function keyMoves(
+  move: (d: V3, group: string) => void,
+  now: () => number = () => performance.now(),
+  frame: (run: () => void) => void = (run) => void requestAnimationFrame(run),
+): (d: V3) => void {
+  let sum: V3 | null = null;
+  let group = '';
+  let last = -Infinity;
+  let serial = 0;
+  const flush = () => {
+    const d = sum;
+    sum = null;
+    if (d && (d[0] || d[1] || d[2])) move(d, group);
+  };
+  return (d) => {
+    const t = now();
+    if (t - last >= KEY_MOVE_GROUP_MS) group = `keys-${++serial}-${t}`;
+    last = t;
+    if (sum) {
+      sum = [sum[0] + d[0], sum[1] + d[1], sum[2] + d[2]];
+      return;
+    }
+    sum = [d[0], d[1], d[2]];
+    frame(flush);
+  };
+}
 
 /** PgUp / PgDn while dragging a selection box: its height. */
 const dragLevelKey: KeyRule = (e, a, s) => {
   if (!s.drag || !isLevelKey(e.key)) return false;
   stopKey(e);
   a.setDrag((d) => (d ? { ...d, dy: d.dy + (e.key === 'PageUp' ? 1 : -1) } : d));
+  return true;
+};
+
+/** PgUp / PgDn with nothing selected and no drag (a mine): the working level (Shift ×5). */
+const workLevelKey: KeyRule = (e, a) => {
+  if (!a.stepLevel || !isLevelKey(e.key)) return false;
+  stopKey(e);
+  a.stepLevel((e.key === 'PageUp' ? 1 : -1) * (e.shiftKey ? 5 : 1));
   return true;
 };
 
@@ -148,12 +200,20 @@ const hudKey: KeyRule = (e, a) => {
   return true;
 };
 
+/** ? in a mine: the shortcut sheet (a build keeps its controls in the hint line). */
+const shortcutsKey: KeyRule = (e, a) => {
+  if (e.key !== '?' || !a.toggleShortcuts || plotMode().kind !== 'mine') return false;
+  stopKey(e);
+  a.toggleShortcuts();
+  return true;
+};
+
 const deleteKey: KeyRule = (e, a, s) => {
   if (e.key !== 'Delete' && e.key !== 'Backspace') return false;
   const { studio } = a;
   if (studio.selection) {
     stopKey(e);
-    studio.edit(erase(studio.canvas, studio.selection, groundEditable(s)), 'remove', 'deleted the selection');
+    studio.edit(deleteSelection(studio.canvas, studio.selection, groundEditable(s)), 'remove', 'deleted the selection');
   }
   return true;
 };
@@ -162,6 +222,7 @@ const escapeKey: KeyRule = (e, a, s) => {
   if (e.key !== 'Escape') return false;
   if (s.pasting) a.setPasting(false);
   else if (s.drag) a.setDrag(null);
+  else if (plotMode().kind === 'mine' && a.studio.selection) a.studio.setSelection(null);
   return true;
 };
 
@@ -214,9 +275,11 @@ const toggleKey: KeyRule = (e, a) => {
 const KEY_RULES: KeyRule[] = [
   moveSelectionKey,
   dragLevelKey,
+  workLevelKey,
   hotbarKey,
   chatKey,
   hudKey,
+  shortcutsKey,
   deleteKey,
   escapeKey,
   rotateKey,
@@ -226,6 +289,8 @@ const KEY_RULES: KeyRule[] = [
 
 /** A key in the world (capture phase): ignored while typing or with the focus elsewhere. */
 export function studioKey(e: KeyboardEvent, a: KeyActions): void {
+  // Never first: its Delete would clear a component's cells as raw ones before the component itself is removed.
+  if (a.handlesKey?.(e)) return;
   if (isTyping(e.target) || !a.inWorld()) return;
   const s = a.state();
   if (e.ctrlKey || e.metaKey) return ctrlKey(e, a, s);
@@ -326,6 +391,11 @@ export function dragEnd(h: Hit | null, button: number, d: Drag): V3 {
 
 /** A finished select drag: a box up to the wheel-raised top (Shift extends the selection). */
 function endSelect(studio: Studio, d: Drag, b: V3, shift: boolean): void {
+  // A mine's click without a drag selects nothing: a stray one-cell selection is what Delete or the arrows would then act on.
+  if (plotMode().kind === 'mine' && d.dy === 0 && b.every((v, i) => v === d.a[i])) {
+    if (!shift) studio.setSelection(null);
+    return;
+  }
   const top: V3 = [b[0], Math.min(plotMode().maxY, Math.max(b[1], d.a[1]) + d.dy), b[2]];
   studio.setSelection(shift ? extend(studio.selection, d.a, top) : boxOf(d.a, top));
 }

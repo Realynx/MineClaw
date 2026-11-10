@@ -28,11 +28,12 @@ import { invert, selectAll, sizeOf } from './canvas';
 import type { Dir, Version } from './facing';
 import type { PaletteEntry } from './palette';
 import type { Studio, StudioSnapshot } from './studio';
+import type { Notices, NoticeTone, StudioNotice } from './studioSave';
 import {
   type BoxMode,
   type BrushMode,
   type BrushShape,
-  erase,
+  deleteSelection,
   type Hit,
   mirrorSel,
   raiseLower,
@@ -64,6 +65,8 @@ export function StudioHeader(p: {
   saving: boolean;
   doSave: (asNew: boolean) => void;
   revisions: DesignRevision[];
+  /** Sends the waiting edits now (after a refusal, or instead of waiting for the next try). */
+  retrySync: () => void;
 }) {
   const { snap, session, version } = p;
   return (
@@ -131,7 +134,19 @@ export function StudioHeader(p: {
             maxLength={120}
           />
         </div>
-        <Button size="sm" onClick={() => p.doSave(false)} disabled={!p.canSave} loading={p.saving}>
+        <SyncChip snap={snap} retry={p.retrySync} />
+        {snap.dirty ? (
+          <Badge tone="warn" data-testid="unsaved-chip" title="Changes since the last save. Ctrl+S saves.">
+            Unsaved changes
+          </Badge>
+        ) : null}
+        <Button
+          size="sm"
+          variant={snap.dirty ? 'primary' : 'secondary'}
+          onClick={() => p.doSave(false)}
+          disabled={!p.canSave}
+          loading={p.saving}
+        >
           {snap.designId ? 'Save as new revision' : 'Save'}
         </Button>
         {snap.designId ? (
@@ -142,6 +157,45 @@ export function StudioHeader(p: {
         {p.revisions.length ? <RevisionList revisions={p.revisions} /> : null}
       </div>
     </header>
+  );
+}
+
+/** "Synced", "Sending 120 cells", "Retrying: <why>" or "Not syncing: <why>": whether the bot's canvas follows this page. */
+export function syncText(snap: Pick<StudioSnapshot, 'pending' | 'sync' | 'syncError'>): string {
+  const why = snap.syncError ?? 'the designer did not answer';
+  if (snap.sync === 'blocked') return `Not syncing: ${why}`;
+  if (snap.sync === 'retrying') return `Retrying: ${why}`;
+  if (snap.sync === 'sending' || snap.pending)
+    return snap.pending ? `Sending ${snap.pending} cell${snap.pending === 1 ? '' : 's'}` : 'Sending';
+  return 'Synced';
+}
+
+const SYNC_TONE = { idle: 'neutral', sending: 'info', retrying: 'warn', blocked: 'danger' } as const;
+
+export function SyncChip({
+  snap,
+  retry,
+}: {
+  snap: Pick<StudioSnapshot, 'pending' | 'sync' | 'syncError'>;
+  retry: () => void;
+}) {
+  const failing = snap.sync === 'blocked' || snap.sync === 'retrying';
+  return (
+    <span className="flex items-center gap-1" data-testid="sync-chip" data-sync={snap.sync}>
+      <Badge
+        tone={SYNC_TONE[snap.sync]}
+        className="max-w-72 truncate"
+        title={failing ? 'The bot saves the canvas it holds: edits it has not got are not saved.' : undefined}
+        role={failing ? 'alert' : 'status'}
+      >
+        {syncText(snap)}
+      </Badge>
+      {failing ? (
+        <button type="button" className="text-xs text-fg underline" onClick={retry}>
+          Retry
+        </button>
+      ) : null}
+    </span>
   );
 }
 
@@ -192,6 +246,8 @@ export function SavedBar(p: {
   canChat: boolean;
   mainBot: string | null;
   askBot: () => void;
+  /** Changed since that save. */
+  dirty?: boolean;
 }) {
   const { saved } = p;
   return (
@@ -199,7 +255,10 @@ export function SavedBar(p: {
       className="flex flex-wrap items-center gap-2 border-b border-border bg-ok-soft px-3 py-1.5 text-xs text-ok"
       data-testid="saved-bar"
     >
-      <span>{saved.text || `Design #${saved.designId}${saved.rev ? ` r${saved.rev}` : ''}`}</span>
+      <span>
+        {(!p.dirty && saved.text) || `Design #${saved.designId}${saved.rev ? ` r${saved.rev}` : ''}`}
+        {p.dirty ? ' · edited since' : ''}
+      </span>
       {p.mineRange !== null ? (
         <span className="rounded bg-surface px-1.5 py-0.5 font-mono text-fg" data-testid="mine-range">
           {p.mineRange}
@@ -226,6 +285,49 @@ export function SavedBar(p: {
         Open in Designs
       </Link>
     </div>
+  );
+}
+
+const NOTICE_TONE: Record<NoticeTone, string> = {
+  info: 'bg-info-soft text-info',
+  ok: 'bg-ok-soft text-ok',
+  warn: 'bg-warn-soft text-warn',
+  error: 'bg-danger-soft text-danger',
+};
+
+function NoticeLine({ notice, testId, dismiss }: { notice: StudioNotice; testId: string; dismiss?: () => void }) {
+  return (
+    <div
+      className={cn(
+        'flex flex-wrap items-center gap-2 border-b border-border px-3 py-1 text-xs',
+        NOTICE_TONE[notice.tone],
+      )}
+      role={notice.tone === 'error' ? 'alert' : 'status'}
+      data-testid={testId}
+      data-tone={notice.tone}
+    >
+      <span>{notice.text}</span>
+      {notice.action ? (
+        <button type="button" className="font-medium underline" onClick={notice.action.run}>
+          {notice.action.label}
+        </button>
+      ) : null}
+      {dismiss ? (
+        <button type="button" className="ml-auto underline" onClick={dismiss}>
+          Dismiss
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+/** The notice line: what stays until dismissed (failures, how a mine's layout opened) above the latest passing notice. */
+export function NoticeLines({ notices, dismiss }: { notices: Notices; dismiss: () => void }) {
+  return (
+    <>
+      {notices.sticky ? <NoticeLine notice={notices.sticky} testId="studio-alert" dismiss={dismiss} /> : null}
+      {notices.passing ? <NoticeLine notice={notices.passing} testId="studio-notice" /> : null}
+    </>
   );
 }
 
@@ -554,8 +656,16 @@ export function TransformBar(p: {
   moveSel: (d: V3) => void;
   doCopy: () => unknown;
   startPaste: () => void;
+  /** False hides the whole design's turn and mirror (a mine with components: they would move its cells under them). */
+  whole?: boolean;
 }) {
   const { studio, sel, version, applyTransform } = p;
+  if (!sel && p.whole === false)
+    return p.hasClip ? (
+      <Act label="Paste [Ctrl+V]" onClick={p.startPaste}>
+        <span>paste</span>
+      </Act>
+    ) : null;
   const what = sel ? 'Selection' : 'Whole design';
   return (
     <div className="flex flex-wrap justify-end gap-1" role="toolbar" aria-label={what}>
@@ -610,7 +720,10 @@ function SelectionMoves(p: {
       <Act label="Duplicate [Ctrl+D]" onClick={() => p.doCopy() && p.startPaste()}>
         <span>dup</span>
       </Act>
-      <Act label="Delete [Delete]" onClick={() => p.studio.edit(erase(p.studio.canvas, p.sel), 'remove', 'deleted the selection')}>
+      <Act
+        label="Delete [Delete]"
+        onClick={() => p.studio.edit(deleteSelection(p.studio.canvas, p.sel), 'remove', 'deleted the selection')}
+      >
         <Trash2 className="size-3.5" />
       </Act>
     </>
@@ -727,7 +840,8 @@ export function AnchorNote({ studio, anchor }: { studio: Studio; anchor: V3 }) {
   return (
     <span className="rounded bg-black/55 px-2 py-1">
       Anchor {anchor.join(', ')}{' '}
-      <button type="button" className="underline" onClick={() => void studio.setAnchor(null)}>
+      {/* A clear that could not be sent now stays queued and is sent again with the edits (studio.setAnchor). */}
+      <button type="button" className="underline" onClick={() => void studio.setAnchor(null).catch(() => undefined)}>
         clear
       </button>
     </span>
