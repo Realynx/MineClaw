@@ -370,9 +370,13 @@ describe('a big mine queued from the Controller', () => {
     expect(body.bots).toEqual(['maid_chan']);
     expect(body.directive.build).toEqual([items[0]]);
     expect(bytes(body)).toBeLessThan(64 * 1024);
-    expect(s.say).toHaveBeenCalledOnce();
-    expect(s.say.mock.calls[0]![0]).toMatch(new RegExp(`^Queued deep mine: 20020 blocks in ${items.length} parts`));
-    expect(s.say.mock.calls[0]![0]).toContain(`the AI got part 1 of ${items.length}`);
+    // Said at once from the plan, and again from the answers.
+    expect(s.say).toHaveBeenCalledTimes(2);
+    expect(s.say.mock.calls[0]![0]).toBe(
+      `Queued deep mine: 20020 blocks in ${items.length} parts · colony: queued · sent to maid_chan (AI)`,
+    );
+    expect(s.say.mock.calls[1]![0]).toMatch(new RegExp(`^Queued deep mine: 20020 blocks in ${items.length} parts`));
+    expect(s.say.mock.calls[1]![0]).toContain(`the AI got part 1 of ${items.length}`);
   });
 
   it('a refused AI directive is said on its own and never stops the colony’s parts', async () => {
@@ -383,8 +387,8 @@ describe('a big mine queued from the Controller', () => {
     await releaseTool(s.c, click, false);
     const total = mineItems(placeDesign(mine(20_000), FAR, 'n', true)).length;
     expect(s.write).toHaveBeenCalledTimes(total);
-    expect(s.say).toHaveBeenCalledOnce();
-    const [line, tone] = s.say.mock.calls[0]! as [string, string | undefined];
+    expect(s.say).toHaveBeenCalledTimes(2);
+    const [line, tone] = s.say.mock.calls[1]! as [string, string | undefined];
     expect(line).toMatch(new RegExp(`^Queued deep mine: 20020 blocks in ${total} parts`));
     expect(line).toContain('old_body: the AI directive failed · no such bot');
     expect(line).not.toContain('the AI got part 1');
@@ -397,8 +401,8 @@ describe('a big mine queued from the Controller', () => {
     await releaseTool(s.c, click, false);
     expect(s.write).toHaveBeenCalledTimes(3);
     const total = mineItems(placeDesign(mine(20_000), FAR, 'n', true)).length;
-    expect(s.say).toHaveBeenCalledOnce();
-    expect(s.say).toHaveBeenCalledWith(
+    expect(s.say).toHaveBeenCalledTimes(2);
+    expect(s.say).toHaveBeenLastCalledWith(
       `deep mine: queued 2 of ${total} parts, then stopped · body over 65536 bytes`,
       'warn',
     );

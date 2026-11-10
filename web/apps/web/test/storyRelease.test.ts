@@ -267,6 +267,50 @@ describe('a released command is drawn at once (pending marks)', () => {
     expect(holo.map((h) => `${h.x},${h.z}`).sort()).toEqual(['0,0', '0,1', '1,0', '1,1']);
   });
 
+  it("a mine design is drawn and said at once, goes at its last part's rev, and a busy part takes it away", async () => {
+    // 5 000 cells to dig: two parts (4 096 cells a part), sent one after the other.
+    const blocks = Array.from({ length: 5000 }, (_, i) => [
+      i % 50,
+      70 - Math.floor(i / 2500),
+      Math.floor(i / 50) % 50,
+      0,
+      0,
+    ]);
+    const tool = { kind: 'design', id: 7, name: 'pit', blocks, mine: { min: 61, max: 70 } };
+    const click = drag([], { moved: false, count: 1 });
+    const state = { designations: [], zones: [], version: '1.12.2' };
+    const head = 'Queued pit: 5000 blocks in 2 parts';
+
+    const parts = [deferred<unknown>(), deferred<unknown>()];
+    let n = 0;
+    const write = vi.fn(() => parts[n++]!.promise);
+    const ok = setup(tool, { write, state });
+    const done = releaseTool(ok.c, click, false);
+    // Drawn and said before any part is answered.
+    expect(write).toHaveBeenCalledTimes(1);
+    expect(ok.pending.view(undefined).holo.length).toBeGreaterThan(0);
+    expect(ok.say).toHaveBeenCalledWith(`${head} · colony: queued`);
+    parts[0]!.resolve({ ok: true, rev: 5 });
+    await vi.waitFor(() => expect(write).toHaveBeenCalledTimes(2));
+    parts[1]!.resolve({ ok: true, rev: 9 });
+    await done;
+    expect(ok.say).toHaveBeenLastCalledWith(`${head} · colony: queued`, undefined);
+    ok.pending.reconcile(stateOf(8), Date.now());
+    expect(ok.pending.size).toBe(1); // the state has not reached the last part yet
+    ok.pending.reconcile(stateOf(9), Date.now());
+    expect(ok.pending.size).toBe(0);
+
+    let m = 0;
+    const busy = new ApiError(503, 'busy', { code: 'busy' });
+    const refused = setup(tool, {
+      write: vi.fn(() => (m++ === 0 ? Promise.resolve({ ok: true, rev: 5 }) : Promise.reject(busy))),
+      state,
+    });
+    await releaseTool(refused.c, click, false);
+    expect(refused.pending.size).toBe(0);
+    expect(refused.say).toHaveBeenLastCalledWith(`pit: queued 1 of 2 parts, then stopped · ${BUSY_TEXT}`, 'warn');
+  });
+
   it('nothing is drawn without the story role, and a Story without pending marks still sends', async () => {
     const ro = setup({ kind: 'designate', id: 'cut' }, { canWrite: false });
     void releaseTool(ro.c, drag([[1, 64, 1]]), false);

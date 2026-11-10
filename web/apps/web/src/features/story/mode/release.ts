@@ -239,9 +239,11 @@ async function releaseDesign(c: Story, tool: ToolOf<'design'>, r: DragResult) {
     c.say(errorText(e), 'warn');
     return;
   }
-  // A mine goes one item per request (all in one would pass the 64 KiB body cap); a build's items arrive together.
+  // A mine goes one item per request (all in one would pass the 64 KiB body cap); a build's items arrive together. Either is
+  // drawn at once and settled by the colony's outcome (a mine's: its last part's answer, or the part that failed).
   if (tool.mine) {
-    await releaseMine(c, items, tool.name, placed.length);
+    const id = show(c, { holo: holoOf(placed) });
+    settle(c, id, await releaseMine(c, items, tool.name, placed.length));
     return;
   }
   await runShown(
