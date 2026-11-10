@@ -37,4 +37,32 @@ describe('entity REST resync races', () => {
     await act(async () => { resolve({ ...fetched, full: true }); await request; });
     expect(client.getQueryData<WorldEntities>(liveKeys.entities)?.bots[0]?.x).toBe(expected);
   });
+
+  it('lays an older snapshot under a newer set that began with a delta instead of keeping that delta alone', async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    clients.push(client);
+    const mob = (id: number, x: number) => ({ kind: 'mob', dim: 0, id, x, y: 64, z: 0 });
+    // The stream got here first: one mob moved, one was removed, nothing about the others.
+    client.setQueryData(liveKeys.entities, { ...frame(1200, 2, 43), entities: [mob(1, 7)], removed: [[0, 3]] });
+    vi.mocked(api).mockResolvedValueOnce({
+      ...frame(1100, 1, 42),
+      full: true,
+      entities: [mob(1, 0), mob(2, 5), mob(3, 9)],
+    });
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    );
+    const hook = renderHook(() => useEntities(), { wrapper });
+    await act(async () => {
+      await hook.result.current.refetch();
+    });
+    const set = client.getQueryData<WorldEntities>(liveKeys.entities)!;
+    expect(set.entities.map((e) => [e.id, e.x])).toEqual([
+      [1, 7],
+      [2, 5],
+    ]);
+    expect(set.full).toBe(true);
+    expect(set.rev).toBe(43);
+    expect(set.bots[0]?.x).toBe(2);
+  });
 });

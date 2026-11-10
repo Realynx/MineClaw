@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { LiveSocketSource } from '@/lib/live/socket';
 import { LiveStream } from '@/lib/live/stream';
 
 class FakeSocket {
@@ -47,4 +48,26 @@ it('reconnects a silent connection and stops all reconnects on disposal', async 
   await vi.advanceTimersByTimeAsync(60_000);
   expect(FakeSocket.all).toHaveLength(2);
   expect(stream.current).toBe('closed');
+});
+
+it('hands the parsed payload to the listeners, so a frame is parsed once', () => {
+  const message = vi.fn();
+  stream = new LiveStream({ onMessage: message }, { validate: false });
+  stream.start();
+  const socket = FakeSocket.all[0]!;
+  socket.open();
+  const raw = new LiveSocketSource('/api/live/socket');
+  const listener = vi.fn();
+  raw.addEventListener('entities', listener);
+  const parse = vi.spyOn(JSON, 'parse');
+  try {
+    socket.frame('entities', 46, { rev: 9 });
+    expect(parse).toHaveBeenCalledTimes(1);
+  } finally {
+    parse.mockRestore();
+  }
+  expect(message).toHaveBeenLastCalledWith('entities', { rev: 9 }, '46');
+  FakeSocket.all[1]!.frame('entities', 47, { rev: 10 });
+  expect((listener.mock.calls[0]![0] as MessageEvent).data).toEqual({ rev: 10 });
+  raw.close();
 });

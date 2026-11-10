@@ -7,12 +7,14 @@
  * - Frames: payloads parsed with `parseBridgeJson`, camelCased, (dev/test) validated against `SSE_EVENTS`; Nest assigns its
  *   own monotonically increasing ids and keeps the last 256 frames for `Last-Event-ID` replay (older → `status resync`).
  * - Per browser: topic/bot/brain/dim filters, `retry: 3000`, `: ping` and a `status` frame every 15 s.
+ * - While browsers are connected, each heartbeat logs the event loop's delay since the last one (p99 and max).
  * - Backpressure: when a socket's buffer is full the client is "congested": state topics coalesce (latest wins), deltas
  *   queue; past 512 KB the queue is dropped and the client gets `status {resync: true}` once it drains; a client congested
  *   for 30 s is disconnected (the browser reconnects with Last-Event-ID).
  * - Streams end when the session ends (checked every 60 s). No compression, `X-Accel-Buffering: no`.
  */
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { monitorEventLoopDelay, type IntervalHistogram } from 'node:perf_hooks';
 import {
   SSE_EVENTS,
   formatSseFrame,
@@ -116,6 +118,8 @@ export class LiveHub {
   private lingerTimer: NodeJS.Timeout | undefined;
   private heartbeat: NodeJS.Timeout | undefined;
   private sessionTimer: NodeJS.Timeout | undefined;
+  /** Event-loop delay since the last heartbeat: a stalled loop holds back every browser's frames. */
+  private loopDelay: IntervalHistogram | undefined;
   private everConnected = false;
   private closed = false;
   /** Connections to the bridge stream so far (tests assert there is exactly one). */
@@ -252,10 +256,15 @@ export class LiveHub {
       this.sessionTimer = setInterval(() => this.checkSessions(), this.opts.sessionCheckMs);
       this.sessionTimer.unref();
     }
+    if (!this.loopDelay) {
+      this.loopDelay = monitorEventLoopDelay({ resolution: 20 });
+      this.loopDelay.enable();
+    }
   }
 
   private tick(): void {
     if (this.clients.size === 0) return;
+    this.logLoopDelay();
     void this.health.check().then(() => {
       const now = Date.now();
       for (const c of this.clients.values()) {
@@ -268,6 +277,18 @@ export class LiveHub {
         this.sendStatus(c, false);
       }
     });
+  }
+
+  /** Once per heartbeat while browsers are connected: the loop's p99 and longest delay since the last line. */
+  private logLoopDelay(): void {
+    const h = this.loopDelay;
+    if (!h) return;
+    const ms = (ns: number) => Math.round(ns / 1e5) / 10;
+    this.log.info(
+      { clients: this.clients.size, p99Ms: ms(h.percentile(99)), maxMs: ms(h.max) },
+      'live hub event loop delay',
+    );
+    h.reset();
   }
 
   private checkSessions(): void {
@@ -531,6 +552,7 @@ export class LiveHub {
     this.stop();
     if (this.heartbeat) clearInterval(this.heartbeat);
     if (this.sessionTimer) clearInterval(this.sessionTimer);
+    this.loopDelay?.disable();
     if (this.lingerTimer) clearTimeout(this.lingerTimer);
     for (const c of [...this.clients.values()]) this.detach(c);
   }

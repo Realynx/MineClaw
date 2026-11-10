@@ -28,6 +28,9 @@ public sealed class PlayerState
 {
     private readonly object _sync = new();
     private PlayerSnapshot _snap = new(0, Vec3d.Zero, PlayerPhysics.EyeHeight, 0, 0, false, 20, 20, 5, 0, 0, 0, 0, 0, 0, false);
+    // When the pose (position, yaw, pitch) was last published, in Stopwatch ticks; 0 = never. Kept beside the snapshot, not in
+    // it: PlayerSnapshot is positional and built in many places.
+    private long _poseStamp;
 
     /// <summary>Simulated body — touch only from the tick thread.</summary>
     public PhysicsState Physics { get; } = new();
@@ -36,6 +39,23 @@ public sealed class PlayerState
     public bool PositionKnown { get; private set; }
 
     public PlayerSnapshot Snapshot { get { lock (_sync) return _snap; } }
+
+    /// <summary>The snapshot and the <see cref="System.Diagnostics.Stopwatch"/> timestamp of its pose, read together (0 = the
+    /// pose was never published). The viewer dates each body's sample by it instead of by the moment it was read.</summary>
+    public PlayerSnapshot PoseSnapshot(out long stamp)
+    {
+        lock (_sync)
+        {
+            stamp = _poseStamp;
+            return _snap;
+        }
+    }
+
+    /// <summary>The Stopwatch timestamp of the last published pose; 0 = never.</summary>
+    public long PoseStamp { get { lock (_sync) return _poseStamp; } }
+
+    // caller holds _sync; never moves backwards
+    private void StampPose() => _poseStamp = Math.Max(_poseStamp, System.Diagnostics.Stopwatch.GetTimestamp());
 
     private void Set(Func<PlayerSnapshot, PlayerSnapshot> f) { lock (_sync) _snap = f(_snap); }
 
@@ -120,14 +140,24 @@ public sealed class PlayerState
         Physics.Teleport(feet, yaw, pitch);
         Physics.OnGround = onGround;
         PositionKnown = true;
-        Set(s => s with { Position = feet, Stance = stance, Yaw = yaw, Pitch = pitch, OnGround = onGround });
+        lock (_sync)
+        {
+            _snap = _snap with { Position = feet, Stance = stance, Yaw = yaw, Pitch = pitch, OnGround = onGround };
+            StampPose();
+        }
     }
 
     /// <summary>Publishes the physics body after a tick.</summary>
-    public void SyncFromPhysics() =>
-        Set(s => s with
+    public void SyncFromPhysics()
+    {
+        lock (_sync)
         {
-            Position = Physics.Position, Stance = Physics.Stance, Yaw = Physics.Yaw, Pitch = Physics.Pitch,
-            OnGround = Physics.OnGround,
-        });
+            _snap = _snap with
+            {
+                Position = Physics.Position, Stance = Physics.Stance, Yaw = Physics.Yaw, Pitch = Physics.Pitch,
+                OnGround = Physics.OnGround,
+            };
+            StampPose();
+        }
+    }
 }

@@ -16,7 +16,7 @@ import type {
 } from '@mineclaw/contracts';
 import { api, type ApiError } from '../api/client';
 import { liveKeys } from './dispatch';
-import { mergeEntities, mergeEvents, mergeFeed, mergeMemoryActivity } from './merge';
+import { mergeEvents, mergeFeed, mergeMemoryActivity, seedEntities } from './merge';
 
 const live = { staleTime: Infinity, refetchOnWindowFocus: false } as const;
 
@@ -67,11 +67,10 @@ export function useEntities() {
     queryKey: liveKeys.entities,
     queryFn: async ({ signal }) => {
       const fetched = await api('world.entities', { query: { since: 0 }, signal });
-      const prev = qc.getQueryData<WorldEntities>(liveKeys.entities);
       // Bot poses advance independently of the entity revision. A slow resync must not rewind a newer stream pose just
-      // because no mob changed revision while the REST request was in flight.
-      const newer = prev && ((prev.rev ?? 0) > (fetched.rev ?? 0) || (prev.rev === fetched.rev && prev.at > fetched.at));
-      return newer ? prev : mergeEntities(undefined, { ...fetched, full: true });
+      // because no mob changed revision while the REST request was in flight; a newer set that began with a delta is laid
+      // over the snapshot instead of kept on its own (it lacks every entity that did not change).
+      return seedEntities(fetched, qc.getQueryData<WorldEntities>(liveKeys.entities));
     },
     ...live,
   });

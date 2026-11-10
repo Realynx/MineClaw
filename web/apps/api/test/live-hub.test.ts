@@ -1,7 +1,8 @@
 /** LiveHub backpressure and filters as units (fake sockets, no network). */
 import { EventEmitter } from 'node:events';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { describe, expect, it } from 'vitest';
+import { Writable } from 'node:stream';
+import { describe, expect, it, vi } from 'vitest';
 import { BridgeClient } from '../src/bridge/bridge-client.js';
 import { BridgeHealth } from '../src/bridge/bridge-health.js';
 import { createLogger } from '../src/common/logger.js';
@@ -251,5 +252,49 @@ describe('SSE parser', () => {
       { event: 'now', data: '{"a":\n1}', id: '7' },
       { event: 'message', data: 'plain', id: '7' },
     ]);
+  });
+});
+
+describe('event loop delay', () => {
+  /** A hub whose log lines are kept (pino writes each line to the stream at once). */
+  function loggedHub() {
+    const lines: Array<Record<string, unknown>> = [];
+    const out = new Writable({
+      write(chunk: Buffer, _enc, done) {
+        lines.push(JSON.parse(chunk.toString()) as Record<string, unknown>);
+        done();
+      },
+    });
+    const logger = createLogger('info', out);
+    const bridge = new BridgeClient({ url: 'http://127.0.0.1:9', key: 'k'.repeat(32), timeoutMs: 50 }, log);
+    const h = new LiveHub(bridge, new BridgeHealth(bridge, log), logger, { backoffBaseMs: 10_000 });
+    return { h, delays: () => lines.filter((l) => l.msg === 'live hub event loop delay') };
+  }
+
+  it('logs p99 and max with the client count at each 15 s heartbeat while browsers are connected', () => {
+    vi.useFakeTimers();
+    try {
+      const { h, delays } = loggedHub();
+      const res = new FakeRes();
+      h.attach(fakeReq(), res as unknown as ServerResponse, undefined, { username: 'u', stillValid: () => true });
+      vi.advanceTimersByTime(14_999);
+      expect(delays()).toEqual([]);
+      vi.advanceTimersByTime(1);
+      expect(delays()).toHaveLength(1);
+      expect(delays()[0]).toMatchObject({
+        level: 30,
+        clients: 1,
+        p99Ms: expect.any(Number),
+        maxMs: expect.any(Number),
+      });
+      vi.advanceTimersByTime(15_000);
+      expect(delays()).toHaveLength(2);
+      res.destroy();
+      vi.advanceTimersByTime(30_000);
+      expect(delays()).toHaveLength(2); // nobody connected: nothing to report
+      h.close();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

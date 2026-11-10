@@ -192,3 +192,175 @@ describe('stream-driven motion (frames pushed, numbered)', () => {
     expect(s.intervalMs).toBeCloseTo(200);
   });
 });
+
+describe('when a body was sampled', () => {
+  const EPOCH = 1_700_000_000_000;
+  const stamped = (ms: number, bots: BotDto[], frame: number): EntityDelta => ({
+    rev: 1,
+    full: true,
+    bots,
+    entities: [],
+    at: EPOCH + ms,
+    frame,
+  });
+
+  it('a live body is dated by its pose age; an age above 0.25 s, or on a body that is not live, is not used', () => {
+    const { s, at } = clocked();
+    // A block every 100 ms; every body is at the same place in every frame.
+    for (let i = 0; i <= 20; i++) {
+      at(1000 + i * 100);
+      s.apply(
+        stamped(
+          i * 100,
+          [
+            bot(i, { name: 'aged', short: 'a', live: true, poseAge: 0.1 }),
+            bot(i, { name: 'plain', short: 'p', live: true }),
+            bot(i, { name: 'old', short: 'o', live: true, poseAge: 0.3 }),
+            bot(i, { name: 'nolive', short: 'n', poseAge: 0.1 }),
+          ],
+          i + 1,
+        ),
+      );
+    }
+    at(3050);
+    s.beginFrame();
+    const plain = s.bot('plain')!.x;
+    expect(s.bot('aged')!.x - plain).toBeCloseTo(1); // its samples are 100 ms older: drawn where it was 100 ms later
+    expect(s.bot('old')!.x).toBe(plain);
+    expect(s.bot('nolive')!.x).toBe(plain);
+  });
+});
+
+// An AI hive body (`live: false`) is published in every frame, but its place is the hub's snapshot, which changes every
+// 1 to 2.5 s. Played out by the frames' stamps it stood for a second, then crossed the distance in one frame interval.
+describe('AI hive bodies (live: false)', () => {
+  const EPOCH = 1_700_000_000_000;
+  const hive = (x: number, extra: Partial<BotDto> = {}) =>
+    bot(x, { name: 'Hive', short: 'h1', main: false, live: false, ...extra });
+  const stamped = (ms: number, b: BotDto, frame: number): EntityDelta => ({
+    rev: 1,
+    full: true,
+    bots: [b],
+    entities: [],
+    at: EPOCH + ms,
+    frame,
+  });
+
+  it('glide on, one update behind, instead of standing and dashing', () => {
+    const { s, at } = clocked();
+    let frame = 0;
+    const steps: number[] = [];
+    let last = NaN;
+    // Ten identical frames, then a 6-block change, over and over: 6 blocks a second on average.
+    for (let k = 0; k < 120; k++) {
+      for (let t = 0; t < 100; t += 25) {
+        at(1000 + k * 100 + t);
+        if (k >= 30) {
+          const x = s.bot('Hive')!.x;
+          if (!Number.isNaN(last)) steps.push(x - last);
+          last = x;
+        }
+        if (t === 0) s.apply(stamped(k * 100, hive(6 * Math.floor(k / 10)), ++frame));
+      }
+    }
+    const average = (6 / 1000) * 25;
+    expect(Math.max(...steps)).toBeLessThan(2 * average);
+    expect(Math.min(...steps)).toBeGreaterThanOrEqual(0); // never back
+    expect(steps.filter((d) => d > 0).length).toBeGreaterThan(steps.length * 0.9); // moving nearly all the time
+    expect(s.bot('Hive')!.x).toBeGreaterThan(6 * 10); // one update behind the newest place (66)
+  });
+
+  it('after a second away a hive body that went far appears there; a near one glides', () => {
+    const { s, at } = clocked();
+    s.apply(stamped(0, hive(0), 1));
+    at(1100);
+    s.apply(stamped(100, hive(0), 2));
+    at(2600);
+    s.apply(stamped(1600, hive(3), 3));
+    expect(s.bot('Hive')!.x).toBe(3);
+    at(2700);
+    s.apply(stamped(1700, hive(3), 4));
+    at(4200);
+    s.apply(stamped(3200, hive(4), 5));
+    expect(s.bot('Hive')!.x).toBeCloseTo(3);
+    at(4200 + 1600 / 2);
+    expect(s.bot('Hive')!.x).toBeCloseTo(3.5); // over the 1.6 s since its last change
+  });
+
+  it('a standing hive body turns its head', () => {
+    const { s, at } = clocked();
+    s.apply(stamped(0, hive(0, { yaw: 0 }), 1));
+    at(1100);
+    s.apply(stamped(100, hive(0, { yaw: 90 }), 2));
+    at(1300);
+    s.apply(stamped(300, hive(0, { yaw: 90 }), 3));
+    at(1300 + s.intervalMs);
+    expect(s.bot('Hive')!.yaw).toBeCloseTo(90);
+    expect(s.bot('Hive')!.x).toBe(0);
+  });
+});
+
+// The models are placed at the start of a frame, the selection outline and the page's overlay marks later in it. Each
+// read used to take the clock again, so a ring led its body by the frame's own work (0.8 block at Faster and a 60 ms frame).
+describe('one sample instant per frame (beginFrame)', () => {
+  const stamped = (ms: number, x: number, frame: number): EntityDelta => ({
+    ...delta(1, [mob(7, x, { kind: 'item', age: 1 })], { full: true, bots: [bot(x)] }),
+    at: 1_700_000_000_000 + ms,
+    frame,
+  });
+
+  it('every read of a frame returns the same positions while the clock runs on', () => {
+    const { s, at } = clocked();
+    s.apply(delta(1, [mob(7, 0)], { full: true }));
+    at(1200);
+    s.apply(delta(2, [mob(7, 6)], { bots: [bot(4)] }));
+    at(1250);
+    s.beginFrame();
+    const body = s.bots()[0].x,
+      ent = s.entities(0)[0].x;
+    expect(body).toBeCloseTo(1);
+    expect(ent).toBeCloseTo(1.5);
+    at(1290); // 40 ms of the frame's work later, the outline and the overlay ask again
+    expect(s.bot('main')!.x).toBe(body);
+    expect(s.bots()[0].x).toBe(body);
+    expect(s.entities(0)[0].x).toBe(ent);
+    s.beginFrame(); // the next frame moves on
+    expect(s.bot('main')!.x).toBeCloseTo(1.8);
+    expect(s.entities(0)[0].x).toBeCloseTo(2.7);
+  });
+
+  it('holds for timestamped motion and for the ages that advance locally', () => {
+    const { s, at } = clocked();
+    for (let i = 0; i <= 30; i++) {
+      at(1000 + i * 100);
+      s.apply(stamped(i * 100, i * 0.43, i + 1));
+    }
+    at(4020);
+    s.beginFrame();
+    const body = s.bot('main')!.x,
+      [drop] = s.entities(0);
+    expect(body).toBeCloseTo((3020 - 250) * 0.0043, 1); // 250 ms behind the stream
+    at(4080);
+    expect(s.bot('main')!.x).toBe(body);
+    expect(s.entities(0)[0]).toEqual(drop); // position and ageTicks alike
+    s.beginFrame(4080);
+    expect(s.bot('main')!.x - body).toBeCloseTo(60 * 0.0043);
+    expect(s.entities(0)[0].ageTicks).toBeCloseTo(drop.ageTicks + 60 / 50);
+  });
+
+  it('a frame instant older than the last update never overshoots the blend that update started', () => {
+    const { s, at } = clocked();
+    for (let i = 0; i <= 2; i++) {
+      at(1000 + i * 100);
+      s.apply(stamped(i * 100, i, i + 1));
+    }
+    s.beginFrame(); // drawn at 1200: 250 ms behind, still at the start
+    expect(s.bot('main')!.x).toBe(0);
+    // No frame was drawn for a while (the fps cap, a busy page), and an update lands that has a third of a block to blend.
+    at(1900);
+    s.apply(stamped(900, 2.5, 4));
+    expect(Math.abs(s.bot('main')!.x)).toBeLessThan(0.4); // the blend once, not eight times over (two blocks off)
+    s.beginFrame();
+    expect(s.bot('main')!.x).toBeCloseTo(2); // the frame after it draws the pawn where it waited
+  });
+});

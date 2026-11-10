@@ -350,7 +350,7 @@ export class MockHive {
         z: p.z,
         yaw: p.yaw,
         pitch: 10,
-        pose_age: 0.2,
+        pose_age: 0,
         hp: v.hp,
         food: v.food,
         job: b.task,

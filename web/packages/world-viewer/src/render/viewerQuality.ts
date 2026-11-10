@@ -5,6 +5,7 @@
 // show the live fps and whether WebGL runs in software. No three.js here: the app imports this through the light
 // `@mineclaw/world-viewer/settings` entry without pulling in the renderer.
 
+import type { MotionFigures } from '../world/motion';
 import type { QualityProfile } from './quality';
 
 /** How far mobs, players and drops are drawn: as far as the ground ('ground'), or this many blocks. */
@@ -190,6 +191,22 @@ let status: ViewerStatus | null = null;
 /** Runtimes report here after each primary render. */
 export function reportViewerStatus(s: ViewerStatus): void {
   status = s;
+}
+
+/** The entity stream and the drawn frames over the last ten seconds (`WorldRuntime.motionStatus`). */
+export interface MotionStatus extends MotionFigures {
+  /** The longest time between two drawn frames (ms). */
+  frame: number;
+}
+
+/**
+ * The frame-rate overlay's second line. Reading it: `frame` at 100 ms or more is the browser's main thread; `arr` high
+ * with `src` near 100 is a relay or the network; `src` high is the bot or the bridge; all low and bodies still uneven
+ * is the game itself or the sampling.
+ */
+export function motionLine(m: MotionStatus): string {
+  const ms = (v: number) => `${Math.round(v)} ms`;
+  return `motion ${m.rate.toFixed(1)}/s · src ${ms(m.src)} · arr ${ms(m.arr)} · frame ${ms(m.frame)} · buf ${ms(m.buf)} · pauses ${m.pauses}`;
 }
 
 /** The latest report of any runtime's interactive view, or null when none drew in the last two seconds. */

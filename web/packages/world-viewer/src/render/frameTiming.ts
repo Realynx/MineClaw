@@ -48,6 +48,13 @@ export class FrameTiming {
     return Math.max(p.cpu, Number.isFinite(ns) ? ns / 1e6 : 0);
   }
 
+  /** Drops the measurement `end` left waiting for the GPU, unread: its frame is not one to judge the frame rate by. */
+  discard(): void {
+    if (!this.pending) return;
+    this.gl?.deleteQuery(this.pending.query);
+    this.pending = null;
+  }
+
   dispose(): void {
     if (this.query) this.gl?.deleteQuery(this.query);
     if (this.pending) this.gl?.deleteQuery(this.pending.query);

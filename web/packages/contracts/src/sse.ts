@@ -37,7 +37,7 @@ export const SSE_EVENTS = {
   feed: FeedResponse,
   /** One bot's now-snapshot (2 Hz per watched bot; emitted on change). */
   now: BotNow,
-  /** Entity delta (5 Hz). `full: true` = replace the set. */
+  /** Entity delta (up to 10 Hz, only when something changed). `full: true` = replace the set. */
   entities: WorldEntities,
   /** Hive tree (0.33 Hz; emitted on change). */
   hive: HiveTreeNode,

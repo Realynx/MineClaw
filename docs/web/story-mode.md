@@ -2590,6 +2590,30 @@ The design grew while it was built. The wire forms are in `docs/web/api.md` §6 
     just above it along the view ray (started at the camera it culled every section: the ground vanished past about 47
     blocks of zoom).
   - With no colony yet, the map opens over the main bot (else the signed-in user's player), not the world origin.
+  - **First frame (2026-11-10).** The map places its camera inside the viewer's frame callback, before the viewer poses
+    it, so the first frame drawn is already on the colony. Until the map knows where to look (the remembered view, the
+    colony's home, or for a colony without a home the main bot or the player) every frame is held: nothing is drawn and
+    nothing is asked of the world, so no terrain is fetched, meshed or shown at the world origin. While it holds and the
+    colony is still loading, a neutral area says "Loading the colony…". A new viewer engine object (the viewer remounted)
+    opens on the same picture, and the takeover view holds the same way until it has the pawn's pose.
+  - **Remembered view (2026-11-10).** The browser remembers the last colony the map showed and its view (look-at x and z,
+    zoom clamped to the map's 10..112), one per account in `localStorage` (`mcx-story-view:<user>`, shape-checked on
+    read; a copy in the page's memory covers blocked storage). Re-entering the Controller opens that view when it is of the
+    same colony, and home on a first visit. Without `?colony=` in the address the last colony opened in this browser opens
+    (asked for while the list is still loading), else the first active one; a remembered colony that answers 404 is
+    forgotten. The working level is not remembered.
+  - **Colony switch (2026-11-10).** Switching to another colony glides the map to the new colony's home (500 ms) once its
+    state is in; a colony with no home glides over the main bot (else the player), or stays. A home moved inside one
+    colony does not move the map.
+  - **Load error (2026-11-10).** A failed list or state request (no answer, 503) shows "Can't reach the colony. Retrying…"
+    instead of the found-a-colony card, which only shows when there really is no colony (an empty list, or a 404 for the
+    colony in `?colony=`). A colony whose state is still missing is asked for again every 3 s, even while stream frames
+    flow; one that answered 404 is not (the minute's full refetch still would see it appear).
+  - **Updating the map (2026-11-10).** A small chip in the top-left corner says "Updating the map…" while the viewer
+    catches up: a tab that came back, a reconnect, a view just added. It blocks nothing. The map polls
+    `WorldRuntime.syncStatus()` four times a second (never per frame) and shows the chip after two polls in a row report
+    `updating`, so a section re-meshed during live play does not flash it. Only a sweep starts it: live block changes
+    alone never do, sections out of every view's range do not count, and meshing after a sweep holds it for at most 10 s.
   - Pawns draw with name labels and job icons, and zones and designations are coloured overlays.
   - **Bodies as models (added 2026-11-03).** Every pawn and AI body is drawn as its Minecraft player model (skin, held
     item, armour, walking), like the Live view. They are bots of the world store; the server leaves bot players out of the

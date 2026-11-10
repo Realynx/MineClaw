@@ -42,7 +42,15 @@ internal sealed class FakeSupervisorWorld : ISupervisorWorld
     public IReadOnlyList<WorldBot> Bots() =>
         [new("maid_chan", "main", true, 0, 1.5, 65, 1.5, 90, 20, 0, 20, 18, "idle", null, "cobblestone x12", ["block 4,64,6"], true, 0)];
 
-    public IReadOnlyList<WorldEntity> Entities(int? dim) { Interlocked.Increment(ref EntityCalls); return [new("player", "PoofImaFox", 0, 3, 65, 3)]; }
+    /// <summary>1 = the next entity read throws (once).</summary>
+    public int ThrowEntitiesOnce;
+
+    public IReadOnlyList<WorldEntity> Entities(int? dim)
+    {
+        Interlocked.Increment(ref EntityCalls);
+        if (Interlocked.Exchange(ref ThrowEntitiesOnce, 0) == 1) throw new InvalidOperationException("entity merge broke");
+        return [new("player", "PoofImaFox", 0, 3, 65, 3)];
+    }
 
     public WorldOverlays Overlays(int dim) => new(DateTimeOffset.UnixEpoch, dim,
         [new WorldMark("block", "block 4,64,6", [4, 64, 6], [4, 64, 6], "maid_chan")], [new WorldMark("waypoint", "home", [0, 65, 0], [0, 65, 0])],

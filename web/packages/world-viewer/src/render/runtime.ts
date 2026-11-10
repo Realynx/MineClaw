@@ -13,6 +13,7 @@ import { normalizeEntities, normalizeOverlays } from '../wire/normalize';
 import type { GameVersion } from '../world/blocks';
 import { WorldCache, type WorldTimeAnchor } from '../world/cache';
 import { EntityStore, type BotView, type EntityView } from '../world/entities';
+import { RecentFigures } from '../world/motion';
 import { fogColour, precipitation, skyColour, skylightSubtractedSmooth } from '../world/sky';
 import { Poller, WorldSync, type Interest } from '../world/sync';
 // [blocks] the bundled block atlas + its animation pass
@@ -31,7 +32,7 @@ import { loadBundle, type AssetBundle } from '../assets/bundle';
 import { ASSETS_CHANGED } from '../assets/localStore';
 import { PROFILES, QualityController, probeRendererOnce, type QualityName, type QualityProfile, type RendererProbe } from './quality';
 import { FrameTiming } from './frameTiming';
-import { effectiveProfile, entityReach, FrameLimiter, getViewerQuality, reportViewerStatus, viewerQualityRev, type ViewerQuality } from './viewerQuality';
+import { effectiveProfile, entityReach, FrameLimiter, getViewerQuality, reportViewerStatus, viewerQualityRev, type MotionStatus, type ViewerQuality } from './viewerQuality';
 import { ChangeFlash } from './changeFlash';
 import { BlockDeltaFeed } from '../world/deltas';
 import { BlockEntityStore } from '../world/blockEntities';
@@ -167,6 +168,20 @@ export interface RuntimeMemory {
   /** How far the last primary view drew entities (blocks; top-down / iso: across the ground from its look-at point). */
   entityRadius: number;
 }
+
+/** Whether the map is catching up (a tab that came back, a reconnect): for a small "updating" note, polled, never per frame. */
+export interface SyncStatus {
+  /** Every view's world sweep since the loops last started (or were told to re-index) is over. */
+  swept: boolean;
+  /** Sections waiting to be meshed within some view's range. */
+  sectionsQueued: number;
+  /** Not swept yet, or the sections the last sweep brought are still being meshed. */
+  updating: boolean;
+}
+
+/** After a sweep, how long the "updating" note may wait for the views' meshing queue to run dry: live block changes can keep
+ * it from ever reaching zero. */
+export const MESH_TAIL_MS = 10_000;
 
 let nextViewId = 1;
 export const newViewId = () => nextViewId++;
@@ -308,6 +323,15 @@ export class WorldRuntime {
   private statusFrames = 0;
   private statusAt = 0;
   private statusFps = 0;
+  /** The last primary render (0: none since the runtime last paused, the primary changed or it held a frame) and the longest
+   * gap between two, over ten seconds. */
+  private drawnAt = 0;
+  private readonly drawnGaps = new RecentFigures(1);
+  /** The dimensions with a view centre in the last frame (the sections whose queue `syncStatus` counts). */
+  private centreDims: ReadonlyMap<Dim, Centre[]> = new Map();
+  /** `syncStatus`: a sweep was seen, and the sections it brought are still being meshed (until `meshTailEnds`). */
+  private meshTail = false;
+  private meshTailEnds = 0;
   private entityRadius = 0;
   private flash = 0;
   private readonly renderedAt = new Map<number, number>();
@@ -541,6 +565,7 @@ export class WorldRuntime {
   attachPrimary(v: RuntimeView, container: HTMLElement): boolean {
     if (this.primary && this.primary.view !== v) return false;
     this.primary = { view: v, container };
+    this.drawnAt = 0; // the motion line's frame gap is measured within one primary view, not across a page change
     // Persistent canvases still contain the previous view's pixels until this camera draws its first frame.
     this.canvas.style.visibility = 'hidden';
     container.appendChild(this.canvas);
@@ -816,6 +841,29 @@ export class WorldRuntime {
     };
   }
 
+  /**
+   * See `SyncStatus`. Polled a few times a second, never per frame. After a sweep the map stays "updating" until the
+   * queue in the views' range first runs dry (at most MESH_TAIL_MS): a re-mesh during live play is not catching up.
+   */
+  syncStatus(now: number = performance.now()): SyncStatus {
+    let queued = 0;
+    for (const dim of this.centreDims.keys()) queued += this.sections.get(dim)?.queuedInRange ?? 0;
+    const swept = !this.sync.catchingUp;
+    if (!swept) {
+      this.meshTail = true;
+      this.meshTailEnds = 0;
+    } else if (this.meshTail) {
+      if (!this.meshTailEnds) this.meshTailEnds = now + MESH_TAIL_MS;
+      if (queued === 0 || now >= this.meshTailEnds) this.meshTail = false;
+    }
+    return { swept, sectionsQueued: queued, updating: !swept || this.meshTail };
+  }
+
+  /** The frame-rate overlay's motion line: the entity stream over the last ten seconds and the longest gap between two drawn frames. */
+  motionStatus(now: number = performance.now()): MotionStatus {
+    return { ...this.store.motionFigures(), frame: this.drawnGaps.most(now, 0) };
+  }
+
   private makeSync(): WorldSync {
     const s = new WorldSync(this.source, this.host, this.cache, {
       onApplied: (res) => {
@@ -993,7 +1041,7 @@ export class WorldRuntime {
   private readonly tick = (now: number): void => {
     if (this.disposed) return;
     this.raf = requestAnimationFrame(this.tick);
-    if (this.paused || this.hidden) { this.last = 0; return; }
+    if (this.paused || this.hidden) { this.last = this.drawnAt = 0; return; }
     this.applyQuality();
     // The fps cap skips whole frames (upkeep included); the next drawn frame's dt spans the skipped ones.
     if (!this.limiter.due(now, this.q.fpsCap)) return;
@@ -1018,6 +1066,8 @@ export class WorldRuntime {
   /** Entities, overlays, bubbles and entity light; entity events animate (swings, hurt flashes, deaths…), lightning also
    * flashes the world. */
   private updateBodies(now: number): void {
+    // One instant for every reader of this frame, on the store's own clock (the one its updates are stamped with).
+    this.store.beginFrame();
     const selected = new Set<string>();
     for (const v of this.views.values()) for (const s of v.selectedBots()) selected.add(s);
     this.entities.update(this.store.bots(this.botsBuf), this.store.entities(null, this.entsBuf), now, selected);
@@ -1078,6 +1128,7 @@ export class WorldRuntime {
       centres.set(c.dim, list);
     }
     this.sync.setInterests(interests);
+    this.centreDims = centres;
     for (const [dim, cs] of centres) this.sectionsFor(dim).maintain(cs, now);
   }
 
@@ -1097,15 +1148,21 @@ export class WorldRuntime {
       else this.render(s, now);
     }
     if (primarySetup) this.render(primarySetup, now);
+    // A primary that drew nothing (held until it knows where to look) is not a slow frame: the gap restarts.
+    else this.drawnAt = 0;
     if (timed) {
       const cpu = this.frameTiming.end(now);
       if (cpu !== null && primarySetup) this.quality.sample(now, cpu);
+      // The primary drew nothing (a held view): its GPU time would read as a fast frame and turn the levers back up.
+      if (!primarySetup) this.frameTiming.discard();
     }
   }
 
   /** After a primary render: the page-wide viewer status (fps over half-second windows, the levers, the entity reach). */
   private report(now: number, s: ViewSetup, entityRadius: number): void {
     this.entityRadius = entityRadius;
+    if (this.drawnAt > 0) this.drawnGaps.max(now, 0, now - this.drawnAt);
+    this.drawnAt = now;
     this.statusFrames++;
     if (!this.statusAt) this.statusAt = now;
     if (now - this.statusAt >= 500) {

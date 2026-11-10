@@ -186,11 +186,54 @@ Tests for these go in `tests/MineClaw.App.Tests` (or the closest existing test p
   frames' pace; its own poll is a 1 s backstop, and the cache-backed source numbers frames (`EntityDelta.frame`) so a read
   between frames never restarts the glides. On the bot the entity delta has its own two-slot lane beside the heavy world reads
   (chunk batches, the index): it never queues behind them.
+- **Playout (2026-11-10).** How the viewer turns the frames into smooth motion (`world/motion.ts`, `world/entities.ts`).
+  - Bodies are drawn one update interval plus 150 ms behind the stream, within 200..400 ms: 250 ms at 10 Hz.
+  - A body whose next frame is late waits where it is drawn and then walks on from there at its own pace, later: the
+    delay grows to cover the hole (at most 1 s) and slews back 15 ms per update, so after a hiccup bodies run up to 1 s
+    behind for a few seconds instead of freezing and dashing. A stretch after a quiet moment (the bridge sends nothing
+    while nothing moves) is never replayed slower than half the body's own pace. History is kept by time (1.3 s, at most
+    32 points), so a grown delay still finds the updates it plays.
+  - After a second without frames a body's walk continuation is taken back over 300 ms. A frame after a second or more of
+    silence (a tab that was away, a reconnect) is a fresh start: a body more than 2 blocks (Manhattan) from where it is
+    drawn appears at its new place instead of gliding there; a closer one gets a short glide. More than 8 blocks in one
+    update always snaps.
+  - The stream clock is anchored on a frame. A later frame that arrives over 120 ms faster than that anchor shows it was
+    stale: within a second of the anchor everything starts over; later the clock is moved under the running playout
+    (every track's history shifts, the delay takes the difference up), so nothing drawn jumps.
+  - Live bots send `pose_age` (0..0.25 s): how old the pose was when the frame was built. The bot records a stopwatch
+    stamp each time it publishes a pose (`PlayerState.PoseSnapshot`), and the viewer dates the sample
+    `sampled - poseAge * 1000` for `live: true` bodies with an age of 0..0.25 s, so a 20 Hz position read at 10 Hz does
+    not shake. The bot rebuilds its entity log at most every 50 ms (was 100 ms), so every 100 ms socket tick gets a fresh
+    one (at 100 ms about one tick in three resent the previous log).
+  - AI hive bodies (`live: false`) move only when their hub's snapshot changes (every 1 to 2.5 s). They glide to each new
+    place over the time since their previous change (200..3000 ms), one update behind, instead of standing and dashing.
+    After a second without frames one more than 2 blocks off snaps the same way; a standing one still turns its head.
+    The supervisor takes such a body's position from the newer of its pose and its hub snapshot.
+  - One sample instant per drawn frame: `EntityStore.beginFrame()` runs first in the runtime's body update, so the
+    models, the Story overlay's marks and the camera follow all read the same instant.
+  - The browser parses each stream frame once (the socket hands its parsed payload on). In production (validation off)
+    `entities` and `blocks` frames are checked against the contract one in 100 (a mismatch is warned about at most once a
+    minute); every other topic, `story` included, is always checked. The `world.entities` cache never expires. A set
+    is complete when it was a full set (`full: true`); one that began with a delta, or that a stream resync marked
+    stale, is completed once from REST by the first world view that reads it (the Controller included), then handed
+    on as a full set.
 - **Perf line (2026-11-04).** The supervisor logs once a minute: process CPU, thread pool (threads, queued items), GC
   (collections, pause, MB/s), the A* gate (searches, busy seconds, longest, time bodies waited), the Story director (picks and
   ticks with their time) and per route (ids folded) count and p50/p95/max of the time callers waited. World/control push
   diagnostics count publication gaps over 250 ms, the longest gap and GC pause during it, and the peak queued work observed
   at a send. These measure supervisor publication, not browser receipt; queued work can drain before the observation.
+- **Stream diagnostics (2026-11-10).** Every hop of the motion path can be read.
+  - The world and control push lines append `, longest L ms, gaps>150ms G2, opens O, failed F` after
+    `queued-peak-at-send Q` (the existing text is unchanged): the true longest interval between two sends (also below
+    250 ms), the gaps over 150 ms, the sockets opened in the minute, and the sockets that ended on a snapshot error or a
+    busy lane. A world socket that ends other than by the client closing or a shutdown logs
+    `supervisor: world socket ended: <how> <detail>` at Information, at most one line per 10 s (the suppressed ones are
+    counted into the next).
+  - The bridge logs `world stream: N frames, longest gap M ms, reconnects R, gc pause P ms` once a minute while a client
+    is connected: motion (entity) frames received from the bot's world socket, the longest interval between two of them,
+    reconnects to the bot, and the bridge's GC pause. A world socket that had been up and closes logs one Information
+    line with the reason; failed connect attempts stay at Debug.
+  - The browser's half is the frame-rate overlay's motion line (Viewer settings, below).
 - **Worker availability (2026-11-08).** Normal bot startup raises the worker minimum to four per available CPU, capped at 64,
   while preserving a higher existing minimum, the configured maximum and the I/O minimum. Workers are created on demand.
   This gives socket continuations room alongside existing synchronous colony and inspection work: live testing on the
@@ -254,6 +297,19 @@ and caching. It never reshapes domain data beyond camelCase conversion.
   (reopened and re-synced when shown). `npm run test:e2e` runs a `prod` project against the standalone build behind Nest
   (`apps/web/scripts/prod-stack.mjs`, mock bridge at production stream rates; `MOCK_REPLAY_DIR` replays a capture of a real
   bot) next to the mock-mode specs.
+- **Tab return (2026-11-10).** A world view that comes back keeps what it had: the columns in the shared store, the
+  section meshes (a new view, such as a re-entered Controller, follow view or takeover, no longer evicts them on its first
+  step; a view names no interest and no section centre until its camera has been posed), and the entities. It reloads
+  only what may have changed: the index hash-diff runs at once and downloads just the columns whose hash moved, the
+  stream reconnects and replays or resyncs, and a resync marks the entity set stale, so the next read lays one REST
+  snapshot under it. That request is never waited for (bodies keep moving on stream frames, handed on as deltas, and
+  it gives up after 10 s); the seeded set carries no events, so swings and sounds are not played twice. The bodies
+  restart as after any silence (the 2-block snap above). While the views catch up, `WorldRuntime.syncStatus()` reports
+  `updating` (an interest's sweep has not finished, or the sections in the views' range that it brought are still being
+  meshed, for at most 10 s; a re-mesh during live play alone is not catching up), and the Controller shows a small
+  "Updating the map…" chip. A tab the browser discarded is a page reload.
+  `e2e/prod/story-first-frame.spec.ts` guards the Controller's first frame: with the colony's state held back 1.5 s, no
+  world index is asked for near the origin, and the first one is at the colony's home.
 - **Tables.** Every table is server-paged and virtualised.
 - **Status.** One connection-status indicator in the header, not one per poller.
 - **Dev stats.** Hidden unless the user turns on "developer details".
@@ -535,6 +591,17 @@ when storage is unavailable. Other tabs follow through the `storage` event.
   - Frame rate overlay: a small fps / frame time / resolution / distance / entity count readout in the top-right corner of
     every interactive view (`WorldViewer`). The panel also shows the measured fps of the last interactive view and whether
     WebGL is software-rendered (`WEBGL_debug_renderer_info`: SwiftShader, llvmpipe and the like).
+    - **Motion line (2026-11-10).** A second line shows how bodies get here, over the last 10 s
+      (`WorldRuntime.motionStatus()`, `motionLine` in `render/viewerQuality.ts`):
+      `motion 9.8/s · src 110 ms · arr 240 ms · frame 180 ms · buf 250 ms · pauses 1`. `motion` is entity frames applied
+      per second; `src` the longest step between the sender's stamps of two consecutive frames; `arr` the longest time
+      between their arrivals (both ignore a silence of a second or more: a quiet world sends nothing); `frame` the longest
+      time between two drawn frames of one view (reset while the tab is hidden, when the drawing view changes and while
+      it holds its frame); `buf` how far behind the stream bots are drawn now;
+      `pauses` the frames for which a body had to wait. Reading it: `frame` at 100 ms or more is the browser's main
+      thread; `arr` high with `src` near 100 ms is a relay (bridge or Nest) or the network; `src` high is the bot or the
+      bridge's world socket; all low and pawns still uneven is the game itself (Fast / Faster, server corrections) or a
+      sparse hive body. This line is the production readout (`window.__mcxViewer` exists in mock mode only).
   - Smooth lighting and antialiasing are not offered: the first is baked into the meshes in the worker, the second is fixed when
     the WebGL context is created.
 - **Day and night** (not a setting): every view's sky light, sky and fog follow the world time (`WorldCache.timeNow`, per

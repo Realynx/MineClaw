@@ -8,6 +8,7 @@
 import { writeFileSync } from 'node:fs';
 import * as THREE from 'three';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import type { RuntimeView } from '../src/render/runtime';
 import { Digest, rng } from './digest';
 
 const hooks: { render?: (scene: THREE.Scene, camera: THREE.Camera) => void; call?: (s: string) => void } = {};
@@ -58,8 +59,9 @@ vi.mock('three', async (orig) => {
   return { ...real, WebGLRenderer: FakeRenderer };
 });
 
-const { WorldRuntime } = await import('../src/render/runtime');
+const { WorldRuntime, newViewId, MESH_TAIL_MS } = await import('../src/render/runtime');
 const { WorldViewerEngine } = await import('../src/render/engine');
+const { FrameTiming } = await import('../src/render/frameTiming');
 const { ThumbnailView } = await import('../src/render/thumbnails');
 const { SectionManager } = await import('../src/render/sections');
 const { resetViewerQuality, setViewerQuality, viewerStatus } = await import('../src/render/viewerQuality');
@@ -220,7 +222,7 @@ async function run(): Promise<string> {
   rt.step(clock, 0);
   // Pin the initial world to the primary region. Multi-view loading now yields after two batches; this golden concerns
   // rendering/cameras, not transport scheduling, so finish the original single-view download before recording frames.
-  rt.sync.setInterest(engine.interest());
+  rt.sync.setInterest(engine.interest()!);
   const sync = rt.sync as unknown as { running: boolean; tick(n: number): Promise<void> };
   sync.running = true;
   await sync.tick(EPOCH + clock);
@@ -458,5 +460,476 @@ describe('frame golden', () => {
       expect(options.map((o) => o.hiddenBot)).toEqual(['Alice', undefined]); // copies render before the primary surface
       expect(options[1]).not.toHaveProperty('hiddenBot');
     } finally { player.dispose(); normal.dispose(); }
+  });
+});
+
+// ------------------------------------------------------------------------------------------------------------ first frame
+
+/** One frame on the fake clock. */
+async function step(rt: InstanceType<typeof WorldRuntime>, ms = 16): Promise<void> {
+  clock += ms;
+  rt.step(clock, ms / 1000);
+  await flush();
+}
+
+/** One world pass by hand (the loops are stopped): index the next due interest and download what it lacks. */
+async function syncOnce(rt: InstanceType<typeof WorldRuntime>): Promise<void> {
+  const sync = rt.sync as unknown as { running: boolean; tick(n: number): Promise<void> };
+  sync.running = true;
+  await sync.tick(EPOCH + clock);
+  sync.running = false;
+  await flush();
+}
+
+const newRuntime = (src: ReturnType<typeof createFixtureSource>) =>
+  new WorldRuntime(src, { inlineMesher: true, quality: 'gpu', textures: false, pixelRatio: 1 });
+
+/**
+ * What an earlier page leaves in the shared runtime: the 6 x 7 columns the fixture has around chunk (14, 0), 224 blocks
+ * from the origin, all meshed for a top-down view that has since gone. Its cover is wider than the pictures of the
+ * views the tests add, so those find every section they want already there.
+ */
+async function leftBehind() {
+  const src = createFixtureSource({ radius: 16, mobs: 0, now: () => EPOCH + clock });
+  const rt = newRuntime(src);
+  const earlier: RuntimeView = {
+    id: newViewId(),
+    interest: () => ({ dim: 0, x: 224, z: 0, r: 48 }),
+    centre: () => ({ dim: 0, x: 224, y: 64, z: 0, distance: 32, cover: 64 }),
+    frame: () => null,
+    overlayDim: () => null,
+    selectedBots: () => [],
+  };
+  rt.addView(earlier);
+  stopNetwork(rt);
+  rt.sync.setInterest({ dim: 0, x: 224, z: 0, r: 48 });
+  await syncOnce(rt);
+  const sections = rt.sectionsFor(0);
+  for (let i = 0; i < 100 && (i === 0 || sections.busy || sections.queued > 0); i++) await step(rt, 500);
+  expect(sections.busy).toBe(false);
+  expect(sections.queued).toBe(0);
+  const count = sections.count;
+  expect(count).toBe(6 * 7 * 8);
+  const builds = new Map(sections.builds);
+  rt.removeView(earlier);
+  return { src, rt, sections, count, builds };
+}
+
+/** A WebGL2 context with the timer-query extension: every query is ready at once and reports `ms`. */
+function timerGl(ms: number) {
+  return {
+    QUERY_RESULT_AVAILABLE: 1,
+    QUERY_RESULT: 2,
+    getExtension: vi.fn(() => ({ TIME_ELAPSED_EXT: 3, GPU_DISJOINT_EXT: 4 })),
+    createQuery: vi.fn(() => ({})),
+    beginQuery: vi.fn(),
+    endQuery: vi.fn(),
+    deleteQuery: vi.fn(),
+    getQueryParameter: vi.fn((_query: unknown, p: number) => (p === 1 ? true : ms * 1e6)),
+    getParameter: vi.fn(() => false),
+  };
+}
+
+// A new engine's camera sits at the rig's defaults (the world origin) until its first frame poses it, and the app may
+// hold frames (onBeforeFrame returning false) until it knows where the camera goes. Until then the view must not count:
+// world synced, or sections kept, around the origin are the wrong map and evict what is held for the right one.
+describe('a view asks for nothing until its camera is posed', () => {
+  it('a held view draws nothing, stays hidden and asks for no world', async () => {
+    const src = createFixtureSource({ mobs: 0 });
+    const index = vi.spyOn(src, 'index');
+    const rt = newRuntime(src);
+    const before = vi.fn((): false => false);
+    const engine = new WorldViewerEngine(container(800, 500), {
+      source: src,
+      runtime: rt,
+      cameraMode: 'top',
+      pixelRatio: 1,
+      onBeforeFrame: before,
+    });
+    stopNetwork(rt);
+    const cameras: THREE.Camera[] = [];
+    hooks.render = (_scene, cam) => void cameras.push(cam);
+    try {
+      await step(rt);
+      await step(rt);
+      expect(before).toHaveBeenCalledTimes(2); // asked again every frame
+      expect(engine.posed).toBe(false);
+      expect(engine.interest()).toBeNull();
+      expect(engine.centre()).toBeNull();
+      expect(cameras.includes(engine.camera)).toBe(false);
+      expect(rt.canvas.style.visibility).toBe('hidden');
+      await syncOnce(rt);
+      expect(index).not.toHaveBeenCalled();
+    } finally {
+      hooks.render = undefined;
+      engine.dispose();
+    }
+  });
+
+  it('the first frame that is not held poses the camera, shows the canvas and asks for the world there', async () => {
+    const src = createFixtureSource({ mobs: 0 });
+    const index = vi.spyOn(src, 'index');
+    const rt = newRuntime(src);
+    let hold = true;
+    const engine = new WorldViewerEngine(container(800, 500), {
+      source: src,
+      runtime: rt,
+      cameraMode: 'top',
+      pixelRatio: 1,
+      onBeforeFrame: (view) => {
+        if (hold) return false;
+        view.rig.target.set(400.5, 65, 400.5);
+      },
+    });
+    stopNetwork(rt);
+    const drawnAt: number[][] = [];
+    hooks.render = (_scene, cam) => {
+      if (cam === engine.camera) drawnAt.push(engine.camera.position.toArray());
+    };
+    try {
+      await step(rt);
+      hold = false;
+      await step(rt);
+      expect(drawnAt).toHaveLength(1);
+      expect(drawnAt[0][0]).toBeCloseTo(400.5);
+      expect(Math.abs(drawnAt[0][2] - 400.5)).toBeLessThan(1); // the top camera is tilted 0.1 degree off vertical
+      expect(rt.canvas.style.visibility).toBe('visible');
+      expect(engine.posed).toBe(true);
+      expect(engine.interest()).toMatchObject({ dim: 0, x: 400.5, z: 400.5 });
+      expect(engine.centre()).toMatchObject({ dim: 0, x: 400.5, y: 65, z: 400.5 });
+      // Upkeep runs before the views' frames: the sync hears of the place in the next step, and first asks for it.
+      await step(rt);
+      await syncOnce(rt);
+      expect(index).toHaveBeenCalledTimes(1);
+      expect(index.mock.calls[0].slice(0, 3)).toEqual([0, 400, 400]);
+    } finally {
+      hooks.render = undefined;
+      engine.dispose();
+    }
+  });
+
+  it('stays posed through a later held frame and through a page that hides and shows it again', async () => {
+    const src = createFixtureSource({ mobs: 0 });
+    const rt = newRuntime(src);
+    let hold = false;
+    const engine = new WorldViewerEngine(container(800, 500), {
+      source: src,
+      runtime: rt,
+      cameraMode: 'top',
+      pixelRatio: 1,
+      onBeforeFrame: (view) => {
+        if (hold) return false;
+        view.rig.target.set(400.5, 65, 400.5);
+      },
+    });
+    stopNetwork(rt);
+    let drawn = 0;
+    hooks.render = (_scene, cam) => {
+      if (cam === engine.camera) drawn++;
+    };
+    try {
+      await step(rt);
+      expect(drawn).toBe(1);
+      hold = true;
+      await step(rt);
+      expect(drawn).toBe(1);
+      expect(engine.posed).toBe(true);
+      expect(engine.interest()).toMatchObject({ x: 400.5, z: 400.5 });
+      engine.suspend();
+      engine.resume();
+      stopNetwork(rt);
+      expect(engine.posed).toBe(true);
+      expect(engine.centre()).toMatchObject({ x: 400.5, y: 65, z: 400.5 });
+    } finally {
+      hooks.render = undefined;
+      engine.dispose();
+    }
+  });
+
+  it('neither a held view nor its first frames at its place evict the sections the runtime holds there', async () => {
+    const { src, rt, sections, count, builds } = await leftBehind();
+    let spot: [number, number, number] | null = null;
+    const engine = new WorldViewerEngine(container(800, 500), {
+      source: src,
+      runtime: rt,
+      cameraMode: 'top',
+      drawDistance: 32,
+      pixelRatio: 1,
+      onBeforeFrame: (view) => {
+        if (!spot) return false;
+        view.rig.target.set(...spot);
+      },
+    });
+    stopNetwork(rt);
+    try {
+      for (let i = 0; i < 3; i++) await step(rt, 500);
+      expect(sections.count).toBe(count);
+      spot = [224.5, 65, 0.5];
+      for (let i = 0; i < 2; i++) await step(rt, 500);
+      expect(engine.centre()).toMatchObject({ x: 224.5, z: 0.5 });
+      expect(sections.count).toBe(count);
+      expect(sections.queued).toBe(0);
+      expect(new Map(sections.builds)).toEqual(builds); // nothing was meshed again
+    } finally {
+      engine.dispose();
+    }
+  });
+
+  it('a follow view that finds its bot in its first frame keeps the sections held around that bot', async () => {
+    const { src, rt, sections, count, builds } = await leftBehind();
+    const pawn = { ...bots(0)[0], name: 'Pawn', short: 'p1', main: false, x: 224, y: 70, z: 0 };
+    rt.store.apply({ rev: 1, full: true, bots: [pawn], entities: [] });
+    const engine = new WorldViewerEngine(container(800, 500), {
+      source: src,
+      runtime: rt,
+      follow: 'Pawn',
+      drawDistance: 32,
+      pixelRatio: 1,
+    });
+    stopNetwork(rt);
+    try {
+      await step(rt, 500);
+      expect(sections.count).toBe(count);
+      expect(engine.centre()).toMatchObject({ x: 224, z: 0 });
+      await step(rt, 500);
+      expect(sections.count).toBe(count);
+      expect(new Map(sections.builds)).toEqual(builds);
+    } finally {
+      engine.dispose();
+    }
+  });
+
+  it('a free camera the app places in its first frame (the takeover view) keeps them too', async () => {
+    const { src, rt, sections, count, builds } = await leftBehind();
+    const engine = new WorldViewerEngine(container(800, 500), {
+      source: src,
+      runtime: rt,
+      cameraMode: 'fly',
+      drawDistance: 32,
+      pixelRatio: 1,
+      onBeforeFrame: (view) => void view.rig.flyPos.set(224.5, 71.5, 0.5),
+    });
+    stopNetwork(rt);
+    try {
+      await step(rt, 500);
+      expect(sections.count).toBe(count);
+      expect(engine.centre()).toMatchObject({ x: 224.5, y: 71.5, z: 0.5 });
+      await step(rt, 500);
+      expect(sections.count).toBe(count);
+      expect(new Map(sections.builds)).toEqual(builds);
+    } finally {
+      engine.dispose();
+    }
+  });
+
+  it('does not judge the frame rate by a frame its primary view held (GPU timer queries)', async () => {
+    const src = createFixtureSource({ mobs: 0 });
+    const rt = newRuntime(src);
+    const gl = timerGl(25);
+    const timing = new FrameTiming(gl as unknown as WebGL2RenderingContext);
+    (rt as unknown as { frameTiming: InstanceType<typeof FrameTiming> }).frameTiming = timing;
+    let hold = true;
+    const engine = new WorldViewerEngine(container(800, 500), {
+      source: src,
+      runtime: rt,
+      cameraMode: 'top',
+      pixelRatio: 1,
+      onBeforeFrame: () => (hold ? false : undefined),
+    });
+    stopNetwork(rt);
+    try {
+      await step(rt);
+      await step(rt);
+      expect(gl.createQuery).toHaveBeenCalled(); // a held frame was timed …
+      expect(gl.deleteQuery).toHaveBeenCalledTimes(gl.createQuery.mock.calls.length); // … its measurement dropped,
+      expect(gl.getQueryParameter).not.toHaveBeenCalled(); // never read,
+      expect(rt.quality.state.frameMs).toBe(0); // so the levers saw nothing
+      hold = false;
+      await step(rt);
+      await step(rt); // the GPU's answer for a drawn frame is read on the next one
+      expect(rt.quality.state.frameMs).toBe(25);
+    } finally {
+      engine.dispose();
+    }
+  });
+});
+
+// ------------------------------------------------------------------------------------------------------------ readouts
+
+// What a page polls between frames: the overlay's motion line and the map's "updating" note. Neither goes through the
+// viewer status the frame golden records.
+describe('readouts a page polls', () => {
+  it('the longest gap between two drawn frames over the last ten seconds', async () => {
+    const src = createFixtureSource({ mobs: 0 });
+    const rt = newRuntime(src);
+    const engine = new WorldViewerEngine(container(800, 500), {
+      source: src,
+      runtime: rt,
+      cameraMode: 'top',
+      pixelRatio: 1,
+      onBeforeFrame: (view) => void view.rig.target.set(0.5, 65, 0.5),
+    });
+    stopNetwork(rt);
+    try {
+      await step(rt);
+      expect(rt.motionStatus(clock).frame).toBe(0); // one frame is no gap
+      await step(rt);
+      expect(rt.motionStatus(clock).frame).toBe(16);
+      await step(rt, 180); // a long task held the page
+      await step(rt);
+      expect(rt.motionStatus(clock)).toMatchObject({ frame: 180, rate: 0, pauses: 0 });
+      expect(rt.motionStatus(clock + 11_000).frame).toBe(0);
+      expect(viewerStatus(clock)).not.toHaveProperty('frame');
+    } finally {
+      engine.dispose();
+    }
+  });
+
+  it('a held frame or a new primary view is not a gap between drawn frames', async () => {
+    const src = createFixtureSource({ mobs: 0 });
+    const rt = newRuntime(src);
+    let hold = false;
+    const options = {
+      source: src,
+      runtime: rt,
+      cameraMode: 'top' as const,
+      pixelRatio: 1,
+      onBeforeFrame: (view: { rig: { target: THREE.Vector3 } }) =>
+        hold ? false : void view.rig.target.set(0.5, 65, 0.5),
+    };
+    const first = new WorldViewerEngine(container(800, 500), options);
+    stopNetwork(rt);
+    rt.retain(); // the runtime outlives the first page, as the shared one does
+    let second: InstanceType<typeof WorldViewerEngine> | null = null;
+    try {
+      await step(rt);
+      await step(rt);
+      expect(rt.motionStatus(clock).frame).toBe(16);
+      hold = true; // waiting for the colony's place
+      for (let i = 0; i < 4; i++) await step(rt, 500);
+      hold = false;
+      await step(rt);
+      expect(rt.motionStatus(clock).frame).toBe(16);
+      // The page changes in one commit: the old view goes and the new one comes, with no frame between.
+      first.dispose();
+      second = new WorldViewerEngine(container(800, 500), options);
+      stopNetwork(rt);
+      await step(rt, 2000);
+      await step(rt);
+      expect(rt.motionStatus(clock).frame).toBe(16);
+    } finally {
+      if (!second) first.dispose();
+      second?.dispose();
+      rt.release();
+    }
+  });
+
+  it('every reader of a frame sees a body at the frame’s instant, not at the time it reads', async () => {
+    const src = createFixtureSource({ mobs: 0 });
+    const rt = newRuntime(src);
+    const engine = new WorldViewerEngine(container(800, 500), {
+      source: src,
+      runtime: rt,
+      cameraMode: 'top',
+      pixelRatio: 1,
+      onBeforeFrame: (view) => void view.rig.target.set(0.5, 65, 0.5),
+    });
+    stopNetwork(rt);
+    const begin = vi.spyOn(rt.store, 'beginFrame');
+    const update = vi.spyOn(rt.entities, 'update');
+    try {
+      rt.store.apply({ rev: 1, full: true, bots: bots(0), entities: [] });
+      clock += 200;
+      rt.store.apply({ rev: 2, full: true, bots: bots(1), entities: [] }); // Alice glides from x 4 to 4.5
+      await step(rt);
+      expect(begin).toHaveBeenCalledTimes(1);
+      expect(begin.mock.invocationCallOrder[0]).toBeLessThan(update.mock.invocationCallOrder[0]);
+      const drawn = rt.store.bot('Alice')!.x;
+      expect(drawn).toBeGreaterThan(4);
+      expect(drawn).toBeLessThan(4.5);
+      clock += 50; // later in the same frame (outlines, overlay marks): the body has not moved
+      expect(rt.store.bot('Alice')!.x).toBe(drawn);
+      expect(rt.store.bots().find((b) => b.name === 'Alice')!.x).toBe(drawn);
+      await step(rt); // the next frame moves on
+      expect(begin).toHaveBeenCalledTimes(2);
+      expect(rt.store.bot('Alice')!.x).toBeGreaterThan(drawn);
+    } finally {
+      engine.dispose();
+    }
+  });
+
+  it('the map is updating until the view’s sweep is over and its sections are meshed', async () => {
+    const src = createFixtureSource({ radius: 2, mobs: 0, now: () => EPOCH + clock });
+    const rt = newRuntime(src);
+    const engine = new WorldViewerEngine(container(800, 500), {
+      source: src,
+      runtime: rt,
+      cameraMode: 'top',
+      drawDistance: 32,
+      pixelRatio: 1,
+      onBeforeFrame: (view) => void view.rig.target.set(8.5, 65, 8.5),
+    });
+    stopNetwork(rt);
+    try {
+      await step(rt);
+      await step(rt); // the sync hears of the view's place
+      expect(rt.syncStatus()).toMatchObject({ swept: false, updating: true });
+      await syncOnce(rt);
+      expect(rt.syncStatus().swept).toBe(true);
+      expect(rt.syncStatus()).toMatchObject({ updating: true }); // sections to mesh
+      const sections = rt.sectionsFor(0);
+      for (let i = 0; i < 100 && (sections.busy || sections.queued > 0); i++) await step(rt, 500);
+      expect(rt.syncStatus()).toEqual({ swept: true, sectionsQueued: 0, updating: false });
+      rt.sync.reindexNow(); // the tab came back
+      expect(rt.syncStatus()).toMatchObject({ swept: false, updating: true });
+      await syncOnce(rt);
+      expect(rt.syncStatus().updating).toBe(false); // nothing had changed
+      // A block changed during live play: a re-mesh, not catching up.
+      sections.markDirty([[0, 4, 0]]);
+      expect(rt.syncStatus()).toEqual({ swept: true, sectionsQueued: 1, updating: false });
+      // A catch-up whose meshing live changes keep from ever running dry still ends.
+      rt.sync.reindexNow();
+      expect(rt.syncStatus().updating).toBe(true);
+      await syncOnce(rt);
+      sections.hold = true;
+      expect(rt.syncStatus()).toMatchObject({ swept: true, sectionsQueued: 1, updating: true });
+      expect(rt.syncStatus(clock + MESH_TAIL_MS - 1).updating).toBe(true);
+      expect(rt.syncStatus(clock + MESH_TAIL_MS).updating).toBe(false);
+    } finally {
+      engine.dispose();
+    }
+  });
+
+  it('sections left dirty out of every view’s range do not keep the map updating', async () => {
+    const src = createFixtureSource({ radius: 2, mobs: 0, now: () => EPOCH + clock });
+    const rt = newRuntime(src);
+    const at = { x: 8.5, z: 8.5 };
+    const engine = new WorldViewerEngine(container(800, 500), {
+      source: src,
+      runtime: rt,
+      cameraMode: 'top',
+      drawDistance: 32,
+      pixelRatio: 1,
+      onBeforeFrame: (view) => void view.rig.target.set(at.x, 65, at.z),
+    });
+    stopNetwork(rt);
+    try {
+      await step(rt);
+      await step(rt);
+      expect(rt.syncStatus().updating).toBe(true);
+      await syncOnce(rt); // the columns are in, not meshed yet
+      const sections = rt.sectionsFor(0);
+      expect(sections.queued).toBeGreaterThan(0);
+      sections.hold = true; // meshing (a software renderer) is slower than the pan
+      at.x = at.z = 4000; // the view moves on before they are meshed
+      await step(rt);
+      await step(rt, 500);
+      sections.hold = false;
+      await step(rt, 500);
+      expect(sections.queued).toBeGreaterThan(0); // still dirty, never scheduled
+      expect(rt.syncStatus()).toEqual({ swept: true, sectionsQueued: 0, updating: false });
+    } finally {
+      engine.dispose();
+    }
   });
 });

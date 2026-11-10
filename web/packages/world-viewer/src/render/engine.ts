@@ -51,8 +51,12 @@ export interface EngineOptions extends RuntimeOptions {
   onAimClick?: (t: AimTarget | null, mods: { shift: boolean; ctrl: boolean; button?: number }) => void;
   /** Adds application plan cells to the center-ray pick, without changing the physical world. */
   resolveAim?: (physical: AimTarget | null, ray: AimRay) => AimTarget | null;
-  /** Application camera input, applied before this frame's camera matrices are computed. */
-  onBeforeFrame?: (engine: WorldViewerEngine, now: number, dt: number) => void;
+  /**
+   * Application camera input, applied before this frame's camera matrices are computed. Returning `false` holds the
+   * view for this frame: nothing is drawn, and before its first frame that is not held the view asks for no world (see
+   * `posed`).
+   */
+  onBeforeFrame?: (engine: WorldViewerEngine, now: number, dt: number) => void | false;
   /** Application overlays, using the exact camera matrices just rendered (including viewport fitting). */
   onAfterFrame?: (engine: WorldViewerEngine, now: number, dt: number) => void;
 }
@@ -108,6 +112,8 @@ export class WorldViewerEngine implements RuntimeView {
   private botLabels = true;
   private frameNow = 0;
   private frameDt = 0;
+  /** Set by the first frame that poses the camera and never cleared: a suspended or re-aimed view keeps its camera. */
+  private posedOnce = false;
   private readonly afterRender = () => this.opts.onAfterFrame?.(this, this.frameNow, this.frameDt);
 
   constructor(
@@ -459,18 +465,29 @@ export class WorldViewerEngine implements RuntimeView {
 
   // ------------------------------------------------------------------------------------------------------------ RuntimeView
 
+  /**
+   * Whether a frame has posed this view's camera yet. Until one has, the camera sits at the rig's defaults (the world
+   * origin), so the view names no interest and no centre: world synced there would be the wrong map, and sections kept
+   * around it would evict the ones the shared runtime already holds for the place the view is about to show.
+   */
+  get posed(): boolean {
+    return this.posedOnce;
+  }
+
   private lookCentre(): THREE.Vector3 {
     return this.rig.mode === 'fly' ? this.camera.position : this.rig.target;
   }
 
-  interest(): Interest {
+  interest(): Interest | null {
+    if (!this.posedOnce) return null;
     const c = this.lookCentre();
     return { dim: this.dim, x: c.x, z: c.z, r: Math.max(this.drawDistance, this.cover()) + 24,
       priority: this.runtime.isPrimary(this) ? 2 : 1,
     };
   }
 
-  centre(): Centre & { dim: Dim } {
+  centre(): (Centre & { dim: Dim }) | null {
+    if (!this.posedOnce) return null;
     const c = this.lookCentre();
     return { dim: this.dim, x: c.x, y: c.y, z: c.z, distance: this.drawDistance, cover: this.cover() };
   }
@@ -499,13 +516,14 @@ export class WorldViewerEngine implements RuntimeView {
     if (this.disposed || this.suspended) return null;
     this.frameNow = now;
     this.frameDt = dt;
-    this.opts.onBeforeFrame?.(this, now, dt);
+    if (this.opts.onBeforeFrame?.(this, now, dt) === false) return null;
     const t0 = performance.now();
     const bot = this.followed();
     this.followBot(bot, dt);
     this.rigInput.controller = this.opts.controls === 'controller';
     if (this.inputPaused || this.opts.controls === 'player' || this.opts.controls === 'controller' && this.rig.mode === 'fly' && !this.locked()) this.keys.clear();
     this.rig.apply(this.camera, dt, this.rigInput, now);
+    this.posedOnce = true;
     const iso = this.rig.mode === 'iso' || this.rig.mode === 'top';
     const cover = this.cover();
     this.fitClipPlanes(iso, cover);
