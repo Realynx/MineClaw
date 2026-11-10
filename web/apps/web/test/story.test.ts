@@ -297,6 +297,11 @@ describe('map math', () => {
     // the cursor point stays where it is: target moved toward it in proportion
     expect(z.x).toBeCloseTo(10 - 10 / 1.15);
     expect(zoomAt({ x: 0, z: 0 }, ZOOM_MAX, 3, { x: 0, z: 0 }).zoom).toBe(ZOOM_MAX);
+    // zooming out has no practical limit: far past the old 112-block cap, and every result stays finite
+    let far = { zoom: 112, x: 5, z: 5 };
+    for (let i = 0; i < 40; i++) far = zoomAt(far, far.zoom, 1, { x: 0, z: 0 });
+    expect(far.zoom).toBeGreaterThan(10_000);
+    expect(Number.isFinite(far.x) && Number.isFinite(far.z)).toBe(true);
     expect(edgePan({ x: 2, y: 300 }, 800, 600)).toEqual([-1, 0]);
     expect(edgePan({ x: 400, y: 599 }, 800, 600)).toEqual([0, 1]);
     expect(edgePan({ x: 400, y: 300 }, 800, 600)).toEqual([0, 0]);
