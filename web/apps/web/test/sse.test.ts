@@ -74,6 +74,51 @@ describe('LiveStream', () => {
     live.stop();
   });
 
+  it('with validation off, still parses Story frames (defaults) but checks only one entity frame in a hundred', () => {
+    const onMessage = vi.fn();
+    const live = new LiveStream({ onMessage }, { factory, validate: false });
+    live.start();
+    sources[0]!.emit('story', { id: 'c1', rev: 1, at: 1 }); // a JSON string, as an EventSource hands it
+    expect(onMessage.mock.calls[0]![1]).toMatchObject({ id: 'c1', pawns: [] });
+    onMessage.mockClear();
+    // The contract drops unknown keys at the top of a frame, so `extra` shows whether a frame went through zod.
+    for (let i = 1; i <= 200; i++)
+      sources[0]!.emit('entities', { at: i, rev: i, bots: [], entities: [], extra: i }, String(i));
+    const checked = onMessage.mock.calls.flatMap(([, data]) =>
+      (data as { extra?: number }).extra === undefined ? [(data as { rev: number }).rev] : [],
+    );
+    expect(onMessage).toHaveBeenCalledTimes(200);
+    expect(checked).toEqual([100, 200]);
+    live.stop();
+  });
+
+  it('passes a rejected entity sample on and warns at most once a minute (validation off)', () => {
+    const onMessage = vi.fn();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const live = new LiveStream({ onMessage }, { factory, validate: false });
+    live.start();
+    const bad = { at: 'soon', rev: 1, bots: [], entities: [] };
+    for (let i = 0; i < 300; i++) sources[0]!.emit('entities', bad);
+    expect(onMessage).toHaveBeenCalledTimes(300);
+    expect(warn).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(60_000);
+    for (let i = 0; i < 100; i++) sources[0]!.emit('entities', bad);
+    expect(warn).toHaveBeenCalledTimes(2);
+    warn.mockRestore();
+    live.stop();
+  });
+
+  it('checks every entity frame when validation is on', () => {
+    const onMessage = vi.fn();
+    const err = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const live = new LiveStream({ onMessage }, { factory, validate: true });
+    live.start();
+    sources[0]!.emit('entities', { at: 'soon', rev: 1, bots: [], entities: [] });
+    expect(onMessage).not.toHaveBeenCalled();
+    err.mockRestore();
+    live.stop();
+  });
+
   it('lets the browser retry transient errors, and reopens (with a resync) when the source closed', () => {
     const onResync = vi.fn();
     const states: string[] = [];
@@ -166,6 +211,48 @@ describe('applyLiveEvent', () => {
     expect(moved.entities).toEqual(base.entities);
     expect(moved.at).toBe(11);
     expect(mergeEntities(moved, { at: 9, rev: 5, full: false, bots: [bot(1)], entities: [] })).toBe(moved); // an older frame
+  });
+
+  it("a bots-only frame carries no events, so the previous frame's swings are not replayed", () => {
+    const swing = { kind: 'swing', id: 7, dim: 0, at: 10 };
+    const base: WorldEntities = { at: 10, rev: 5, full: true, bots: [], entities: [], events: [swing] };
+    const moved = mergeEntities(base, { at: 11, rev: 5, full: false, bots: [], entities: [] });
+    expect(moved.at).toBe(11);
+    expect(moved.events ?? []).toEqual([]);
+    expect(base.events).toEqual([swing]);
+  });
+
+  it('a set that began with a delta keeps its removals until it is complete', () => {
+    const mob = (id: number, x = 0) => ({ kind: 'mob', dim: 0, x, y: 0, z: 0, id });
+    const first = mergeEntities(undefined, {
+      at: 1,
+      rev: 6,
+      full: false,
+      bots: [],
+      entities: [mob(1)],
+      removed: [[0, 2]],
+    });
+    const next = mergeEntities(first, {
+      at: 2,
+      rev: 7,
+      full: false,
+      bots: [],
+      entities: [mob(2), mob(3)],
+      removed: [[0, 4]],
+    });
+    expect(next.full).toBe(false);
+    expect(next.removed).toEqual([[0, 4]]); // entity 2 came back
+    const complete = mergeEntities(next, { at: 3, rev: 8, full: true, bots: [], entities: [mob(1)], removed: [] });
+    const after = mergeEntities(complete, {
+      at: 4,
+      rev: 9,
+      full: false,
+      bots: [],
+      entities: [mob(1, 5)],
+      removed: [[0, 9]],
+    });
+    expect(after.full).toBe(true);
+    expect(after.removed).toEqual([]);
   });
 
   it('replaces the complete chest snapshot even when no entity revision changed', () => {

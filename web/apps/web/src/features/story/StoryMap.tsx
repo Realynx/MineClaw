@@ -85,6 +85,8 @@ import {
   failedCells,
   stalledIn,
 } from './tools';
+import { viewFor, type StoryView } from './viewMemory';
+import { MapUpdatingChip } from './MapUpdatingChip';
 import { COLORS, pawnColor } from './visuals';
 import { buildTitle, isRepairBuild } from './zones/preserve';
 import { drawZones, zoneLabel } from './zones/zoneDraw';
@@ -157,10 +159,19 @@ export interface StoryMapProps {
   /** Keys held (pan), owned by the page's key handler. */
   keys: React.RefObject<Set<string>>;
   home: V3 | null;
-  /** No colony yet: the first placement is over the main bot (else the viewing user's player) instead of home. */
+  /** The colony shown. When it changes to another one, the map glides to that colony's home once its state is here. */
+  colony?: string | null;
+  /** The colony is still loading: until the map knows where to look, it says so and draws no terrain. */
+  loading?: boolean;
+  /** Where this browser last had the map (viewMemory.ts): the map opens there when the view is of the colony shown. */
+  initialView?: StoryView | null;
+  /** No home to open on (no colony yet, or a colony without one): the first placement is over the main bot (else the
+   * viewing user's player). */
   settle?: boolean;
   /** The viewing user's Minecraft player (the settle fallback). */
   player?: string | null;
+  /** Where the map looks and its zoom, for the page to remember: at most every 2 s while it changes, and on leaving. */
+  onView?: (view: { x: number; z: number; zoom: number }) => void;
   /** The map centre's column (x, level, z), a few times a second while it changes. */
   onCentre?: (c: V3) => void;
   /** Settling with no colony: the floor height the map was placed at (the working level starts there). */
@@ -487,6 +498,24 @@ export const StoryMap =forwardRef<StoryMapHandle, StoryMapProps>(function StoryM
   const mats = useRef<ViewMats | null>(null);
   const lastClick = useRef<{ t: number; name: string } | null>(null);
   const placed = useRef(false);
+  /** Where the map looks (x, z) and its zoom: set by the first placement, then kept current from the rig at every drawn
+   * frame, so a new engine object opens on the same picture and the page can remember it. */
+  const spot = useRef({ x: 0, z: 0, zoom: TOP_ZOOM, known: false });
+  /** The engine that already carries `spot` (a frame of any other engine places it first). */
+  const posedEngine = useRef<WorldViewerEngine | null>(null);
+  /** When settling was first asked for: the wait for the main bot or the player counts from there. */
+  const settleSince = useRef<number | null>(null);
+  /** The last colony shown, and whether the map still has to move to the one it was switched to. */
+  const shownColony = useRef<string | null>(null);
+  const recentre = useRef(false);
+  /** The view last reported to the page. */
+  const viewSent = useRef({ at: 0, x: NaN, z: NaN, zoom: NaN });
+  /** The look-at column of the first drawn frame, for the mock debug hook (the colony, never the world origin). */
+  const firstFrame = useRef<[number, number] | null>(null);
+  /** The camera has been placed (`placed` as state, for the picture). Until then, and while nothing the page knows gives
+   * the next frame a spot, the map is waiting: it says the colony is loading instead of drawing anywhere else. */
+  const [opened, setOpened] = useState(false);
+  const waiting = !opened && !props.home && !viewFor(props.initialView, props.colony);
   const appliedCut = useRef<string | undefined>(undefined);
   const lastEngine = useRef<WorldViewerEngine | null>(null);
   /** Standing heights per column at one level (`x,z` -> feet y, null = nowhere to stand); refilled for each right-drag. */
@@ -554,12 +583,19 @@ export const StoryMap =forwardRef<StoryMapHandle, StoryMapProps>(function StoryM
     focus: (x, z, y) => {
       const e = engine();
       if (!e) return;
+      if (posedEngine.current !== e) {
+        // Nothing drawn yet, so nothing to glide from: this is where the map opens (its next frame places the camera).
+        openAt(x + 0.5, z + 0.5);
+        return;
+      }
       e.rig.beginTransition(e.camera, performance.now(), 500);
       e.rig.target.set(x + 0.5, y ?? p.current.level + 1, z + 0.5);
       if (p.current.view === 'fly') startFly(e);
     },
     center: () => {
-      const t = engine()?.rig.target;
+      // Null until the map is placed: an unplaced camera looks at the world origin, which is nowhere to move a home to.
+      const e = engine();
+      const t = e && posedEngine.current === e ? e.rig.target : null;
       return t ? [Math.floor(t.x), Math.floor(t.y), Math.floor(t.z)] : null;
     },
     zoom: () => engine()?.rig.isoZoom ?? TOP_ZOOM,
@@ -588,46 +624,107 @@ export const StoryMap =forwardRef<StoryMapHandle, StoryMapProps>(function StoryM
     },
   }));
 
-  /** Where the map is first placed: home; with no colony yet, the main bot or the player (null: neither showed up in time,
-   * the map stays where it is); undefined = keep waiting (settling not asked yet, or still waiting for a body). */
-  const firstSpot = (e: WorldViewerEngine, t0: number): V3 | null | undefined => {
+  /** Where the map is first placed: home; with no home to open on, the main bot or the player (null: neither showed up
+   * in time, the map stays where it is); undefined = keep waiting (the colony is still loading, or no body has shown
+   * up yet). */
+  const firstSpot = (e: WorldViewerEngine): V3 | null | undefined => {
     const home = p.current.home;
     if (home) return home;
     if (!p.current.settle) return undefined;
+    settleSince.current ??= performance.now();
     const at = settleSpot(e, p.current.player);
-    if (!at && performance.now() - t0 < SETTLE_WAIT_MS) return undefined;
+    if (!at && performance.now() - settleSince.current < SETTLE_WAIT_MS) return undefined;
     return at;
   };
 
-  // First placement over the colony's home; with no colony yet, over the main bot (else the viewing user's player) so a new
-  // colony settles where the hive is rather than at the world origin. The target height follows the level.
-  useEffect(() => {
-    let raf = 0;
-    const t0 = performance.now();
-    const tryPlace = () => {
-      const e = engine();
-      if (!e || placed.current) return;
-      const at = firstSpot(e, t0);
-      if (at === undefined) return;
+  /** [frame] The first placement, into `spot`: the view this browser remembers for the colony, else `firstSpot` (so a
+   * new colony settles where the hive is rather than at the world origin). Returns the height to look at; undefined =
+   * keep waiting. */
+  const placeFirst = (e: WorldViewerEngine): number | undefined => {
+    const pr = p.current,
+      s = spot.current;
+    const seen = viewFor(pr.initialView, pr.colony);
+    if (seen) {
+      s.x = seen.x;
+      s.z = seen.z;
+      s.zoom = seen.zoom;
+      s.known = true;
+      return pr.level + 1;
+    }
+    const at = firstSpot(e);
+    if (at === undefined) return undefined;
+    if (!at) return pr.level + 1;
+    s.x = at[0] + 0.5;
+    s.z = at[2] + 0.5;
+    s.known = true;
+    if (pr.home) return pr.level + 1;
+    pr.onSettled?.(at[1]);
+    return at[1] + 1;
+  };
+
+  /** [frame] Puts the camera where the map looks before the viewer poses it, so nothing is ever drawn (or asked of the
+   * world) anywhere else. False = the spot is not known yet: the viewer holds the frame. A new engine object gets the
+   * same spot. The target height follows the level. */
+  const ensurePlaced = (e: WorldViewerEngine, now: number): boolean => {
+    if (posedEngine.current === e) return true;
+    let y = p.current.level + 1;
+    if (!placed.current) {
+      const first = placeFirst(e);
+      if (first === undefined) return false;
+      y = first;
       placed.current = true;
-      e.rig.isoZoom = TOP_ZOOM;
-      if (!at) return;
-      const home = p.current.home;
-      if (!home) p.current.onSettled?.(at[1]);
-      e.rig.target.set(at[0] + 0.5, (home ? p.current.level : at[1]) + 1, at[2] + 0.5);
-      if (p.current.view === 'fly') startFly(e);
-    };
-    const loop = () => {
-      tryPlace();
-      if (!placed.current) raf = requestAnimationFrame(loop);
-    };
-    raf = requestAnimationFrame(loop);
-    return () => cancelAnimationFrame(raf);
-  }, [props.home, props.settle, ready, startFly]);
+      recentre.current = false; // it opens on the colony shown: nothing to move to
+      setOpened(true);
+    }
+    const s = spot.current;
+    e.rig.isoZoom = s.zoom;
+    if (s.known) e.rig.target.set(s.x, y, s.z);
+    // A glide begun before this engine drew anything (the view was switched while it waited) starts at the rig's
+    // default camera: it ends here, so the first drawn frame is at the spot.
+    if (e.rig.transitioning) e.rig.beginTransition(e.camera, now - 1, 1);
+    if (p.current.view === 'fly') startFly(e);
+    posedEngine.current = e;
+    return true;
+  };
+
+  /** The map opens at a point named before anything was drawn (a focus): its next frame places the camera there. */
+  const openAt = (x: number, z: number) => {
+    const s = spot.current;
+    s.x = x;
+    s.z = z;
+    s.known = true;
+    placed.current = true;
+    posedEngine.current = null;
+    recentre.current = false;
+    setOpened(true);
+  };
+
+  // A switch to another colony (never the first one shown, never a home moved inside one colony) re-centres the map.
+  useEffect(() => {
+    const id = props.colony;
+    if (!id) return;
+    if (shownColony.current && shownColony.current !== id) recentre.current = true;
+    shownColony.current = id;
+  }, [props.colony]);
+
+  /** [frame] After a colony switch: glides to the new colony's home once its state is here (the view is never held
+   * again). A colony with no home glides where a first visit would settle (the main bot, else the player), or stays. */
+  const followColony = (e: WorldViewerEngine, now: number) => {
+    const at = p.current.home ?? (p.current.settle ? settleSpot(e, p.current.player) : undefined);
+    if (at === undefined) return; // its state is not here yet
+    // Cleared even with nowhere to go: until then the view is neither reported nor remembered.
+    recentre.current = false;
+    if (!at) return;
+    e.rig.beginTransition(e.camera, now, 500);
+    e.rig.target.set(at[0] + 0.5, p.current.level + 1, at[2] + 0.5);
+    if (p.current.view === 'fly') startFly(e);
+  };
 
   // Input, the world and its overlay share one rendered frame, including the viewer's FPS cap.
   const frameState = useRef({ centre: { at: 0, key: '', cb: undefined }, pan: { x: 0, z: 0 } });
-  const beforeViewerFrame = (e: WorldViewerEngine, _now: number, dt: number) => {
+  const beforeViewerFrame = (e: WorldViewerEngine, now: number, dt: number): void | false => {
+    if (!ensurePlaced(e, now)) return false;
+    if (recentre.current) followColony(e, now);
     const c = canvas.current;
     if (!c) return;
     syncView(e);
@@ -638,6 +735,8 @@ export const StoryMap =forwardRef<StoryMapHandle, StoryMapProps>(function StoryM
     if (p.current.view !== 'fly') panStep(e, dt, c.clientWidth, c.clientHeight, frameState.current.pan);
   };
   const afterViewerFrame = (e: WorldViewerEngine, now: number, dt: number) => {
+    trackSpot(e);
+    reportView(now);
     const c = canvas.current;
     if (!c) return;
     if (p.current.view === 'fly') {
@@ -668,7 +767,6 @@ export const StoryMap =forwardRef<StoryMapHandle, StoryMapProps>(function StoryM
       holo.current = { ghosts: null, builds: null, preview: '' };
       // The pawns and AI bodies are drawn as their player models; the overlay draws their names (no second label).
       e.setBotLabels(false);
-      if (p.current.view === 'fly') startFly(e); // free cam chosen before the viewer finished loading
     }
     syncLevelCut(e);
     e.setBotBadges(p.current.view === 'fly' ? flyBadgesRef.current : EMPTY_BADGES);
@@ -747,6 +845,39 @@ export const StoryMap =forwardRef<StoryMapHandle, StoryMapProps>(function StoryM
     centre.key = key;
     p.current.onCentre?.(cc);
   };
+
+  /** [frame] A frame was drawn: `spot` is where the map looks now (the free cam leaves the map's own target alone). */
+  const trackSpot = (e: WorldViewerEngine) => {
+    const s = spot.current,
+      t = e.rig.target;
+    s.x = t.x;
+    s.z = t.z;
+    s.zoom = e.rig.isoZoom;
+    s.known = true;
+    firstFrame.current ??= [Math.floor(t.x), Math.floor(t.z)];
+  };
+
+  /** [frame] The view for the page to remember (the next visit opens on it): at most every 2 s, only while it changes,
+   * and not between a colony switch and the move to that colony (the picture is still the previous colony's). */
+  const reportView = (now: number) => {
+    const s = spot.current,
+      sent = viewSent.current;
+    if (!p.current.onView || recentre.current || now - sent.at <= 2000) return;
+    if (s.x === sent.x && s.z === sent.z && s.zoom === sent.zoom) return;
+    sent.at = now;
+    sent.x = s.x;
+    sent.z = s.z;
+    sent.zoom = s.zoom;
+    p.current.onView({ x: s.x, z: s.z, zoom: s.zoom });
+  };
+
+  // Leaving the page: the view as last drawn goes to the page to remember (from `spot`: the engine may be gone).
+  useEffect(() => {
+    const s = spot.current;
+    return () => {
+      if (placed.current && s.known && !recentre.current) p.current.onView?.({ x: s.x, z: s.z, zoom: s.zoom });
+    };
+  }, []);
 
   /** [holograms] Hands the viewer the queued cells (only when the state's ghosts or builds changed) and the design being
    * placed (only when its cell or turn changed). */
@@ -1844,6 +1975,8 @@ export const StoryMap =forwardRef<StoryMapHandle, StoryMapProps>(function StoryM
         if (e) e.rig.target.set(x + 0.5, p.current.level + 1, z + 0.5);
       },
       ready: () => !!engine() && !!mats.current,
+      /** The look-at column [x, z] of the first frame this map drew (null = none drawn yet). */
+      firstFrame: () => firstFrame.current,
       /** The live preview of the drag in progress (null = none): what its release would designate. */
       preview: () => {
         const r = scan.current.result;
@@ -2008,6 +2141,16 @@ export const StoryMap =forwardRef<StoryMapHandle, StoryMapProps>(function StoryM
         onContextMenu={(e) => e.preventDefault()}
         onAuxClick={(e) => e.preventDefault()}
       />
+      {waiting && props.loading ? (
+        <p
+          role="status"
+          className="pointer-events-none absolute inset-0 grid place-items-center text-sm text-muted"
+          data-testid="story-map-loading"
+        >
+          Loading the colony…
+        </p>
+      ) : null}
+      <MapUpdatingChip viewer={viewer} hidden={waiting} />
       <StoryFlyCrosshair flying={props.view === 'fly'} host={wrap} />
       <StoryAudio viewer={viewer} view={props.view} />
       <StoryFlyEditor editor={editor} state={props.state} flying={props.view === 'fly'} canEdit={!!props.canEdit} onStart={props.onDropTool} viewer={viewer} onCapture={captureFly} onCaptureNotice={setCaptureNotice} />

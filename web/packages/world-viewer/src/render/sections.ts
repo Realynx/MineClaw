@@ -103,6 +103,17 @@ export class SectionManager {
     return this.dirty.size;
   }
 
+  /** Dirty sections in range of the last frame's views: the ones `schedule` will mesh. Others (columns downloaded beyond
+   * the draw range, a view that moved on) stay dirty until they come into range. Polled, not per frame. */
+  get queuedInRange(): number {
+    let n = 0;
+    for (const k of this.dirty) {
+      const [cx, , cz] = k.split(',').map(Number);
+      if (this.lastCs.some((c) => Math.hypot(cx + 0.5 - c.x, cz + 0.5 - c.z) <= c.d)) n++;
+    }
+    return n;
+  }
+
   get busy(): boolean {
     return this.inFlight;
   }

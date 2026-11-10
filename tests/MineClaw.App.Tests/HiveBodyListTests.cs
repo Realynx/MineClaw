@@ -36,7 +36,9 @@ public class HiveBodyListTests
         public List<HiveBotState> Bots { get; } = new();
         public IReadOnlyList<HiveBotState> Clones() => Bots;
         public IReadOnlyList<HiveLease> Leases() => [];
-        public Task<HiveEyePose?> ViewAsync(string clone, CancellationToken ct) => Task.FromResult<HiveEyePose?>(null);
+        /// <summary>What "send me your view" answers (null = no pose).</summary>
+        public HiveEyePose? Pose;
+        public Task<HiveEyePose?> ViewAsync(string clone, CancellationToken ct) => Task.FromResult(Pose);
     }
 
     private static HiveTree Tree(string main)
@@ -210,5 +212,61 @@ public class HiveBodyListTests
         Assert.Equal(("subhive", Hive, false, 21.5), (w102.Kind, w102.Owner, w102.Live, w102.X));
         Assert.Equal(("hive", c.Username), (wb.Single(b => b.Name == Hive).Kind, wb.Single(b => b.Name == Hive).Owner));
         Assert.Equal("main", wb.Single(b => b.Main).Kind);
+    }
+
+    [Fact]
+    public void Pose_age_is_the_time_since_the_pose_was_published_clamped_to_a_quarter_second()
+    {
+        long t = System.Diagnostics.Stopwatch.Frequency * 3600; // an hour after the stopwatch's zero
+        long Ms(double ms) => t + (long)Math.Round(ms * System.Diagnostics.Stopwatch.Frequency / 1000);
+        Assert.Equal(0.0, LiveSupervisorWorld.PoseAge(t, t));
+        Assert.Equal(0.037, LiveSupervisorWorld.PoseAge(t, Ms(37.4)));
+        Assert.Equal(0.038, LiveSupervisorWorld.PoseAge(t, Ms(37.6)));
+        Assert.Equal(0.25, LiveSupervisorWorld.PoseAge(t, Ms(250)));
+        Assert.Equal(0.25, LiveSupervisorWorld.PoseAge(t, Ms(4000))); // dead or riding: no sync each tick, the age stops growing
+        Assert.Equal(0.0, LiveSupervisorWorld.PoseAge(Ms(5), t));      // a stamp read after the clock: never negative
+        Assert.Equal(0.25, LiveSupervisorWorld.PoseAge(0, t));         // never published
+    }
+
+    [Fact]
+    public void A_live_bodys_pose_age_is_its_sample_age_within_a_quarter_second()
+    {
+        var (h, c, bodies, _) = Live();
+        using var _h = h;
+        c.World.Player.ServerTeleport(new MineClaw.World.Vec3d(4.5, 64, 7.5), 65.62, 45, 5, true);
+        var unplaced = new MineClaw.World.WorldState();
+        var world = new LiveSupervisorWorld(h.Vision!.Hub!, () => c.World, c.Username,
+            () => [new LiveBody(c.Username, "main", true, c.World), new LiveBody("maid_chan_200", "200", false, unplaced)], h.Runtime,
+            () => null, new SupervisorOptions()) { AllBodies = bodies };
+
+        var main = world.Bots().Single(b => b.Main);
+        Assert.True(main.Live);
+        Assert.InRange(main.PoseAge!.Value, 0, 0.25);
+        Assert.Equal((4.5, 7.5, 45f), (main.X, main.Z, main.Yaw!.Value));
+        Assert.Equal(0.25, world.Bots().Single(b => b.Name == "maid_chan_200").PoseAge!.Value); // no position yet: as old as allowed
+        var json = JsonSerializer.Serialize(main, SupervisorJson.Options);
+        Assert.Contains("\"pose_age\":", json);
+    }
+
+    [Theory]
+    [InlineData(2.0, 0.3, 20.0)] // the hub's snapshot is newer: its position, the pose's yaw
+    [InlineData(0.1, 1.0, 23.0)] // the pose is newer: its position
+    public void A_hub_clone_takes_its_position_from_the_newer_of_pose_and_snapshot(double poseAge, double snapAge, double x)
+    {
+        var (h, c, bodies, hive) = Live();
+        using var _h = h;
+        var clock = new ManualClock(DateTimeOffset.UtcNow);
+        var now = clock.Now;
+        hive.Bots[0] = new HiveBotState(Hive, 0, 20, 64, 20, "chop the forest", 20, 19, now.AddSeconds(-snapAge), Brain: "awake");
+        hive.Pose = new HiveEyePose(Hive, 0, 23, 64, 21, 135, 12, now.AddSeconds(-poseAge));
+        var world = new LiveSupervisorWorld(h.Vision!.Hub!, () => c.World, c.Username, () => [new LiveBody(c.Username, "main", true, c.World)],
+            h.Runtime, () => null, new SupervisorOptions(), time: clock) { AllBodies = bodies };
+
+        world.Bots(); // the first read asks for the pose in the background (answered at once here)
+        var bot = world.Bots().Single(b => b.Name == Hive);
+        Assert.False(bot.Live);
+        Assert.Equal((x, 135f, 12f), (bot.X, bot.Yaw!.Value, bot.Pitch!.Value));
+        Assert.Equal(poseAge, bot.PoseAge!.Value);
+        Assert.Equal(snapAge, bot.AgeSeconds);
     }
 }

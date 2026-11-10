@@ -4,6 +4,7 @@
  *
  * - `chunks()` asks with `light=1`, splits requests into the server's 64-column cap and merges the MCWC payloads.
  * - `entities()` prefers the SSE-fed query cache (no extra polling) and falls back to GET /api/world/entities.
+ *   A cached set that began with a delta is completed from that route before it may replace the viewer's set.
  * - `blocks()` / `subscribe()` carry live per-block updates (GET /api/world/blocks + the shared stream's `blocks` event; the
  *   reconnect hook fires when the stream had to be reopened).
  * - `chat()` feeds the chat bubbles over heads from the shared stream's `feed` event (./chatBubbles.ts).
@@ -13,14 +14,21 @@ import { toNumber, type WorldEntities } from '@mineclaw/contracts';
 import type { BlockEntities, EntityDelta, WorldSource } from '@mineclaw/world-viewer';
 import { api, apiBlob } from '@/lib/api/client';
 import { liveKeys } from '@/lib/live/dispatch';
+import { entitiesComplete, seedEntities } from '@/lib/live/merge';
 import { subscribeBlocks } from './blocks';
 import { subscribeChat } from './chatBubbles';
-import { subscribeEntityFrames } from './entityFrames';
+import { publishEntityFrame, subscribeEntityFrames } from './entityFrames';
 
 export type { WorldSource };
 
 /** Server cap per /api/world/chunks request. */
 export const MAX_COLS_PER_REQUEST = 64;
+
+/** How long an entity set that could not be completed from REST waits before the next try. */
+export const SEED_RETRY_MS = 5000;
+
+/** How long the REST seed may take before it is given up (and retried after SEED_RETRY_MS). */
+export const SEED_TIMEOUT_MS = 10_000;
 
 const MAGIC = [0x4d, 0x43, 0x57, 0x43]; // "MCWC"
 
@@ -84,6 +92,46 @@ export function createWorldSource(qc?: QueryClient, opts: WorldSourceOptions = {
     if (n === undefined) frames.set(c, (n = ++frameSeq));
     return n;
   };
+  // A cached set that began with a delta is completed from REST, one request at a time. After a failure the next try waits
+  // SEED_RETRY_MS; meanwhile the set is handed on as a delta.
+  let seeding: Promise<WorldEntities | undefined> | null = null;
+  let seedFailedAt = -Infinity;
+  let owedFull = false;
+  const seed = (client: QueryClient): Promise<WorldEntities | undefined> => {
+    if (seeding) return seeding;
+    if (Date.now() - seedFailedAt < SEED_RETRY_MS) return Promise.resolve(undefined);
+    let timedOut = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    seeding = read((signal) => {
+      // A hung reply must not hold every later seed back; a timeout counts as a failure (the retry waits).
+      const limit = new AbortController();
+      signal.addEventListener('abort', () => limit.abort(), { once: true });
+      timer = setTimeout(() => {
+        timedOut = true;
+        limit.abort();
+      }, SEED_TIMEOUT_MS);
+      return api('world.entities', { signal: limit.signal, query: { since: 0 } });
+    })
+      .then(
+        (snapshot) => {
+          // Laid under the cache as it is now: frames that arrived while the request was out are kept.
+          const set = seedEntities(snapshot, client.getQueryData<WorldEntities>(liveKeys.entities));
+          client.setQueryData(liveKeys.entities, set);
+          // The viewers read the complete set now, not at the next stream frame (a quiet world may send none for a while).
+          publishEntityFrame();
+          return set;
+        },
+        (e: unknown) => {
+          if (timedOut || !(e instanceof DOMException && e.name === 'AbortError')) seedFailedAt = Date.now();
+          return undefined;
+        },
+      )
+      .finally(() => {
+        clearTimeout(timer);
+        seeding = null;
+      });
+    return seeding;
+  };
   return {
     cancelPending: () => {
       for (const controller of pending) controller.abort();
@@ -112,9 +160,21 @@ export function createWorldSource(qc?: QueryClient, opts: WorldSourceOptions = {
 
     async entities(since) {
       const cached = qc?.getQueryData<WorldEntities>(liveKeys.entities);
-      if (cached && (cached.rev ?? 0) > 0) {
+      if (qc && cached && (cached.rev ?? 0) > 0) {
+        if (!entitiesComplete(cached)) {
+          // Never waited for: the bodies keep moving on the stream's frames meanwhile, handed on as deltas below. The first
+          // read after the seed lands hands the complete set (owedFull).
+          owedFull = true;
+          void seed(qc);
+        }
         const frame = frameOf(cached);
-        if (since === undefined || since === 0 || (cached.rev ?? 0) > since) return { ...toDelta(cached, true), frame };
+        // Only a complete set may replace the store's: a bare delta would delete every entity that did not change. After an
+        // incomplete one (a joined stream, a resync), the next complete set goes in whole even at a revision the store has seen.
+        const full = entitiesComplete(cached);
+        const owed = full && owedFull;
+        if (full) owedFull = false;
+        if (owed || since === undefined || since === 0 || (cached.rev ?? 0) > since)
+          return { ...toDelta(cached, full), frame };
         return { ...toDelta({ ...cached, entities: [], removed: [] }, false), frame };
       }
       return toDelta(await read((signal) => api('world.entities', { signal, query: since ? { since } : {} })), !since);

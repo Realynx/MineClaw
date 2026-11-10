@@ -508,7 +508,7 @@ export function worldBots() {
     z: b.pos[2],
     yaw: (sim.tick * 9 + b.pos[0] * 10) % 360,
     pitch: 10,
-    poseAge: 0.2,
+    poseAge: 0,
     hp: b.hp,
     food: b.food,
     job: b.task,

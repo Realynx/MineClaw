@@ -158,13 +158,18 @@ public sealed partial class SupervisorWorldRoutes
     private readonly SemaphoreSlim _inspections = new(2);
     private readonly EntityDeltaLog _entityLog;
 
+    /// <summary>The entity log rebuilds at most this often. Half the socket's 100 ms tick: two ticks are 100 ms apart only on
+    /// average, so at 100 ms about every other tick found the log fresh and carried no entity movement, and the next one carried
+    /// 200 ms of it. REST callers are rate-limited by their own bucket.</summary>
+    internal static readonly TimeSpan EntityRebuildInterval = TimeSpan.FromMilliseconds(50);
+
     public SupervisorWorldRoutes(ISupervisorWorld world, WorldRouteLimits? limits = null, TimeProvider? time = null)
     {
         _world = world;
         _time = time ?? TimeProvider.System;
         var l = limits ?? WorldRouteLimits.Default;
         _cache = new RenderCache<SupervisorReply>(_time, 48);
-        _entityLog = new EntityDeltaLog(_time) { MinInterval = TimeSpan.FromMilliseconds(100) };
+        _entityLog = new EntityDeltaLog(_time) { MinInterval = EntityRebuildInterval };
         _buckets = new Dictionary<string, TokenBucket>(StringComparer.Ordinal)
         {
             ["index"] = new(l.IndexPerSec, l.IndexBurst, _time),

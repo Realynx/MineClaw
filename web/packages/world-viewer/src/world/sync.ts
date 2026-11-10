@@ -103,19 +103,26 @@ export interface Interest {
   priority?: number;
 }
 
-/** A view wholly covered by another shares its index/download work, including negative chunk coordinates. */
-export function sharedInterests(list: Record<string, Interest>): Map<string, Interest> {
+/**
+ * A view wholly covered by another shares its index/download work, including negative chunk coordinates. `coveredBy`,
+ * when given, is filled with the key of the interest that covers each one left out.
+ */
+export function sharedInterests(
+  list: Record<string, Interest>,
+  coveredBy?: Map<string, string>,
+): Map<string, Interest> {
   const sorted = Object.entries(list)
     .map(([k, i]) => [k, { ...i, r: Math.max(16, Math.min(256, Math.round(i.r))) }] as const)
     .sort((a, b) => (b[1].priority ?? 0) - (a[1].priority ?? 0) || b[1].r - a[1].r);
   const kept = new Map<string, Interest>();
   for (const [k, i] of sorted) {
     const r = indexRect(i.x, i.z, i.r);
-    const covered = [...kept.values()].some((other) => {
+    const covering = [...kept].find(([, other]) => {
       const q = indexRect(other.x, other.z, other.r);
       return other.dim === i.dim && q[0] <= r[0] && q[1] <= r[1] && q[2] >= r[2] && q[3] >= r[3];
     });
-    if (!covered) kept.set(k, i);
+    if (!covering) kept.set(k, i);
+    else coveredBy?.set(k, covering[0]);
   }
   return kept;
 }
@@ -144,6 +151,11 @@ export class WorldSync {
   private generation = 0;
   private rr = 0;
   private priorityTurn = false;
+  /** Interests whose sweep is over: since the last `start()` or `reindexNow()`, an index answered and all it wanted is applied. */
+  private readonly swept = new Set<string>();
+  /** Bumped by `start()` and `reindexNow()`: a pass that began before cannot end the new sweep. */
+  private sweep = 0;
+  private coveredBy = new Map<string, string>();
   readonly indexBackoff = new Backoff();
   readonly chunkBackoff = new Backoff();
   periodMs = 900;
@@ -156,6 +168,27 @@ export class WorldSync {
   /** Re-index every interest on the next pass (block-delta fallback, reconnect). */
   reindexNow(): void {
     this.indexedAt.clear();
+    this.restartSweep();
+  }
+
+  /**
+   * Whether interest `key` has caught up: the sweep that began with the last `start()` or `reindexNow()` got its index
+   * and applied every column that index wanted. An interest another one covers follows that one; an unknown key is done.
+   */
+  isSwept(key: string): boolean {
+    const k = this.coveredBy.get(key) ?? key;
+    return !this.interests.has(k) || this.swept.has(k);
+  }
+
+  /** Some interest has not caught up yet (a tab that came back, a reconnect, a view just added). */
+  get catchingUp(): boolean {
+    for (const k of this.interests.keys()) if (!this.swept.has(k)) return true;
+    return false;
+  }
+
+  private restartSweep(): void {
+    this.sweep++;
+    this.swept.clear();
   }
 
   /** A delta outside every view must not restart their indexing/download turns. */
@@ -190,14 +223,18 @@ export class WorldSync {
       return;
     }
     this.interestShape = shape;
-    const next = sharedInterests(list);
+    const coveredBy = new Map<string, string>();
+    const next = sharedInterests(list, coveredBy);
     this.interests = next;
+    this.coveredBy = coveredBy;
     for (const k of [...this.indexedAt.keys()]) if (!next.has(k)) this.indexedAt.delete(k);
     for (const k of this.pendingColumns.keys()) if (!next.has(k)) this.pendingColumns.delete(k);
+    for (const k of [...this.swept]) if (!next.has(k)) this.swept.delete(k);
   }
 
   start(): void {
     if (this.running) return;
+    this.restartSweep();
     this.running = true;
     this.loop(++this.generation);
   }
@@ -235,6 +272,7 @@ export class WorldSync {
     const key = this.nextDue(now);
     if (key === null) return;
     const it = this.interests.get(key)!;
+    const sweep = this.sweep;
     this.busy = true;
     try {
       const index = await this.fetchIndex(it);
@@ -246,7 +284,8 @@ export class WorldSync {
       const rec = this.cache.reconcile(it.dim, cx0, cz0, cx1, cz1, index.columns);
       if (rec.dropped.length) this.ev.onDropped(it.dim, rec.dropped, await this.host.drop(it.dim, rec.dropped));
       if (rec.touched.length) this.ev.onTouched(it.dim, await this.host.touch(it.dim, rec.touched));
-      await this.fetchColumns(key, it, rec.want);
+      const applied = await this.fetchColumns(key, it, rec.want);
+      if (applied === rec.want.length && sweep === this.sweep && this.currentInterest(key, it)) this.swept.add(key);
       await this.trimAround(it);
     } finally {
       this.busy = false;
@@ -294,9 +333,9 @@ export class WorldSync {
     return normalizeIndex(raw);
   }
 
-  /** Nearby columns interleaved with oldest waiting columns; a failed batch is retried on the next pass. */
-  private async fetchColumns(key: string, it: Interest, want: Array<[number, number]>): Promise<void> {
-    if (!this.currentInterest(key, it) || this.chunkBackoff.waiting(Date.now())) return;
+  /** Nearby columns interleaved with oldest waiting columns; a failed batch is retried on the next pass. Returns how many were applied. */
+  private async fetchColumns(key: string, it: Interest, want: Array<[number, number]>): Promise<number> {
+    if (!this.currentInterest(key, it) || this.chunkBackoff.waiting(Date.now())) return 0;
     const ccx = Math.floor(it.x) >> 4, ccz = Math.floor(it.z) >> 4;
     // A scattered thumbnail grid cannot hold the interactive view behind eight whole downloads. One view keeps full
     // throughput; several views share short turns. Overlap the next download with the worker applying this one.
@@ -308,7 +347,8 @@ export class WorldSync {
     const batches: Array<Array<[number, number]>> = [];
     for (let n = 0; n < selected.length; n += this.batchColumns)
       batches.push(selected.slice(n, n + this.batchColumns).map((c) => c.split(',').map(Number) as [number, number]));
-    if (!batches.length) return;
+    if (!batches.length) return 0;
+    let applied = 0;
     let pending = this.downloadBatch(it.dim, batches[0]);
     for (let n = 0; n < batches.length; n++) {
       const buf = await pending;
@@ -326,8 +366,10 @@ export class WorldSync {
       }
       this.cache.applyStored(res.dim, res.columns, res.bytes);
       this.ev.onApplied(res);
+      applied += batches[n].length;
       if (this.chunkBackoff.waiting(Date.now())) break;
     }
+    return applied;
   }
 
   /** Stop a stale download sweep as soon as its view closes, changes dimension, or pans into another index rectangle. */

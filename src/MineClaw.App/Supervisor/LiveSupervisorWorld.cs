@@ -347,11 +347,13 @@ public sealed class LiveSupervisorWorld : ISupervisorWorld
     private static IReadOnlyList<string> ClaimsOf(IReadOnlyList<HiveLease> leases, string name) =>
         leases.Where(l => l.Owner.Equals(name, StringComparison.OrdinalIgnoreCase)).Select(l => HiveVision.Lease(l.Key).Text).ToList();
 
-    /// <summary>A hive bot this process doesn't drive: where the hub last saw it, or its eye pose when that is fresh and close by.</summary>
+    /// <summary>A hive bot this process doesn't drive: where the hub last saw it, or its eye pose when that is newer and close by.
+    /// The pose is refreshed every 2.5 s and the hub's snapshot every second, so taking the pose whenever it existed held the body
+    /// still for 2.5 s and then moved it in one step; the newer of the two moves it every second. Yaw and pitch stay the pose's.</summary>
     private WorldBot HubBot(HiveBotState hb, DateTimeOffset now, IReadOnlyList<string> claims)
     {
         var p = Pose(hb.Name, now);
-        bool usePose = p != null && p.Dim == hb.Dim && Math.Abs(p.X - hb.X) + Math.Abs(p.Z - hb.Z) < 24;
+        bool usePose = p != null && p.Dim == hb.Dim && p.At >= hb.At && Math.Abs(p.X - hb.X) + Math.Abs(p.Z - hb.Z) < 24;
         return new WorldBot(hb.Name, hb.Short, hb.IsMain, hb.Dim, R(usePose ? p!.X : hb.X), R(usePose ? p!.Y : hb.Y), R(usePose ? p!.Z : hb.Z),
             p?.Yaw, p?.Pitch, p != null ? Math.Round(Math.Max(0, (now - p.At).TotalSeconds), 1) : null, hb.Hp, hb.Food, hb.Job, hb.Brain, null,
             claims, false, Math.Round(Math.Max(0, (now - hb.At).TotalSeconds), 1));
@@ -382,10 +384,19 @@ public sealed class LiveSupervisorWorld : ISupervisorWorld
         var me = w.Player;
         string? job = hb?.Job;
         if (job == null && b.Job != null) try { job = b.Job(); } catch (Exception) { }
-        var pos = me.Position;
-        return new WorldBot(b.Name, b.IsMain ? "main" : b.Short, b.IsMain, w.Dimension, R(pos.X), R(pos.Y), R(pos.Z), me.Yaw, me.Pitch, 0,
-            me.Health, me.Food, job, hb?.Brain, HeldOf(w), claims, true, 0) { Equipment = EquipmentOf(w) };
+        var snap = me.PoseSnapshot(out long stamp); // position, yaw, pitch and the moment they were published, in one read
+        var pos = snap.Position;
+        return new WorldBot(b.Name, b.IsMain ? "main" : b.Short, b.IsMain, w.Dimension, R(pos.X), R(pos.Y), R(pos.Z), snap.Yaw, snap.Pitch,
+            PoseAge(stamp, System.Diagnostics.Stopwatch.GetTimestamp()), snap.Health, snap.Food, job, hb?.Brain, HeldOf(w), claims, true, 0)
+        { Equipment = EquipmentOf(w) };
     }
+
+    /// <summary>A live body's <c>pose_age</c> in seconds from two <see cref="System.Diagnostics.Stopwatch"/> readings: how long ago its
+    /// pose was published, clamped to 0..0.25 and rounded to 1 ms. The viewer dates the sample by it (positions change every
+    /// 50 ms tick, frames go out every 100 ms). The clamp matters: a body that does not sync every tick (dead, riding, no position
+    /// yet: stamp 0) would otherwise report a growing age.</summary>
+    internal static double PoseAge(long stamp, long now) =>
+        Math.Round(Math.Clamp(System.Diagnostics.Stopwatch.GetElapsedTime(stamp, now).TotalMilliseconds, 0, 250) / 1000, 3);
 
     /// <summary>What a live body wears and holds (player window: 5 helmet .. 8 boots, the held hotbar slot, 45 the off hand).</summary>
     internal static WorldEquipment? EquipmentOf(WorldState w)

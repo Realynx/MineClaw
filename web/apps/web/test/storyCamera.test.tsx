@@ -57,7 +57,14 @@ beforeEach(() => {
   Object.defineProperty(document, 'fullscreenElement', { configurable: true, get: () => document.body });
   Object.defineProperty(navigator, 'keyboard', { configurable: true, value: { lock: vi.fn(async () => {}), unlock: vi.fn() } });
 });
-afterEach(() => { vi.unstubAllGlobals(); Reflect.deleteProperty(document, 'fullscreenElement'); Reflect.deleteProperty(navigator, 'keyboard'); });
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
+  vi.restoreAllMocks();
+  Reflect.deleteProperty(document, 'fullscreenElement');
+  Reflect.deleteProperty(navigator, 'keyboard');
+  Reflect.deleteProperty(window, '__story');
+});
 
 const mapProps = (): StoryMapProps => ({
   state: undefined,
@@ -103,23 +110,14 @@ it('switches the same mounted viewer to free cam and back, giving mouse control 
   expect(viewer.mounts).toBe(1);
 });
 
-it('moves free cam to the colony when its first home position arrives after the viewer', () => {
-  const frames = new Map<number, FrameRequestCallback>();
-  let frameId = 0;
-  vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
-    frames.set(++frameId, cb);
-    return frameId;
-  });
-  vi.stubGlobal('cancelAnimationFrame', (id: number) => frames.delete(id));
-  const frame = () => {
-    const pending = [...frames.values()];
-    frames.clear();
-    for (const cb of pending) cb(16);
-    viewer.beforeFrame?.(viewer.engine as Parameters<NonNullable<WorldViewerProps['onBeforeFrame']>>[0], 16, 0);
-  };
+type FrameEngine = Parameters<NonNullable<WorldViewerProps['onBeforeFrame']>>[0];
+
+/** A viewer engine as the map's frame callbacks use it. Its rig starts where the real one does: the world origin, at
+ * zoom 48. */
+function fakeEngine(bots: unknown[] = []) {
   const target = {
     x: 0,
-    y: 0,
+    y: 64,
     z: 0,
     set(x: number, y: number, z: number) {
       this.x = x;
@@ -127,36 +125,334 @@ it('moves free cam to the colony when its first home position arrives after the 
       this.z = z;
     },
   };
-  const position = vi.fn();
-  const setBotBadges = vi.fn();
-  const setBotLabels = vi.fn();
   const matrix = { elements: new Array<number>(16).fill(0) };
-  viewer.engine = {
-    surface: { focus: viewer.focus }, lock: viewer.lock,
-    rig: { target, isoZoom: 44, flyPos: { set: position } },
-    camera: { matrixWorldInverse: matrix, projectionMatrix: matrix, matrixWorld: matrix, projectionMatrixInverse: matrix },
-    setBotLabels,
-    setBotBadges,
+  const engine = {
+    surface: { focus: viewer.focus },
+    lock: viewer.lock,
+    rig: { target, isoZoom: 48, flyPos: { set: vi.fn() }, transitioning: false, beginTransition: vi.fn() },
+    camera: {
+      matrixWorldInverse: matrix,
+      projectionMatrix: matrix,
+      matrixWorld: matrix,
+      projectionMatrixInverse: matrix,
+    },
+    setBotLabels: vi.fn(),
+    setBotBadges: vi.fn(),
     setLevelCut: vi.fn(),
     setHolograms: vi.fn(),
+    runtime: { store: { bots: () => bots, entities: () => [] }, host: { scan: () => Promise.resolve([]) } },
   };
-  const props = mapProps();
-  props.state = { pawns: [{ name: 'maid_chan_109', display: 'Nickname', job: { type: 'mine', label: 'Mining quarry' } }] } as unknown as StoryMapProps['state'];
-  const { rerender } = render(<StoryMap {...props} view="fly" home={null} />);
+  viewer.engine = engine;
+  return engine;
+}
+
+/** The viewer's call before it poses the camera. False = the map holds the frame: the viewer draws nothing. */
+function before(now = 16): boolean {
+  let drawn = true;
+  act(() => {
+    drawn = viewer.beforeFrame!(viewer.engine as FrameEngine, now, 0) !== false;
+  });
+  return drawn;
+}
+
+/** One viewer frame: the after-frame callback runs only when the frame is drawn. True when it was. */
+function frame(now = 16): boolean {
+  if (!before(now)) return false;
+  act(() => viewer.afterFrame!(viewer.engine as FrameEngine, now, 0));
+  return true;
+}
+
+/** The map mounted with a 2D overlay that draws nothing (the frame callbacks are what is under test). */
+function mount(props: StoryMapProps, ref?: React.Ref<StoryMapHandle>) {
+  const page = render(<StoryMap ref={ref} {...props} />);
   vi.spyOn(screen.getByLabelText<HTMLCanvasElement>(/Colony map/), 'getContext').mockReturnValue(null);
-  frame(); // engine exists, but the asynchronous colony position has not arrived
-  expect(position).toHaveBeenLastCalledWith(0, 12, 16);
-  expect(setBotBadges).toHaveBeenLastCalledWith([expect.objectContaining({ text: '109', activity: 'Mining quarry' })]);
-  expect(setBotLabels).toHaveBeenLastCalledWith(false);
-  rerender(<StoryMap {...props} view="fly" home={[100, 63, 200]} />);
-  frame();
-  expect(position).toHaveBeenLastCalledWith(100.5, 76, 216.5);
+  return {
+    ...page,
+    show: (next: Partial<StoryMapProps>) => page.rerender(<StoryMap ref={ref} {...props} {...next} />),
+  };
+}
+
+it('holds every frame until the first home position arrives, then opens free cam on the colony', () => {
+  const engine = fakeEngine();
+  const props = mapProps();
+  props.state = {
+    pawns: [{ name: 'maid_chan_109', display: 'Nickname', job: { type: 'mine', label: 'Mining quarry' } }],
+  } as unknown as StoryMapProps['state'];
+  const { show } = mount({ ...props, view: 'fly', home: null });
+  const aimed = engine.rig.flyPos.set.mock.calls.length; // choosing free cam aims it once, from the rig as it is
+  expect(before()).toBe(false); // the engine exists, but the asynchronous colony position has not arrived
+  expect(engine.rig.target).toMatchObject({ x: 0, y: 64, z: 0 });
+  expect(engine.rig.flyPos.set.mock.calls).toHaveLength(aimed);
+  expect(engine.setBotBadges).not.toHaveBeenCalled();
+  expect(engine.setBotLabels).not.toHaveBeenCalled();
+  show({ view: 'fly', home: [100, 63, 200] });
+  expect(before()).toBe(true);
+  expect(engine.rig.target).toMatchObject({ x: 100.5, y: 64, z: 200.5 });
+  expect(engine.rig.isoZoom).toBe(44);
+  expect(engine.rig.flyPos.set).toHaveBeenLastCalledWith(100.5, 76, 216.5);
+  expect(engine.setBotBadges).toHaveBeenLastCalledWith([
+    expect.objectContaining({ text: '109', activity: 'Mining quarry' }),
+  ]);
+  expect(engine.setBotLabels).toHaveBeenLastCalledWith(false);
   expect(viewer.mode).toBe('fly');
   expect(viewer.mounts).toBe(1);
-  rerender(<StoryMap {...props} view="top" />);
+  show({ view: 'top', home: [100, 63, 200] });
+  before();
+  expect(engine.setBotBadges).toHaveBeenLastCalledWith([]);
+  expect(engine.setBotLabels).toHaveBeenLastCalledWith(false);
+});
+
+it('places the camera on the colony in its very first frame when the home is known at mount', () => {
+  const engine = fakeEngine();
+  mount({ ...mapProps(), home: [100, 63, 200] });
+  expect(before()).toBe(true);
+  expect(engine.rig.target).toMatchObject({ x: 100.5, y: 64, z: 200.5 });
+  expect(engine.rig.isoZoom).toBe(44);
+  expect(engine.rig.beginTransition).not.toHaveBeenCalled(); // placed, not glided to: nothing was drawn before
+  expect(engine.rig.flyPos.set).not.toHaveBeenCalled();
+});
+
+it('gives a new engine object the picture the map had, where it was panned and zoomed to', () => {
+  const first = fakeEngine();
+  mount({ ...mapProps(), home: [100, 63, 200] });
+  expect(frame()).toBe(true);
+  first.rig.target.x = 140.25;
+  first.rig.isoZoom = 60;
+  expect(frame(32)).toBe(true);
+  const next = fakeEngine();
+  expect(before(48)).toBe(true);
+  expect(next.rig.target).toMatchObject({ x: 140.25, y: 64, z: 200.5 });
+  expect(next.rig.isoZoom).toBe(60);
+  expect(next.setBotLabels).toHaveBeenLastCalledWith(false); // and its per-engine setup
+});
+
+it('ends a glide begun before the first drawn frame: that frame is at the spot, not on its way from the origin', () => {
+  const engine = fakeEngine();
+  engine.rig.transitioning = true; // the view was switched while the map waited: the rig glides from its default camera
+  mount({ ...mapProps(), home: [100, 63, 200] });
+  before(500);
+  // A glide whose time has run out: the rig's next pose is the wanted one.
+  expect(engine.rig.beginTransition).toHaveBeenCalledExactlyOnceWith(engine.camera, 499, 1);
+});
+
+it('with no colony, waits six seconds for the main bot or the player, then lets the map show where the rig is', () => {
+  const now = vi.spyOn(performance, 'now').mockReturnValue(1_000);
+  const engine = fakeEngine();
+  const onSettled = vi.fn();
+  const ref = createRef<StoryMapHandle>();
+  mount({ ...mapProps(), home: null, settle: true, onSettled }, ref);
+  expect(before()).toBe(false);
+  now.mockReturnValue(6_999);
+  expect(before()).toBe(false);
+  expect(ref.current?.center()).toBeNull();
+  now.mockReturnValue(7_000);
+  expect(before()).toBe(true);
+  expect(engine.rig.target).toMatchObject({ x: 0, y: 64, z: 0 });
+  expect(engine.rig.isoZoom).toBe(44);
+  expect(onSettled).not.toHaveBeenCalled();
+  expect(ref.current?.center()).toEqual([0, 64, 0]);
+  now.mockRestore();
+});
+
+it('with no colony, settles over the main bot as soon as the viewer knows it', () => {
+  const bots: unknown[] = [];
+  const engine = fakeEngine(bots);
+  const onSettled = vi.fn();
+  mount({ ...mapProps(), home: null, settle: true, onSettled });
+  expect(before()).toBe(false);
+  bots.push({ dim: 0, dto: { main: true }, x: 40.7, y: 70, z: -12.3 });
+  expect(before()).toBe(true);
+  expect(engine.rig.target).toMatchObject({ x: 40.5, z: -12.5 });
+  expect(engine.rig.isoZoom).toBe(44);
+  expect(onSettled).toHaveBeenCalledExactlyOnceWith(69); // the floor under the bot: the working level starts there
+});
+
+it('glides to the new colony when the colony changes, and stays put when a home moves inside one colony', () => {
+  const engine = fakeEngine();
+  const { show } = mount({ ...mapProps(), colony: 'story-1', home: [100, 63, 200] });
   frame();
-  expect(setBotBadges).toHaveBeenLastCalledWith([]);
-  expect(setBotLabels).toHaveBeenLastCalledWith(false);
+  show({ colony: 'story-1', home: [300, 63, 400] }); // "move home": the same colony
+  frame(32);
+  expect(engine.rig.target).toMatchObject({ x: 100.5, z: 200.5 });
+  show({ colony: 'story-2', home: null, loading: true }); // switched: the new colony's state is still on its way
+  expect(frame(48)).toBe(true); // drawn where it was: never held again, and no loading line over the picture
+  expect(screen.queryByRole('status')).not.toBeInTheDocument();
+  expect(engine.rig.target).toMatchObject({ x: 100.5, z: 200.5 });
+  expect(engine.rig.beginTransition).not.toHaveBeenCalled();
+  show({ colony: 'story-2', home: [-50, 70, 60] });
+  frame(64);
+  expect(engine.rig.beginTransition).toHaveBeenCalledExactlyOnceWith(engine.camera, 64, 500);
+  expect(engine.rig.target).toMatchObject({ x: -49.5, y: 64, z: 60.5 });
+  frame(80);
+  expect(engine.rig.beginTransition).toHaveBeenCalledOnce();
+});
+
+it('has no centre before the map is placed', () => {
+  fakeEngine();
+  const ref = createRef<StoryMapHandle>();
+  const { show } = mount({ ...mapProps(), home: null }, ref);
+  expect(before()).toBe(false);
+  expect(ref.current?.center()).toBeNull(); // "move home here" and a new colony never take the world origin
+  show({ home: [100, 63, 200] });
+  before();
+  expect(ref.current?.center()).toEqual([100, 64, 200]);
+});
+
+it('opens on the view remembered for the colony before its home arrives, and the home does not override it', () => {
+  const engine = fakeEngine();
+  const initialView = { colony: 'story-1', x: 216.5, z: 400.5, zoom: 60 };
+  const { show } = mount({ ...mapProps(), colony: 'story-1', home: null, loading: true, initialView });
+  expect(screen.queryByText('Loading the colony…')).not.toBeInTheDocument(); // it knows where to look already
+  expect(before()).toBe(true);
+  expect(engine.rig.target).toMatchObject({ x: 216.5, y: 64, z: 400.5 });
+  expect(engine.rig.isoZoom).toBe(60);
+  show({ colony: 'story-1', home: [100, 63, 200], loading: false, initialView });
+  frame(32);
+  expect(engine.rig.target).toMatchObject({ x: 216.5, z: 400.5 });
+  expect(engine.rig.isoZoom).toBe(60);
+});
+
+it('ignores a view remembered for another colony and opens on the home', () => {
+  const engine = fakeEngine();
+  const initialView = { colony: 'story-9', x: 216.5, z: 400.5, zoom: 60 };
+  const { show } = mount({ ...mapProps(), colony: 'story-1', home: null, loading: true, initialView });
+  expect(screen.getByRole('status')).toHaveTextContent('Loading the colony…');
+  expect(before()).toBe(false);
+  show({ colony: 'story-1', home: [100, 63, 200], loading: false, initialView });
+  before();
+  expect(engine.rig.target).toMatchObject({ x: 100.5, y: 64, z: 200.5 });
+  expect(engine.rig.isoZoom).toBe(44);
+});
+
+it('says the colony is loading when the remembered colony turns out to be gone before anything was drawn', () => {
+  fakeEngine();
+  const initialView = { colony: 'story-9', x: 216.5, z: 400.5, zoom: 60 };
+  const { show } = mount({ ...mapProps(), colony: 'story-9', home: null, loading: true, initialView });
+  expect(screen.queryByRole('status')).not.toBeInTheDocument();
+  show({ colony: 'story-1', home: null, loading: true, initialView: null }); // forgotten: the list's choice is loading
+  expect(screen.getByRole('status')).toHaveTextContent('Loading the colony…');
+  expect(before()).toBe(false);
+});
+
+it('says the colony is loading until the map knows where to look, and never once it does', () => {
+  fakeEngine();
+  const { show } = mount({ ...mapProps(), home: null, loading: true });
+  expect(screen.getByRole('status')).toHaveTextContent('Loading the colony…');
+  expect(before()).toBe(false);
+  expect(screen.getByRole('status')).toHaveTextContent('Loading the colony…');
+  show({ home: [100, 63, 200], loading: true }); // the home is here; the frame that places the camera ends the wait
+  expect(before()).toBe(true);
+  expect(screen.queryByRole('status')).not.toBeInTheDocument();
+});
+
+it('shows no loading line when the home is known at mount, nor while a colony-less map settles', () => {
+  fakeEngine();
+  const known = mount({ ...mapProps(), home: [100, 63, 200], loading: true });
+  expect(screen.queryByRole('status')).not.toBeInTheDocument();
+  known.unmount();
+  mount({ ...mapProps(), home: null, settle: true });
+  expect(before()).toBe(false); // waiting for the main bot: the found-a-colony card is the page's word on it
+  expect(screen.queryByRole('status')).not.toBeInTheDocument();
+});
+
+it('takes a focus before anything was drawn as the place to open on', () => {
+  const engine = fakeEngine();
+  const ref = createRef<StoryMapHandle>();
+  mount({ ...mapProps(), home: null, loading: true }, ref);
+  expect(before()).toBe(false);
+  act(() => ref.current!.focus(40, -20));
+  expect(screen.queryByRole('status')).not.toBeInTheDocument();
+  expect(engine.rig.target).toMatchObject({ x: 0, y: 64, z: 0 }); // the camera moves in its frame, not before
+  expect(before()).toBe(true);
+  expect(engine.rig.target).toMatchObject({ x: 40.5, y: 64, z: -19.5 });
+  expect(engine.rig.beginTransition).not.toHaveBeenCalled(); // nothing to glide from
+  act(() => ref.current!.focus(60, 10, 70));
+  expect(engine.rig.beginTransition).toHaveBeenCalledOnce(); // once drawn, a focus glides as before
+  expect(engine.rig.target).toMatchObject({ x: 60.5, y: 70, z: 10.5 });
+});
+
+it('reports the view for the page to remember: at most every two seconds while it changes, and once on leaving', () => {
+  const engine = fakeEngine();
+  const onView = vi.fn();
+  const { unmount } = mount({ ...mapProps(), home: [100, 63, 200], onView });
+  frame(3_000);
+  expect(onView).toHaveBeenCalledExactlyOnceWith({ x: 100.5, z: 200.5, zoom: 44 });
+  frame(6_000); // unchanged: nothing to say
+  expect(onView).toHaveBeenCalledOnce();
+  engine.rig.target.x = 120.5;
+  frame(6_016);
+  expect(onView).toHaveBeenLastCalledWith({ x: 120.5, z: 200.5, zoom: 44 });
+  engine.rig.target.z = 180.5;
+  engine.rig.isoZoom = 80;
+  frame(7_000); // changed again, but the last report is only a second old
+  expect(onView).toHaveBeenCalledTimes(2);
+  unmount();
+  expect(onView).toHaveBeenCalledTimes(3);
+  expect(onView).toHaveBeenLastCalledWith({ x: 120.5, z: 180.5, zoom: 80 });
+});
+
+it('reports no view from a map that never found its place, nor while still on the colony it was switched from', () => {
+  const engine = fakeEngine();
+  const onView = vi.fn();
+  const unplaced = mount({ ...mapProps(), home: null, onView });
+  expect(before(3_000)).toBe(false);
+  unplaced.unmount();
+  expect(onView).not.toHaveBeenCalled();
+  const switched = mount({ ...mapProps(), colony: 'story-1', home: [100, 63, 200], onView });
+  frame(3_000);
+  expect(onView).toHaveBeenCalledOnce();
+  switched.show({ colony: 'story-2', home: null });
+  engine.rig.target.x = 120.5; // panned while the new colony loads: still the old colony's ground
+  frame(6_000);
+  switched.unmount();
+  expect(onView).toHaveBeenCalledOnce();
+});
+
+it('after a switch to a colony with no home, glides over its main bot and remembers the view again', () => {
+  const bots: unknown[] = [];
+  const engine = fakeEngine(bots);
+  const onView = vi.fn();
+  const { show, unmount } = mount({ ...mapProps(), colony: 'story-1', home: [100, 63, 200], onView });
+  frame(3_000);
+  expect(onView).toHaveBeenCalledOnce();
+  show({ colony: 'story-2', home: null, loading: true });
+  frame(3_016); // its state is on its way: stays put
+  expect(engine.rig.beginTransition).not.toHaveBeenCalled();
+  bots.push({ dim: 0, dto: { main: true }, x: 40.7, y: 70, z: -12.3 });
+  show({ colony: 'story-2', home: null, settle: true }); // here, with no home
+  frame(6_000);
+  expect(engine.rig.beginTransition).toHaveBeenCalledExactlyOnceWith(engine.camera, 6_000, 500);
+  expect(engine.rig.target).toMatchObject({ x: 40.5, z: -12.5 });
+  expect(onView).toHaveBeenLastCalledWith({ x: 40.5, z: -12.5, zoom: 44 });
+  engine.rig.target.x = 60.5;
+  frame(6_016);
+  unmount();
+  expect(onView).toHaveBeenLastCalledWith({ x: 60.5, z: -12.5, zoom: 44 });
+});
+
+it('after a switch to a colony with no home and no body to settle on, stays put and remembers the view again', () => {
+  const engine = fakeEngine();
+  const onView = vi.fn();
+  const { show } = mount({ ...mapProps(), colony: 'story-1', home: [100, 63, 200], onView });
+  frame(3_000);
+  show({ colony: 'story-2', home: null, settle: true });
+  engine.rig.target.x = 120.5;
+  frame(6_000);
+  expect(engine.rig.beginTransition).not.toHaveBeenCalled();
+  expect(engine.rig.target).toMatchObject({ x: 120.5, z: 200.5 });
+  expect(onView).toHaveBeenLastCalledWith({ x: 120.5, z: 200.5, zoom: 44 });
+});
+
+it('tells the mock debug hook which column the first drawn frame looked at', () => {
+  vi.stubEnv('NEXT_PUBLIC_MOCK', '1');
+  fakeEngine();
+  const { show } = mount({ ...mapProps(), home: null });
+  const story = () => (window as unknown as { __story: { firstFrame(): [number, number] | null } }).__story;
+  expect(frame()).toBe(false);
+  expect(story().firstFrame()).toBeNull();
+  show({ home: [400, 63, 400] });
+  expect(frame()).toBe(true);
+  expect(story().firstFrame()).toEqual([400, 400]);
 });
 
 it('routes bare-world clicks through fullscreen before the engine can lock and leaves open editor menus alone', async () => {

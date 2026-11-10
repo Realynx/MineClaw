@@ -5,7 +5,7 @@ import type { BotView } from '../world/entities';
 import type { AimTarget, AimRay } from '../render/aim';
 import type { BubbleKind, ShownBubble } from '../render/bubbles';
 import { useWorldRuntime } from './WorldThumbnail';
-import { getViewerQuality, subscribeViewerQuality } from '../render/viewerQuality';
+import { getViewerQuality, motionLine, subscribeViewerQuality } from '../render/viewerQuality';
 
 export interface WorldViewerProps {
   source: WorldSource;
@@ -31,6 +31,11 @@ export interface WorldViewerProps {
   /** A left click with the mouse locked, on the crosshair's target (replaces the plain pick while locked). */
   onAimClick?: (t: AimTarget | null, mods: { shift: boolean; ctrl: boolean; button?: number }) => void;
   resolveAim?: (physical: AimTarget | null, ray: AimRay) => AimTarget | null;
+  /**
+   * Camera input for this frame, called before the camera is posed. Return `false` to hold the view for the frame:
+   * nothing is drawn (the canvas stays hidden until the first drawn frame) and, until its first frame that is not held,
+   * the view loads no world. An app that does not yet know where its camera belongs holds here, then places it here.
+   */
   onBeforeFrame?: EngineOptions['onBeforeFrame'];
   onAfterFrame?: EngineOptions['onAfterFrame'];
   /** A target block marker drawn in the world. */
@@ -220,7 +225,10 @@ function WorldNotes({ notes, layers }: { notes: string[]; layers?: Partial<Layer
   );
 }
 
-/** The viewer settings' fps readout (`perfOverlay`): this view's frame rate, the timed frame and the controller's levers. */
+/**
+ * The viewer settings' fps readout (`perfOverlay`): this view's frame rate, the timed frame and the controller's levers;
+ * below it how bodies get here (`motionLine`).
+ */
 function PerfOverlay({ engine }: { engine: { current: WorldViewerEngine | null } }) {
   const on = useSyncExternalStore(subscribeViewerQuality, () => getViewerQuality().perfOverlay, () => false);
   const [text, setText] = useState('');
@@ -232,7 +240,8 @@ function PerfOverlay({ engine }: { engine: { current: WorldViewerEngine | null }
       if (!e || !s) return;
       const m = s.memory;
       setText(
-        `${s.fps.toFixed(0)} fps · ${m.frameMs.toFixed(1)} ms · ${Math.round(s.resolutionScale * 100)}% res · ${Math.round(m.drawFactor * 100)}% dist · ${e.runtime.entities.instances} ent · ${m.quality}`,
+        `${s.fps.toFixed(0)} fps · ${m.frameMs.toFixed(1)} ms · ${Math.round(s.resolutionScale * 100)}% res · ${Math.round(m.drawFactor * 100)}% dist · ${e.runtime.entities.instances} ent · ${m.quality}` +
+          `\n${motionLine(e.runtime.motionStatus())}`,
       );
     };
     tick();
@@ -243,7 +252,7 @@ function PerfOverlay({ engine }: { engine: { current: WorldViewerEngine | null }
   return (
     <div
       data-testid="viewer-perf"
-      style={{ position: 'absolute', right: 8, top: 8, padding: '3px 8px', font: '11px ui-monospace, monospace', color: '#fff', background: 'rgba(0,0,0,0.55)', borderRadius: 6, pointerEvents: 'none', whiteSpace: 'nowrap', zIndex: 5 }}
+      style={{ position: 'absolute', right: 8, top: 8, padding: '3px 8px', font: '11px ui-monospace, monospace', color: '#fff', background: 'rgba(0,0,0,0.55)', borderRadius: 6, pointerEvents: 'none', whiteSpace: 'pre', zIndex: 5 }}
     >
       {text}
     </div>

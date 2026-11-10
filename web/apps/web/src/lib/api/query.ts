@@ -51,7 +51,7 @@ const STALE_TIME = new Map<RouteId, number>([
 ]);
 
 export function makeQueryClient(): QueryClient {
-  return new QueryClient({
+  const client = new QueryClient({
     defaultOptions: {
       queries: {
         retry: (count, err) => {
@@ -66,6 +66,11 @@ export function makeQueryClient(): QueryClient {
       mutations: { retry: false, networkMode: 'always' },
     },
   });
+  // The stream writes the entity set ten times a second, often with no observer (the Controller reads it through the
+  // viewer): it must not be dropped after gcTime and come back as a bare delta, and comparing it deeply on every frame is
+  // wasted work (every frame changes `at`).
+  client.setQueryDefaults(['world.entities'], { gcTime: Infinity, structuralSharing: false });
+  return client;
 }
 
 type ApiQueryOptions<K extends RouteId> = Omit<

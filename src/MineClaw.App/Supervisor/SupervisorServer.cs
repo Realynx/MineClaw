@@ -120,6 +120,29 @@ public sealed class SupervisorServer : IAsyncDisposable
 
     private Timer? _perfTimer;
 
+    /// <summary>At most one world-socket-ended line per this long; the ends in between are counted into the next line.</summary>
+    internal static readonly TimeSpan WorldSocketEndLogEvery = TimeSpan.FromSeconds(10);
+    private long _worldEndLoggedAt = long.MinValue / 2;
+    private int _worldEndsQuiet;
+
+    /// <summary>A world socket that ended other than by its client closing (or shutdown) is one Information line: the bridge's
+    /// motion stream stopped and reconnects, which the viewer shows as stalled bodies. Debug alone left no trace in the log.</summary>
+    private void LogWorldSocketEnd(WorldSocketEnded ended)
+    {
+        if (ended.End is WorldSocketEnd.ClientClosed or WorldSocketEnd.Shutdown) return;
+        if (!WorldSocketEndDue(ref _worldEndLoggedAt, Environment.TickCount64)) { Interlocked.Increment(ref _worldEndsQuiet); return; }
+        int quiet = Interlocked.Exchange(ref _worldEndsQuiet, 0);
+        _log.LogInformation("supervisor: world socket ended: {End} {Detail}{Quiet}", ended.End, ended.Detail ?? "",
+            quiet > 0 ? $" ({quiet} more since the last line)" : "");
+    }
+
+    /// <summary>Whether a line is due at <paramref name="nowMs"/> (claims the slot when it is).</summary>
+    internal static bool WorldSocketEndDue(ref long lastMs, long nowMs)
+    {
+        long last = Interlocked.Read(ref lastMs);
+        return nowMs - last >= (long)WorldSocketEndLogEvery.TotalMilliseconds && Interlocked.CompareExchange(ref lastMs, nowMs, last) == last;
+    }
+
     private async Task ServeAsync(HttpListenerContext ctx, CancellationToken ct)
     {
         var res = ctx.Response;
@@ -133,7 +156,7 @@ public sealed class SupervisorServer : IAsyncDisposable
                 else
                 {
                     using var socket = (await ctx.AcceptWebSocketAsync(null).ConfigureAwait(false)).WebSocket;
-                    await world.SocketAsync(socket, request, ct, Perf).ConfigureAwait(false);
+                    LogWorldSocketEnd(await world.SocketAsync(socket, request, ct, Perf).ConfigureAwait(false));
                 }
                 return;
             }

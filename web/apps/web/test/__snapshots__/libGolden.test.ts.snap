@@ -251,7 +251,12 @@ exports[`lib helpers (golden) > merges entity deltas the same 1`] = `
       },
     ],
     "full": false,
-    "removed": [],
+    "removed": [
+      [
+        0,
+        1,
+      ],
+    ],
     "rev": 6,
   },
   {

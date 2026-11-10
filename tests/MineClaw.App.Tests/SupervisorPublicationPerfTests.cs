@@ -51,4 +51,40 @@ public sealed class SupervisorPublicationPerfTests
         Assert.Contains("push control 3 samples, gaps>250ms 1, max 600 ms (GC 15 ms), GC-in-gaps 15 ms, queued-peak-at-send 3", line);
         Assert.Contains("push world 2 samples, gaps>250ms 0, max 0 ms (GC 0 ms), GC-in-gaps 0 ms, queued-peak-at-send 1", line);
     }
+
+    [Fact]
+    public void A_gap_under_the_250ms_line_still_shows_as_the_longest_interval_and_a_gap_over_150ms()
+    {
+        var perf = new SupervisorPerf();
+        var world = perf.MonitorPublication("world");
+        world.Sample(At(0), 100, 0);
+        world.Sample(At(100), 100, 0);
+        world.Sample(At(280), 100, 0); // 180 ms: a visible stop at Fast, invisible to gaps>250ms
+        world.Sample(At(380), 100, 0);
+
+        Assert.Contains("push world 4 samples, gaps>250ms 0, max 0 ms (GC 0 ms), GC-in-gaps 0 ms, queued-peak-at-send 0, "
+            + "longest 180 ms, gaps>150ms 1, opens 1, failed 0", perf.Summary());
+    }
+
+    [Fact]
+    public void Opened_and_failed_sockets_are_counted_per_minute_per_stream()
+    {
+        var perf = new SupervisorPerf();
+        var first = perf.MonitorPublication("world");
+        first.Sample(At(0), 100, 0);
+        first.Failed();
+        var second = perf.MonitorPublication("world");
+        second.Sample(At(5000), 100, 0); // a new socket: no gap from the dropped one
+        perf.MonitorPublication("control");
+
+        var line = perf.Summary();
+        Assert.Contains("push world 2 samples, gaps>250ms 0, max 0 ms (GC 0 ms), GC-in-gaps 0 ms, queued-peak-at-send 0, "
+            + "longest 0 ms, gaps>150ms 0, opens 2, failed 1", line);
+        Assert.Contains("push control 0 samples, gaps>250ms 0, max 0 ms (GC 0 ms), GC-in-gaps 0 ms, queued-peak-at-send 0, "
+            + "longest 0 ms, gaps>150ms 0, opens 1, failed 0", line);
+
+        second.Sample(At(5100), 100, 0);
+        Assert.Contains("push world 1 samples, gaps>250ms 0, max 0 ms (GC 0 ms), GC-in-gaps 0 ms, queued-peak-at-send 0, "
+            + "longest 100 ms, gaps>150ms 0, opens 0, failed 0", perf.Summary());
+    }
 }

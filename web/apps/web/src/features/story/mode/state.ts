@@ -3,10 +3,11 @@
  * options, the working level / x-ray / view, the HUD's overlays, the colony's bodies, and the material selector.
  * `useStoryModeState` puts them together into the one object the actions, the key map and the HUD read (`StoryModeState`).
  */
-import type { StoryColonyState, StoryOnlineBlocked } from '@mineclaw/contracts';
+import type { StoryColonyState, StoryColonySummary, StoryOnlineBlocked } from '@mineclaw/contracts';
 import { useQueryClient } from '@tanstack/react-query';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react';
+import { ApiError } from '@/lib/api/client';
 import { useAuth } from '@/lib/auth';
 import type { AttackWho } from '../assign/gear';
 import { WorldClock } from '../clock';
@@ -40,6 +41,7 @@ import {
 } from '../tools';
 import { useFullscreen } from '../useFullscreen';
 import { useArchitect, useColonies, useColony, useStoryWrite } from '../useStory';
+import { clearView, loadView, saveView, type StoryView } from '../viewMemory';
 import type { PendingWater } from '../WaterTools';
 
 export type V3 = [number, number, number];
@@ -92,7 +94,70 @@ function useWorldClock(state: StoryColonyState | undefined): WorldClock {
   return clock;
 }
 
-/** The account, the colonies, the open colony (`?colony=`, else the first) and its writer. */
+/** What the page knows about the colony it opens, from the list request and the state request. */
+export interface ColonyLoad {
+  /** `?colony=` names the colony (it is asked for whatever the list says). */
+  explicit: boolean;
+  listLoaded: boolean;
+  listCount: number;
+  listFailed: boolean;
+  hasState: boolean;
+  stateFailed: boolean;
+  /** The state request answered 404: there is no such colony. */
+  stateMissing: boolean;
+}
+
+/**
+ * No colony, or a colony that cannot be reached? `noColony` (the found-a-colony card; the map settles over the main
+ * bot) only when the server said so: the list came back empty, or it came back and the opened colony answered 404.
+ * `loadError` when a request failed (the page says so and keeps asking). Neither = still loading. A failed request is
+ * never "no colony": the map would settle somewhere else and stay there when the state arrives after all.
+ */
+export function colonyLoadState(s: ColonyLoad): { noColony: boolean; loadError: boolean } {
+  if (s.hasState) return { noColony: false, loadError: false };
+  const noColony = s.listLoaded && (s.stateMissing || (!s.explicit && s.listCount === 0));
+  const loadError = !noColony && ((s.listFailed && !s.listLoaded) || (s.stateFailed && !s.stateMissing));
+  return { noColony, loadError };
+}
+
+/**
+ * The colony that opens with no `?colony=` in the address: the one this browser opened last (asked for before the list
+ * is in, so the two requests run side by side; kept while the list has it), else the first active one, else the first.
+ */
+export function defaultColony(
+  list: ReadonlyArray<StoryColonySummary> | undefined,
+  remembered: string | null,
+): string | null {
+  if (!list) return remembered;
+  if (remembered && list.some((c) => c.id === remembered)) return remembered;
+  return (list.find((c) => c.active !== false) ?? list[0])?.id ?? null;
+}
+
+const isMissing = (e: unknown) => e instanceof ApiError && e.status === 404;
+
+/**
+ * The view this browser last had of a colony (../viewMemory.ts). `opening` is read once per visit: the map opens on it.
+ * `remembered`, its colony, follows what is saved, so an address without `?colony=` stays on the colony last shown.
+ */
+function useViewMemory(user: string) {
+  const [opening, setOpening] = useState(() => loadView(user));
+  const [remembered, setRemembered] = useState(() => opening?.colony ?? null);
+  const remember = useCallback(
+    (view: StoryView) => {
+      saveView(user, view);
+      setRemembered(view.colony);
+    },
+    [user],
+  );
+  const forget = useCallback(() => {
+    clearView(user);
+    setOpening(null);
+    setRemembered(null);
+  }, [user]);
+  return { opening, remembered, remember, forget };
+}
+
+/** The account, the colonies, the open colony (`?colony=`, else `defaultColony`), how its load stands, its writer. */
 function useStoryData() {
   const { me, can, canChat } = useAuth();
   const router = useRouter();
@@ -100,12 +165,37 @@ function useStoryData() {
   const qc = useQueryClient();
   const colonies = useColonies();
   const list = colonies.data?.colonies ?? [];
-  const id = params.get('colony') ?? list[0]?.id ?? null;
+  const explicit = params.get('colony');
+  const { opening, remembered, remember, forget } = useViewMemory(me.username);
+  const id = explicit ?? defaultColony(colonies.data?.colonies, remembered);
   const colony = useColony(id);
   const state = colony.data;
   const write = useStoryWrite(id);
   const clock = useWorldClock(state);
-  const noColony = !state && !colony.isLoading && !colonies.isLoading;
+  const hasState = !!state;
+  const stateMissing = isMissing(colony.error);
+  const { noColony, loadError } = colonyLoadState({
+    explicit: explicit !== null,
+    listLoaded: colonies.data !== undefined,
+    listCount: list.length,
+    // Counted, not `isError`: each refetch of a list that never loaded goes back to "pending": the card would blink.
+    listFailed: colonies.errorUpdateCount > 0,
+    hasState,
+    stateFailed: colony.isError,
+    stateMissing,
+  });
+  // The remembered colony answered 404: it is forgotten, so the list's choice opens instead.
+  const gone = stateMissing && id !== null && id === remembered;
+  useEffect(() => {
+    if (gone) forget();
+  }, [gone, forget]);
+  /** The map's view, remembered for the colony it shows (never for one whose state is not here). */
+  const rememberView = useCallback(
+    (view: { x: number; z: number; zoom: number }) => {
+      if (id && hasState) remember({ colony: id, ...view });
+    },
+    [remember, id, hasState],
+  );
   return {
     me,
     can,
@@ -121,6 +211,9 @@ function useStoryData() {
     write,
     clock,
     noColony,
+    loadError,
+    initialView: opening,
+    rememberView,
   };
 }
 

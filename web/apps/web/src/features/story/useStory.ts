@@ -8,7 +8,7 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { RouteId, StoryColonyState, StoryRecipe } from '@mineclaw/contracts';
 import { useCallback, useEffect } from 'react';
-import { api, type RouteBody } from '@/lib/api/client';
+import { api, ApiError, type RouteBody } from '@/lib/api/client';
 import { qk } from '@/lib/api/query';
 import { storyFramesFlowing } from './frames';
 import { mergeColony } from './model';
@@ -31,6 +31,30 @@ export async function catchUp(qc: ReturnType<typeof useQueryClient>, id: string)
   qc.setQueryData<StoryColonyState>(colonyKey(id), (p) => mergeColony(p, prev ? d : { ...d, full: true }));
 }
 
+/** Colony queries whose missing state is being asked for again: one request each at a time (it may wait a while). */
+const refetching = new WeakSet<object>();
+
+/**
+ * A colony whose first fetch failed has no state for the stream's deltas to merge into, and the `since=rev` catch-up
+ * stands down while those frames flow: asks for the whole state again, whether or not frames flow. True when it is
+ * being asked for (the caller's catch-up is not needed too). It asks through `catchUp` so the failed query keeps saying
+ * it failed until a state arrives (a query refetch turns it back to "loading" for every attempt, and the page's "can't
+ * reach the colony" would blink). A colony the server does not have (404) is not asked for here or by the catch-up (true):
+ * the page shows the found-a-colony card, and the minute's full refetch still notices one that appears.
+ */
+export function refetchMissing(qc: ReturnType<typeof useQueryClient>, id: string): boolean {
+  if (document.visibilityState !== 'visible') return false;
+  const query = qc.getQueryCache().find({ queryKey: colonyKey(id) });
+  if (!query || query.state.data !== undefined || query.state.fetchStatus !== 'idle') return false;
+  if (query.state.error instanceof ApiError && query.state.error.status === 404) return true;
+  if (refetching.has(query)) return true;
+  refetching.add(query);
+  void catchUp(qc, id)
+    .catch(() => undefined)
+    .finally(() => refetching.delete(query));
+  return true;
+}
+
 export function useColony(id: string | null) {
   const qc = useQueryClient();
   const q = useQuery<StoryColonyState>({
@@ -45,6 +69,7 @@ export function useColony(id: string | null) {
   useEffect(() => {
     if (!id) return;
     const t = setInterval(() => {
+      if (refetchMissing(qc, id)) return;
       if (document.visibilityState === 'visible' && !storyFramesFlowing(id)) void catchUp(qc, id).catch(() => undefined);
     }, 3000);
     const full = setInterval(() => void qc.invalidateQueries({ queryKey: colonyKey(id) }), 60_000);

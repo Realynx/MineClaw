@@ -8,6 +8,7 @@ import {
   entityReach,
   FrameLimiter,
   getViewerQuality,
+  motionLine,
   resetViewerQuality,
   setViewerQuality,
   subscribeViewerQuality,
@@ -108,6 +109,22 @@ describe('frame limiter', () => {
     expect(l.due(5000, 30)).toBe(true); // a long stall
     expect(l.due(5016, 30)).toBe(false);
     expect(l.due(5033, 30)).toBe(true);
+  });
+});
+
+describe('motion line', () => {
+  it('reads like the overlay’s second line: frames a second, then the longest gaps in ms, the delay and the pauses', () => {
+    expect(motionLine({ rate: 9.84, src: 110.4, arr: 239.6, frame: 180, buf: 250.2, pauses: 1 })).toBe(
+      'motion 9.8/s · src 110 ms · arr 240 ms · frame 180 ms · buf 250 ms · pauses 1',
+    );
+    expect(motionLine({ rate: 0, src: 0, arr: 0, frame: 0, buf: 0, pauses: 0 })).toBe(
+      'motion 0.0/s · src 0 ms · arr 0 ms · frame 0 ms · buf 0 ms · pauses 0',
+    );
+  });
+
+  it('is on the settings entry, which a page can load without three.js', async () => {
+    const settings = await import('../src/settings');
+    expect(settings.motionLine).toBe(motionLine);
   });
 });
 

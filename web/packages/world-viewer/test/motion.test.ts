@@ -26,49 +26,57 @@ function simulate(cadence: number[], timestamped: boolean) {
 }
 
 describe('timestamped viewer motion', () => {
-  it('reduces the spectator buffer to 150ms for the faster 10Hz stream', () => {
+  it('draws the 10Hz stream 250ms behind: one update plus 150ms of slack for a late one', () => {
     const result = simulate([100], true);
     expect(result.stalled).toBeLessThan(0.01);
-    expect(result.lag).toBeGreaterThan(140);
-    expect(result.lag).toBeLessThan(175);
+    expect(result.lag).toBeGreaterThan(240);
+    expect(result.lag).toBeLessThan(275);
   });
   it('keeps walking smooth across occasional delayed frames, without adding an unbounded display delay', () => {
     const cadence = [200, 200, 400, 200, 200];
     const before = simulate(cadence, false), after = simulate(cadence, true);
-    expect(after.stalled).toBeLessThan(0.06);
-    expect(after.stalled).toBeLessThan(before.stalled / 2);
+    expect(after.stalled).toBe(0);
+    expect(after.jitter).toBeLessThan(0.1);
     expect(after.jitter).toBeLessThan(before.jitter);
-    expect(after.lag).toBeLessThan(300);
+    // A 5 Hz stream is drawn 350 ms behind (200 + 150), and each 400 ms hole is waited out instead of dashed across.
+    expect(after.lag).toBeLessThan(400);
   });
 
   it('handles burst delivery using sample timestamps instead of accelerating every short arrival interval', () => {
     const h = harness();
     for (let t = 1000; t <= 2000; t += 200) h.receive(t, (t - 1000) * 0.004);
     const before = h.at(2500).x;
+    expect(before).toBeCloseTo(4.4); // waiting where the continued walk ended
     h.receive(2500, 4.8, 64, 0, 2200);
     expect(h.at(2500).x).toBeCloseTo(before);
     h.receive(2510, 5.6, 64, 0, 2400);
-    expect(h.at(2610).x).toBeCloseTo(5.44);
-    expect(h.at(2650).x).toBeCloseTo(5.6);
+    // It walks on from there at its own 0.004 blocks/ms (a little faster while the delay slews back), no dash to 5.6.
+    expect(h.at(2610).x).toBeCloseTo(4.9);
+    expect(h.at(2650).x).toBeCloseTo(5.06);
+    expect(h.at(2750).x).toBeCloseTo(5.46);
+    expect(h.at(2900).x).toBeCloseTo(6);
+    expect(h.store.pauses).toBe(1);
   });
 
-  it('resumes after quiet in 250ms, and resets its estimate instead of interpolating over the idle time', () => {
+  it('resumes after quiet in 350ms, and resets its estimate instead of interpolating over the idle time', () => {
     const h = harness(); h.receive(1000, 0); h.receive(11000, 0.86);
     expect(h.store.intervalMs).toBe(200);
-    expect(h.at(11125).x).toBeCloseTo(0.43);
-    expect(h.at(11250).x).toBeCloseTo(0.86);
+    expect(h.at(11175).x).toBeCloseTo(0.43);
+    expect(h.at(11350).x).toBeCloseTo(0.86);
   });
 
   it('bounds prediction to 0.4 blocks and settles to the known position when updates stop', () => {
     const h = harness();
     h.receive(1000, 0); h.receive(1200, 0.86); h.receive(1400, 1.72);
-    for (let t = 1400; t < 2400; t += 10) {
+    for (let t = 1400; t < 3000; t += 10) {
       expect(h.at(t).x).toBeLessThanOrEqual(2.12);
       expect(h.at(t).y).toBe(64);
     }
-    expect(h.at(2000).x).toBeCloseTo(1.72);
-    h.receive(2400, 1.72);
-    expect(h.at(2650).x).toBeCloseTo(1.72);
+    // A second of silence can be a hole in the stream: the pawn waits where the walk took it, then is taken back.
+    expect(h.at(2400).x).toBeCloseTo(2.12);
+    expect(h.at(2700).x).toBeCloseTo(1.72);
+    h.receive(2800, 1.72);
+    expect(h.at(3050).x).toBeCloseTo(1.72);
   });
 
   it('never predicts vertical movement, snaps teleports, and discards old dimension history', () => {

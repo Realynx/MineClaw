@@ -38,4 +38,27 @@ describe('nonblocking adaptive quality timing', () => {
     stalled.timer.begin(); stalled.timer.end(4000); stalled.timer.dispose();
     expect(stalled.gl.deleteQuery).toHaveBeenCalledTimes(2);
   });
+  it('drops a waiting measurement unread, and can measure again at once', () => {
+    const f = fixture();
+    f.timer.begin();
+    f.at(5);
+    expect(f.timer.end(1000)).toBeNull();
+    f.timer.discard();
+    expect(f.gl.deleteQuery).toHaveBeenCalledOnce();
+    f.ready();
+    expect(f.timer.poll(1016)).toBeNull(); // no sample from the dropped frame
+    expect(f.gl.getQueryParameter).not.toHaveBeenCalled();
+    f.timer.discard(); // nothing waiting: nothing to drop
+    expect(f.gl.deleteQuery).toHaveBeenCalledOnce();
+    expect(f.timer.begin()).toBe(true);
+    f.at(9);
+    expect(f.timer.end(2000)).toBeNull();
+    expect(f.timer.poll(2016)).toBe(25);
+    const cpu = fixture(false);
+    cpu.timer.begin();
+    cpu.at(7);
+    expect(cpu.timer.end(1000)).toBe(7);
+    cpu.timer.discard();
+    expect(cpu.gl.deleteQuery).not.toHaveBeenCalled();
+  });
 });

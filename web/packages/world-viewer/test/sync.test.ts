@@ -303,6 +303,103 @@ describe('WorldSync index-then-fetch', () => {
   });
 });
 
+// A tab that comes back draws what it had, while the index hash-diff catches up behind it. The page shows a small
+// "updating" note until each view's sweep since the loops restarted is over.
+describe('WorldSync sweep status', () => {
+  function rig(source: WorldSource) {
+    const sync = new WorldSync(source, new InlineMeshHost(), new WorldCache(), {
+      onApplied: () => undefined,
+      onDropped: () => undefined,
+      onTouched: () => undefined,
+      onInfo: () => undefined,
+      onError: () => undefined,
+    });
+    const running = (on: boolean) => ((sync as unknown as { running: boolean }).running = on);
+    running(true);
+    return { sync, running };
+  }
+
+  it('is over once an index answered and every column it wanted is applied; reindexNow starts another', async () => {
+    const src = createFixtureSource({ radius: 3, now: () => 0, buildRate: 0 });
+    const { sync } = rig(src);
+    sync.batchColumns = 8;
+    sync.maxBatches = 2; // 16 of the 49 columns a pass
+    sync.setInterest({ dim: 0, x: 0, z: 0, r: 64 });
+    expect(sync.isSwept('main')).toBe(false);
+    for (let pass = 0; pass < 3; pass++) {
+      await sync.tick(pass * 1000);
+      expect(sync.catchingUp).toBe(true);
+    }
+    await sync.tick(3000); // the last column
+    expect(src.calls.columns).toBe(49);
+    expect(sync.isSwept('main')).toBe(true);
+    expect(sync.catchingUp).toBe(false);
+    sync.reindexNow();
+    expect(sync.isSwept('main')).toBe(false);
+    await sync.tick(3100); // re-indexed at once; nothing changed, nothing to download
+    expect(src.calls.columns).toBe(49);
+    expect(sync.isSwept('main')).toBe(true);
+  });
+
+  it('a failed index or batch leaves the sweep open', async () => {
+    const src = createFixtureSource({ radius: 1, now: () => 0, buildRate: 0 });
+    const index = vi.spyOn(src, 'index').mockRejectedValueOnce(new Error('503'));
+    vi.spyOn(src, 'chunks').mockRejectedValueOnce(new Error('503'));
+    const { sync } = rig(src);
+    sync.setInterest({ dim: 0, x: 0, z: 0, r: 16 });
+    const t0 = Date.now(); // the back-off is kept on the wall clock
+    await sync.tick(t0);
+    expect(sync.catchingUp).toBe(true);
+    await sync.tick(t0 + 20_000);
+    expect(index).toHaveBeenCalledTimes(2);
+    expect(sync.catchingUp).toBe(true); // the batch failed
+    sync.chunkBackoff.ok();
+    await sync.tick(t0 + 40_000);
+    expect(sync.catchingUp).toBe(false);
+  });
+
+  it('a pass that began before reindexNow cannot end the sweep it started', async () => {
+    const src = createFixtureSource({ radius: 1, now: () => 0, buildRate: 0 });
+    const chunks = src.chunks.bind(src);
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const requested = vi.spyOn(src, 'chunks').mockImplementationOnce(async (...a) => {
+      await gate;
+      return chunks(...a);
+    });
+    const { sync } = rig(src);
+    sync.setInterest({ dim: 0, x: 0, z: 0, r: 16 });
+    const loading = sync.tick(0);
+    await vi.waitFor(() => expect(requested).toHaveBeenCalledOnce());
+    sync.reindexNow(); // a reconnect while that pass was downloading
+    release();
+    await loading;
+    expect(sync.catchingUp).toBe(true);
+    await sync.tick(100);
+    expect(sync.catchingUp).toBe(false);
+  });
+
+  it('start() begins a new sweep; a view another covers follows it; a key no view has is done', async () => {
+    const src = createFixtureSource({ radius: 2, now: () => 0, buildRate: 0 });
+    const { sync, running } = rig(src);
+    sync.setInterests({ main: { dim: 0, x: 0, z: 0, r: 48, priority: 1 }, thumb: { dim: 0, x: 8, z: 8, r: 16 } });
+    expect(sync.isSwept('thumb')).toBe(false);
+    await sync.tick(0);
+    expect(sync.isSwept('main')).toBe(true);
+    expect(sync.isSwept('thumb')).toBe(true);
+    expect(sync.isSwept('gone')).toBe(true);
+    // The tab was hidden and comes back.
+    running(false);
+    sync.start();
+    sync.stop();
+    expect(sync.isSwept('main')).toBe(false);
+    expect(sync.isSwept('thumb')).toBe(false);
+    running(true);
+    await sync.tick(1000); // the next index
+    expect(sync.catchingUp).toBe(false);
+  });
+});
+
 describe('fixture world', () => {
   it.each(['b1.8.1', '1.12.2'] as const)('%s fixture payloads decode and mesh', async (version) => {
     const src = createFixtureSource({ version, radius: 1, now: () => 0 });

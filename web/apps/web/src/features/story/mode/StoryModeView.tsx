@@ -95,7 +95,11 @@ export function StoryMapSlot({ c }: Props) {
       view={c.view}
       keys={keys}
       home={(state?.home as V3 | undefined) ?? null}
-      settle={noColony}
+      colony={c.id}
+      loading={!state && !noColony && !c.loadError}
+      initialView={c.initialView}
+      onView={c.rememberView}
+      settle={noColony || (!!state && !state.home)}
       player={c.me.player ?? null}
       onCentre={noColony || c.tab === 'colony' ? c.setCentre : undefined}
       onSettled={c.setSettledY}
@@ -256,6 +260,18 @@ function NoColonyCard({ c }: Props) {
   );
 }
 
+/** A request for the colony failed: said plainly while the page keeps asking. Never the found-a-colony card: there may
+ * well be a colony. */
+function LoadErrorCard() {
+  return (
+    <div className="absolute inset-0 grid place-items-center">
+      <p role="status" className={cn(panel, 'px-4 py-3 text-sm')} data-testid="story-load-error">
+        Can&apos;t reach the colony. Retrying…
+      </p>
+    </div>
+  );
+}
+
 /** The water placement waiting for its confirm. */
 function WaterConfirmSlot({ c }: Props) {
   const { pendingWater } = c;
@@ -358,6 +374,7 @@ export function StoryHudLayer({ c }: Props) {
         </div>
       ) : null}
       {c.noColony ? <NoColonyCard c={c} /> : null}
+      {c.loadError ? <LoadErrorCard /> : null}
 
       {c.tab === 'colony' ? (
         <PreserveContext.Provider value={preserveWriter(c)}>

@@ -21,7 +21,8 @@ export class LiveSocketSource implements EventSourceLike {
       try {
         const frame = JSON.parse(String(event.data)) as { event: string; id?: string | number; data: unknown };
         if (!(SSE_EVENT_NAMES as readonly string[]).includes(frame.event)) return;
-        const message = new MessageEvent(frame.event, { data: JSON.stringify(frame.data), lastEventId: String(frame.id ?? '') });
+        // The parsed payload goes on as is: LiveStream takes an object, so the frame is parsed once per message.
+        const message = new MessageEvent(frame.event, { data: frame.data, lastEventId: String(frame.id ?? '') });
         for (const listener of this.listeners.get(frame.event) ?? []) listener(message);
       } catch { /* A malformed frame cannot replace the last valid world state. */ }
     };

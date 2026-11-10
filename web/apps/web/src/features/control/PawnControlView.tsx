@@ -97,10 +97,10 @@ export function PawnControlView({ body, returnTo }: { body: string; returnTo: st
     return () => { window.removeEventListener('keydown', key); clearInterval(timer); };
   }, [inventoryOpen, inventoryBusy, closeInventory]);
 
-  const beforeFrame = useCallback((engine: WorldViewerEngine, now: number) => {
+  const beforeFrame = useCallback((engine: WorldViewerEngine, now: number): void | false => {
     const input = latest.current.input.current;
     const pose = latest.current.camera.current.position(now, input, (bounds, dim) => engine.playerCollision(bounds, dim));
-    if (!pose) return;
+    if (!pose) return false; // no pose yet: the viewer holds the frame rather than draw (and load) the world origin
     const eyeY = pose.y + (input.sneak ? 1.54 : 1.62);
     engine.rig.flyPos.set(pose.x, eyeY, pose.z);
     engine.rig.flyYaw = input.yaw; engine.rig.flyPitch = input.pitch;

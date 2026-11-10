@@ -21,7 +21,7 @@ import { publishBlocks } from '@/features/world/blocks';
 import { publishEntityFrame } from '@/features/world/entityFrames';
 import { publishFeed } from '@/features/world/chatBubbles';
 import { qk } from '../api/query';
-import { mergeEntities, mergeEvents, mergeFeed, mergeMemoryActivity } from './merge';
+import { mergeEntities, mergeEvents, mergeFeed, mergeMemoryActivity, staleEntities } from './merge';
 import type { LiveEventName } from './stream';
 
 /** Stable keys for the live topics (the REST hooks use exactly these). */
@@ -72,6 +72,15 @@ const LIVE_HANDLERS: Partial<Record<LiveEventName, (qc: QueryClient, data: unkno
 
 /** After a resync: re-fetch the REST state of every live topic (merges keep what the stream already delivered). */
 export function resyncLive(qc: QueryClient): Promise<void> {
+  resyncEntities(qc);
   const ids = ['status', 'bots.now', 'feed', 'events', 'world.entities', 'hive.tree', 'memoryActivity.list', 'story.get'];
   return qc.invalidateQueries({ predicate: (q) => ids.includes(String(q.queryKey[0])) });
+}
+
+/**
+ * Removals missed during the gap would stay as ghosts, and an invalidation refetches only a query with an observer (the
+ * Controller has none): the cached set is marked incomplete, so whoever reads it next lays a REST snapshot under it.
+ */
+function resyncEntities(qc: QueryClient): void {
+  qc.setQueryData<WorldEntities>(liveKeys.entities, (prev) => (prev ? staleEntities(prev) : prev));
 }
