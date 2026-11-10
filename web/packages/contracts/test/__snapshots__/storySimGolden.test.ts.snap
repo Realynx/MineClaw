@@ -1052,7 +1052,7 @@ exports[`the mock director: a golden run > zones: modes, into, plants, quarries 
   ],
   [
     "strip by quarry",
-    "875a1d8d378707fa",
+    "dae898e9ca381b71",
   ],
   [
     "strip alone",
@@ -1060,15 +1060,15 @@ exports[`the mock director: a golden run > zones: modes, into, plants, quarries 
   ],
   [
     "strip ores",
-    "d8b3f25ad9b36545",
+    "f99c87011221a71e",
   ],
   [
     "mode ores",
-    "ca07cb69d132cbad",
+    "009d2f47a568d62d",
   ],
   [
     "mode quarry",
-    "2602fb7e1aa7f82f",
+    "ca07cb69d132cbad",
   ],
   [
     "mode missing",
@@ -1136,7 +1136,7 @@ exports[`the mock director: a golden run > zones: modes, into, plants, quarries 
   ],
   [
     "erase any",
-    "b27275d305b72b70",
+    "4c9caddd7f99380c",
   ],
   [
     "no area",
@@ -1144,7 +1144,7 @@ exports[`the mock director: a golden run > zones: modes, into, plants, quarries 
   ],
   [
     "state",
-    "75ee81880654e545",
+    "27e774ba43e1baa9",
   ],
 ]
 `;

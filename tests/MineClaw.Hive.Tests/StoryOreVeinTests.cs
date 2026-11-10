@@ -80,6 +80,25 @@ public sealed class StoryOreVeinTests
     }
 
     [Fact]
+    public void A_miner_with_no_free_slot_gets_no_vein_job_until_it_has_one()
+    {
+        // Its batch would dig nothing ("0/1 dug; inventory full", a success) and the same vein job came back at once. The gate is the
+        // body's free slots, never the report's text: the batch above says "inventory full" with room to spare and goes on.
+        var (c, h, w, j) = Rig();
+        Dig(c, w, j, Seed);
+        c.Report(c.P(), Id(j), "done", "batch: 1/2 dug; inventory full", null);
+        h.Lives[c.P()] = FakeStoryHost.Live(0, 64, 0, inv: new Stack(4, 0, 35 * 64)) with { FreeSlots = 0 };
+        var held = c.Next();
+        Assert.NotEqual("dig", held["kind"]!.GetValue<string>());
+        Assert.Single(c.Designations, d => d.At == Next); // the vein's mark stays
+        c.Report(c.P(), Id(held), "done", null, null);
+        h.Lives[c.P()] = FakeStoryHost.Live(0, 64, 0);
+        var resumed = c.Next();
+        Assert.Equal("dig", resumed["kind"]!.GetValue<string>());
+        Assert.Equal(Next.ToString(), resumed["at"]!.GetValue<string>());
+    }
+
+    [Fact]
     public void Cancelling_an_extension_by_id_interrupts_the_owner_and_prevents_rediscovery()
     {
         var (c, h, w, j) = Rig();
@@ -218,5 +237,74 @@ public sealed class StoryOreVeinTests
         c.ZoneOp("remove", "mine", null, id: zone.Id);
         Assert.Empty(c.Designations);
         Assert.Null(c.CurrentOf(c.P()));
+    }
+
+    private sealed class Clock : TimeProvider
+    {
+        public DateTimeOffset Now = DateTimeOffset.Parse("2026-11-09T12:00:00Z");
+        public override DateTimeOffset GetUtcNow() => Now;
+    }
+
+    /// <summary>The south edge cell of a 5×5 quarry's working layer (y 59) and the ore beside it, outside the zone.</summary>
+    private static readonly P3 Edge = new(12, 59, 14), WallOre = new(12, 59, 15);
+
+    /// <summary>A 5×5 quarry dug down to y 60 (its stair natural stone), iron ore in its south wall beside <see cref="Edge"/>; the pawn
+    /// on the pit's floor has a dig batch that holds the edge cell.</summary>
+    private static (StoryColony C, FakeStoryHost H, FakeStoryWorld W, JsonObject J) QuarryWall(Clock clock)
+    {
+        var (c, h, w) = StoryRig.Make(time: clock);
+        foreach (var type in WorkTypes.All) c.Pawns[c.P()].Priorities[type] = type == WorkTypes.Mine ? 1 : 0;
+        c.DoneGrace = TimeSpan.Zero;
+        c.ZoneOp("add", "mine", Area.Of(10, 63, 10, 14, 63, 14));
+        var zone = c.Zones.Single();
+        zone.QuarryTop = 63;
+        var ring = StoryQuarry.Ring(zone.Cells)!;
+        for (int x = 10; x <= 14; x++) for (int z = 10; z <= 14; z++) for (int y = 60; y <= 63; y++) w.Set(x, y, z, 0);
+        for (int k = 0; k <= 3; k++)
+        {
+            var step = StoryQuarry.Step(ring, 63, k);
+            w.Set(step.X, step.Y, step.Z, 1);
+        }
+        w.Set(WallOre.X, WallOre.Y, WallOre.Z, 15);
+        h.Lives[c.P()] = FakeStoryHost.Live(Edge.X, 60, Edge.Z - 1);
+        var j = c.Next();
+        Assert.Contains(Edge.ToString(), j["dig_cells"]!.AsArray().Select(n => n!.GetValue<string>()));
+        return (c, h, w, j);
+    }
+
+    [Fact]
+    public void A_quarry_vein_that_would_open_a_cave_waits()
+    {
+        // Vein work came before the quarry's own and its only check was liquid or sand beside: a wall ore beside a cave let the cave
+        // into the pit.
+        var clock = new Clock();
+        var (c, _, w, j) = QuarryWall(clock);
+        for (int z = WallOre.Z + 1; z <= WallOre.Z + 70; z++) w.Set(WallOre.X, WallOre.Y, z, 0); // a cave tunnel behind the ore
+        Assert.Empty(Dig(c, w, j, Edge, ore: 1));
+        Assert.Single(c.Designations, d => d.At == WallOre && d.Wait!.Contains("would open the quarry to a cave"));
+        Assert.False(c.Leases().ContainsKey("b:" + WallOre));
+        c.Report(c.P(), Id(j), "done", "batch", null);
+        w.Set(WallOre.X, WallOre.Y, WallOre.Z + 1, 1); // the cave walled off behind the ore: followed again
+        clock.Now += TimeSpan.FromSeconds(6);
+        Assert.Equal(WallOre.ToString(), c.Next()["at"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public void A_quarry_vein_stops_while_a_spawner_stops_the_quarry()
+    {
+        var clock = new Clock();
+        var (c, _, w, j) = QuarryWall(clock);
+        Assert.Equal(WallOre.ToString(), Assert.Single(Dig(c, w, j, Edge, ore: 1))!["at"]!.GetValue<string>());
+        c.Report(c.P(), Id(j), "done", "batch: 1/2 dug", null); // the ore left for later: its mark stays
+        var spawner = new P3(WallOre.X, 57, WallOre.Z + 2);
+        w.Set(spawner.X, spawner.Y, spawner.Z, 52);
+        clock.Now += TimeSpan.FromSeconds(6);
+        var held = c.Next();
+        Assert.NotEqual("dig", held["kind"]!.GetValue<string>());
+        Assert.Single(c.Designations, d => d.At == WallOre && d.Wait!.Contains("monster spawner"));
+        c.Report(c.P(), Id(held), "done", null, null);
+        w.Set(spawner.X, spawner.Y, spawner.Z, 0); // broken by the owner
+        clock.Now += TimeSpan.FromSeconds(6);
+        Assert.Equal(WallOre.ToString(), c.Next()["at"]!.GetValue<string>());
     }
 }

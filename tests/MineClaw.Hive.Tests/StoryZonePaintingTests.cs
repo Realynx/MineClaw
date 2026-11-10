@@ -66,11 +66,30 @@ public sealed class StoryZonePaintingTests
     }
 
     [Fact]
+    public void A_quarrys_placed_seals_stay_its_own_through_a_merge_and_a_split()
+    {
+        // The seals its place jobs put there are what keeps them from the stray sweep (StoryColony.QuarrySweep.cs): a merge kept only the
+        // oldest zone's fields, and a split part started with none.
+        var (c, _, _) = StoryRig.Make();
+        var a = Op(c, "add", "mine", Area.Of(0, 63, 0, 4, 63, 4))["id"]!.GetValue<string>();
+        var b = Op(c, "add", "mine", Area.Of(6, 63, 0, 10, 63, 4))["id"]!.GetValue<string>();
+        Z(c, a).QuarryPlaced = [new P3(2, 50, 2)];
+        Z(c, b).QuarryPlaced = [new P3(11, 40, 1)];
+        var r = Op(c, "add", "mine", Area.Of(5, 63, 0, 5, 63, 4)); // the column between: one 11x5 quarry
+        Assert.Equal([b], Ids(r["merged"]![0]!["from"]));
+        Assert.Equal(new HashSet<P3> { new(2, 50, 2), new(11, 40, 1) }, Z(c, a).QuarryPlaced!.ToHashSet());
+        r = Op(c, "remove", null, Area.Of(5, 63, 0, 5, 63, 4)); // apart again
+        var split = Ids(r["split"]![0]!["into"]).Single();
+        Assert.Equal(Z(c, a).QuarryPlaced!.ToHashSet(), Z(c, split).QuarryPlaced!.ToHashSet());
+    }
+
+    [Fact]
     public void A_work_zone_overwrites_other_work_zones_under_it_and_splits_them()
     {
         var (c, _, _) = StoryRig.Make();
         var chop = Op(c, "add", "chop", Area.Of(0, 63, 0, 9, 63, 2), "Woodlot")["id"]!.GetValue<string>();
-        var r = Op(c, "add", "mine", Area.Of(4, 63, -5, 5, 63, 5));
+        // Ores only: the T this mine zone grows into below would leave a quarry without its stair, and that is refused.
+        var r = Op(c, "add", "mine", Area.Of(4, 63, -5, 5, 63, 5), body: new JsonObject { ["mode"] = "ores" });
         var mine = r["id"]!.GetValue<string>();
         Assert.Equal([mine], Ids(r["created"]));
         Assert.Equal([chop], Ids(r["shrunk"]));
@@ -85,10 +104,10 @@ public sealed class StoryZonePaintingTests
         foreach (var x in Enumerable.Range(-1, 12))
             for (int z = -6; z <= 6; z++)
                 Assert.True(c.Zones.Count(zn => zn.Kind is "chop" or "mine" or "farm" && zn.Contains(x, z)) <= 1);
-        // Painting the quarry over the whole of a part deletes it.
+        // Painting the mine zone over the whole of a part deletes it.
         r = Op(c, "add", "mine", Area.Of(6, 63, 0, 9, 63, 2));
         Assert.Equal([other], Ids(r["deleted"]));
-        Assert.Equal(mine, r["id"]!.GetValue<string>()); // it touches the quarry: the quarry grows
+        Assert.Equal(mine, r["id"]!.GetValue<string>()); // it touches the mine zone: the mine zone grows
     }
 
     [Fact]

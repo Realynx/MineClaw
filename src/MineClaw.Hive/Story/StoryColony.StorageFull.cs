@@ -31,15 +31,47 @@ public sealed partial class StoryColony
     private void StorageFullAlert(ZoneState z, StoryPlant crop, int id, int meta)
     {
         if (Now - _storageFullSaid < TimeSpan.FromMinutes(10)) return;
+        SayStorageFull(id, meta, z.Area.Center,
+            $"Growing zone {ZoneName(z)} leaves its ripe {crop.Label.ToLowerInvariant()} standing until one has room; tilling and sowing go on.");
+    }
+
+    /// <summary>The storage-full alert itself (its callers keep it to one every 10 minutes): the item, how many chests are full, what
+    /// waits for room (<paramref name="waits"/>, a sentence), and the chests near home that aren't storage yet.</summary>
+    private void SayStorageFull(int id, int meta, P3 near, string waits)
+    {
         _storageFullSaid = Now;
         string item = World?.Data.DisplayName(id, meta) ?? ItemName(id, meta);
         int full = Storages.Count(s => s.FreeSlots == 0);
-        var loose = UnregisteredChests(Home() ?? z.Area.Center, 24, 6);
+        var loose = UnregisteredChests(Home() ?? near, 24, 6);
         string more = loose.Count > 0
             ? $"Chests near home that aren't storage yet: {string.Join(", ", loose)} (set them as storage to use them)"
             : "Place more chests (a chest the colony builds is storage) or set more chests as storage";
-        Alert("warn", $"Storage is full: no chest has room for {item} ({full} of {Storages.Count} storage chests full). Growing zone "
-            + $"{ZoneName(z)} leaves its ripe {crop.Label.ToLowerInvariant()} standing until one has room; tilling and sowing go on. {more}");
+        Alert("warn", $"Storage is full: no chest has room for {item} ({full} of {Storages.Count} storage chests full). {waits} {more}");
+    }
+
+    /// <summary>
+    /// A miner with no free slot was about to get a dig (a quarry cell, the stair's head room, an ore vein): it gets none, and this says
+    /// why (docs/web/story-mode.md "Quarries", full pockets). Its script's dig batch needs a free slot for every block and ends "0/12
+    /// dug; inventory full" as a success, so the director handed the same batch out again at once: a full pick under the colony lock
+    /// and a fresh quarry scan per round, several a second, for as long as storage stayed full. A pawn unloads before it works (the
+    /// picker's delivery comes first), so full pockets here mean it could not: nothing it carries has a chest to go to (the
+    /// storage-full alert names the item, like the farm's), its last delivery failed and rests, or it carries only what it keeps.
+    /// </summary>
+    private void PocketsFullNote(PawnState p, PawnLive live, string work, string halted = "digging")
+    {
+        Stack? stuck = null;
+        bool room = false;
+        foreach (var s in Deliverables(live))
+        {
+            if (HaulDest(s.Id, s.Meta, live.Block) is { Chest: not null }) { room = true; break; }
+            stuck ??= s;
+        }
+        if (room) { Blocked($"{work}: pockets full, storing its load first"); return; }
+        if (stuck == null) { Blocked($"{work}: pockets full of what it keeps (tools, food, its blocks)"); return; }
+        Blocked($"{work}: pockets full, no storage has room");
+        // No storage at all is the standing "No storage for: …" alert's (as for the farm): this one is for chests without room.
+        if (Storages.Count == 0 || Now - _storageFullSaid < TimeSpan.FromMinutes(10)) return;
+        SayStorageFull(stuck.Id, stuck.Meta, live.Block, $"{p.Display}'s pockets are full: no {halted} for it ({work}) until one has room.");
     }
 
     /// <summary>Chests (and trapped chests) within <paramref name="r"/> of <paramref name="around"/> that aren't storage, nearest first

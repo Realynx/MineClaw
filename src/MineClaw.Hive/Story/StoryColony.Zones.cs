@@ -91,6 +91,7 @@ public sealed partial class StoryColony
 
     private (JsonNode? Result, string? Error) EraseZones(string? kind, ZoneCells cells)
     {
+        if (kind is null or "mine" && QuarryShapeRefusal(cells, (zs, id) => ZonePainter.Erase(zs, kind, cells, id)) is { } qerr) return (null, qerr); // StoryColony.Quarry.cs
         var er = ZonePainter.Erase(Zones, kind, cells, () => NextId("z"));
         ZonesChanged(er);
         return (ZoneResultJson(er, null), null);
@@ -107,6 +108,11 @@ public sealed partial class StoryColony
         if (serr != null) return (null, serr);
         var (paintCells, ferr) = PaintCells(template, cells, a);
         if (ferr != null) return (null, ferr);
+        if (!ZonePainter.IsOverlay(template.Kind) && QuarryShapeRefusal(paintCells!, (zs, id) =>
+            {
+                var tinto = into == null ? null : zs.First(t => t.Id == into.Id);
+                return ZonePainter.Paint(zs, template.Kind, template.Plant, paintCells!, a.Y1, a.Y2, tinto, () => (tinto ?? template).CopySettings(id()), id).Result;
+            }) is { } qerr) return (null, qerr); // a quarry keeps its stair ring and its mode (StoryColony.Quarry.cs)
         var before = PreserveBefore(); // a preserved zone merged into another gives its cells' snapshot over (StoryColony.Preserve.cs)
         var (painted, err) = ZonePainter.Paint(Zones, template.Kind, template.Plant, paintCells!, a.Y1, a.Y2, into, () => MakeZone(into, template, name), () => NextId("z"));
         if (err != null || painted == null) return (null, err ?? "nothing painted");

@@ -399,6 +399,41 @@ export function quarryStep(
   return [x, top - k, z];
 }
 
+/** A zone that may be a quarry: a mine zone's mode (null = ores only, as on the bot). */
+type ModeZone = ZoneLike & { mode?: string | null };
+const isQuarryZone = (z: ModeZone): boolean => z.kind === 'mine' && z.mode === 'quarry';
+const zoneLabel = (z: ZoneLike): string => (z.name ? `'${z.name}'` : String(z.id));
+
+/**
+ * Why the director refuses a paint or an erase, or null (the bot's `QuarryShapeRefusal`): one that would leave a quarry with no stair
+ * ring (an L, a T, a notch: the ring walk ends at the inner corner), or merge a quarry with an ores-only zone. Nothing changes then.
+ * `before` is the zones the change was made on, `out` what `paintZones` / `eraseZones` made of them.
+ */
+export function quarryPaintRefusal<Z extends ModeZone>(before: readonly Z[], out: ZonePaintOut<Z>): string | null {
+  const old = (id: string | number) => before.find((z) => String(z.id) === String(id));
+  for (const m of out.result.merged) {
+    const merged = [m.into, ...m.from].map(old).filter((z): z is Z => !!z && z.kind === 'mine');
+    const quarry = merged.find(isQuarryZone);
+    const ores = merged.find((z) => !isQuarryZone(z));
+    if (quarry && ores)
+      return `Quarry ${zoneLabel(quarry)} and ores-only zone ${zoneLabel(ores)} would merge into one. Nothing changed: leave a column between them, or give both the same mode first`;
+  }
+  for (const z of out.zones) {
+    if (before.includes(z) || !isQuarryZone(z) || quarryRing(zoneCellSet(z))) continue;
+    const split = out.result.split.find((s) => s.into.some((id) => String(id) === String(z.id)));
+    const was = old(z.id) ?? (split ? old(split.from) : undefined);
+    if (was && String(was.id) === String(z.id) && !quarryRing(zoneCellSet(was))) continue; // it had none before: nothing is lost
+    const grew = zoneCellSet(z).size > (was ? zoneCellSet(was).size : 0);
+    return (
+      `Quarry ${zoneLabel(was ?? z)} would lose its stair: a quarry's edge must run all the way round, with no notch, L or T. Nothing changed: ` +
+      (grew
+        ? 'paint the new part as a quarry of its own, a column apart, or erase this one and paint the whole new shape'
+        : 'only whole rows or columns can come off its sides (or erase the whole quarry)')
+    );
+  }
+  return null;
+}
+
 /**
  * The still-water columns of a block scan (flat `[x, y, z, id, meta, below]` records of ids 8/9): a column counts when its top
  * water block is a source (meta 0). What a fishing zone keeps of a painted area (the bot also wants open air above).

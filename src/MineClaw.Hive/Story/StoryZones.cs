@@ -224,6 +224,7 @@ public static class ZonePainter
             all.UnionWith(o.Cells);
             lo = Math.Min(lo, o.Area.Y1);
             hi = Math.Max(hi, o.Area.Y2);
+            if (o.QuarryPlaced != null) target.QuarryPlaced = (target.QuarryPlaced ?? []).Union(o.QuarryPlaced).ToList(); // its seals stay its own
             zones.Remove(o);
             from.Add(o.Id);
         }

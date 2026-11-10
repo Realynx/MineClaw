@@ -23,7 +23,7 @@ public sealed partial class StoryColony
             if (Takes(at)) cells.Add(at);
         }
         // A scratch scan applies the same liquid/falling/cave rules without changing the working layer's status.
-        var check = new QuarryScan { Top = q.Top, Bottom = q.Bottom, Ring = q.Ring };
+        var check = new QuarryScan { Top = q.Top, Bottom = q.Bottom, Ring = q.Ring, FirstStep = q.FirstStep };
         foreach (var (column, bottom) in q.Bottoms) check.Bottoms[column] = bottom;
         var columns = z.Cells.Sorted().Where(c => Near(new P3(c.X, seed.Y, c.Z)))
             .OrderBy(c => Math.Abs(c.X - seed.X) + Math.Abs(c.Z - seed.Z)).ToList();
@@ -35,7 +35,7 @@ public sealed partial class StoryColony
                 if (stopped.Contains((x, zz))) continue;
                 var at = new P3(x, y, zz);
                 if (OpenCell(w.Block(x, y, zz).Id)) continue;
-                P3? step = q.Ring is { } ring ? StoryQuarry.Step(ring, q.Top, q.Top - y) : null;
+                P3? step = q.Ring is { } ring && q.Top - y >= q.FirstStep ? StoryQuarry.Step(ring, q.Top, q.Top - y) : null;
                 if (!ThinRemnant(w, at) || ClassifyQuarryCell(w, z, check, at, step) != QuarryCell.Dig
                     || HeldForMissingStep(w, q, at) || !Takes(at)) { stopped.Add((x, zz)); continue; }
                 cells.Add(at);
@@ -56,7 +56,7 @@ public sealed partial class StoryColony
             && OpenCell(w.Block(at.X + d.Item1, at.Y, at.Z + d.Item2).Id)) >= 3;
 
     private static bool HeldForMissingStep(IStoryWorld w, QuarryScan q, P3 at) => q.Ring is { } ring
-        && q.Top - at.Y is var k && k > 0 && StoryQuarry.Step(ring, q.Top, k - 1) == at.Add(0, 1, 0)
+        && q.Top - at.Y is var k && k > q.FirstStep && StoryQuarry.Step(ring, q.Top, k - 1) == at.Add(0, 1, 0)
         && StepNeedsBlock(w, at.Add(0, 1, 0)) != null;
 
     /// <summary>Each attempted cell has its own success/failure and lease. Untouched cells stay reserved until the job ends.</summary>
@@ -79,10 +79,22 @@ public sealed partial class StoryColony
         j.MoreLeases.Remove(key);
         if (key != j.Lease && HoldsLease(key, p.Name)) _leases.Remove(key);
         var single = DigCellJob(j, at);
-        if (status == "done") Done(p, single, null);
+        // A cell its own view (or the colony's) shows open is dug, whatever the report says (it fell, another pawn got it, the
+        // server's answer came after the client gave up): failed, it rested and its back-off counted against the cell.
+        if (status == "done" || single.Source != "ghost" && DugAnyway(p.Name, at)) Done(p, single, null);
         else Failed(p, single, status[8..]);
         if (single.Source == "ghost" && single.SourceId != null) j.Cells?.Remove(single.SourceId);
         j.DigDesignations.Remove(at);
+    }
+
+    /// <summary>The cell is open in the pawn's own view (its connection carries the server's answer first) or in the colony's.</summary>
+    private bool DugAnyway(string pawn, P3 at)
+    {
+        IStoryWorld? own = null;
+        try { own = Host.ViewOf(pawn); } catch (Exception) { /* no view: the colony's */ }
+        foreach (var w in new[] { own, World })
+            if (w != null && w.Loaded(at.X, at.Z) && OpenCell(w.Block(at.X, at.Y, at.Z).Id)) return true;
+        return false;
     }
 
     private static ActiveJob DigCellJob(ActiveJob batch, P3 at)

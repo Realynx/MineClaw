@@ -17,12 +17,12 @@ public sealed partial class StoryColony
         bool exits = inside != null && live.Y < QuarryTopOf(inside) - 1
             && (fetch || job.At is { } target && quarry != inside
                 && (!inside.Contains(target.X, target.Z) || target.Y > live.Y + 2));
-        if (exits) job.Json["quarry_exit"] = QuarryWalk(w, inside!, (int)Math.Floor(live.Y), QuarryTopOf(inside!) + 1);
+        if (exits) job.Json["quarry_exit"] = QuarryWalk(w, inside!, (int)Math.Floor(live.Y), QuarryEntry(inside!));
         if (quarry == null || job.At is not { } at) return job;
         int? planned = job.Json["quarry_access_y"]?.GetValue<int>()
             ?? (job.Kind == "dig" ? Quarry(quarry)?.WorkFeet : null) ?? QuarryWorkHeight(w, quarry, at);
         if (planned is not { } feet) return job;
-        int from = inside == quarry && !fetch ? (int)Math.Floor(live.Y) : QuarryTopOf(quarry) + 1;
+        int from = inside == quarry && !fetch ? (int)Math.Floor(live.Y) : QuarryEntry(quarry); // the first step: not over lower ground
         if (Math.Abs(from - feet) > 2) job.Json["quarry_approach"] = QuarryWalk(w, quarry, from, feet);
         return job;
     }
@@ -35,7 +35,9 @@ public sealed partial class StoryColony
     private JsonArray? QuarryWalk(IStoryWorld w, ZoneState z, int fromY, int toY)
     {
         if (StoryQuarry.Ring(z.Cells) is not { } ring) return null;
-        int top = QuarryTopOf(z), from = Math.Clamp(top + 1 - fromY, 0, top - 1), to = Math.Clamp(top + 1 - toY, 0, top - 1);
+        var (top, first) = QuarryStairStart(z);
+        first = Math.Min(first, top - 1);
+        int from = Math.Clamp(top + 1 - fromY, first, top - 1), to = Math.Clamp(top + 1 - toY, first, top - 1);
         int direction = from <= to ? 1 : -1;
         var route = new JsonArray();
         for (int k = from; ; k += direction)

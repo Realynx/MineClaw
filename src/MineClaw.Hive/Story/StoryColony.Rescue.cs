@@ -179,13 +179,60 @@ public sealed partial class StoryColony
         if (!_unreachRun.TryGetValue(p.Name, out var run)) _unreachRun[p.Name] = run = new();
         run.Add((Now, MissKey(j) ?? j.Id));
         run.RemoveAll(r => Now - r.At > StuckWindow);
-        if (run.Select(r => r.Key).Distinct().Count() < StuckStreak || _stuck.ContainsKey(p.Name)) return;
+        if (_stuck.ContainsKey(p.Name)) return;
+        if (LostBesidePit(p, j)) { StuckBesidePit(p); return; }
+        if (run.Select(r => r.Key).Distinct().Count() < StuckStreak) return;
         var live = Host.Live(p.Name);
         _stuck[p.Name] = new StuckState { Since = Now, At = live.Block, Why = $"{StuckStreak} targets out of reach in a row" };
         NoteHazard(p.Name, live.Block);
         run.Clear();
         _log.LogInformation("story {Colony}: {Pawn} looks stuck at {At}: {N} targets out of reach in a row", Id, p.Name, live.Block, StuckStreak);
     }
+
+    /// <summary>
+    /// A quarry job out of reach for a pawn under ground outside every quarry's columns and every home: a cave beside the pit. Near
+    /// the quarry it is "mining near", so it was taken for lost only after <see cref="StuckStreak"/> misses within a minute, and one
+    /// failed walk can take longer than that. One miss is enough.
+    /// </summary>
+    private bool LostBesidePit(PawnState p, ActiveJob j)
+    {
+        if (j.Source != "zone" || Zones.FirstOrDefault(z => z.Id == j.SourceId) is not { } zone || !IsQuarry(zone)) return false;
+        var live = Host.Live(p.Name);
+        var at = live.Block;
+        return live.Online && World is { } w && w.Loaded(at.X, at.Z) && StoryWander.Underground(w, at) && QuarryColumn(at) == null
+            && !Zones.Any(z => z.Kind == "home" && z.Contains(at.X, at.Z)) && QuarryNear(zone, at) && !DiggingBesidePit(p, zone, at);
+    }
+
+    /// <summary>
+    /// Under ground beside the pit for its own digging, not lost: in this quarry's wall-ore tunnel (its last job was a vein dig from
+    /// it, or one of its vein cells is within 4), or near other mining (any other mine or deconstruct mark, a build, an ores-only zone
+    /// within 16, as <see cref="MiningNear"/> has it). One quarry miss sent such a miner to escape, cutting its work off.
+    /// </summary>
+    private bool DiggingBesidePit(PawnState p, ZoneState quarry, P3 at)
+    {
+        if (_veinFrom.TryGetValue(p.Name, out var from) && from == quarry.Id) return true;
+        foreach (var kind in new[] { "mine", "deconstruct" })
+            if (Index().ByKind.TryGetValue(kind, out var list)
+                && list.Any(x => x.Target.Dist(at.X, at.Y, at.Z) <= (x.D.OreOrigin is { Source: "zone" } o && o.Id == quarry.Id ? 4 : 16))) return true;
+        if (Builds.Any(b => b.Status != "done" && b.Ghosts.Any(g => g.At.Dist(at.X, at.Y, at.Z) <= 16))) return true;
+        return Zones.Any(z => z.Kind == "mine" && !IsQuarry(z)
+            && z.Area.Center.Dist(at.X, at.Y, at.Z) <= 16 + Math.Max(z.Area.X2 - z.Area.X1, z.Area.Z2 - z.Area.Z1));
+    }
+
+    /// <summary>The quarry a pawn's last finished job followed wall ore from (a vein dig), by pawn; any other job ends it.</summary>
+    private readonly Dictionary<string, string> _veinFrom = new(StringComparer.OrdinalIgnoreCase);
+
+    private void StuckBesidePit(PawnState p)
+    {
+        var live = Host.Live(p.Name);
+        _stuck[p.Name] = new StuckState { Since = Now, At = live.Block, Why = "under ground beside a quarry, its work out of reach" };
+        NoteHazard(p.Name, live.Block);
+        _unreachRun.Remove(p.Name);
+        _log.LogInformation("story {Colony}: {Pawn} looks stuck at {At}: under ground beside a quarry, its work out of reach", Id, p.Name, live.Block);
+    }
+
+    /// <summary>The quarry whose columns hold this cell (at any height), or null.</summary>
+    private ZoneState? QuarryColumn(P3 at) => Zix().Quarry.TryGetValue(ZoneCells.Key(at.X, at.Z), out var z) ? z : null;
 
     /// <summary>A job done: the pawn isn't stuck; a rescuer's blocks arrived; the target was reached after all.</summary>
     private void Reached(PawnState p, ActiveJob j)
@@ -198,6 +245,10 @@ public sealed partial class StoryColony
         }
         if (MissKey(j) is { } key) { _unreachBy.Remove(key); _pawnFails.Remove(PawnKey(key, p.Name)); _quarryMiss.Remove(key); }
         if (j.Source == "rescue" && j.SourceId is { } who && _stuck.TryGetValue(who, out var s)) s.Delivered = true;
+        // A dig batch's cells are done one by one as plain jobs (no OreOrigin): their mark still names it here.
+        if (j.Source == "designation" && (j.OreOrigin ?? Designations.FirstOrDefault(d => d.Id == j.SourceId)?.OreOrigin) is { Source: "zone" } vein)
+            _veinFrom[p.Name] = vein.Id;
+        else _veinFrom.Remove(p.Name);
     }
 
     /// <summary>A target tried again on purpose (retry, re-marked): every pawn's own rest of it ends too.</summary>
@@ -223,10 +274,12 @@ public sealed partial class StoryColony
         return Escape(p, live, "under ground: heading back up");
     }
 
-    /// <summary>Under ground with nothing queued, no mining near and not in a house: a cave it walked or fell into.</summary>
+    /// <summary>Under ground with nothing queued, no mining near and not in a house: a cave it walked or fell into. Never down in a
+    /// quarry's pit (its columns, under its top): the stair's steps and the seals left standing over a miner there read as ground over
+    /// it, and deep in a small quarry every pick sent its miners home.</summary>
     private bool LostUnderground(PawnState p, PawnLive live) =>
         p.Queue.Count == 0 && World is { } w && w.Loaded(live.Block.X, live.Block.Z) && StoryWander.Underground(w, live.Block) && !MiningNear(live.Block)
-        && !Zones.Any(z => z.Kind == "home" && z.Contains(live.Block.X, live.Block.Z));
+        && !Zones.Any(z => z.Kind == "home" && z.Contains(live.Block.X, live.Block.Z)) && QuarryAt(live.Block) == null;
 
     /// <summary>
     /// Sticky until it is out: only escape work, never a regular task (live 11-04: pawns in a ravine cycled through tasks for 20
@@ -277,13 +330,22 @@ public sealed partial class StoryColony
     }
 
     /// <summary>Digging work within 16 blocks (a mine or deconstruct designation, a mine zone, a build: a basement): being under ground
-    /// is the job then.</summary>
+    /// is the job then. A quarry is near within 16 across of its columns, at any depth up to 2 over its top (measured from where it was
+    /// painted, the miners of a quarry deeper than 16 plus its size were never near it).</summary>
     private bool MiningNear(P3 at)
     {
         foreach (var kind in new[] { "mine", "deconstruct" })
             if (Index().ByKind.TryGetValue(kind, out var list) && list.Any(x => x.Target.Dist(at.X, at.Y, at.Z) <= 16)) return true;
         if (Builds.Any(b => b.Status != "done" && b.Ghosts.Any(g => g.At.Dist(at.X, at.Y, at.Z) <= 16))) return true;
-        return Zones.Any(z => z.Kind == "mine" && z.Area.Center.Dist(at.X, at.Y, at.Z) <= 16 + Math.Max(z.Area.X2 - z.Area.X1, z.Area.Z2 - z.Area.Z1));
+        return Zones.Any(z => z.Kind == "mine" && (IsQuarry(z) ? QuarryNear(z, at)
+            : z.Area.Center.Dist(at.X, at.Y, at.Z) <= 16 + Math.Max(z.Area.X2 - z.Area.X1, z.Area.Z2 - z.Area.Z1)));
+    }
+
+    /// <summary>Within 16 blocks across of the quarry's bounds, and no more than 2 over its top.</summary>
+    private bool QuarryNear(ZoneState z, P3 at)
+    {
+        int dx = Math.Max(0, Math.Max(z.Area.X1 - at.X, at.X - z.Area.X2)), dz = Math.Max(0, Math.Max(z.Area.Z1 - at.Z, at.Z - z.Area.Z2));
+        return dx * dx + dz * dz <= 16 * 16 && at.Y <= QuarryTopOf(z) + 2;
     }
 
     /// <summary>

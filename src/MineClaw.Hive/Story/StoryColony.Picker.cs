@@ -693,6 +693,7 @@ public sealed partial class StoryColony
         if (j.Source == "crop") GrowHarvested(j);
         _zoneScan.Remove(j.SourceId ?? "");
         _quarryScan.Remove(j.SourceId ?? ""); // StoryColony.Quarry.cs
+        QuarryPlaceDone(j); // a seal it placed is the quarry's own (StoryColony.QuarrySweep.cs)
         _growScan.Remove(j.SourceId ?? "");
     }
 
@@ -876,7 +877,9 @@ public sealed partial class StoryColony
     /// </summary>
     private bool SoftFailure(PawnState p, ActiveJob j, string why)
     {
-        if (j.Source is not ("designation" or "ghost") || j.Lease == null || !Transient(why) || Unreachable(why)) return false;
+        // A quarry dig too (StoryColony.Quarry.cs): its layer waits for each cell, so a 10-minute back-off held the whole quarry.
+        bool notNow = j.Source is "designation" or "ghost" ? Transient(why) : QuarryDigTransient(j, why);
+        if (!notNow || j.Lease == null || Unreachable(why)) return false;
         int soft = _softFails[j.Lease] = _softFails.GetValueOrDefault(j.Lease) + 1;
         if (soft < SoftLimit)
         {

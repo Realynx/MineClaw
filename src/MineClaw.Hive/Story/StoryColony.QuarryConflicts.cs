@@ -35,8 +35,8 @@ public sealed partial class StoryColony
     private int QuarryTopOf(ZoneState z)
     {
         if (z.QuarryTop is { } t) return t;
-        Quarry(z);
-        return z.QuarryTop ?? z.Area.Y2;
+        var q = Quarry(z);
+        return z.QuarryTop ?? (q is { Top: > 0 } ? q.Top : z.Area.Y2); // a column out of view: the look's top (none is kept yet)
     }
 
     private static string ConflictWords(ZoneState z) => $"{QuarryConflictWords}{ZoneName(z)}: the quarry digs this cell";

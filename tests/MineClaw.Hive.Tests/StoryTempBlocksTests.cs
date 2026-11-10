@@ -181,6 +181,126 @@ public sealed class StoryTempBlocksTests
     }
 
     /// <summary>
+    /// Every block in or beside a quarry was skipped by the stray look, because the quarry's seals were recorded nowhere: a pawn's
+    /// pillar left on the rim or in the pit stood for good. Now only its stair's cells, the seals its finished place jobs put there and
+    /// a block holding back lava or water are its own.
+    /// </summary>
+    [Fact]
+    public void A_pawns_block_beside_a_quarry_that_is_no_step_or_seal_is_swept()
+    {
+        var (c, h, w) = StoryRig.Make(1);
+        Only(c, WorkTypes.Mine);
+        var pawn = c.P();
+        c.Meta.QuarrySealsAdopted = true; // a colony already on this version: nothing to adopt
+        h.Lives[pawn] = FakeStoryHost.Live(0, 64, 0, inv: [new Stack(4, 0, 64)]);
+        Assert.Null(c.ZoneOp("add", "mine", Area.Of(10, 63, 10, 15, 63, 15)).Error);
+        void Placed(int x, int y, int z, int id) { w.Set(x, y, z, id); h.Placed.Add((new P3(x, y, z), id, pawn)); }
+        // A seal its place job put over water in the pit: the quarry's own from now on.
+        var wet = new P3(12, 63, 12);
+        w.Set(wet.X, wet.Y, wet.Z, 9);
+        var seal = c.Next();
+        Assert.Equal("place", seal["kind"]!.GetValue<string>());
+        Assert.Equal(wet.ToString(), seal["at"]!.GetValue<string>());
+        Placed(wet.X, wet.Y, wet.Z, 4);
+        c.Report(pawn, seal["id"]!.GetValue<string>(), "done", null, null);
+        var step = StoryQuarry.Step(StoryQuarry.Ring(c.Zones.Single().Cells)!, 63, 0);
+        Placed(step.X, step.Y, step.Z, 4); // a stair step a pawn placed
+        Placed(16, 60, 14, 4); // beside the quarry, holding back water
+        w.Set(17, 60, 14, 9);
+        Placed(16, 64, 12, 3); Placed(16, 65, 12, 3); // a pillar on the rim
+        Placed(13, 64, 14, 3); // a stub on the quarry's top
+        c.Tick();
+        var swept = Cleanups(c).Select(d => d.At!.Value).ToHashSet();
+        Assert.Equal(new HashSet<P3> { new(16, 64, 12), new(16, 65, 12), new(13, 64, 14) }, swept);
+        Assert.Single(c.Alerts, a => a.Text.StartsWith("Found 3 stray block(s)"));
+    }
+
+    /// <summary>
+    /// A seal walling a cave off from the pit whose place job reported failure after the block went in is recorded nowhere: the stray
+    /// look took it for a pawn's leftover and dug it out, reopening the cave into the pit. A block with cave air beside it is kept.
+    /// </summary>
+    [Fact]
+    public void A_pawns_block_walling_a_cave_off_from_a_quarry_is_never_a_stray()
+    {
+        var (c, h, w) = StoryRig.Make(1);
+        Only(c, WorkTypes.Mine);
+        var pawn = c.P();
+        c.Meta.QuarrySealsAdopted = true;
+        h.Lives[pawn] = FakeStoryHost.Live(0, 64, 0, inv: [new Stack(4, 0, 64)]);
+        Assert.Null(c.ZoneOp("add", "mine", Area.Of(10, 63, 10, 15, 63, 15)).Error);
+        void Placed(int x, int y, int z, int id) { w.Set(x, y, z, id); h.Placed.Add((new P3(x, y, z), id, pawn)); }
+        for (int x = 17; x <= 60; x++) { w.Set(x, 58, 12, 0); w.Set(x, 59, 12, 0); } // a cave running east from the pit's side
+        Placed(16, 58, 12, 4); // the seal in its mouth, recorded nowhere
+        Placed(16, 64, 12, 3); // a stub on the rim: a stray
+        c.Tick();
+        Assert.Equal(new P3(16, 64, 12), Assert.Single(Cleanups(c)).At);
+        Assert.Null(c.Zones.Single().QuarryPlaced);
+    }
+
+    /// <summary>
+    /// A save from before quarries recorded their seals: the pawns' blocks already in or beside a quarry are taken as its own once, so the
+    /// upgrade never sweeps a seal (a stray elsewhere is swept as before).
+    /// </summary>
+    [Fact]
+    public void On_the_upgrade_the_pawns_blocks_already_in_or_beside_a_quarry_are_adopted_never_swept()
+    {
+        var (c, h, w) = StoryRig.Make(1);
+        var pawn = c.P();
+        Assert.False(c.Meta.QuarrySealsAdopted);
+        Assert.Null(c.ZoneOp("add", "mine", Area.Of(10, 63, 10, 15, 63, 15)).Error);
+        void Placed(int x, int y, int z, int id) { w.Set(x, y, z, id); h.Placed.Add((new P3(x, y, z), id, pawn)); }
+        Placed(15, 50, 12, 4); // an old seal in the pit's wall
+        Placed(16, 58, 12, 4); // and one beside it, in a cave's mouth
+        Placed(30, 64, 30, 3); // a stray far from any quarry
+        c.Tick();
+        Assert.Equal(new P3(30, 64, 30), Assert.Single(Cleanups(c)).At);
+        Assert.True(c.Meta.QuarrySealsAdopted);
+        var zone = c.Zones.Single();
+        Assert.Equal(new HashSet<P3> { new(15, 50, 12), new(16, 58, 12) }, zone.QuarryPlaced!.ToHashSet());
+        // Saved with the zone; a zone with none writes nothing new.
+        Assert.Contains("\"QuarryPlaced\"", System.Text.Json.JsonSerializer.Serialize(zone));
+        Assert.DoesNotContain("QuarryPlaced", System.Text.Json.JsonSerializer.Serialize(new ZoneState { Id = "z9", Kind = "mine" }));
+        Assert.Equal(zone.QuarryPlaced, zone.CopySettings("z9").QuarryPlaced);
+    }
+
+    /// <summary>A quarry that becomes done says so once, and the pawns' blocks left beside it (out of the load look's range) are swept.</summary>
+    [Fact]
+    public void A_quarry_that_becomes_done_says_so_once_and_its_pawns_strays_are_swept()
+    {
+        var clock = new ManualTime();
+        var (c, h, w) = StoryRig.Make(1, time: clock);
+        var pawn = c.P();
+        c.Meta.QuarrySealsAdopted = true;
+        c.Tick(); // the load look: nothing near home
+        Assert.Null(c.ZoneOp("add", "mine", Area.Of(300, 63, 10, 305, 63, 15)).Error);
+        var zone = c.Zones.Single();
+        var ring = StoryQuarry.Ring(zone.Cells)!;
+        // Dug out already, down to the stone at y 0; only its stair stands.
+        var steps = Enumerable.Range(0, 63).Select(k => StoryQuarry.Step(ring, 63, k)).ToHashSet();
+        for (int x = 300; x <= 305; x++)
+            for (int z = 10; z <= 15; z++)
+                for (int y = 1; y <= 63; y++)
+                    if (!steps.Contains(new P3(x, y, z))) w.Set(x, y, z, 0);
+        void Placed(int x, int y, int z, int id) { w.Set(x, y, z, id); h.Placed.Add((new P3(x, y, z), id, pawn)); }
+        Placed(306, 40, 12, 3); // a pawn's block beside the pit
+        var step = StoryQuarry.Step(ring, 63, 5);
+        Placed(step.X, step.Y, step.Z, 4); // a step it placed
+        zone.QuarryPlaced = [new P3(306, 45, 12)]; // a seal its place job put in a cave's mouth
+        Placed(306, 45, 12, 4);
+        Assert.True(c.State()["zones"]![0]!["quarry"]!["done"]!.GetValue<bool>());
+        Assert.Single(c.Alerts, a => a.Text.StartsWith("Quarry z") && a.Text.EndsWith("is done: dug down to bedrock"));
+        clock.Now += TimeSpan.FromSeconds(4);
+        c.Tick();
+        Assert.Equal(new P3(306, 40, 12), Assert.Single(Cleanups(c)).At);
+        Assert.Single(c.Alerts, a => a.Text.Contains("found 1 stray block(s) the pawns left in or beside it"));
+        clock.Now += TimeSpan.FromSeconds(40);
+        c.State();
+        c.Tick();
+        Assert.Single(c.Alerts, a => a.Text.Contains("is done"));
+        Assert.Single(Cleanups(c));
+    }
+
+    /// <summary>
     /// Live 11-06: oak planks on the lids of storage chests 216,64,400 and 223,64,400 kept them shut (241 failed opens in 7 hours). A
     /// lid block a pawn of this colony placed is queued for removal; one the placed-block log can't put on a pawn may be a player's: it
     /// is only listed, never removed.
