@@ -69,8 +69,11 @@ All three new processes run on CT 114 beside the bot:
     | 429    | rate limited                        | `rate_limited` + `Retry-After` + `retryAfterMs` |
     | 502    | upstream error                      | `upstream_error`                                |
     | 503    | bridge or bot down                  | `upstream_unavailable`                          |
-    | 503    | render gate busy                    | `busy` + `Retry-After`                          |
+    | 503    | busy (render gate, colony, queue)   | `busy` + `Retry-After` + `retryAfterMs`         |
 
+  - The bridge answers `busy` for a supervisor 503 whose error says "busy" or that carries a retry hint, and for a story
+    command it never sent (§3 "Supervisor connections"); every other 503 is `upstream_unavailable`. A Story Mode
+    colony command answered `busy` was not applied (§6 "Story Mode").
   - Auth errors are generic.
   - Upstream URLs, tokens and stack traces never reach the browser.
   - A supervisor `MemoryEditResult` refusal (400 with that body) is passed through as 400 with the same `MemoryEditResult`
@@ -227,6 +230,16 @@ include_world, max_usd, who}`.
   - Binary replies are streamed.
 - **Render routes:** `/v1/render/tile/{bot}.png` forwards to the supervisor's `/view/{bot}?mode&radius&xray`. This is the only
   non-`/api` supervisor path the bridge calls.
+- **Supervisor connections** (`Bridge:SupervisorConnections` in the bridge's config, default 6, clamped to 1..7; the
+  supervisor serves at most 8 requests at once). The bridge splits them into lanes (`SupervisorClient.Lanes`):
+  - **live** (2): `GET world/entities`, `world/blocks`, `status`, and a body's control `input` / `release`;
+  - **interactive** (2): story commands (`POST story/colonies/{id}/{action}`), one chest (`GET world/containers` with `x=`;
+    the badge box with `x0=` stays ordinary), a body's inventory and the recipes;
+  - **ordinary** (2): everything else.
+  - A total of 7 adds a story-read lane of one (`GET story` and `GET story/colonies/{id}[/…]`). 5 or less has no interactive
+    lane (4..5: two live, 2..3: one live, 1: one shared connection).
+  - At most two story commands are on the wire at once. One that waits more than 4 s for its turn is answered 503 `busy`
+    without being sent. A story command's upstream timeout is 14 s (the Architect, a GET, keeps the 8 s default).
 - **Bridge-native routes** are the bridge's own C# code over the read-only db and the shared libraries. "bridge-native" in the
   tables below means no supervisor call.
 
@@ -362,10 +375,10 @@ Notes on specific routes:
 | `bodies.scripts` | `GET /api/bodies/scripts` | viewer | – | `LiveScriptsResponse` | `GET /v1/sup/bodies/scripts` | /api/bodies/scripts | – |
 | `bodies.script` | `GET /api/bodies/:body/script` | viewer | params `BodyParams`<br>query `BodyScriptQuery` | `BodyScriptReply` | `GET /v1/sup/bodies/{body}/script` | /api/bodies/{body}/script | – |
 | `bodies.controller` | `GET /api/bodies/:body/controller` | viewer | params `BodyParams` | `BodyControllerInfo` | `GET /v1/sup/bodies/{body}/controller` | /api/bodies/{body}/controller | – |
-| `bodies.controlAcquire` | `POST /api/bodies/:body/control/acquire` | story | params `BodyParams`<br>body `PawnControlAcquireRequest` | `PawnControlSession` | `GET /v1/sup/bodies/{body}/control/acquire` | /api/bodies/{body}/control/acquire | – |
-| `bodies.controlInput` | `POST /api/bodies/:body/control/input` | story | params `BodyParams`<br>body `PawnControlInputRequest` | `PawnControlSession` | `GET /v1/sup/bodies/{body}/control/input` | /api/bodies/{body}/control/input | – |
-| `bodies.controlAction` | `POST /api/bodies/:body/control/action` | story | params `BodyParams`<br>body `PawnControlActionRequest` | `PawnControlActionResponse` | `GET /v1/sup/bodies/{body}/control/action` | /api/bodies/{body}/control/action | – |
-| `bodies.controlRelease` | `POST /api/bodies/:body/control/release` | story | params `BodyParams`<br>body `PawnControlReleaseRequest` | `PawnControlReleaseResponse` | `GET /v1/sup/bodies/{body}/control/release` | /api/bodies/{body}/control/release | – |
+| `bodies.controlAcquire` | `POST /api/bodies/:body/control/acquire` | story | params `BodyParams`<br>body `PawnControlAcquireRequest` | `PawnControlSession` | `POST /v1/sup/bodies/{body}/control/acquire` | /api/bodies/{body}/control/acquire | – |
+| `bodies.controlInput` | `POST /api/bodies/:body/control/input` | story | params `BodyParams`<br>body `PawnControlInputRequest` | `PawnControlSession` | `POST /v1/sup/bodies/{body}/control/input` | /api/bodies/{body}/control/input | – |
+| `bodies.controlAction` | `POST /api/bodies/:body/control/action` | story | params `BodyParams`<br>body `PawnControlActionRequest` | `PawnControlActionResponse` | `POST /v1/sup/bodies/{body}/control/action` | /api/bodies/{body}/control/action | – |
+| `bodies.controlRelease` | `POST /api/bodies/:body/control/release` | story | params `BodyParams`<br>body `PawnControlReleaseRequest` | `PawnControlReleaseResponse` | `POST /v1/sup/bodies/{body}/control/release` | /api/bodies/{body}/control/release | – |
 | `vision.render` | `GET /api/bodies/:body/vision/render` | viewer | params `BodyParams`<br>query `VisionRenderQuery` | png | `GET /v1/sup/bodies/{body}/vision/render` | /api/bodies/{body}/vision/render | – |
 | `vision.png` | `GET /api/bodies/:body/vision/:id/image.png` | viewer | params `VisionSheetParams` | png | `GET /v1/sup/bodies/{body}/vision/{id}.png` | /api/bodies/{body}/vision/{id}.png | – |
 | `vision.sheet` | `GET /api/bodies/:body/vision/:id` | viewer | params `VisionSheetParams` | `VisionSheetInfo` | `GET /v1/sup/bodies/{body}/vision/{id}` | /api/bodies/{body}/vision/{id} | – |
@@ -438,6 +451,14 @@ Browsers connect to `/api/live/socket` with subprotocol `mineclaw.live.v1`. Nest
 the supervisor's `/api/world/socket`; slower status/feed topics keep their existing polling cadence. Chunk downloads and
 occasional inspections use REST. Upgrade requests require an allowed Origin and an authenticated viewer session.
 
+The supervisor's world socket sends an `entities` delta every 100 ms (its delta log rebuilds at most every 50 ms) and, at
+most every 200 ms, up to 8 pages of block changes while `more`; the bridge resumes it from its `entities_since` and
+`blocks_since` cursors. The bridge publishes an `entities` frame only when something changed (entities, removals, events,
+the bots or the open chests), ignoring `pose_age` and `age_seconds` when it compares the bots. Each `WorldBot` carries
+`pose_age` (seconds): on a live body (`live: true`, driven by this process) how long before the frame its position, yaw and
+pitch were published, clamped to 0..0.25 and rounded to 1 ms (the viewer dates its sample by it); on a hive body seen
+through its hub, the age of its last eye pose (null without one).
+
 WebSocket frames are JSON envelopes `{ "event": "entities", "id": 123, "data": { ... } }`, using the catalogue below.
 The browser resumes with `lastEventId` in the query string. Filtering, replay, bounded queues and explicit resync are shared
 with `GET /api/live/stream`, which remains available for SSE clients. Both transports receive status heartbeats every 15 s.
@@ -445,9 +466,28 @@ with `GET /api/live/stream`, which remains available for SSE clients. Both trans
 Pawn takeover uses a separate `/api/bodies/{body}/control/socket` connection with subprotocol `mineclaw.control.v1` and
 `csrf.<token>` offered during upgrade. It requires the story role. Acquire/release remain REST operations; the first socket
 message attaches the acquired lease with `{ "type": "attach", "session": "..." }`. Lease tokens never appear in URLs.
-Inputs stream at 20 Hz independently of replies; state frames also arrive at 20 Hz. Actions carry their own request IDs.
-Disconnect releases control, and replacing an attachment neutralizes its held inputs. Existing deadman and lease expiry
-limits still apply. The browser interpolates confirmed positions and applies mouse look immediately.
+Inputs stream at 20 Hz independently of replies. Actions carry their own request IDs and are answered with
+`{type: "action", request_id, data}`. Disconnect releases control, and replacing an attachment neutralizes its held inputs.
+Existing deadman and lease expiry limits still apply. Frames travel snake_case, as the supervisor writes them (Nest relays
+them unchanged).
+
+- **State frames** `{type: "state", sampled_at_ms, data}`: one per pawn game tick, sent once the tick has its sample, at
+  least 20 ms apart (a burst of catch-up ticks becomes a few frames) and at the latest 100 ms after the last one (a dead,
+  riding or frozen pawn). `data` is a `PawnControlSession` (the session reply): its `state` (`PawnControlState`), the
+  latest `action`, `reach`, and the `inventory` only when its version changed since this socket's last frame. The state's
+  newer fields are all optional, so older servers and browsers still work together: `tick` (the game client's tick
+  counter), `ack_seq` and `ack_wait_ms` (the newest input that tick used and how long it waited), the velocity `vx`/`vy`/`vz` (blocks per tick), the running `teleports` and `impulses`
+  counts, `using_item`, `stopped`, `effects`, `dig` (the block being dug and its progress 0..1), `aim` (the block the
+  pawn's ray hits within reach; null = nothing in reach, absent = not reported), `broke` (blocks this takeover broke:
+  a growing `count` and the newest one), `armor` (0..20) and `air` (ticks, 300 = full). A state that is not one fresh
+  tick's sample (riding, waiting for a teleport, dead) has no `tick`, `ack_seq`, `ack_wait_ms` or velocity, and says
+  `stopped`. `reach` is the dig and use ray's length in blocks; action statuses and replies may carry `code`: `dug`,
+  `aim_changed`, `cancelled` or `placed` (`PAWN_CONTROL_ACTION_CODES`; an unknown code reads as none).
+- **End.** When the server ends a takeover, the closing frame is `{type: "error", reason, message}` with `reason` one of
+  `died`, `expired`, `replaced` or `offline` (`PAWN_CONTROL_END_REASONS`); other errors are `{type: "error", message}`
+  (with `request_id` for a failed action).
+- The browser reconciles each state frame against its own prediction for the same tick and applies mouse look
+  immediately.
 
 **Compatible SSE frame format** (`text/event-stream`). Nest builds frames with `formatSseFrame`:
 
@@ -493,10 +533,10 @@ what it holds:
 | `event`          | `EventsResponse`                                                     | `/api/events?since=`, 2 Hz                                              | when non-empty           |
 | `feed`           | `FeedResponse`                                                       | `/api/viewer/feed?since=`, 2 Hz                                         | when non-empty           |
 | `now`            | `BotNow` (one frame per bot)                                         | `/api/viewer/now?bot=`, 2 Hz per bot, 1 Hz per subhive body (every online row of `/api/status`) | on change                |
-| `entities`       | `WorldEntities` (delta; `full: true` means replace the set)          | `/api/world/entities?since=rev`, 5 Hz                                   | when changed             |
+| `entities`       | `WorldEntities` (delta; `full: true` means replace the set)          | supervisor `/api/world/socket` (resumes at `entities_since`), 10 Hz     | when changed             |
 | `hive`           | `HiveTreeNode`                                                       | `/api/hive/tree`, every 3 s                                             | on change                |
 | `memoryActivity` | `MemoryActivityResponse` (new events + the full in-context snapshot) | `/api/viewer/memory-activity?since=`, 1 Hz                              | on change                |
-| `blocks`         | `WorldBlockDeltas` (per-block changes; `full: true` = refetch via index/chunks) | `/api/world/blocks?since=rev`, 5 Hz (pages while `more`)       | when non-empty or full   |
+| `blocks`         | `WorldBlockDeltas` (per-block changes; `full: true` = refetch via index/chunks) | supervisor `/api/world/socket` (resumes at `blocks_since`), 5 Hz (pages while `more`) | when non-empty or full   |
 | `story`          | `StoryColonyFrame` (one colony's delta + its `id`)                   | `/api/story` every 5 s, then `/api/story/colonies/{id}?since=rev` per colony, 2 Hz, while the stream has clients | when the colony's `rev` moved |
 | `status`         | `LiveStatus`                                                         | Nest-native: upstream state, bot reachability, latency                  | on change and every 15 s |
 
@@ -698,6 +738,16 @@ in_context, staleness_s, evicted}]}`.
     builds, storages}` (storages as `"x,y,z"` keys). No `since` (or `full: true`) replaces the whole state. `ghosts` and
     `categories` replace when present; `alerts` append (de-duplicated). The SSE `story` frame is the same delta plus the colony
     `id`; the client also catches up with `since=rev` every 3 s and refetches in full every minute.
+  - **Colony commands answer busy or a `rev` (added 2026-11-10).** `POST /api/story/colonies/{id}/{action}` for
+    `designations`, `zones`, `builds`, `orders`, `draft`, `storage`, `bills`, `workbenches` and `beds` waits for the colony at
+    most 6 s (`SupervisorStoryRoutes.LockBudget`). Past that it answers 503 `busy` (`busy: the colony did not take the
+    change`, `Retry-After: 1`) and nothing was applied. A 200 object answer from those actions carries `rev`, read under the
+    same lock: a colony state whose `rev` has reached it holds the change (an answer with its own `rev` keeps it). The other
+    actions (release, resume, pawns, online, home, options, …) wait as before and carry no added `rev`. The colony list
+    (`GET /api/story`) and a colony's state use the same budget and answer 503 `busy` (`busy: the colony could not be read
+    in time`). These texts are the bot's; the public answer is Nest's generic `busy` error with `retryAfterMs`, so a client
+    keys on the code. The bridge's own limits for these commands are in §3 "Supervisor connections"; the web shows a
+    change at once and puts the old value back on a definite refusal (4xx or `busy`).
   - **Bills** use `{op:"add", bench, bill}`, `{op:"update", id, …bill fields}`, `{op:"remove"|"pause"|"resume", id}`,
     `{op:"reorder", bench, ids}`. `bill` is an opaque key for case conversion only in responses (a blueprint's material
     map): request bodies convert with `REQUEST_OPAQUE_KEYS`, so a bill's `minSkill` reaches the bot as `min_skill`.
@@ -818,7 +868,7 @@ and tools in src/MineClaw.Bot/Blueprints/Designer*.cs). Never the live world. Be
   fails is a 502.
 - **`POST sessions/{id}/canvas {rev, ops:[{kind, label, cells}], anchor?, clear_anchor?}`** → `{rev, applied, stale}`: the
   user's own edits (manual tools, undo of AI ops), and the anchor ("move origin").
-- **`POST sessions/{id}/save {name, summary?, as_new?, preview_png?, preview_only?, mine_authoring?}`** → `{design_id, rev, name, blocks, created, text}`. The canvas is
+- **`POST sessions/{id}/save {name, summary?, as_new?, preview_png?, preview_only?, mine_authoring?, redstone_authoring?}`** → `{design_id, rev, name, blocks, created, text}`. The canvas is
   drawn as DSL exactly like a capture (`DesignHistory.Draw`, interior air between each column's lowest and highest block),
   saved as an accepted design with no site (the bot builds a copy where asked); dug cells are drawn as forced air '.', undug
   ground under y 0 as '_' (left as it is), and when anything is below y 0 the DSL says `ground N` (the layers under the
@@ -835,22 +885,24 @@ and tools in src/MineClaw.Bot/Blueprints/Designer*.cs). Never the live world. Be
 - **Bridge.** `/v1/sup/designer/*` passes reads for any signed role; every POST needs `design` or `admin`, and the bridge
   writes `player` (the linked player) and `who` ("user (web)") into the body, refusing a body that sets them.
   The exact `/v1/sup/designer/sessions/{positive integer id}/save` path accepts up to 8 MiB of signed JSON for the picture
-  and mine-component metadata, matching the gateway and supervisor save limits. Other designer routes retain the normal
+  and the mine or redstone editor data, matching the gateway and supervisor save limits. Other designer routes retain the normal
   256 KiB bridge JSON limit; invalid save paths do not receive the exception. Shard upload limits are separate.
 - **Canvas batches (added 2026-11-10).** The studio sends its edits through `POST sessions/{id}/canvas` in bodies of at most
   `DESIGNER_CANVAS_BATCH_BYTES` (200 000 bytes, an upper-bound estimate that counts non-ASCII label characters as 6 bytes),
   inside `DESIGNER_CANVAS_BODY_CAP` (256 KiB, the bridge's and the supervisor's limit; both in contracts `designer.ts`). One
   request at a time per session, in edit order: canvas batches, the anchor, a message and a save share that line. A message
   carries `canvas: {rev}` without edits (they went through the canvas route first, which still tells the model about them). A
-  413 halves the batch (down to 16 000 bytes), 429 / 409 (session busy) / 5xx / network errors retry after 2, 4, 8 … 30 s (or the reply's
-  retry-after, at most 60 s), and any other 4xx stops the sync until the user retries. A save is refused in the browser while
-  edits are unsent, and when the mine layout is over 2 000 000 characters. The mock bridge enforces the same caps.
+  413 halves the batch (down to 16 000 bytes), 408 / 409 (session busy) / 423 / 425 / 429 / 5xx / network errors retry after
+  2, 4, 8 … 30 s (or the reply's retry-after when longer, at most 60 s), and any other 4xx stops the sync until the user
+  retries. A save is refused in the browser while edits are unsent, and when the mine layout is over 2 000 000 characters. The mock bridge enforces the same caps.
 - **Persistence.** `designer_sessions` and `designer_messages` in the agent db (a session's `kind`, `seed` and `preferred_for`
-  columns were added for mine designs; older rows are builds).
+  columns were added for mine designs; older rows are builds). A redstone design's editor data is one row per saved
+  revision in `designer_redstone_authoring(design_id, rev, data)`.
 
 ### Mine designs (added 2026-11-03)
 
-A session is a `build` (the grassland plot above) or a `mine` (`kind`). A mine is the inverse of a build: the cells to dig out
+A session is a `build` (the grassland plot above), a `mine` or a `redstone` circuit (`kind`, `DesignerKind`; "Redstone
+designs" below). A mine is the inverse of a build: the cells to dig out
 of the ground, so a large underground strip mine can be drawn once and placed in the world for the pawns to mine.
 
 - **The canvas.** A 256×256 mine plot, with generated terrain and **absolute world y 0..127** (`plot` =
@@ -914,6 +966,32 @@ of the ground, so a large underground strip mine can be drawn once and placed in
   mine across this plot, by that vein yield: `OreLevels`). `remove` digs rooms; a build turn's prompt and tools are unchanged.
 - **Story Mode.** A placed mine is one `mine` build item group (docs/web/story-mode.md "Construction"): `blocks` = the cells to dig
   at their absolute y, `place` = `[[x,y,z,id,meta]]` the blocks that go in them.
+
+### Redstone designs (added 2026-11-09)
+
+A `redstone` session is a circuit drawn on the same grassland plot as a build (`plot` is the build's). The studio simulates
+it in the browser (`@mineclaw/redstone`, docs/design/redstone-designer.md); to the bot it is a build in every other respect
+(the model's prompt and tools are a build's).
+
+- **Routes.** `POST sessions {kind: "redstone", …}` opens an empty circuit canvas. `POST sessions/{id}/version {version,
+  kind?, apply?}`: build ↔ redstone relabels the canvas at once and keeps its cells, dug cells and anchor; to or from a mine
+  the canvas is cleared like any other kind switch. A version check without `apply` on a full canvas for another version
+  changes nothing, the relabel included (it waits for the apply). A kind other than build, mine or redstone is a 400.
+- **Editor data.** `redstone_authoring` on the session (a redstone session only) is the editor data of the design revision
+  it opened or last saved: placed components, probes, breakpoints and simulator settings, as a JSON object marked
+  `"redstone": 1`, at most 2,000,000 characters; the circuit itself is the cells. The save body may carry a new one (an
+  invalid one is a 400); without it the session's is saved again, and another kind of canvas saves none. It is stored per
+  revision (`designer_redstone_authoring`). A revision the bot drew itself (a commit, a revert, the brain's revise) takes the
+  earlier revision's data whose marker its DSL names, else the newest earlier one; the studio checks every component
+  against the cells before it uses one.
+- **Saved as DSL.** A build's DSL under the comment line `# kind redstone` (the DSL's own `kind` statement knows only build
+  and mine, so older readers still parse it) and, with editor data, `# redstone layout <sha256 of the data>`, so a change to
+  the editor data alone is a revision of its own. Commits, reverts and revisions keep both lines. A revision opens as the
+  kind its own DSL says. The bridge's design list and detail report `kind: "redstone"` (per design and revision) from the
+  same line.
+- **Building.** Every build of a saved design asks `BlueprintService.WorldRefusal` first, and it refuses a circuit ("is a
+  redstone circuit: the builder can't wire one yet …"), which also stops a pawn's `blueprint` order. Story Mode's design
+  pick-up refuses a redstone design in the browser.
 
 ## 7. Binary formats
 
