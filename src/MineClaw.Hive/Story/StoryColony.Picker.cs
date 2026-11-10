@@ -43,14 +43,19 @@ public sealed partial class StoryColony
     internal ActiveJob Pick(PawnState p, PawnLive live)
     {
         if (_humanControlled.Contains(p.Name)) return Hold("controlled by player", "controlled", s: 1);
+        long t = System.Diagnostics.Stopwatch.GetTimestamp(); // stages timed for the perf line (StoryPerf.TakeInside)
         ReconcileStorageSigns();
         _pickEnts = null; // the world's entities are read once per pick
         _toolPlans.Clear(); // and each block's tool once per pick
         _pickPawn = p.Name; _pickClaims = null; // chests this pawn can't reach are left out of its plans (StoryColony.Ledger.cs)
         PurgeToolFailuresOnce(); // after a load: tool/record failures of old never hold a target back
+        t = StoryPerf.PickStage("signs", t);
         try
         {
-            var job = QuarryTravel(PillarHint(FollowOre(PickCore(p, live)), live), live);
+            var core = PickCore(p, live);
+            t = StoryPerf.PickStage("core", t);
+            var job = QuarryTravel(PillarHint(FollowOre(core), live), live);
+            StoryPerf.PickStage("after", t);
             // Idle after an empty search: the wanderers' wake check need not search again until something changes (StoryColony.IdleAudit.cs).
             if (job.Source is "none" or "wander" && _looks.TryGetValue(p.Name, out var look) && look.At == Now && !look.Found) _probed[p.Name] = (Now, WorkStamp());
             return job;
@@ -60,12 +65,19 @@ public sealed partial class StoryColony
 
     private ActiveJob PickCore(PawnState p, PawnLive live)
     {
-        if (GateJob(p, live) is { } gated) return gated;
-        if (ErrandJob(p, live) is { } errand) return errand;
+        long t = System.Diagnostics.Stopwatch.GetTimestamp();
+        var gated = GateJob(p, live);
+        t = StoryPerf.PickStage("gate", t);
+        if (gated != null) return gated;
+        var errand = ErrandJob(p, live);
+        t = StoryPerf.PickStage("errand", t);
+        if (errand != null) return errand;
         int hour = HourNow;
         var block = ScheduleBlockAt(p, hour);
         var home = Home();
-        return ScheduledJob(p, live, block, hour, home) ?? WorkOrIdle(p, live, hour);
+        var scheduled = ScheduledJob(p, live, block, hour, home);
+        StoryPerf.PickStage("scheduled", t);
+        return scheduled ?? WorkOrIdle(p, live, hour);
     }
 
     /// <summary>The pawn's schedule block for this hour (anything when its schedule is missing or the block unknown).</summary>
@@ -116,10 +128,16 @@ public sealed partial class StoryColony
 
     private ActiveJob WorkOrIdle(PawnState p, PawnLive live, int hour)
     {
+        long t = System.Diagnostics.Stopwatch.GetTimestamp();
         if (RescueJob(p, live) is { } rescue) return rescue; // a pawn stuck in a pit gets blocks brought to it first
         if (p.Role == "guard" && GuardZoneJob(p, live) is { } guard) return guard;
-        if (Work(p, live) is { } work) return work;
-        if (Deliver(p, live, force: true) is { } leftovers) return leftovers; // nothing else to do: store what it still carries
+        t = StoryPerf.PickStage("rescue-guard", t);
+        var work = Work(p, live);
+        t = StoryPerf.PickStage("work", t);
+        if (work != null) return work;
+        var leftovers = Deliver(p, live, force: true);
+        StoryPerf.PickStage("deliver-leftovers", t);
+        if (leftovers != null) return leftovers; // nothing else to do: store what it still carries
         var idleLabel = WorkIdleLabel(p);
         if (!_idleAlert.TryGetValue(p.Name, out var last) || Now - last > TimeSpan.FromMinutes(5))
         {
@@ -269,7 +287,10 @@ public sealed partial class StoryColony
     {
         // A craft work waits on right now (a missing tool, a farm's hoe, a water build's bucket) comes before its other work (Fox 11-05:
         // "Immediate requirements like that should always be at the top of the list for crafting"): StoryColony.CraftTasks.cs.
-        if (ImmediateCraftJob(p, live) is { } now) return now;
+        long ts = System.Diagnostics.Stopwatch.GetTimestamp();
+        var now = ImmediateCraftJob(p, live);
+        ts = StoryPerf.PickStage("craft-now", ts);
+        if (now != null) return now;
         int riskChecked = 0;
         bool quarryWait = false;
         foreach (var t in WorkOrder(p))
@@ -278,10 +299,18 @@ public sealed partial class StoryColony
             if (t != WorkTypes.Haul && p.Priorities.GetValueOrDefault(t) is var pr && pr != riskChecked && pr == p.Priorities.GetValueOrDefault(WorkTypes.Haul))
             {
                 riskChecked = pr;
-                if (HaulJob(p, live, riskOnly: true) is { } risky) return risky;
+                var risky = HaulJob(p, live, riskOnly: true);
+                ts = StoryPerf.PickStage("haul-risk", ts);
+                if (risky != null) return risky;
             }
-            if (Candidate(t, p, live) is { } j) return j;
-            if (t == WorkTypes.Mine) quarryWait = WaitingForQuarry(p, live);
+            var j = Candidate(t, p, live);
+            ts = StoryPerf.PickStage("work", ts, t);
+            if (j != null) return j;
+            if (t == WorkTypes.Mine)
+            {
+                quarryWait = WaitingForQuarry(p, live);
+                ts = StoryPerf.PickStage("quarry-wait", ts);
+            }
         }
         return quarryWait ? Hold("waiting for the quarry's next layer", "working", s: 2, type: WorkTypes.Mine) : null;
     }

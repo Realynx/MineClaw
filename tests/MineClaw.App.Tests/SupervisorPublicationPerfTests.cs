@@ -136,6 +136,6 @@ public sealed class SupervisorPublicationPerfTests
     public void The_story_clause_says_how_long_picks_and_ticks_waited_for_the_lock_and_where_the_tick_went()
     {
         var line = new SupervisorPerf().Summary();
-        Assert.Matches(@"seen-chest \d+x \d+ ms max \d+ ms, pick lock-wait \d+x \d+ ms max \d+ ms, tick lock-wait \d+x \d+ ms max \d+ ms, tick phases: ", line);
+        Assert.Matches(@"seen-chest \d+x \d+ ms max \d+ ms, pick lock-wait \d+x \d+ ms max \d+ ms, tick lock-wait \d+x \d+ ms max \d+ ms, pick stages: .*, tick phases: ", line);
     }
 }

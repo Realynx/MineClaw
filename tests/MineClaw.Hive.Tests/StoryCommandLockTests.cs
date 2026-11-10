@@ -174,7 +174,7 @@ public sealed class StoryCommandLockTests
         colonies.Tick();
         c.Next("nobody"); // a pick: it waits for the lock like any other
         var line = StoryPerf.TakeInside();
-        Assert.Matches(@"^pick lock-wait [1-9]\d*x \d+ ms max \d+ ms, tick lock-wait [1-9]\d*x \d+ ms max \d+ ms, tick phases: ", line);
+        Assert.Matches(@"^pick lock-wait [1-9]\d*x \d+ ms max \d+ ms, tick lock-wait [1-9]\d*x \d+ ms max \d+ ms, pick stages: .*, tick phases: ", line);
         var phases = line[line.IndexOf("tick phases:", StringComparison.Ordinal)..];
         foreach (var phase in new[] { "leases", "reconcile", "idle-audit", "start-pawns", "save" }) Assert.Matches($@"\b{phase} [1-9]\d*x \d+ ms max \d+ ms", phases);
     }

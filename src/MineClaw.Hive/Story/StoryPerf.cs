@@ -104,16 +104,33 @@ public static class StoryPerf
         return Stopwatch.GetTimestamp();
     }
 
-    /// <summary>"pick lock-wait …, tick lock-wait …, tick phases: reconcile 9x 12000 ms max 5000 ms, …" (costliest first), and starts over.</summary>
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<(string Stage, string? Kind), Meter> PickStages = new();
+
+    /// <summary>
+    /// One stage of a pick ended (it holds the colony lock): noted under <paramref name="stage"/>, or "stage:kind" for a work type's
+    /// search. Stages nest (work holds the work:… searches), so they do not add up to the pick. Returns now.
+    /// </summary>
+    internal static long PickStage(string stage, long since, string? kind = null)
+    {
+        PickStages.GetOrAdd((stage, kind), static _ => new Meter()).Note(since);
+        return Stopwatch.GetTimestamp();
+    }
+
+    /// <summary>
+    /// "pick lock-wait …, tick lock-wait …, pick stages: work 80x 51000 ms max 900 ms, work:mine …, tick phases: reconcile …" (each costliest
+    /// first, the ten costliest pick stages), and starts over.
+    /// </summary>
     public static string TakeInside()
     {
         static string S(string name, Sample s) => string.Create(System.Globalization.CultureInfo.InvariantCulture,
             $"{name} {s.Count}x {s.Total.TotalMilliseconds:0} ms max {s.Longest.TotalMilliseconds:0} ms");
-        var phases = TickPhases.Select(kv => (kv.Key, S: kv.Value.Take())).Where(p => p.S.Count > 0)
-            .OrderByDescending(p => p.S.Total).ThenBy(p => p.Key, StringComparer.Ordinal)
-            .Select(p => S(p.Key, p.S));
+        static IEnumerable<string> Costliest<TKey>(IEnumerable<KeyValuePair<TKey, Meter>> meters, Func<TKey, string> name, int top) =>
+            meters.Select(kv => (Name: name(kv.Key), S: kv.Value.Take())).Where(p => p.S.Count > 0)
+                .OrderByDescending(p => p.S.Total).ThenBy(p => p.Name, StringComparer.Ordinal).Take(top).Select(p => S(p.Name, p.S));
+        var stages = Costliest(PickStages, k => k.Kind == null ? k.Stage : $"{k.Stage}:{k.Kind}", 10);
+        var phases = Costliest(TickPhases, k => k, int.MaxValue);
         return string.Create(System.Globalization.CultureInfo.InvariantCulture,
-            $"{S("pick lock-wait", PickLockWait.Take())}, {S("tick lock-wait", TickLockWait.Take())}, tick phases: {string.Join(", ", phases)}");
+            $"{S("pick lock-wait", PickLockWait.Take())}, {S("tick lock-wait", TickLockWait.Take())}, pick stages: {string.Join(", ", stages)}, tick phases: {string.Join(", ", phases)}");
     }
 
     /// <summary>The counters since the last call, and starts them over.</summary>
