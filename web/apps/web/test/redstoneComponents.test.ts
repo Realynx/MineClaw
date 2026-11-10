@@ -534,6 +534,7 @@ describe('the Library tab', () => {
       viewer: { current: null },
       stage: { current: null },
       live: false,
+      canEdit: true,
     });
     return createElement(LibraryTab, { components, studio, version: '1.12.2' });
   }
@@ -549,12 +550,13 @@ describe('the Library tab', () => {
     fireEvent.click(screen.getByRole('button', { name: 'NOT' }));
     fireEvent.change(screen.getByRole('textbox', { name: 'Place at x y z' }), { target: { value: '10 0 10' } });
     fireEvent.click(screen.getByRole('button', { name: 'Place at' }));
-    expect(screen.getAllByTestId('placed-component')).toHaveLength(1);
+    expect(screen.getAllByRole('option', { name: /^NOT \d$/ })).toHaveLength(1);
     expect(blocks(studio)).toEqual(layoutBlocks([10, 0, 10]));
-    fireEvent.click(screen.getByRole('button', { name: 'Turn c1' }));
+    fireEvent.click(screen.getByRole('option', { name: 'NOT 1' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Turn NOT 1' }));
     expect(blocks(studio)).toEqual(layoutBlocks([10, 0, 10], 1));
-    fireEvent.click(screen.getByRole('button', { name: 'Remove c1' }));
-    expect(screen.queryAllByTestId('placed-component')).toHaveLength(0);
+    fireEvent.click(screen.getByRole('button', { name: 'Delete NOT 1' }));
+    expect(screen.queryAllByRole('option', { name: /^NOT \d$/ })).toHaveLength(0);
     expect(blocks(studio)).toEqual([]);
     view.unmount();
   });

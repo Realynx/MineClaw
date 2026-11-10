@@ -117,6 +117,59 @@ face except at an output port, all of it after every turn and mirror) are tested
   this browser's quick library, which can be exported and imported as JSON. A definition drawn for the other game version
   can be used, with a warning.
 
+## Components as movable parts (added 2026-11-10)
+
+A placed gate stays one part until the user takes it apart: the mouse, the keys and the outliner move, turn, join and
+group it as a whole, never as loose cells. The chat starts collapsed in a redstone design, as in a mine (T or a click
+opens it).
+
+- **Component model.** `RedstoneComponentController` keeps the instances outside React. Besides placing, turning,
+  mirroring, unlinking and removing, it can `check` a corner without writing anything (the reason a spot is refused),
+  `move` an instance with a snap's joint (one dust in the gap), `duplicate` it beside itself (east first, then clockwise,
+  further out), `combine` instances and `ungroup` them, and say what each port is joined to (`portsOf`: another
+  component's port, loose dust, or open). Each of these is one undo step; moves that share a group (a held arrow key, one
+  gizmo drag) are one step together.
+- **Dragging with the mouse.** A plain left press on a component's box with the mouse free selects it without locking
+  the view (a capture listener on the stage takes the press before the engine sees it). Past 5 px it drags the component
+  across its own level: the outline, its port marks and the selection box move in the overlay only, once per frame, and
+  snap within 2 cells (an input onto another component's output, an output onto an input, or a port onto the end of a
+  dust line). Where the component cannot stand (too close to another box, off the plot) the outline is red and the
+  reason shows as a tip. The release is one `move`: one undo step, one edit for the bot, and the joint's dust. Esc, a
+  cancelled pointer, a lost pointer capture or the window losing focus put it back. A press on empty space, on a gizmo
+  handle, with a modifier or with another button goes on to the engine as before, so click-to-lock and looking around
+  still work. With the mouse locked and the Select tool, a click selects the component under the crosshair. Nothing takes
+  the mouse while a simulation is live.
+- **Placing with the mouse.** After "Place …" in the Library, the gate's outline and ports (a ghost) follow the mouse
+  with the mouse free, on the selected component's level (y 0 when none is selected), once per frame and in the overlay
+  only; it snaps onto an output port when the snap box is ticked, and is red with the reason where `place` would refuse.
+  A plain left click places its corner on the cell under the mouse (one undo step) without locking the view; a right
+  click or Esc stops placing. The controller's `previewPlace` answers each frame without writing anything. A click with
+  the mouse locked and the typed corner still place as before.
+- **Keys.** For the selected (or dragged) component: R or ] turns it clockwise, Shift+R or [ counter-clockwise, M
+  mirrors it east-west and Shift+M north-south, Delete removes it, Ctrl+D duplicates it, and the arrow keys, PgUp/PgDn and
+  the gizmo move it as a whole. Ctrl+G combines the ticked components, Ctrl+Shift+G ungroups the selected one. While
+  editing is not allowed (a live simulation, a read-only page) these keys are taken and do nothing, so the page never
+  edits a component's cells as raw ones.
+- **Ports in the world.** The selected and ticked components' ports are marked on their cells: amber where open, green
+  where joined, each with a chevron pointing into the box for an input and out of it for an output. A drag shows the ports
+  of the piece in hand where it would land.
+- **Outliner.** The Library tab's outliner (`RedstoneOutliner.tsx`, on the shared `ComponentOutliner`) replaces the old
+  Placed list. A row reads "name n" with the block count and "joined/total ports joined"; its tooltip lists the corner and
+  what each port joins. Rows have Duplicate, Unlink and Delete. Selection is shared with the world, and picking a
+  component in the world opens the Library tab. Double-click, F on a focused row or the frame button centres the view on
+  it (plain F in the world stays the Face tool). Ctrl-click ticks a row and Shift-click a range for Combine. Under the
+  list, the selected component's name, typed corner, turn both ways, mirror both ways, Ungroup and its ports.
+- **Combine and ungroup.** Combining makes one of the design's own components, named "combined": its box spans the
+  members', it takes the cells between them (the wires that join them, which then move with it), and its ports are the
+  members' ports outside that box (repeated names are numbered). It is refused for fewer than two members, a box over 32
+  on a side, another component in or beside the box, or ground inside it. The definition remembers its parts, so
+  ungrouping puts them back where they stand, in any turn and mirror, and leaves the wires between them as plain blocks;
+  the combined definition goes when nothing else uses it. A component of the design's own without parts ungroups to plain
+  blocks; a library gate is made plain blocks with the row's Unlink.
+
+This supersedes the Persistence note that what a component covered is kept in memory only: it is now saved (`under`
+below), so a remove after a reload gives those blocks back.
+
 ## Owner decisions
 
 | Question | Decision |
@@ -168,6 +221,16 @@ face except at an output port, all of it after every turn and mirror) are tested
   check: nothing changes.
 - **Browser-only keys.** The quick library (`mineclaw.redstone.library.v1:<owner>`) and the debugger's key map
   (`mineclaw.redstone.debuggerKeys.v1`).
+- **Parts and what a box covered (added 2026-11-10).** Two optional fields, so the contracts are unchanged
+  (`redstoneAuthoring` is an opaque text there) and an older envelope opens as before:
+  `components[].under` is what the box covered before the component took it, as `[dx, dy, dz, value]` from `at` (value:
+  id × 16 + meta, air 0, undisturbed ground -1), only where that was not bare air or ground; `customDefs[].parts` is the
+  list a combined definition was made from, `{ def, at, turns, mirror, label? }` with `at` from the definition's box
+  corner. Both are stored relative, so the `origin` rebase leaves them alone. An older studio that rewrites the envelope
+  drops them; the design then degrades (ungroup gives plain blocks, a remove leaves air) but opens. A saved instance that
+  no longer matches its cells when the design opens is still dropped, and now a note says so, in the mine's wording ("1 of
+  2 saved components no longer matches the circuit and was opened as plain blocks. The saved revision still has it."),
+  shown as a warning that stays until dismissed. An empty canvas gets no note.
 
 ## Hand-off to pawns (deferred)
 
@@ -213,6 +276,15 @@ should stay at or above 40. If it does not, lower the default display rate.
   engine (`redstoneAcceptance.test.ts`: a library NOT gate's torch flips 2 gt after its block is powered and stopping
   restores the view exactly; a rising breakpoint on the XOR's output pauses on the exact tick and a step back returns to
   the tick before, with the timeline's cursor there).
+- `web/apps/web/test/` for components as parts (added 2026-11-10): the model (`redstoneComponentModel.test.ts`: move,
+  turn and mirror ports, snapping both ways and onto dust, duplicate, combine and ungroup round trips, `under` and
+  `parts` round trips with an old envelope, restore with the note), the mouse and keys (`redstoneComponentDrag.test.ts`),
+  placing with the mouse free (`redstonePlaceGhost.test.ts`),
+  the outliner (`redstoneOutliner.test.tsx`), the shared drag and outliner (`componentDrag.test.ts`,
+  `componentOutliner.test.tsx`) and the collapsed chat (`StudioChat.test.tsx`).
+- `web/apps/web/e2e/studio-redstone.spec.ts` (mock mode): the collapsed chat, a NOT gate dragged with the mouse free and
+  put back by one undo step, a second one placed by its ghost with the mouse free, R / Shift+R / M, a refused drag put back with Esc, a snap onto another gate's output shown
+  joined, combine and ungroup, save and reload, and a hand-edited gate opened as plain blocks with the note.
 - C#: `DesignerRedstoneTests` (kind, tag round trip, per-revision editor data, every redstone palette entry saved and
   reloaded), `DesignKindTests` (the bridge), `RedstoneDesignBuildTests` (the builder's refusal).
 - Not done: a Playwright run of the studio page.

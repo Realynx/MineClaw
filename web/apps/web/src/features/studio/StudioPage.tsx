@@ -61,6 +61,7 @@ import { CONFIGURE_TOOL } from './redstone/redstoneTools';
 import { useRedstoneSim } from './redstone/useRedstoneSim';
 import { LibraryTab } from './redstone/LibraryTab';
 import { useRedstoneComponents } from './redstone/useRedstoneComponents';
+import { gizmoDrags } from './components/gizmoDrag';
 import { minePreview } from './mine/minePreview';
 import { Gesture, useIdleReadout } from './mine/mineReadouts';
 import { visibleMinePreview } from './mine/visiblePreview';
@@ -585,7 +586,13 @@ function StudioBody({
     look: lookNow,
   });
   /** A redstone design's placed library components (inert for the other kinds). */
-  const components = useRedstoneComponents({ enabled: redstone, studio, viewer, stage, live: sim.live });
+  const components = useRedstoneComponents({ enabled: redstone, studio, viewer, stage, live: sim.live,
+    overlay, mod, ready, canEdit: canWrite && !snap.busy && !saving && !versionBusy, selecting: tool === 'select',
+    notice: setNotice });
+  const { moveSelected: moveRedstoneSelection, nudgeSelected: nudgeRedstone, handlesKey: redstoneHandlesKey } = components;
+  const { dragStart: redstoneDragStart, dragPreview: redstoneDragPreview, dragCommit: redstoneDragCommit, dragCancel: redstoneDragCancel } = components;
+  /** Which kind (mine, then redstone) took the gizmo press: it owns that drag across renders. */
+  const gizmoOwner = useRef<number | null>(null);
 
   useEffect(() => () => studio.dispose(), [studio]);
   useEffect(() => flushWhenHidden(studio), [studio]);
@@ -717,9 +724,11 @@ function StudioBody({
   const moveSel = useCallback(
     (d: V3, group?: string) => {
       if (moveMineSelection(d, group)) return;
+      // A redstone component moves as a whole (the gizmo, the arrow keys); its cells never move as raw ones.
+      if (moveRedstoneSelection(d, group)) return;
       applyTransform(`move ${d.join(',')}`, (s) => move(studio.canvas, s, d), group);
     },
-    [applyTransform, studio, moveMineSelection],
+    [applyTransform, studio, moveMineSelection, moveRedstoneSelection],
   );
 
   const placeAt = useCallback(
@@ -858,7 +867,11 @@ function StudioBody({
     pointerActions.current = {
       canEdit: canWrite && !snap.busy && !saving && !versionBusy && !sim.live,
       down, up, move: moveSel, setDrag,
-      dragStart: mineDragStart, dragPreview: mineDragPreview, dragCommit: mineDragCommit, dragCancel: mineDragCancel,
+      // A redstone component, like a mine module, previews a gizmo drag in the overlay and moves once on release.
+      ...gizmoDrags([
+        { dragStart: mineDragStart, dragPreview: mineDragPreview, dragCommit: mineDragCommit, dragCancel: mineDragCancel },
+        { dragStart: redstoneDragStart, dragPreview: redstoneDragPreview, dragCommit: redstoneDragCommit, dragCancel: redstoneDragCancel },
+      ], gizmoOwner),
       gesture: (held) => gesture.set(held),
       cancel: () => {
         if (stroke.current?.timer) clearInterval(stroke.current.timer);
@@ -869,7 +882,8 @@ function StudioBody({
       error: (error) => setNotice(errorText(error), { tone: 'error' }),
     };
   }, [canWrite, snap.busy, saving, versionBusy, sim.live, down, up, moveSel, setNotice,
-    mineDragStart, mineDragPreview, mineDragCommit, mineDragCancel, gesture]);
+    mineDragStart, mineDragPreview, mineDragCommit, mineDragCancel, gesture,
+    redstoneDragStart, redstoneDragPreview, redstoneDragCommit, redstoneDragCancel]);
   useEffect(() => {
     const engine = ready ? viewer.current?.engine() : null;
     if (!engine) return;
@@ -909,8 +923,8 @@ function StudioBody({
         setPasting,
         setDrag,
         moveSel,
-        nudgeSel: nudgeSelected,
-        handlesKey: mineHandlesKey,
+        nudgeSel: (d) => nudgeSelected(d) || nudgeRedstone(d),
+        handlesKey: (e) => mineHandlesKey(e) || redstoneHandlesKey(e),
         stepLevel,
         setActive,
         openChat,
@@ -928,7 +942,8 @@ function StudioBody({
       });
     window.addEventListener('keydown', onKey, true);
     return () => window.removeEventListener('keydown', onKey, true);
-  }, [studio, moveSel, nudgeSelected, mineHandlesKey, stepLevel, applyTransform, openChat, doCopy, chooseTool, look]);
+  }, [studio, moveSel, nudgeSelected, mineHandlesKey, stepLevel, applyTransform, openChat, doCopy, chooseTool, look,
+    nudgeRedstone, redstoneHandlesKey]);
 
   // ------------------------------------------------------------------ chat, save, build
 
@@ -1137,6 +1152,9 @@ function StudioBody({
           </div> : minePlacement.refused ? <div data-testid="mine-placement-tip" className="absolute top-3 left-14 rounded border border-red-400/50 bg-black/80 px-3 py-2 text-xs text-red-300">
             {minePlacement.refused}
           </div> : null}
+          {components.refused ? <div data-testid="redstone-drag-tip" className="absolute top-3 left-14 rounded border border-red-400/50 bg-black/80 px-3 py-2 text-xs text-red-300">
+            {components.refused}
+          </div> : null}
           {hud ? (
             <StudioHud
               aim={aimText(h, mine)}
@@ -1166,7 +1184,7 @@ function StudioBody({
           {/* Tool options and the selection's actions */}
           <ToolColumn
             mine={mine}
-            moduleSelected={minePlacement.selectedId !== null}
+            moduleSelected={minePlacement.selectedId !== null || components.selectedId !== null}
             components={minePlacement.modules.length > 0}
             under={under}
             setUnder={setUnder}
@@ -1258,11 +1276,12 @@ function StudioBody({
             serverVersion={session.serverVersion}
             stage={stage}
             library={<LibraryTab components={components} studio={studio} version={version} />}
+            component={components.selectedId}
           />
         ) : null}
         <ChatPanel
           ref={chat}
-          kind={mine ? 'mine' : 'build'}
+          kind={mine ? 'mine' : redstone ? 'redstone' : 'build'}
           messages={snap.messages}
           models={models}
           model={model}
@@ -1384,7 +1403,8 @@ function ToolColumn(p: {
         startPaste={p.startPaste}
         whole={!(mine && p.components)}
       /> : <span className="rounded bg-black/55 px-2 py-1">Drag it or an axis · Arrow keys move · PgUp / PgDn changes Y</span>}
-      {sel && !mine ? (
+      {/* A selected component's box is never edited as raw cells: it would stop being the component. */}
+      {sel && !mine && !p.moduleSelected ? (
         <SelectionEdits
           studio={studio}
           sel={sel}

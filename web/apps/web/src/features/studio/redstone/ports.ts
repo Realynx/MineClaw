@@ -135,6 +135,100 @@ export function snapPlacement(
   return best ? { at: best.at, joint: best.joint } : null;
 }
 
+/**
+ * What a moved component's port can land on: another component's port (`in` or `out`, with its side), or the end of a
+ * dust line (`dust`, with the way the line runs on from it, or null for a lone dust).
+ */
+export interface SnapTarget {
+  at: Pos;
+  kind: 'in' | 'out' | 'dust';
+  side: Side | null;
+}
+
+/** A corner that puts one port on a target: `joint` is the shared cell, `d` how far the port had to go. */
+export interface CornerSnap {
+  at: Pos;
+  joint: Pos;
+  d: number;
+  to: 'port' | 'dust';
+}
+
+/** How far a dragged component's port reaches for a target: a little less than placing, so a drag does not jump. */
+export const MOVE_SNAP_REACH = 2;
+
+/**
+ * Every corner within reach of `corner` that lays one of `ports` (relative to the corner, already turned) on a target,
+ * nearest first and a port before a dust end at the same distance. An input takes an output and an output an input,
+ * facing each other; a dust end takes any port whose side points along the line, so the wire runs straight on.
+ */
+export function snapCorner(
+  ports: readonly Port[],
+  corner: Pos,
+  targets: readonly SnapTarget[],
+  reach = MOVE_SNAP_REACH,
+): CornerSnap[] {
+  const out: CornerSnap[] = [];
+  for (const t of targets)
+    for (const p of ports) {
+      if (t.kind === 'dust') {
+        if (t.side !== null && p.side !== t.side) continue;
+      } else if (p.kind === t.kind || t.side === null || p.side !== opposite(t.side)) continue;
+      const at = add(p.at, corner);
+      const d = Math.max(Math.abs(at[0] - t.at[0]), Math.abs(at[1] - t.at[1]), Math.abs(at[2] - t.at[2]));
+      if (d > reach) continue;
+      out.push({
+        at: [t.at[0] - p.at[0], t.at[1] - p.at[1], t.at[2] - p.at[2]],
+        joint: t.at,
+        d,
+        to: t.kind === 'dust' ? 'dust' : 'port',
+      });
+    }
+  return out.sort((a, b) => a.d - b.d || (a.to === b.to ? 0 : a.to === 'port' ? -1 : 1));
+}
+
+/** The four cells beside one on its level, with the side each lies on. */
+export const besides = (p: Pos): Array<{ at: Pos; side: Side }> =>
+  (Object.keys(SIDE_STEP) as Side[]).map((side) => ({
+    at: [p[0] + SIDE_STEP[side][0], p[1], p[2] + SIDE_STEP[side][1]],
+    side,
+  }));
+
+/**
+ * How a part lies once the component around it is mirrored and turned: `outer` applied after `inner`. A mirror reverses
+ * the way a later turn goes, and two mirrors across different axes make a half turn.
+ */
+export function composePlacement(
+  outer: { turns: number; mirror: Mirror },
+  inner: { turns: number; mirror: Mirror },
+): { turns: number; mirror: Mirror } {
+  if (outer.mirror === null) return { turns: quarter(outer.turns + inner.turns), mirror: inner.mirror };
+  if (inner.mirror === null) return { turns: quarter(outer.turns - inner.turns), mirror: outer.mirror };
+  if (inner.mirror === outer.mirror) return { turns: quarter(outer.turns - inner.turns), mirror: null };
+  return { turns: quarter(outer.turns - inner.turns + 2), mirror: null };
+}
+
+/**
+ * Where a box inside a layout of `size` has its min corner once the layout is mirrored and turned. The box's corners go
+ * through the package's own transform (as ports, which it moves like cells), so the two can never disagree.
+ */
+export function boxCornerAfter(
+  size: readonly [number, number, number],
+  box: Box,
+  turns: number,
+  mirror: Mirror,
+  v: RedstoneVersion,
+): Pos {
+  const corner = (name: string, at: Pos): Port => ({ name, kind: 'in', at, side: 'north' });
+  const t = transformLayout(
+    { size, cells: [], ports: [corner('min', box.min), corner('max', box.max)] },
+    turns,
+    mirror,
+    v,
+  );
+  const [a, b] = [t.ports[0]!.at, t.ports[1]!.at];
+  return [Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.min(a[2], b[2])];
+}
+
 /** The cell one step outside a port, away from its box (where a feeder's next cell goes). */
 export const beyond = (port: Pick<Port, 'at' | 'side'>): Pos => {
   const [dx, dz] = SIDE_STEP[port.side];
