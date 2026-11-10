@@ -56,6 +56,8 @@ public static partial class DesignerSave
         int? grade = WithDsl(rec, pick.Dsl, () => GradeY(s, rec));
         var (canvas, off) = DesignerCanvas.FromSnapshot(snap!, grade);
         canvas.Version = pick.Version;
+        // A circuit is drawn like a build: the revision's own comment line says it is one (an older revision may be a plain build).
+        if (RedstoneDesign.IsRedstone(pick.Dsl)) canvas.Kind = DesignerCanvas.KindRedstone;
         if (canvas.Count < snap!.Count) return new(canvas, off, rec, $"#{id} is bigger than the plot: {snap.Count - canvas.Count} blocks left out", Rev: pick.Rev);
         return new(canvas, off, rec, null, Rev: pick.Rev);
     }
@@ -125,8 +127,11 @@ public static partial class DesignerSave
         catch (Exception) { return null; }
     }
 
+    /// <summary>The session's canvas saved as its design's next revision. <c>redstoneAuthoring</c> is a redstone canvas's editor data
+    /// (<see cref="DesignerRedstoneAuthoring"/>, or null): only its marker goes into the DSL, and the caller stores the text with
+    /// the revision this returns.</summary>
     public static DesignerSaveResult Save(BlueprintService s, DesignerSessionRecord session, string name, string? summary, string requester, bool asNew,
-        string bot = "")
+        string bot = "", string? redstoneAuthoring = null)
     {
         // Drawn in the session's version, with its version line (every revision records the version it was saved for).
         using var scope = DesignVersions.Use(session.Version);
@@ -153,6 +158,8 @@ public static partial class DesignerSave
         var (dsl, min, bad, why) = DesignHistory.Draw(name, snap, air, ChunkColumn.SizeY, underground ? grade : null, session.Version);
         if (dsl == null) return Fail($"can't save it as a design: {why}");
         dsl = StudioDsl(dsl, placed, session.Anchor, off, min);
+        // A circuit is a build to every reader of the DSL; the tag (a comment) is what makes it one for the studio and the builders.
+        if (canvas.Kind == DesignerCanvas.KindRedstone) dsl = RedstoneDesign.Tagged(dsl, redstoneAuthoring);
         var names = NamesOf(snap, session.Version);
         var line = BuildLine(name, box, snap, names, dug, grade);
         return Store(s, session, req, existing, names, new Drawing(dsl, line, bad, placed ? min : null, snap.Count), "", StudioAnchor, "");

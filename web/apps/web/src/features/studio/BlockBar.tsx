@@ -168,6 +168,7 @@ export const PaletteDrawer = memo(function PaletteDrawer({
   onChoose,
   onClose,
   sheet,
+  initialCategory,
 }: {
   palette: readonly PaletteEntry[];
   version: string;
@@ -175,9 +176,13 @@ export const PaletteDrawer = memo(function PaletteDrawer({
   onChoose: (e: PaletteEntry) => void;
   onClose: () => void;
   sheet: IconSheet | null;
+  /** The category the drawer opens on (a redstone design: its parts); every block when the palette has none of it. */
+  initialCategory?: string;
 }) {
   const [q, setQ] = useState('');
-  const [cat, setCat] = useState<string | null>(null);
+  const [cat, setCat] = useState<string | null>(() =>
+    initialCategory && inCategory(palette, initialCategory).length > 0 ? initialCategory : null,
+  );
   const [favs, setFavs] = useState<string[]>(() => favouriteKeys(version));
   const recent = useMemo(() => entriesOf(palette, recentKeys(version)), [palette, version]);
   const favourites = useMemo(() => entriesOf(palette, favs), [palette, favs]);

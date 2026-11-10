@@ -4,7 +4,7 @@
  * The Design Studio's chrome around the 3D stage (StudioPage owns the state): the header (version, kind, name, save, revisions),
  * the saved bar, the kind / version dialogs, the HUD, the tool rail, and the tool options with the selection's actions.
  */
-import type { DesignerCompatReport, DesignerSession, DesignRevision } from '@mineclaw/contracts';
+import type { DesignerCompatReport, DesignerKind, DesignerSession, DesignRevision } from '@mineclaw/contracts';
 import {
   Copy,
   FlipHorizontal2,
@@ -27,6 +27,7 @@ import type { Cell, Selection, V3 } from './canvas';
 import { invert, selectAll, sizeOf } from './canvas';
 import type { Dir, Version } from './facing';
 import type { PaletteEntry } from './palette';
+import { RedstoneSavedBar } from './redstone/RedstoneSavedBar';
 import type { Studio, StudioSnapshot } from './studio';
 import {
   type BoxMode,
@@ -42,7 +43,7 @@ import {
   underRange,
 } from './tools';
 
-export type Tool = 'build' | 'box' | 'line' | 'select' | 'brush' | 'face' | 'extrude' | 'anchor';
+export type Tool = 'build' | 'box' | 'line' | 'select' | 'brush' | 'face' | 'extrude' | 'anchor' | 'configure';
 export type ToolDef = { id: Tool; label: string; key: string; icon: ReactNode };
 type Bounds = { min: V3; max: V3 };
 type Transform = (label: string, f: (s: Selection) => { cells: Cell[]; selection: Selection | null }) => void;
@@ -55,7 +56,7 @@ export function StudioHeader(p: {
   version: Version;
   locked: boolean;
   changeVersion: (v: Version) => void;
-  changeKind: (k: 'build' | 'mine') => void;
+  changeKind: (k: DesignerKind) => void;
   saveName: string;
   setSaveName: (v: string) => void;
   saveSummary: string;
@@ -94,19 +95,20 @@ export function StudioHeader(p: {
       </label>
       <label
         className="flex items-center gap-1 text-xs text-muted"
-        title="Build: on flat grass. Mine: dug into generated terrain, kept at absolute y (pawns mine it out)."
+        title="Build: on flat grass. Mine: dug into generated terrain, kept at absolute y (pawns mine it out). Redstone: a circuit on flat grass, with a simulator and a debugger."
       >
         Kind
         <select
           aria-label="Design kind"
           value={session.kind ?? 'build'}
           disabled={p.locked}
-          onChange={(e) => p.changeKind(e.target.value as 'build' | 'mine')}
+          onChange={(e) => p.changeKind(e.target.value as DesignerKind)}
           className="h-7 rounded-md border border-border bg-surface px-1.5 text-xs text-fg"
           data-testid="kind-select"
         >
           <option value="build">Build</option>
           <option value="mine">Mine</option>
+          <option value="redstone">Redstone</option>
         </select>
       </label>
       <ServerVersionNote version={version} serverVersion={session.serverVersion} />
@@ -192,8 +194,11 @@ export function SavedBar(p: {
   canChat: boolean;
   mainBot: string | null;
   askBot: () => void;
+  /** A redstone design: neither the pawns nor the bot's builder can build a working circuit yet, so neither is offered. */
+  redstone?: boolean;
 }) {
   const { saved } = p;
+  if (p.redstone) return <RedstoneSavedBar saved={saved} />;
   return (
     <div
       className="flex flex-wrap items-center gap-2 border-b border-border bg-ok-soft px-3 py-1.5 text-xs text-ok"
@@ -235,7 +240,7 @@ export function mineRangeText(bounds: Bounds, preferred: string | null): string 
 }
 
 export function KindDialog(p: {
-  kind: 'build' | 'mine';
+  kind: DesignerKind;
   blocks: number;
   dug: number;
   busy: boolean;
@@ -243,6 +248,8 @@ export function KindDialog(p: {
   onCancel: () => void;
 }) {
   const mine = p.kind === 'mine';
+  // Only a switch to or from a mine clears the canvas, so the other target is a build or a redstone circuit.
+  const onGrass = p.kind === 'redstone' ? 'a redstone circuit' : 'a build';
   return (
     <div
       role="dialog"
@@ -251,9 +258,9 @@ export function KindDialog(p: {
       data-testid="kind-dialog"
     >
       <p>
-        Switch this design to <b>{mine ? 'a mine' : 'a build'}</b>? The canvas is cleared ({p.blocks} blocks,{' '}
+        Switch this design to <b>{mine ? 'a mine' : onGrass}</b>? The canvas is cleared ({p.blocks} blocks,{' '}
         {p.dug} dug cells):{' '}
-        {mine ? 'a mine is dug into generated terrain at absolute y' : 'a build stands on flat grass'}. Save it
+        {mine ? 'a mine is dug into generated terrain at absolute y' : `${onGrass} stands on flat grass`}. Save it
         first to keep it.
       </p>
       <div className="flex gap-2">

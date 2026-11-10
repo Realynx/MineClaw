@@ -105,6 +105,10 @@ export class Studio {
   private diverged = new Set<number>();
   private mineAuthoring: string | undefined;
   private savedMineAuthoring: string | undefined;
+  private redstoneAuthoring: string | undefined;
+  private savedRedstoneAuthoring: string | undefined;
+  /** The kind of the design revision this session opened or last saved (null: none, or a bot that does not say). */
+  private savedKind: string | null = null;
   /** A mine session's generated terrain (null for a build). */
   readonly terrain: MineTerrain | null;
 
@@ -123,7 +127,24 @@ export class Studio {
     this.anchor = session.anchor ?? null;
     this.designId = session.designId ?? null;
     this.name = session.name;
+    // A build <-> redstone switch keeps every cell but is still a change of the design until it is saved.
+    if (session.designId)
+      this.savedKind = session.revisions.find((r) => r.rev === session.designRevision)?.kind ?? null;
     this.snap = this.build();
+  }
+
+  /**
+   * Takes over the unsaved work of the studio this one replaces on the same plot (a build <-> redstone switch remounts the
+   * page on the bot's copy of the same cells): what each touched cell held at the last save, so those edits stay unsaved.
+   * The undo steps stay behind with the page they belonged to.
+   */
+  adoptUnsaved(from: Studio): void {
+    for (const [k, v] of from.saved) if (!this.saved.has(k)) this.saved.set(k, v);
+    for (const [k, v] of this.saved) {
+      if (this.stateAt(k) === v) this.diverged.delete(k);
+      else this.diverged.add(k);
+    }
+    this.changed();
   }
 
   get id(): number {
@@ -174,6 +195,8 @@ export class Studio {
 
   /** Whether leaving now would lose canvas changes. */
   get dirty(): boolean {
+    if (this.redstoneAuthoring !== this.savedRedstoneAuthoring) return true;
+    if (this.savedKind !== null && this.savedKind !== (this.session.kind ?? 'build')) return true;
     return this.diverged.size > 0 || this.mineAuthoring !== this.savedMineAuthoring;
   }
 
@@ -182,6 +205,17 @@ export class Studio {
     if (initialize) this.savedMineAuthoring = data;
     if (this.mineAuthoring === data) return;
     this.mineAuthoring = data;
+    this.changed();
+  }
+
+  /**
+   * A redstone design's own metadata (placed components, probes, breakpoints, simulator settings): an edit of it alone
+   * counts as unsaved work and goes out with the next save. `initialize` marks `data` as what the opened revision holds.
+   */
+  setRedstoneAuthoring(data: string, initialize = false): void {
+    if (initialize) this.savedRedstoneAuthoring = data;
+    if (this.redstoneAuthoring === data) return;
+    this.redstoneAuthoring = data;
     this.changed();
   }
 
@@ -425,11 +459,14 @@ export class Studio {
       ...(asNew ? { asNew: true } : {}),
       ...(previewPng ? { previewPng } : {}),
       ...(this.mineAuthoring !== undefined ? { mineAuthoring: this.mineAuthoring } : {}),
+      ...(this.redstoneAuthoring !== undefined ? { redstoneAuthoring: this.redstoneAuthoring } : {}),
     };
     // What is on the canvas as the save goes out is what the save holds (edits made meanwhile stay unsaved).
     const at = new Map([...this.diverged].map((k) => [k, this.stateAt(k)]));
     const r = await this.api.save(this.id, body);
     this.savedMineAuthoring = body.mineAuthoring;
+    this.savedRedstoneAuthoring = body.redstoneAuthoring;
+    this.savedKind = this.session.kind ?? 'build';
     for (const [k, v] of at) {
       const now = this.stateAt(k);
       this.saved.set(k, v);

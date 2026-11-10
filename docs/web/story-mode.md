@@ -2787,3 +2787,22 @@ or loss of focus. It never enters full screen automatically; use **PgDn** to des
 - Saving in the designer captures the current camera as its picture. Existing cards have **Take picture / Change picture** links; choose N/E/S/W or the current camera and **Update picture**. Updating only the picture does not create a design revision. The snapshot hides editor overlays.
 - **Directives** chats with the actual main hive mind, using its existing chat history/feed. Requests carry the selected colony and are registered directives. The main-only `colony_control` tool reads state, explains payloads and invokes the same validated controller handlers for roles, schedules, zones, builds, bills, storage, gear and colony options. `story_directive` retrieves complete long requests. Sending acknowledges delivery; the reply and visible state report execution. Drafts and pending replies survive switching controller tabs. Refused delivery can be retried without resending to successful recipients. Client window/camera preferences remain local UI settings.
 - Live Hive's shared **Preview FPS** slider saves a cap for all small previews; it does not throttle full World views, Controller, simulation or network updates. The top-level World switch is removed. Click a pawn's preview to open its individual World entry. Hive-tree pawn icons/colors follow their current task; sub hive minds and the main hive mind have distinct color identities.
+
+## Redstone designs are not built by pawns yet (added 2026-11-10)
+
+A Design Studio design of kind `redstone` (docs/design/redstone-designer.md) is a circuit the studio simulates. Pawns cannot
+wire one yet: they would leave out the delays, comparator modes and lever states, and a half-built circuit fires while it is
+built. Until the build hand-off lands, the Controller refuses it everywhere it could pick one up:
+
+- `/story?design=N` and the Designs card read the design's kind before any saved plan and say "… is a redstone circuit:
+  pawns can't build those yet". The studio session's kind is checked again when the cells come from there, and a design
+  whose kind cannot be read is not picked up at all.
+- The Designs library labels a circuit "Redstone"; the studio hides "Build in Controller" and "Ask the bot to build it" for
+  one.
+- On the bot, the classic builder refuses it (`BlueprintService.RedstoneRefusal`), which also stops a pawn's `blueprint`
+  order.
+
+The hand-off planned for later: build items with `phase` (digs and supports, then wiring and consumers, then sources) and
+`mechanism`; a mechanism group never reopens a done cell and is released when built, so pistons and doors move freely; the
+colony derives the use clicks for repeater delay, comparator mode and lever state from each cell's meta; pawns place no TNT
+and place dispensers and droppers empty; the web runs the simulator as a pre-flight first.

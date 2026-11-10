@@ -423,6 +423,16 @@ it touches the world, and a save is an ordinary design, so the bot can build it 
   history, then "Build in Story Mode" and "Ask the bot to build it" (a chat line to main naming the design).
 - **Performance.** One private WebGL context, a handful of overlay objects, re-meshing only touched sections: the 40 fps
   software-WebGL target holds.
+- **Redstone designs (added 2026-11-10).** The Kind select's third kind, a circuit on the build plot (docs/design/redstone-
+  designer.md). The simulator, its orientation table and the proven gate library are the workspace package
+  `web/packages/redstone` (`@mineclaw/redstone`: no dependencies, no DOM, imported by the web app only, so deployment is
+  unchanged); the studio side is `features/studio/redstone/`. `RedstoneSimController` builds a simulation from the canvas,
+  runs it in 4 ms slices per frame and shows its states through `StudioWorld.setDisplay` at a display rate (10 Hz default,
+  halved while the viewer is under 30 fps); any canvas change ends a live simulation. `RedstoneComponentController` places
+  library components: an instance owns its box's cells, each change is one undo step, a hand edit detaches it, boxes keep a
+  free cell between them and a snap joins an input port to an output port. The debugger (`redstone/debugger/`) and the
+  components save in the design's `redstoneAuthoring` text through one store (`redstone/authoring.ts`). The 40 fps check
+  with a running simulation on software WebGL has not been measured.
 
 ## Administration (added 2026-11-03)
 
