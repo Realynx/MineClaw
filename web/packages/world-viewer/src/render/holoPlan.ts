@@ -98,13 +98,29 @@ export function planHolograms(cells: readonly HoloCell[], cap = HOLO_CAP): HoloP
   const boxes = new Map<string, HoloBox>();
   const capped = new Set<string>();
   let n = 0;
+  // A queue lists a build's cells together: its box is looked up once per run of them.
+  let last: string | number | undefined,
+    build = '',
+    b: HoloBox | undefined;
   for (const c of cells) {
-    const build = String(c.build);
-    const b = boxes.get(build);
-    if (!b) boxes.set(build, { build, min: [c.x, c.y, c.z], max: [c.x + 1, c.y + 1, c.z + 1], state: c.id === 0 ? 'dig' : c.state });
+    if (c.build !== last) {
+      last = c.build;
+      build = String(c.build);
+      b = boxes.get(build);
+    }
+    if (!b)
+      boxes.set(
+        build,
+        (b = { build, min: [c.x, c.y, c.z], max: [c.x + 1, c.y + 1, c.z + 1], state: c.id === 0 ? 'dig' : c.state }),
+      );
     else {
-      b.min = [Math.min(b.min[0], c.x), Math.min(b.min[1], c.y), Math.min(b.min[2], c.z)];
-      b.max = [Math.max(b.max[0], c.x + 1), Math.max(b.max[1], c.y + 1), Math.max(b.max[2], c.z + 1)];
+      // In place (the box's own arrays): no two arrays per cell of a 47k-cell queue.
+      if (c.x < b.min[0]) b.min[0] = c.x;
+      if (c.y < b.min[1]) b.min[1] = c.y;
+      if (c.z < b.min[2]) b.min[2] = c.z;
+      if (c.x + 1 > b.max[0]) b.max[0] = c.x + 1;
+      if (c.y + 1 > b.max[1]) b.max[1] = c.y + 1;
+      if (c.z + 1 > b.max[2]) b.max[2] = c.z + 1;
       const s = c.id === 0 ? 'dig' : c.state;
       if (BOX_RANK[s] > BOX_RANK[b.state]) b.state = s;
     }
@@ -117,4 +133,49 @@ export function planHolograms(cells: readonly HoloCell[], cap = HOLO_CAP): HoloP
     else groups[c.state].push(c.x, c.y, c.z, c.id, c.meta);
   }
   return { groups, dig, boxes: [...boxes.values()], capped, cells: n };
+}
+
+/** Queues of more cells than this are meshed by region (`HOLO_REGION` blocks square, x and z), and a change re-meshes only the
+ * regions it touches; a smaller queue is one region, meshed whole as it always was. */
+export const HOLO_REGION_MIN = 4096;
+export const HOLO_REGION = 32;
+
+/** One region's share of a plan: its per-state groups and its digs (flat, in plan order). */
+export interface HoloRegionPlan {
+  /** "rx,rz" (region coordinates). */
+  key: string;
+  groups: Record<HoloState, number[]>;
+  dig: number[];
+}
+
+/** A region's number (from block x and z): the map key, no string per cell. */
+export function holoRegionId(x: number, z: number): number {
+  return (Math.floor(x / HOLO_REGION) + 1048576) * 2097152 + (Math.floor(z / HOLO_REGION) + 1048576);
+}
+
+/** Splits a plan's drawn cells by region (each region's cells keep the plan's order). */
+export function planRegions(plan: HoloPlan): Map<number, HoloRegionPlan> {
+  const out = new Map<number, HoloRegionPlan>();
+  const regionOf = (x: number, z: number) => {
+    const id = holoRegionId(x, z);
+    let r = out.get(id);
+    if (!r)
+      out.set(
+        id,
+        (r = {
+          key: `${Math.floor(x / HOLO_REGION)},${Math.floor(z / HOLO_REGION)}`,
+          groups: { todo: [], active: [], waiting: [], blocked: [] },
+          dig: [],
+        }),
+      );
+    return r;
+  };
+  for (const s of HOLO_STATES) {
+    const flat = plan.groups[s];
+    for (let i = 0; i + 4 < flat.length; i += 5)
+      regionOf(flat[i], flat[i + 2]).groups[s].push(flat[i], flat[i + 1], flat[i + 2], flat[i + 3], flat[i + 4]);
+  }
+  for (let i = 0; i + 4 < plan.dig.length; i += 5)
+    regionOf(plan.dig[i], plan.dig[i + 2]).dig.push(plan.dig[i], plan.dig[i + 1], plan.dig[i + 2], 0, 0);
+  return out;
 }

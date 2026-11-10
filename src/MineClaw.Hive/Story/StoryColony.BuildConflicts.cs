@@ -7,8 +7,6 @@ public sealed partial class StoryColony
     private static bool BuildConflicted(GhostState g) =>
         g.State == "blocked" && g.Reason?.StartsWith(BuildConflictWords, StringComparison.Ordinal) == true;
 
-    private static bool OwnsBuildCell(BuildState b, GhostState g) => !g.Remove || ReplacementAir(b, g);
-
     private static bool SameBuildIntent(GhostState a, GhostState b) =>
         a.Remove || b.Remove ? a.Remove == b.Remove : a.Id == b.Id && a.Meta == b.Meta;
 
@@ -34,15 +32,27 @@ public sealed partial class StoryColony
 
     /// <summary>A newer placement design owns an overlapping cell, even when paused or finished.
     /// Queue priority never changes that ownership. Removing the newer design releases the older one.</summary>
+    /// <summary>Who owns each placed cell, made again every pass (kept between passes, so its room is not allocated again).</summary>
+    private readonly Dictionary<P3, (BuildState Build, GhostState Ghost)> _cellOwners = new();
+
     private void BuildConflictsPass()
     {
-        var owners = new Dictionary<P3, (BuildState Build, GhostState Ghost)>();
+        var owners = _cellOwners;
+        owners.Clear();
+        // A build owns its placed cells and, a replacement design, its empty space too; the spec read once a build, not per cell (a
+        // strip mine's 47,000 digs own no cell: passed over at once).
         foreach (var b in Builds.Where(b => b.Kind != "preserve").OrderBy(b => b.Created))
-            foreach (var g in b.Ghosts.Where(g => OwnsBuildCell(b, g))) owners[g.At] = (b, g);
+        {
+            bool replacement = ReplacementBuild(b);
+            foreach (var g in b.Ghosts) if (!g.Remove || replacement) owners[g.At] = (b, g);
+        }
         var held = new List<(BuildState Build, GhostState Ghost, string Why)>();
         foreach (var b in Builds.Where(b => b.Kind != "preserve"))
-            foreach (var g in b.Ghosts.Where(g => OwnsBuildCell(b, g)))
+        {
+            bool replacement = ReplacementBuild(b);
+            foreach (var g in b.Ghosts)
             {
+                if (g.Remove && !replacement) continue;
                 var owner = owners[g.At];
                 if (owner.Build != b && !SameBuildIntent(g, owner.Ghost))
                     held.Add((b, g, BuildConflictWords + owner.Build.Id + ": newer design owns this cell"));
@@ -55,6 +65,8 @@ public sealed partial class StoryColony
                     b.Rev = g.Rev;
                 }
             }
+        }
+        owners.Clear(); // no build or cell kept alive until the next pass
         var ids = held.Select(h => $"{h.Build.Id}|{h.Ghost.At}").ToHashSet();
         foreach (var (pawn, job) in _current.ToList())
             if (job.Source == "ghost" && JobCells(job).Any(ids.Contains) && Pawns.TryGetValue(pawn, out var p))

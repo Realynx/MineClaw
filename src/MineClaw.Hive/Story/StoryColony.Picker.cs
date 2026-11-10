@@ -314,9 +314,9 @@ public sealed partial class StoryColony
         [WorkTypes.Craft] = static (c, p, live) => c.BillJob(p, live, WorkTypes.Craft) ?? c.SupplyJob(p, live), // the builds' own crafts (a bench to place, a 2×2 craft)
         [WorkTypes.Hunt] = static (c, p, live) => c.HuntJob(p, live),
         [WorkTypes.Fish] = static (c, p, live) => c.FishJob(p, live), // StoryColony.Fishing.cs
-        [WorkTypes.Build] = static (c, p, live) => c.StorageSignRemovalJob(p, live) ?? c.VeinJob(p, live, WorkTypes.Build) ?? c.GhostJob(p, live) ?? c.DesignationJob(p, live, live.Block, WorkTypes.Build, "deconstruct", "dig", "deconstructing"),
+        [WorkTypes.Build] = static (c, p, live) => c.StorageSignRemovalJob(p, live) ?? c.GhostJob(p, live) ?? c.DesignationJob(p, live, live.Block, WorkTypes.Build, "deconstruct", "dig", "deconstructing"),
         [WorkTypes.Farm] = static (c, p, live) => c.DesignationJob(p, live, live.Block, WorkTypes.Farm, "harvest", "harvest", "harvesting") ?? c.FarmZoneJob(p, live),
-        [WorkTypes.Mine] = static (c, p, live) => c.VeinJob(p, live, WorkTypes.Mine) ?? c.DesignationJob(p, live, live.Block, WorkTypes.Mine, "mine", "dig", "mining") ?? c.ZoneJob(p, live.Block, WorkTypes.Mine, "mine", live),
+        [WorkTypes.Mine] = static (c, p, live) => c.VeinJob(p, live, WorkTypes.Mine) ?? c.DesignationJob(p, live, live.Block, WorkTypes.Mine, "mine", "dig", "mining") ?? c.MineDesignJob(p, live) ?? c.ZoneJob(p, live.Block, WorkTypes.Mine, "mine", live),
         [WorkTypes.Chop] = static (c, p, live) => c.ChopJob(p, live),
         [WorkTypes.Haul] = static (c, p, live) => c.HaulingWork(p, live), // pickups, organization, and fresh chest contents
     };
@@ -650,6 +650,8 @@ public sealed partial class StoryColony
         if (WorkTypes.Known(j.Type)) _lastWork[p.Name] = j.Type; // what it gathers next keeps its loot (KeepGathering)
         if (j.Type == WorkTypes.Mine && j.Source == "zone" && j.Kind == "dig" && j.SourceId is { } zone)
             _lastQuarryWork[p.Name] = (zone, Now);
+        // A mark's, quarry's or order's dig beside a mine design opens its cells now, not at their recheck (a ghost's: CellFinished).
+        if (j.Source != "ghost" && (j.Kind == "dig" || j.Type == WorkTypes.Mine) && j.At is { } dugAt) MineCellOpened(dugAt);
         HauledDone(j); // every drop a collect trip leased: its haul designation is done (StoryColony.EntityMarks.cs)
         if (j.Source == "deliver") _leaseFails.Remove("deliver:" + p.Name);
         if (DoneBySource.TryGetValue(j.Source, out var done)) done(this, p, j, note);

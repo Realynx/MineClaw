@@ -90,11 +90,15 @@ public sealed partial class StoryColony
     {
         var drift = new Drift();
         _blockedNow.Clear();
+        bool replacement = ReplacementBuild(b); // its spec read once a build, not twice a cell
         foreach (var g in b.Ghosts)
         {
+            // A plain dig that isn't blocked has nothing to reconcile (no branch below takes it): a 47,000-cell strip mine is skipped
+            // at the cost of a field read a cell.
+            if (g.Remove && !replacement && g.State != "blocked") continue;
             if (BuildConflicted(g) || !w.Loaded(g.At.X, g.At.Z) || QuarryHeld(b, g)) continue;
-            if (ReplacementBuild(b) && temps.Contains(g.At)) continue;
-            if (ReplacementAir(b, g) && g.State != "leased")
+            if (replacement && temps.Contains(g.At)) continue;
+            if (g.Remove && replacement && g.State != "leased")
             {
                 ReconcileAir(w, b, g, seen, ref drift);
             }
@@ -699,6 +703,7 @@ public sealed partial class StoryColony
     private void CellFinished(BuildState b, GhostState g)
     {
         _doneSince.Add(g.At);
+        MineCellOpened(g.At); // the mine cells beside it are read again: one may be open now (StoryColony.MineCells.cs)
         if (_sampled.Count == 0 || !_sampled.Remove(g, out var tried)) return;
         var cls = (tried.Build, tried.Reason);
         _probe.Remove(cls);

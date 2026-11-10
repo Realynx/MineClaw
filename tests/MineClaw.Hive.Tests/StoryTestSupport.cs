@@ -13,8 +13,13 @@ internal sealed class FakeStoryWorld(IGameData? data = null) : IStoryWorld
     public List<StoryEntity> Ents { get; } = new();
     public List<StorySign> SignRows { get; } = new();
     public IReadOnlyList<StorySign> Signs() => SignRows.Where(s => Loaded(s.At.X, s.At.Z) && Block(s.At.X, s.At.Y, s.At.Z).Id is 63 or 68).ToList();
-    public (int Id, int Meta) Block(int x, int y, int z) =>
-        Unloaded.Count > 0 && Unloaded.Contains((x, z)) ? (0, 0) : Blocks.TryGetValue(new P3(x, y, z), out var b) ? b : y <= 63 ? (1, 0) : (0, 0);
+    public (int Id, int Meta) Block(int x, int y, int z)
+    {
+        Interlocked.Increment(ref BlockReads);
+        return Unloaded.Count > 0 && Unloaded.Contains((x, z)) ? (0, 0) : Blocks.TryGetValue(new P3(x, y, z), out var b) ? b : y <= 63 ? (1, 0) : (0, 0);
+    }
+    /// <summary>How many blocks the director read (the benchmarks count them: a live view's read costs far more than this one's).</summary>
+    public long BlockReads;
     public IReadOnlyList<StoryEntity> Entities() => Ents.ToList();
     public void Set(int x, int y, int z, int id, int meta = 0) => Blocks[new P3(x, y, z)] = (id, meta);
     /// <summary>Columns not in the view (they read as air): everything else is loaded.</summary>
@@ -69,7 +74,21 @@ internal sealed class FakeStoryHost(FakeStoryWorld world) : IStoryHost
     public IReadOnlyList<Stack>? KnownChest(P3 at) => Chests.TryGetValue(at, out var c) ? c : null;
     /// <summary>The bodies' looks into chests (contents and when), as the bot's memory has them.</summary>
     public Dictionary<P3, (IReadOnlyList<Stack> Contents, DateTimeOffset At)> Seen { get; } = new();
-    public (IReadOnlyList<Stack> Contents, DateTimeOffset At)? SeenChest(P3 at) => Seen.TryGetValue(at, out var s) ? s : null;
+    public (IReadOnlyList<Stack> Contents, DateTimeOffset At)? SeenChest(P3 at)
+    {
+        SeenReads++;
+        return Seen.TryGetValue(at, out var s) ? s : null;
+    }
+    /// <summary>How often one chest's memory was read (<see cref="SeenChest"/>), and the whole memory's look times (<see cref="ChestLooks"/>).</summary>
+    public int SeenReads, LookReads;
+    /// <summary>The memory answers when each chest was looked into, in one read (as the live host does): off unless a test turns it on.</summary>
+    public bool FeedsLooks { get; set; }
+    public IReadOnlyDictionary<P3, DateTimeOffset>? ChestLooks()
+    {
+        if (!FeedsLooks) return null;
+        LookReads++;
+        return Seen.ToDictionary(kv => kv.Key, kv => kv.Value.At);
+    }
     /// <summary>Remembers chests (the colony looks into unseen ones before a bill waits): off unless a test turns it on.</summary>
     public bool KnowsChests { get; set; }
     /// <summary>Player names that are the hive's own bots.</summary>

@@ -47,7 +47,7 @@ public sealed class StoryBlockedWorkTests
     {
         var clock = new Clock(DateTimeOffset.Parse("2026-11-04T10:00:00Z"));
         var (c, h, w) = StoryRig.Make(pawns: 1, time: clock);
-        Only(c, WorkTypes.Build);
+        Only(c, WorkTypes.Build, WorkTypes.Mine); // the torch is building work, the digs mining
         h.Lives[c.P(0)] = FakeStoryHost.Live(0, 64, 3); // no torches anywhere
         // A torch at the entry (the highest cell: first in a mine's order) and a shaft below it.
         var r = c.BuildsOp("add", new JsonArray(new JsonObject

@@ -128,6 +128,7 @@ public sealed partial class StoryColony
         p.Data = new PreserveSnap(lo, hi, cols);
         p.TakenAt ??= Now;
         _dirty = true;
+        z.Rev = Touch(); // stamped: a tick's save writes only rows whose revision moved
     }
 
     /// <summary>One column of the new snapshot: the old values where it had them, the world's block elsewhere.</summary>

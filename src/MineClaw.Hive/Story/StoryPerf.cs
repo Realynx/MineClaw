@@ -50,7 +50,7 @@ public static class StoryPerf
     internal static readonly Meter LockWait = new();
     /// <summary>State builds, under the lock (<see cref="StoryColony.State"/>).</summary>
     internal static readonly Meter StateBuilds = new();
-    /// <summary>The colony written to the store, under the lock (<see cref="StoryColony.Save"/>).</summary>
+    /// <summary>The colony written to the store (<see cref="StoryColony.Save"/>): its changed rows taken under the lock, the db write after it.</summary>
     internal static readonly Meter Saves = new();
     /// <summary>Chest-memory reads, under the lock (the storage record kept honest: StoryColony.StockCheck.cs).</summary>
     internal static readonly Meter SeenChest = new();

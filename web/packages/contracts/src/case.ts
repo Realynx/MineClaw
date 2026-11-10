@@ -82,6 +82,8 @@ type ReviverContext = { source?: string } | undefined;
  * reads from the bridge, then applies `toCamel`.
  */
 export function parseBridgeJson(text: string, int64Keys: ReadonlySet<string> = INT64_KEYS): unknown {
+  // A reviver runs on every value (16x slower on a 2 MB colony state): skip it when no int64 key can be in the text.
+  if (!mayHoldKeys(text, int64Keys)) return JSON.parse(text) as unknown;
   const reviver = function (this: unknown, key: string, value: unknown, context?: ReviverContext): unknown {
     if (typeof value === 'number' && int64Keys.has(key)) {
       if (context?.source !== undefined) return context.source;
@@ -90,6 +92,62 @@ export function parseBridgeJson(text: string, int64Keys: ReadonlySet<string> = I
     return value;
   };
   return JSON.parse(text, reviver) as unknown;
+}
+
+/**
+ * Whether a JSON text could hold any of these keys: the quoted key itself, or any of its characters written as a `\uXXXX`
+ * escape (a key spelled with escapes parses to the same name). False means a reviver for these keys would change nothing.
+ */
+function mayHoldKeys(text: string, keys: ReadonlySet<string>): boolean {
+  for (const key of keys) {
+    if (text.includes(`"${key}"`)) return true;
+    for (const ch of key) {
+      // A character with a short escape (`\"`, `\\`, `\/`, control characters) is not worth a precise check.
+      if (ch === '"' || ch === '\\' || ch === '/' || ch < ' ') return true;
+      const hex = ch.charCodeAt(0).toString(16).padStart(4, '0');
+      if (text.includes(`\\u${hex}`) || text.includes(`\\u${hex.toUpperCase()}`)) return true;
+    }
+  }
+  return false;
+}
+
+/** snake → camel spellings already worked out (field names repeat in every frame); cleared when it grows past the cap. */
+const camelKeys = new Map<string, string>();
+const CAMEL_KEYS_CAP = 8192;
+
+function camelKey(key: string): string {
+  let camel = camelKeys.get(key);
+  if (camel === undefined) {
+    camel = snakeToCamel(key);
+    if (camelKeys.size >= CAMEL_KEYS_CAP) camelKeys.clear();
+    camelKeys.set(key, camel);
+  }
+  return camel;
+}
+
+function convertJson(value: unknown, opaque: ReadonlySet<string>): unknown {
+  if (value === null || typeof value !== 'object') return value;
+  if (Array.isArray(value)) {
+    // A tuple of primitives (a ghost row, a position) has no keys to convert: it is shared, not copied.
+    let i = 0;
+    while (i < value.length && (value[i] === null || typeof value[i] !== 'object')) i++;
+    return i === value.length ? value : value.map((v) => convertJson(v, opaque));
+  }
+  if (!isPlainObject(value)) return value;
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(value)) {
+    out[camelKey(k)] = opaque.has(k) ? v : convertJson(v, opaque);
+  }
+  return out;
+}
+
+/**
+ * `toCamel` for a value fresh from `JSON.parse`/`parseBridgeJson` (the API's bridge replies and live frames): the same keys,
+ * values and shapes, but key spellings are cached and arrays holding no object or array are SHARED with the input instead of
+ * copied. Only for input that is not used or mutated afterwards.
+ */
+export function toCamelJson<T = unknown>(value: unknown, options: CaseOptions = {}): T {
+  return convertJson(value, options.opaque ?? OPAQUE_KEYS) as T;
 }
 
 /** Deep-converts object keys from camelCase to snake_case (public → bridge: query keys and bodies). */

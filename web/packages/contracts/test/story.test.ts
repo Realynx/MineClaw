@@ -719,4 +719,16 @@ describe('story fixtures', () => {
     expect(f.timeOfDay).toBeTypeOf('number');
     expect(f.builds?.[0]?.blocksTotal).toBeGreaterThan(0);
   });
+
+  it('a mine build\'s empty material ("") parses in the state and in a frame', () => {
+    const mine = { id: 'b7', kind: 'mine', label: 'strip mine', status: 'queued', blocks_total: 3, material: '' };
+    expect(C.StoryBuild.parse(C.toCamel(mine)).material).toBe('');
+    const state = live.storyState as Record<string, unknown>;
+    const withMine = { ...state, builds: [...((state.builds as unknown[] | undefined) ?? []), mine] };
+    const s = C.StoryColonyState.safeParse(C.toCamel(withMine));
+    if (!s.success) throw new Error(JSON.stringify(s.error.issues.slice(0, 5)));
+    const f = C.StoryColonyFrame.safeParse(C.toCamel({ ...withMine, id: 'story-1' }));
+    if (!f.success) throw new Error(JSON.stringify(f.error.issues.slice(0, 5)));
+    expect(C.StoryBuild.safeParse({ ...mine, material: 'x'.repeat(65) }).success).toBe(false);
+  });
 });

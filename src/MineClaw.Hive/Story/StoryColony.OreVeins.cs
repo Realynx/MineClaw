@@ -5,7 +5,11 @@ namespace MineClaw.Hive.Story;
 
 public sealed partial class StoryColony
 {
-    private static string WorkOf(DesignationState d) => d.OreOrigin?.Type ?? WorkOf(d.Kind);
+    private static string WorkOf(DesignationState d) => d.OreOrigin is { } o ? VeinWork(o) : WorkOf(d.Kind);
+
+    /// <summary>The work a followed vein counts as: the work of the dig that found it, and a mine design's (source <c>build</c>) is
+    /// mining, also for a vein saved while those digs were still building work (no migration of saved marks).</summary>
+    private static string VeinWork(OreWorkOrigin o) => o.Source == "build" ? WorkTypes.Mine : o.Type;
 
     // Discover only faces actually opened by authorized mining. The frontier is saved as ordinary, cancellable marks;
     // we never scan arbitrary underground ore or append it to a design's original access geometry.
@@ -97,7 +101,7 @@ public sealed partial class StoryColony
     private ActiveJob? VeinJob(PawnState p, PawnLive live, string type)
     {
         if (World is not { } w) return null;
-        foreach (var d in Designations.Where(d => d.OreOrigin?.Type == type && d.At != null).OrderBy(d => d.At!.Value.Dist(live.Block)).ToList())
+        foreach (var d in Designations.Where(d => d.OreOrigin is { } o && VeinWork(o) == type && d.At != null).OrderBy(d => d.At!.Value.Dist(live.Block)).ToList())
         {
             if (!VeinWorkable(p, live, w, d)) continue;
             var at = d.At!.Value;

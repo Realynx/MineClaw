@@ -3320,3 +3320,34 @@ The hand-off planned for later: build items with `phase` (digs and supports, the
 `mechanism`; a mechanism group never reopens a done cell and is released when built, so pistons and doors move freely; the
 colony derives the use clicks for repeater delay, comparator mode and lever state from each cell's meta; pawns place no TNT
 and place dispensers and droppers empty; the web runs the simulator as a pre-flight first.
+
+## Controller: mine designs read as mining (added 2026-11-10)
+
+The Controller shows a placed mine design (builds of kind `mine`) as mining work, not construction; no contract changed. In the
+Build queue its group is headed "Mine design / mining" (a single ungrouped mine build: "Mining order"), its rows carry
+`data-work="mine"` and their Top buttons say "Mine … first". A pawn digging one shows the Mine badge, because its dig jobs
+arrive with job type `mine`; a torch or ladder the design puts in stays a `build` job and shows the Build badge. The Work tab's
+Mine column says it covers quarries, mine designations and mine designs, and the Build column says it covers the blocks a
+mine design puts in. A picked-up mine design's options bar reads "Mine design: …" with its cells to mine and its y range.
+
+## Mine designs are mining work (added 2026-11-10)
+
+Fox (11-10): "these types of designs, when imported, should count as mining, not building." A placed mine design (a build of
+kind `mine`) is split by what each cell does:
+
+- **Its digs are Mine work.** They are offered by the Mine work search (after the ore veins and the mine designations, before the
+  mine zones and quarries), never by the Build search, so a pawn with Mine off (a pure builder) does not dig them and a miner does.
+  The dig job's `type` is `mine` (its `kind`, `label` and other fields are unchanged), so experience goes to the Mine skill, the
+  pawn keeps what it digs while more mining is about (as after a quarry dig), and the job takes its material's tool as before.
+  With no free slot a pawn takes no mine design dig (its pockets-full note names the design), as for a quarry. A pawn down in a
+  quarry pit leaves cells higher up to a miner up top. A cell nobody can reach counts against the miners, not the builders.
+- **The blocks it puts in stay Build work:** its torches, ladders and rails (and the digging of their own cells) go to builders.
+  Such a block that waits for its cell to be dug says `build b…: its blocks go in once the mine is dug to them (mining work)`.
+- **Ore veins** a design's digs open are followed as Mine work. A vein saved while the digs were building work (its origin's
+  type is `build`) is read as Mine work too; the saved mark is not rewritten.
+- **The idle audit** counts a mine design's digs as Mine work: a pure builder with only those about is idle for `priority 0`.
+- **Saves:** nothing is migrated. A saved `mine` build loads as it was and its digs are Mine work from then on.
+- **Benchmark golden:** the strip-mine benchmark's pinned job digest (`StoryStripMineBenchmarkTests`) changed on purpose from
+  `A49B4DFA82E54C1E` to `B23A5B484BFC7344` with this: the miners take the design's digs instead of quarrying, and those
+  jobs' type is `mine`. It is `3211521576AB2F41` since the fixture moved to made-up coordinates (same shape and counts; the jobs'
+  positions and the ores placed by position moved with it).

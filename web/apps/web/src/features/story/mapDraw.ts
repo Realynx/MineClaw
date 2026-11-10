@@ -138,6 +138,14 @@ export function failedModel(blocks: GhostBlocks) {
   return m;
 }
 
+/** Ghosts lowest first (the angled view draws them so), sorted once per list: a strip mine's 47k cost 2.6 ms a frame. */
+const ghostsByHeight = new WeakMap<object, GhostBlocks>();
+export function ghostsLowFirst(ghosts: GhostBlocks): GhostBlocks {
+  let sorted = ghostsByHeight.get(ghosts);
+  if (!sorted) ghostsByHeight.set(ghosts, (sorted = [...ghosts].sort((a, b) => a[1] - b[1])));
+  return sorted;
+}
+
 /** The cells a designation's mark goes on: a tree's top log, else its first cell. */
 function markCells(d: StoryColonyState['designations'][number]): V3[] {
   const all = designationCells(d);
@@ -436,7 +444,7 @@ export class MapPainter {
 
   /** Build ghosts: translucent blocks by state; anything above the level cut only as a faint outline (x-rayed). */
   drawGhosts(ghosts: GhostBlocks): void {
-    const sorted = this.angled ? [...ghosts].sort((a, b) => a[1] - b[1]) : ghosts;
+    const sorted = this.angled ? ghostsLowFirst(ghosts) : ghosts;
     let drawn = 0;
     for (const g of sorted) {
       if (drawn++ > 3000) break;

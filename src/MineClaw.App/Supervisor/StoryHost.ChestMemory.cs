@@ -1,7 +1,9 @@
+using System.Globalization;
 using MineClaw.Agent.Rag;
 using MineClaw.Data;
 using MineClaw.Hive.Story;
 using MineClaw.World;
+using Microsoft.Extensions.Logging;
 
 namespace MineClaw.App.Supervisor;
 
@@ -15,6 +17,34 @@ public sealed partial class StoryHost
         var positions = ChestPairs.Cells(new ChestView(world), new BlockPos(at.X, at.Y, at.Z));
         return positions.Select(p => obs.Get("chest", ObservationStore.KeyFor(p.X, p.Y, p.Z), dimension: world.Dimension))
             .Where(row => row?.ContentsAt != null).OrderByDescending(row => row!.ContentsAt).FirstOrDefault();
+    }
+
+    /// <summary>Every remembered chest cell with when its contents were read, in one query of the memory (the colony then reads only
+    /// the chests looked into after its record: <see cref="SeenChest"/> is three queries a chest). Null when there is no memory.</summary>
+    public IReadOnlyDictionary<P3, DateTimeOffset>? ChestLooks()
+    {
+        if (_observations is not { } obs || World is not { } world) return null;
+        try
+        {
+            var looks = new Dictionary<P3, DateTimeOffset>();
+            foreach (var (key, at) in obs.ContentsTimes("chest", world.Dimension))
+                if (Cell(key) is { } p) looks[p] = at;
+            return looks;
+        }
+        catch (Exception ex)
+        {
+            _log.LogDebug(ex, "story: chest looks");
+            return null;
+        }
+    }
+
+    /// <summary>An observation key "x,y,z" as a cell, or null.</summary>
+    private static P3? Cell(string key)
+    {
+        var parts = key.Split(',');
+        return parts.Length == 3 && int.TryParse(parts[0], NumberStyles.Integer, CultureInfo.InvariantCulture, out int x)
+            && int.TryParse(parts[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out int y)
+            && int.TryParse(parts[2], NumberStyles.Integer, CultureInfo.InvariantCulture, out int z) ? new P3(x, y, z) : null;
     }
 
     private sealed class ChestView(IStoryWorld world) : IBlockAccess

@@ -34,10 +34,66 @@ function mergeBy<T>(
 }
 
 type Ghosts = NonNullable<StoryColonyState['ghosts']>;
+type Ghost = Ghosts['blocks'][number];
 
-/** A ghost's key: "<build>|x,y,z" (the delta's `removed.ghosts` names ghosts so). */
-const ghostKey = (g: Ghosts['blocks'][number]) => `${g[5]}|${g[0]},${g[1]},${g[2]}`;
 const keySet = (keys: ReadonlyArray<unknown> | null | undefined) => new Set((keys ?? []).map(String));
+
+/**
+ * Where each held ghost sits in its ghosts' `blocks`: build → cell → position. It belongs to the one ghosts object it was made
+ * for and moves on to the merged one, so a delta's few cells are merged without keying every held ghost again (a strip mine
+ * holds tens of thousands). A ghosts object without one (a whole state, or one already merged once) is indexed on first use.
+ */
+type GhostIndex = Map<string, Map<number | string, number>>;
+const ghostIndexes = new WeakMap<Ghosts, GhostIndex>();
+
+const CELL_SPAN = 2097152; // 2^21: |x| and |z| below it pack into one safe integer with y
+/** A cell's key inside its build: one number while the coordinates fit (no string per ghost), else "x,y,z". */
+function cellKey(x: number, y: number, z: number): number | string {
+  const fits =
+    Number.isInteger(x) &&
+    Number.isInteger(y) &&
+    Number.isInteger(z) &&
+    Math.abs(x) < CELL_SPAN &&
+    Math.abs(z) < CELL_SPAN &&
+    y >= -128 &&
+    y < 384;
+  return fits ? ((x + CELL_SPAN) * 2 * CELL_SPAN + (z + CELL_SPAN)) * 512 + (y + 128) : `${x},${y},${z}`;
+}
+
+function cellsOf(index: GhostIndex, build: string): Map<number | string, number> {
+  let cells = index.get(build);
+  if (!cells) index.set(build, (cells = new Map<number | string, number>()));
+  return cells;
+}
+
+/** Adds a ghost: over the held one of its build and cell (in its place), else at the end. */
+function putGhost(index: GhostIndex, blocks: Ghost[], g: Ghost): void {
+  const cells = cellsOf(index, String(g[5]));
+  const k = cellKey(g[0], g[1], g[2]);
+  const at = cells.get(k);
+  if (at === undefined) {
+    cells.set(k, blocks.length);
+    blocks.push(g);
+  } else blocks[at] = g;
+}
+
+function indexGhosts(list: readonly Ghost[]): { index: GhostIndex; blocks: Ghost[] } {
+  const index: GhostIndex = new Map();
+  const blocks: Ghost[] = [];
+  for (const g of list) putGhost(index, blocks, g);
+  return { index, blocks };
+}
+
+/** The held position of a removed ghost named "<build>|x,y,z" (the delta's `removed.ghosts`), if it is held. */
+function removedAt(index: GhostIndex, name: string): number | undefined {
+  const bar = name.lastIndexOf('|');
+  const xyz = name.slice(bar + 1).split(',');
+  if (bar < 0 || xyz.length !== 3) return undefined;
+  const [x, y, z] = xyz.map(Number) as [number, number, number];
+  // Only the exact spelling a held ghost has names it (as "<build>|x,y,z" did before the index).
+  if (`${x},${y},${z}` !== name.slice(bar + 1)) return undefined;
+  return index.get(name.slice(0, bar))?.get(cellKey(x, y, z));
+}
 
 /**
  * The build queue's ghosts after a delta. The bot sends only the ghosts that changed after `since` (a full reply: all of
@@ -53,27 +109,25 @@ export function mergeGhosts(
   removedGhosts?: ReadonlyArray<string> | null,
 ): StoryColonyState['ghosts'] {
   if (!prev) return next;
-  const gone = keySet(removedBuilds);
   const fresh = next?.blocks ?? [];
-  const cells = keySet(removedGhosts);
-  if (!ghostsTouched(prev, fresh, gone, cells)) return prev;
-  const map = new Map<string, Ghosts['blocks'][number]>();
-  for (const g of prev.blocks) if (!cells.has(ghostKey(g))) map.set(ghostKey(g), g);
-  for (const g of fresh) map.set(ghostKey(g), g);
-  const blocks = [...map.values()].filter((g) => !gone.has(String(g[5])));
-  return { rev: Math.max(prev.rev, next?.rev ?? 0), blocks };
-}
-
-/** Whether a delta changes the ghosts: new ones, a removed build that had some, or a removed ghost held. */
-function ghostsTouched(
-  prev: Ghosts,
-  fresh: Ghosts['blocks'],
-  gone: ReadonlySet<string>,
-  cells: ReadonlySet<string>,
-): boolean {
-  if (fresh.length > 0) return true;
-  if (!gone.size && !cells.size) return false;
-  return prev.blocks.some((g) => gone.has(String(g[5])) || cells.has(ghostKey(g)));
+  if (!fresh.length && !removedBuilds?.length && !removedGhosts?.length) return prev;
+  const held = ghostIndexes.get(prev);
+  let { index, blocks } = held ? { index: held, blocks: prev.blocks.slice() } : indexGhosts(prev.blocks);
+  const gone = keySet(removedBuilds);
+  const drop = new Set<number>();
+  for (const b of gone) for (const at of index.get(b)?.values() ?? []) drop.add(at);
+  for (const name of removedGhosts ?? []) {
+    const at = removedAt(index, String(name));
+    if (at !== undefined) drop.add(at);
+  }
+  if (!fresh.length && !drop.size) return prev;
+  // The index moves to the merged ghosts (it is changed below): `prev` indexes itself again if it is ever merged again.
+  ghostIndexes.delete(prev);
+  if (drop.size) ({ index, blocks } = indexGhosts(blocks.filter((_, i) => !drop.has(i))));
+  for (const g of fresh) if (!gone.has(String(g[5]))) putGhost(index, blocks, g);
+  const merged = { rev: Math.max(prev.rev, next?.rev ?? 0), blocks };
+  ghostIndexes.set(merged, index);
+  return merged;
 }
 
 /** Applies a delta (or a whole state) to what the client holds. Older revisions are ignored. */

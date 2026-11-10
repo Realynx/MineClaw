@@ -71,6 +71,10 @@ public interface IStoryHost
     IReadOnlyList<Stack>? KnownChest(P3 at) => null;
     /// <summary>What a body last saw inside a chest and when (any body's look: a player's deposit shows once a body opens it), or null.</summary>
     (IReadOnlyList<Stack> Contents, DateTimeOffset At)? SeenChest(P3 at) => null;
+    /// <summary>Every chest cell whose contents a body read, with when (one read of the chest memory, where <see cref="SeenChest"/> is
+    /// one per chest): the colony asks <see cref="SeenChest"/> only for chests looked into after its record. Null = the host can't
+    /// tell (every chest is asked).</summary>
+    IReadOnlyDictionary<P3, DateTimeOffset>? ChestLooks() => null;
     /// <summary>The host remembers what bodies saw in chests (<see cref="SeenChest"/>): a chest nobody looked into is then worth a look
     /// before a bill waits.</summary>
     bool KnowsChests => false;

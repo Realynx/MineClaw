@@ -28,6 +28,7 @@ public sealed partial class StoryColony
             long s = since ?? -1;
             bool full = since == null;
             bool New(long rev) => full || rev > s;
+            var changed = ChangedBuilds(full, s); // one tight pass over the cells' revisions: the delta then reads only these builds
             var w = World;
             int hour = HourNow;
             var o = new JsonObject
@@ -47,7 +48,7 @@ public sealed partial class StoryColony
                 {
                     ["at"] = a.At, ["level"] = a.Level, ["text"] = a.Text, ["pawn"] = a.Pawn,
                 }).ToArray()),
-                ["builds"] = new JsonArray(Builds.Where(b => New(b.Rev) || b.Ghosts.Any(g => New(g.Rev))).OrderBy(b => b.Order).Select(b => (JsonNode)BuildMetadata(b, new JsonObject
+                ["builds"] = new JsonArray(changed.OrderBy(b => b.Order).Select(b => (JsonNode)BuildMetadata(b, new JsonObject
                 {
                     ["id"] = b.Id, ["kind"] = b.Kind, ["label"] = b.Label, ["status"] = b.Status, ["reason"] = b.Reason, ["blocks_total"] = b.BlocksTotal,
                     ["blocks_done"] = b.BlocksDone, ["material"] = b.Material, ["order"] = b.Order, ["created"] = b.Created,
@@ -59,7 +60,7 @@ public sealed partial class StoryColony
                 ["ghosts"] = new JsonObject
                 {
                     ["rev"] = _rev,
-                    ["blocks"] = new JsonArray(Builds.SelectMany(b => b.Ghosts.Where(g => New(g.Rev)
+                    ["blocks"] = new JsonArray(changed.SelectMany(b => b.Ghosts.Where(g => New(g.Rev)
                         && !(ReplacementAir(b, g) && g.State == "done")).Select(g => GhostJson(b, g))).ToArray()),
                 },
                 ["storages"] = new JsonArray(Storages.Where(st => New(st.Rev)).Select(st => (JsonNode)StorageJson(st)).ToArray()),
@@ -92,6 +93,16 @@ public sealed partial class StoryColony
             StoryPerf.StateBuilds.Note(t0);
             return o;
         }
+    }
+
+    /// <summary>The builds a state carries, in queue-list order: all of them, or those whose newest revision (their own or a cell's) is
+    /// after <paramref name="since"/>. Before 11-10 a delta walked all 47,000 cells of a queued strip mine twice through LINQ.</summary>
+    private List<BuildState> ChangedBuilds(bool full, long since)
+    {
+        if (full) return new List<BuildState>(Builds);
+        var list = new List<BuildState>();
+        foreach (var b in Builds) if (StoryStore.BuildRev(b) > since) list.Add(b);
+        return list;
     }
 
     private JsonObject PawnJson(PawnState p)

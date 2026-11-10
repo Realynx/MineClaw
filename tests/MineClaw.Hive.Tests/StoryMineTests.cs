@@ -8,10 +8,11 @@ namespace MineClaw.Hive.Tests;
 /// below y 1, and tells each ghost apart as dig or place with the material expected there.</summary>
 public class StoryMineTests
 {
+    /// <summary>The pawn mines (the design's digs) and builds (its blocks), nothing else.</summary>
     private static void BuildOnly(StoryColony c, int i)
     {
         var p = c.Pawns.Values.ElementAt(i);
-        foreach (var t in WorkTypes.All) p.Priorities[t] = t == WorkTypes.Build ? 1 : 0;
+        foreach (var t in WorkTypes.All) p.Priorities[t] = t is WorkTypes.Build or WorkTypes.Mine ? 1 : 0;
     }
 
     private static JsonArray Cells(params (int X, int Y, int Z)[] ps) => new(ps.Select(p => (JsonNode)new JsonArray(p.X, p.Y, p.Z)).ToArray());

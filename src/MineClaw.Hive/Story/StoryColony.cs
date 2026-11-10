@@ -579,25 +579,56 @@ public sealed partial class StoryColony : IStoryPort
 
     private DateTimeOffset _benchScan = DateTimeOffset.MinValue;
 
-    /// <summary>Writes the colony if anything changed since the last save.</summary>
+    /// <summary>One save at a time per colony, in the order their rows were taken (taken before the colony lock, never under it).</summary>
+    private readonly object _saveGate = new();
+    private DateTimeOffset _lastFullSave = DateTimeOffset.MinValue;
+
+    /// <summary>A tick's save writes only the rows that changed (<see cref="StoryStore.Plan"/>); this often it writes them all, so a
+    /// change that stamped no revision is on disk within this long. A forced save (shutdown, release, founding) always writes all.</summary>
+    public static readonly TimeSpan FullSaveEvery = TimeSpan.FromMinutes(5);
+
+    /// <summary>
+    /// Writes the colony if anything changed since the last save. The rows are taken under the colony lock and written to the db after
+    /// it (live 11-10: saves of up to 1.5 s held the lock the routes and pawns wait on). Never call it while holding the colony lock.
+    /// </summary>
     public void Save(bool force = false)
     {
+        // The save gate comes before the colony lock: a caller holding the lock would take them in the other order (a deadlock).
+        System.Diagnostics.Debug.Assert(!Monitor.IsEntered(_lock), "StoryColony.Save called under the colony lock");
         if (Store == null) return;
-        lock (_lock)
+        lock (_saveGate)
         {
-            if (!force && (!_dirty || Now - _lastSave < TimeSpan.FromSeconds(5))) return; // at most every 5 s
-            _dirty = false;
-            _lastSave = Now;
             long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
-            try { Store.Save(this); }
-            catch (Exception ex) { _dirty = true; _log.LogWarning(ex, "story {Colony}: save failed", Id); }
-            finally { StoryPerf.Saves.Note(t0); } // the whole colony rewritten under the lock: its time is on the perf line
+            StoryStore.SavePlan plan;
+            lock (_lock)
+            {
+                if (!force && (!_dirty || Now - _lastSave < TimeSpan.FromSeconds(5))) return; // at most every 5 s
+                _dirty = false;
+                _lastSave = Now;
+                bool full = force || Now - _lastFullSave >= FullSaveEvery;
+                try { plan = Store.Plan(this, full); }
+                catch (Exception ex)
+                {
+                    _dirty = true;
+                    _log.LogWarning(ex, "story {Colony}: save failed", Id);
+                    StoryPerf.Saves.Note(t0);
+                    return;
+                }
+                if (full) _lastFullSave = Now;
+            }
+            try { Store.Write(plan); }
+            catch (Exception ex)
+            {
+                lock (_lock) _dirty = true;
+                _log.LogWarning(ex, "story {Colony}: save failed", Id);
+            }
+            finally { StoryPerf.Saves.Note(t0); } // the rows taken under the lock and written after it: its time is on the perf line
         }
     }
 
     /// <summary>
-    /// The colony is written at the next tick (about a second), not inside the request: a save rewrites the whole colony under the
-    /// lock, which a click on Pause, Move home, an option or a bed should not wait for. Shutdown still saves.
+    /// The colony is written at the next tick (about a second), not inside the request: a save serializes rows under the lock, which a
+    /// click on Pause, Move home, an option or a bed should not wait for. Shutdown still saves.
     /// </summary>
     private void SaveSoon()
     {

@@ -6,16 +6,32 @@
 //
 // Cost: the cells are meshed in the mesh worker (mesh/holo.ts), one merged mesh per state, so a whole queue is a handful of
 // draw calls; they are rebuilt only when the caller's revision moves or a block change lands on one of their cells (a pawn
-// placed it: it disappears), never per frame. At most `HOLO_CAP` cells are drawn; past it, and when the view is zoomed out
-// so far that a block is a few pixels, each build is one outline box instead. Drawn after the opaque world with the depth
-// test on and depth writes off, so they sit in the world (hidden behind hills, visible through each other). The level cut
+// placed it: it disappears), never per frame. A big queue (a strip mine of tens of thousands of cells) is meshed per region
+// of `HOLO_REGION` blocks, and only the regions whose cells changed are meshed again. At most `HOLO_CAP` cells are drawn;
+// past it, and when the view is zoomed out so far that a block is a few pixels, each build is one outline box instead. Drawn
+// after the opaque world with the depth test on and depth writes off, so they sit in the world (hidden behind hills, visible through each other). The level cut
 // (Story Mode's storeys) hides cells above it and dims the ones below, like the blocks.
 
 import * as THREE from 'three';
 import type { HoloRequest, HoloResult } from '../mesh/holo';
 import type { MeshHost } from '../mesh/host';
 import type { ChunkUniforms } from './chunkMaterial';
-import { BOX_RGB, DIG_RGB, HOLO_LOD_PX, HOLO_STATES, HOLO_STYLES, planHolograms, type HoloCell, type HoloPlan, type HoloState, type HoloStyle } from './holoPlan';
+import {
+  BOX_RGB,
+  DIG_RGB,
+  HOLO_LOD_PX,
+  HOLO_REGION_MIN,
+  HOLO_STATES,
+  HOLO_STYLES,
+  holoRegionId,
+  planHolograms,
+  planRegions,
+  type HoloCell,
+  type HoloPlan,
+  type HoloRegionPlan,
+  type HoloState,
+  type HoloStyle,
+} from './holoPlan';
 export * from './holoPlan';
 
 // ------------------------------------------------------------------------------------------------------------ shaders
@@ -248,6 +264,40 @@ export interface HologramStats {
 
 type Group = HoloState | 'place' | 'placeBlocked';
 
+/** The one region of a small queue (meshed whole, under its plain state keys). */
+const WHOLE = -1;
+
+/** One region's holograms: its share of the plan, the cells whose block changes rebuild it, and what it draws now. */
+interface Region {
+  /** `holoRegionId`, or `WHOLE`. */
+  id: number;
+  plan: HoloRegionPlan;
+  /** Its objects: its own group, or (a small queue) the cells group itself. */
+  group: THREE.Group;
+  /** Its drawn cells, by `localKey` (a big queue's regions; the whole queue's cells are the layer's `keys`). */
+  keys: Set<number>;
+  shown: Set<string>;
+  shownDig: Set<string>;
+  cells: number;
+  digs: number;
+  dirty: boolean;
+  /** Moves with every new share of the plan: a worker answer for an older one is dropped. */
+  gen: number;
+}
+
+/** A block's key inside its region. */
+const localKey = (x: number, y: number, z: number) => ((y + 1024) * 32 + (z & 31)) * 32 + (x & 31);
+
+function sameNumbers(a: readonly number[], b: readonly number[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
+function samePlan(a: HoloRegionPlan, b: HoloRegionPlan): boolean {
+  return sameNumbers(a.dig, b.dig) && HOLO_STATES.every((s) => sameNumbers(a.groups[s], b.groups[s]));
+}
+
 /** One view's holograms (the queue and a placement preview). Add `group` to the scene; `show` before each render. */
 export class HologramLayer {
   readonly group = new THREE.Group();
@@ -261,9 +311,11 @@ export class HologramLayer {
   private rev: string | null = null;
   private plan: HoloPlan | null = null;
   private keys = new Set<string>();
-  /** Cells drawn now: as blocks, and as dig outlines (one cell can be both kinds over time: dug, then the water poured). */
-  private shown = new Set<string>();
-  private shownDig = new Set<string>();
+  /** The queue's regions (a small queue: the one `WHOLE`). Each knows the cells it draws now: as blocks, and as dig outlines
+   * (one cell can be both kinds over time: dug, then the water poured). */
+  private regions = new Map<number, Region>();
+  /** Whether the queue is small enough to be meshed whole. */
+  private whole = true;
   private busy = false;
   private dirty = false;
   private previewKey = '';
@@ -301,34 +353,69 @@ export class HologramLayer {
     if (d === this.dim) return;
     this.dim = d;
     this.rev = null;
-    this.clearGroup(this.cellsGroup);
+    if (this.whole) this.clearGroup(this.cellsGroup);
+    else this.dropRegions();
     this.clearGroup(this.boxGroup);
   }
 
   /**
    * The queued cells, in queue order. Nothing happens unless `rev` differs from the last one (the caller's revision of its
-   * build list: rebuilding is a worker round trip, never per frame). Returns whether a rebuild was started.
+   * build list: rebuilding is a worker round trip, never per frame). A small queue is meshed again whole; a big one only in
+   * the regions whose cells changed. Returns whether a rebuild was started.
    */
   set(cells: readonly HoloCell[], rev: string): boolean {
     if (rev === this.rev) return false;
     this.rev = rev;
     this.st.rev = rev;
-    this.plan = planHolograms(cells);
-    const keys = new Set<string>();
-    for (const c of cells) keys.add(`${c.x},${c.y},${c.z}`);
-    this.keys = keys;
+    const plan = (this.plan = planHolograms(cells));
+    const whole = cells.length <= HOLO_REGION_MIN;
+    if (whole !== this.whole) {
+      this.dropRegions();
+      this.whole = whole;
+    }
+    if (whole) {
+      const keys = new Set<string>();
+      for (const c of cells) keys.add(`${c.x},${c.y},${c.z}`);
+      this.keys = keys;
+      this.regionPlan(WHOLE, { key: '', groups: plan.groups, dig: plan.dig });
+    } else {
+      this.keys = new Set();
+      const next = planRegions(plan);
+      for (const [id, rp] of next) {
+        const r = this.regions.get(id);
+        if (!r || !samePlan(r.plan, rp)) this.regionPlan(id, rp);
+      }
+      for (const [id, r] of this.regions)
+        if (!next.has(id)) {
+          this.clearGroup(r.group);
+          r.group.removeFromParent();
+          this.regions.delete(id);
+        }
+    }
     this.schedule();
     return true;
   }
 
-  /** Block changes in the world: a change on a queued cell (it was built or dug) rebuilds, so the hologram disappears. */
+  /** Block changes in the world: a change on a queued cell (it was built or dug) rebuilds its region, so the hologram
+   * disappears. */
   blocksChanged(dim: number, blocks: ReadonlyArray<readonly [number, number, number]>): void {
     if (dim !== this.dim || !this.plan) return;
-    for (const b of blocks)
-      if (this.keys.has(`${b[0]},${b[1]},${b[2]}`)) {
-        this.schedule();
-        return;
-      }
+    if (this.whole) {
+      for (const b of blocks)
+        if (this.keys.has(`${b[0]},${b[1]},${b[2]}`)) {
+          const w = this.regions.get(WHOLE);
+          if (w) w.dirty = true;
+          this.schedule();
+          return;
+        }
+      return;
+    }
+    let hit = false;
+    for (const b of blocks) {
+      const r = this.regions.get(holoRegionId(b[0], b[2]));
+      if (r?.keys.has(localKey(b[0], b[1], b[2]))) hit = r.dirty = true;
+    }
+    if (hit) this.schedule();
   }
 
   /** A placement preview (flat [x, y, z, id, meta, …]; id 0 = dig), green where it fits and red where blocked; null clears.
@@ -349,7 +436,10 @@ export class HologramLayer {
 
   /** Meshes everything again (the block atlas changed). */
   refresh(): void {
-    if (this.plan) this.schedule();
+    if (this.plan) {
+      for (const r of this.regions.values()) r.dirty = true;
+      this.schedule();
+    }
     if (this.previewBlocks) {
       this.previewDirty = true;
       void this.runPreview();
@@ -372,8 +462,10 @@ export class HologramLayer {
 
   /** Whether a queued cell is drawn as a hologram now (built cells are not): as a block, as a dig outline, or either. */
   has(x: number, y: number, z: number, kind?: 'block' | 'dig'): boolean {
+    const r = this.regions.get(this.whole ? WHOLE : holoRegionId(x, z));
+    if (!r) return false;
     const k = `${x},${y},${z}`;
-    return kind === 'dig' ? this.shownDig.has(k) : kind === 'block' ? this.shown.has(k) : this.shown.has(k) || this.shownDig.has(k);
+    return kind === 'dig' ? r.shownDig.has(k) : kind === 'block' ? r.shown.has(k) : r.shown.has(k) || r.shownDig.has(k);
   }
 
   dispose(): void {
@@ -395,14 +487,66 @@ export class HologramLayer {
     if (!this.busy) this.idle = this.run();
   }
 
+  /** A region's new share of the plan (made on first use): it is meshed again, and an answer for its old share is dropped. */
+  private regionPlan(id: number, plan: HoloRegionPlan): void {
+    let r = this.regions.get(id);
+    if (!r) {
+      const group = id === WHOLE ? this.cellsGroup : new THREE.Group();
+      if (id !== WHOLE) {
+        group.name = `holo region ${plan.key}`;
+        this.cellsGroup.add(group);
+      }
+      r = {
+        id,
+        plan,
+        group,
+        keys: new Set(),
+        shown: new Set(),
+        shownDig: new Set(),
+        cells: 0,
+        digs: 0,
+        dirty: true,
+        gen: 0,
+      };
+      this.regions.set(id, r);
+    }
+    r.plan = plan;
+    r.dirty = true;
+    r.gen++;
+    if (id === WHOLE) return;
+    const keys = new Set<number>();
+    for (const flat of [...HOLO_STATES.map((s) => plan.groups[s]), plan.dig])
+      for (let i = 0; i + 4 < flat.length; i += 5) keys.add(localKey(flat[i], flat[i + 1], flat[i + 2]));
+    r.keys = keys;
+  }
+
+  private dropRegions(): void {
+    this.clearGroup(this.cellsGroup);
+    this.regions.clear();
+  }
+
+  /** A region's worker requests: per state, then its digs (a region of a big queue answers under "<state>@<region>"). */
+  private requests(r: Region): HoloRequest[] {
+    const at = r.plan.key ? `@${r.plan.key}` : '';
+    const reqs: HoloRequest[] = HOLO_STATES.filter((s) => r.plan.groups[s].length).map((s) => ({
+      key: s + at,
+      blocks: r.plan.groups[s],
+      mode: 'build',
+    }));
+    if (r.plan.dig.length) reqs.push({ key: 'dig' + at, blocks: r.plan.dig, mode: 'dig' });
+    return reqs;
+  }
+
   private async run(): Promise<void> {
     while (this.dirty && !this.disposed) {
       this.dirty = false;
       this.busy = true;
       const plan = this.plan;
       if (!plan) break;
-      const reqs: HoloRequest[] = HOLO_STATES.filter((s) => plan.groups[s].length).map((s) => ({ key: s, blocks: plan.groups[s], mode: 'build' }));
-      if (plan.dig.length) reqs.push({ key: 'dig', blocks: plan.dig, mode: 'dig' });
+      const batch = [...this.regions.values()].filter((r) => r.dirty);
+      const gens = batch.map((r) => r.gen);
+      for (const r of batch) r.dirty = false;
+      const reqs = batch.flatMap((r) => this.requests(r));
       let rs: HoloResult[];
       try {
         rs = reqs.length ? await this.host.holo(this.dim, reqs) : [];
@@ -410,39 +554,60 @@ export class HologramLayer {
         rs = [];
       }
       if (this.disposed) break;
-      if (plan !== this.plan) {
-        this.dirty = true; // a newer list arrived meanwhile
-        continue;
-      }
-      this.st.builds++;
-      this.apply(plan, rs);
+      // A region whose cells changed meanwhile (or that went) waits for the next round: its answer is for the old ones.
+      const live = batch.filter((r, i) => r.gen === gens[i] && this.regions.get(r.id) === r);
+      if (live.length < batch.length) this.dirty = true;
+      if (batch.length && !live.length) continue;
+      if (live.length) this.st.builds++;
+      this.apply(plan, live, rs);
     }
     this.busy = false;
   }
 
-  private apply(plan: HoloPlan, rs: HoloResult[]): void {
-    this.clearGroup(this.cellsGroup);
-    this.clearGroup(this.boxGroup);
-    const shown = new Set<string>(), shownDig = new Set<string>();
-    let cells = 0, digs = 0;
-    for (const r of rs) {
-      const dig = r.key === 'dig';
-      addCellKeys(dig ? shownDig : shown, r.cells);
-      if (dig) {
-        digs = r.cells.length / 5;
-        if (digs) this.cellsGroup.add(...this.digMarks(r.cells));
-        continue;
-      }
-      cells += r.cells.length / 5;
-      if (r.mesh) this.cellsGroup.add(this.mesh(r, this.mats[r.key as HoloState]));
+  /** The worker's answers into their regions; then the outline boxes and the totals. */
+  private apply(plan: HoloPlan, live: readonly Region[], rs: HoloResult[]): void {
+    const byKey = new Map(live.map((r) => [r.plan.key, [] as HoloResult[]]));
+    for (const res of rs) {
+      const at = res.key.indexOf('@');
+      byKey.get(at < 0 ? '' : res.key.slice(at + 1))?.push(res);
     }
-    this.shown = shown;
-    this.shownDig = shownDig;
+    for (const r of live) this.applyRegion(r, byKey.get(r.plan.key)!);
+    this.clearGroup(this.boxGroup);
     this.addBoxes(plan);
+    let cells = 0, digs = 0;
+    for (const r of this.regions.values()) {
+      cells += r.cells;
+      digs += r.digs;
+    }
     this.st.cells = cells;
     this.st.digs = digs;
     this.st.boxes = plan.boxes.length;
     this.show(this.lod ? 0 : null);
+  }
+
+  private applyRegion(r: Region, rs: readonly HoloResult[]): void {
+    this.clearGroup(r.group);
+    const shown = new Set<string>(),
+      shownDig = new Set<string>();
+    let cells = 0,
+      digs = 0;
+    for (const res of rs) {
+      const at = res.key.indexOf('@');
+      const state = at < 0 ? res.key : res.key.slice(0, at);
+      const dig = state === 'dig';
+      addCellKeys(dig ? shownDig : shown, res.cells);
+      if (dig) {
+        digs = res.cells.length / 5;
+        if (digs) r.group.add(...this.digMarks(res.cells));
+        continue;
+      }
+      cells += res.cells.length / 5;
+      if (res.mesh) r.group.add(this.mesh(res, this.mats[state as HoloState]));
+    }
+    r.shown = shown;
+    r.shownDig = shownDig;
+    r.cells = cells;
+    r.digs = digs;
   }
 
   /** Outline boxes: every build (far zoom), the capped ones marked to show always. */
@@ -563,6 +728,7 @@ export class HologramLayer {
   private clearGroup(g: THREE.Group): void {
     for (const o of [...g.children]) {
       g.remove(o);
+      if (o instanceof THREE.Group) this.clearGroup(o); // a region's group
       (o as THREE.Mesh).geometry?.dispose();
     }
   }

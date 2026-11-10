@@ -16,6 +16,11 @@ export class SseParser {
     private readonly onComment?: (text: string) => void,
   ) {}
 
+  /** Nothing half-read: no partial line and no event in progress (the next text starts a fresh event). */
+  get idle(): boolean {
+    return this.buf === '' && this.event === '' && this.data.length === 0;
+  }
+
   push(chunk: string): void {
     this.buf += chunk;
     let start = 0;

@@ -212,9 +212,25 @@ public sealed partial class StoryColony
         var set = new HashSet<string>(StringComparer.Ordinal);
         foreach (var d in Designations)
             if (d.Status is null or "open" or "waiting" && WorkOf(d) is { Length: > 0 } t) set.Add(t); // waiting: for a tool
-        if (Builds.Any(b => b.Status is "active" or "queued" && b.Ghosts.Any(g => g.Job && g.State is "todo"))) set.Add(WorkTypes.Build);
+        AddBuildWork(set);
         if (World is { } w) AddBillWork(w, set);
         return set;
+    }
+
+    /// <summary>The work of the builds' cells to do: building, and mining for a mine design's digs (its blocks stay building).</summary>
+    private void AddBuildWork(HashSet<string> set)
+    {
+        foreach (var b in Builds)
+        {
+            if (set.Contains(WorkTypes.Build) && set.Contains(WorkTypes.Mine)) return;
+            if (b.Status is not ("active" or "queued")) continue;
+            foreach (var g in b.Ghosts)
+            {
+                if (!g.Job || g.State != "todo") continue;
+                set.Add(CellWork(b, g));
+                if (b.Kind != "mine" || set.Contains(WorkTypes.Build) && set.Contains(WorkTypes.Mine)) break;
+            }
+        }
     }
 
     /// <summary>The work types of the wanted bills at benches that aren't smelting (a bill whose count is reached, or whose stock is

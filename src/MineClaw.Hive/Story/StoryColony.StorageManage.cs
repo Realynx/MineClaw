@@ -14,6 +14,15 @@ public sealed partial class StoryColony
     /// never guessed from a natural-language ordinal. All mutations use the same sign-aware path as the viewer.</summary>
     public (JsonNode? Result, string? Error) StorageManage(JsonObject request)
     {
+        bool save = false;
+        var answer = StorageManageLocked(request, ref save);
+        // Saved after the colony lock: Save takes its save gate before that lock, so saving under it can deadlock with a tick's save.
+        if (save) Save(force: true);
+        return answer;
+    }
+
+    private (JsonNode? Result, string? Error) StorageManageLocked(JsonObject request, ref bool save)
+    {
         lock (_lock)
         {
             var op = StorageText(request["op"]);
@@ -37,7 +46,7 @@ public sealed partial class StoryColony
             if (filter == null && priority == null && label == null) return (null, "allow, deny, priority, or label required");
             var (changed, error) = StorageOp(op == "remove" ? "remove_entries" : op, targets, filter, priority, label);
             if (error != null) return (null, error);
-            Save(force: true);
+            save = true;
             return (new JsonObject
             {
                 ["colony"] = Id, ["operation"] = op, ["result"] = changed,

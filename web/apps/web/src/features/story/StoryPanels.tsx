@@ -21,7 +21,7 @@ import {
 } from '@mineclaw/contracts';
 import { ZonePreserve } from './zones/PreservePanel';
 import { buildTitle, isRepairBuild } from './zones/preserve';
-import { buildGroups, reorderBuildGroup, type BuildGroup } from './buildGroups';
+import { buildGroups, buildWork, groupWork, reorderBuildGroup, type BuildGroup } from './buildGroups';
 import { zoneCellCount } from './zones/zonePaint';
 import {
   ClipboardPaste,
@@ -335,6 +335,7 @@ export function QueuePanel({
             key={g.key}
             data-build={g.grouped ? undefined : g.builds[0]!.id}
             data-build-group={g.grouped ? g.key : undefined}
+            data-work={groupWork(g) === 'mine' ? 'mine' : undefined}
             draggable={canWrite}
             onDragStart={() => (dragId.current = g.key)}
             onDragEnd={() => {
@@ -368,7 +369,11 @@ export function QueuePanel({
             ) : (
               <div>
                 <div className="mb-1 text-[9px] tracking-wide text-subtle uppercase">
-                  {isRepairBuild(g.builds[0]) ? 'Zone maintenance' : 'Manual order'}
+                  {isRepairBuild(g.builds[0])
+                    ? 'Zone maintenance'
+                    : groupWork(g) === 'mine'
+                      ? 'Mining order'
+                      : 'Manual order'}
                 </div>
                 <div className="flex items-center gap-2">
                   <QueueRow
@@ -416,6 +421,7 @@ function QueueGroup({
   const failures = g.active.reduce((n, b) => n + (failed?.get(String(b.id)) ?? 0), 0);
   const problems = [...new Set(g.active.map((b) => b.reason).filter(Boolean))];
   const label = `${g.title} · ${g.builds[0]!.id}`;
+  const mining = groupWork(g) === 'mine';
   return (
     <>
       <div className="flex items-center gap-2">
@@ -426,7 +432,9 @@ function QueueGroup({
           aria-expanded={expanded}
           onClick={() => setExpanded(!expanded)}
         >
-          <span className="text-[9px] tracking-wide text-subtle uppercase">Design / building instance</span>
+          <span className="text-[9px] tracking-wide text-subtle uppercase">
+            {mining ? 'Mine design / mining' : 'Design / building instance'}
+          </span>
           <span className="block truncate font-semibold">
             {expanded ? '▾' : '▸'} {label}
           </span>
@@ -438,7 +446,7 @@ function QueueGroup({
           type="button"
           disabled={!canWrite || index === 0}
           className="rounded px-1 text-[10px] text-muted disabled:opacity-30"
-          aria-label={`Build ${label} first`}
+          aria-label={`${mining ? 'Mine' : 'Build'} ${label} first`}
           onClick={() => onOp('reorder', [...ids, ...others.filter((b) => !ids.includes(b.id)).map((b) => b.id)])}
         >
           Top
@@ -535,6 +543,7 @@ function QueueRow({
 }) {
   const paused = b.status === 'paused';
   const title = buildTitle(b);
+  const verb = buildWork(b) === 'mine' ? 'Mine' : 'Build';
   return (
     <>
       <GripVertical className="size-3.5 cursor-grab text-subtle" aria-hidden />
@@ -567,8 +576,8 @@ function QueueRow({
           disabled={!canWrite || i === 0}
           onClick={() => onOp('reorder', [b.id, ...others.filter((x) => x.id !== b.id).map((x) => x.id)])}
           className="rounded px-1 text-[10px] font-semibold text-muted hover:bg-surface-3 disabled:opacity-30"
-          title="Build first"
-          aria-label={`Build ${title} first`}
+          title={`${verb} first`}
+          aria-label={`${verb} ${title} first`}
         >
           Top
         </button>

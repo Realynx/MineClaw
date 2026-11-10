@@ -10,7 +10,8 @@ public sealed partial class StoryColony
     {
         var furnaces = Benches.Where(b => b.Kind == "furnace").OrderBy(b => b.Pos.Dist(near)).ToList();
         bool Busy(WorkbenchState b) => b.LoadedBill != null || _current.Values.Any(j => j.At == b.Pos && j.Source is "bill" or "furnace");
-        var free = furnaces.Where(b => BenchAvailable(b) && !Busy(b) && !Skipped("bench:" + b.Pos) && FurnaceCanFuel(b)).ToList();
+        var fuel = new FuelTally();
+        var free = furnaces.Where(b => BenchAvailable(b) && !Busy(b) && !Skipped("bench:" + b.Pos) && FurnaceCanFuel(b, fuel)).ToList();
         var assignments = new Dictionary<(WorkbenchState Bench, string Build, string Recipe), Want>();
         foreach (var want in wants.Where(w => w.Bench == "furnace"))
         {
@@ -46,17 +47,49 @@ public sealed partial class StoryColony
         }
     }
 
-    private bool FurnaceCanFuel(WorkbenchState bench)
+    /// <summary>Whether the furnace has fuel to hand: credit in it, else one of its fuels stored within 256 blocks (after the fetches on
+    /// their way) or carried by a pawn in game. <paramref name="tally"/>: the stock gathered once for every furnace of a pass.</summary>
+    private bool FurnaceCanFuel(WorkbenchState bench, FuelTally? tally = null)
     {
         if (FuelCreditNow(bench) >= 1) return true;
         foreach (var fuel in StoryFuels.For(World!.Data, FuelChoice(bench, null)))
         {
-            int units = fuel.Units(1);
-            bool Matches(Stack s) => fuel.Item.Matches(s.Id, s.Meta);
-            if (Storages.Where(s => ChestOpen(s.Chest) && s.Chest.Dist(bench.Pos) <= 256).SelectMany(s => FurnaceStock(s)).Where(Matches).Sum(s => s.Count) >= units
-                || Pawns.Keys.Select(Host.Live).Where(p => p.Online).Any(p => p.Inventory.Where(Matches).Sum(s => s.Count) >= units)) return true;
+            var t = Tallied(tally ??= new FuelTally());
+            int units = fuel.Units(1), stored = 0;
+            foreach (var (chest, stock) in t.Stores)
+                if (chest.Dist(bench.Pos) <= 256)
+                    foreach (var s in stock)
+                        if (fuel.Item.Matches(s.Id, s.Meta)) stored += s.Count;
+            if (stored >= units) return true;
+            foreach (var pocket in t.Pockets)
+            {
+                int carried = 0;
+                foreach (var s in pocket)
+                    if (fuel.Item.Matches(s.Id, s.Meta)) carried += s.Count;
+                if (carried >= units) return true;
+            }
         }
         return false;
+    }
+
+    /// <summary>What every furnace of a pass may fuel from: each open storage's stock after the fetches on their way, and the pockets of
+    /// the pawns in game (live 11-10: asked again per furnace and per fuel, 29 furnaces cost 106 ms a pass, and every dig made one).</summary>
+    private sealed class FuelTally
+    {
+        public bool Filled;
+        public readonly List<(P3 Chest, List<Stack> Stock)> Stores = new();
+        public readonly List<IReadOnlyList<Stack>> Pockets = new();
+    }
+
+    private FuelTally Tallied(FuelTally t)
+    {
+        if (t.Filled) return t;
+        t.Filled = true;
+        foreach (var s in Storages)
+            if (ChestOpen(s.Chest) && FurnaceStock(s).ToList() is { Count: > 0 } stock) t.Stores.Add((s.Chest, stock));
+        foreach (var name in Pawns.Keys)
+            if (Host.Live(name) is { Online: true } live) t.Pockets.Add(live.Inventory);
+        return t;
     }
 
     private Dictionary<(int Id, int Meta), int>? NamedFurnaceFuelAllowance(Dictionary<(int Id, int Meta), int> hidden)
@@ -86,7 +119,11 @@ public sealed partial class StoryColony
         bool Fits(Stack stack) => input.Options.Any(o => o.Matches(stack.Id, stack.Meta)) && Cats!.Accepts(bill.Ingredients, stack.Id, stack.Meta);
         foreach (var stack in live.Inventory.Where(Fits)) yield return (null, stack);
         foreach (var store in Storages.Where(s => s.Chest.Dist(bench.Pos) <= bill.Radius && ChestOpen(s.Chest)))
+        {
+            // A chest holding none of it yields nothing: skip its grouping and in-flight counts (374 chests per bill check, live 11-10).
+            if (!store.Contents.Any(Fits)) continue;
             foreach (var stack in FurnaceStock(store, pending).Where(Fits)) yield return (store.Chest, stack);
+        }
     }
 
     private int FurnaceBatchSize(BillState bill, StoryRecipe recipe, WorkbenchState bench, PawnLive live, int wanted,

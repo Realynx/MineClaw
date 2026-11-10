@@ -19,7 +19,7 @@ import {
   SSE_EVENTS,
   formatSseFrame,
   parseBridgeJson,
-  toCamel,
+  toCamelJson,
   type LiveStatus,
   type LiveStreamQuery,
   type SseEventName,
@@ -36,6 +36,7 @@ import { SseParser } from './sse-parser.js';
 import type WebSocket from 'ws';
 import { SocketSink, type LiveSink } from './socket-sink.js';
 import { socketText } from './socket-data.js';
+import { contractSample } from './contract-sample.js';
 
 export interface LiveHubOptions {
   upstreamTransport: 'websocket' | 'sse';
@@ -73,6 +74,8 @@ interface Frame {
   id: number;
   event: SseEventName;
   data: unknown;
+  /** The frame as SSE text, formatted once for every client that gets it unfiltered (a full colony state is 2 MB). */
+  text?: string;
 }
 
 interface Queued {
@@ -315,7 +318,9 @@ export class LiveHub {
   private deliver(c: Client, f: Frame): void {
     const payload = filterPayload(c.filter, f.event, f.data, this.aliases);
     if (payload === null) return;
-    this.write(c, formatSseFrame(f.event, f.id, payload), coalesceKey(f.event, payload));
+    const text =
+      payload === f.data ? (f.text ??= formatSseFrame(f.event, f.id, f.data)) : formatSseFrame(f.event, f.id, payload);
+    this.write(c, text, coalesceKey(f.event, payload));
   }
 
   private write(c: Client, text: string, key?: string): void {
@@ -400,14 +405,14 @@ export class LiveHub {
     const name = event as SseEventName;
     let payload: unknown;
     try {
-      payload = toCamel(typeof data === 'string' ? parseBridgeJson(data) : data);
+      payload = toCamelJson(typeof data === 'string' ? parseBridgeJson(data) : data);
       if (event === 'entities') this.observeWorld?.(payload);
     } catch {
       this.log.warn({ event }, 'bridge sent an unparseable SSE frame');
       return;
     }
     if (this.opts.validate !== 'off') {
-      const r = (SSE_EVENTS[name] as z.ZodType).safeParse(payload);
+      const r = (SSE_EVENTS[name] as z.ZodType).safeParse(contractSample(payload));
       if (!r.success) {
         this.log.warn({ event, issues: r.error.issues.slice(0, 5) }, 'SSE frame does not match the contract');
         if (this.opts.validate === 'strict') return;

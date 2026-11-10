@@ -28,19 +28,47 @@ public sealed partial class StoryColony
     internal bool RefreshSeen(IEnumerable<StorageState> list, bool force = false)
     {
         bool any = false;
+        IReadOnlyDictionary<P3, DateTimeOffset>? looks = null;
+        bool asked = force; // a forced look reads its chest itself
         foreach (var st in list.ToList())
-            if (RefreshOneSeen(st, force)) any = true;
+        {
+            if (!force && SeenAskedLately(st)) continue;
+            if (!asked)
+            {
+                asked = true;
+                try { looks = Host.ChestLooks(); } catch (Exception) { looks = null; } // once a sweep, and only when a chest is due
+            }
+            if (RefreshOneSeen(st, force, looks)) any = true;
+        }
         if (any) _stockChanged = true;
         return any;
     }
 
-    /// <summary>One storage: a body's newer look replaces its record (unless the record changed since). True when it did.</summary>
-    private bool RefreshOneSeen(StorageState st, bool force)
+    private bool SeenAskedLately(StorageState st) => _seenAsked.TryGetValue(st.Chest, out var asked) && Now - asked < TimeSpan.FromSeconds(5);
+
+    /// <summary>
+    /// No body looked into the chest (or the other half of a double chest: any chest beside it counts) after its record: reading the
+    /// chest memory would change nothing. Live 11-10: every haul search read all 374 chests' memories every 5 s, 3,782 reads a minute
+    /// under the colony lock.
+    /// </summary>
+    private static bool NoNewerLook(StorageState st, IReadOnlyDictionary<P3, DateTimeOffset> looks)
     {
-        if (!force && _seenAsked.TryGetValue(st.Chest, out var asked) && Now - asked < TimeSpan.FromSeconds(5)) return false;
+        var record = st.SeenAt is { } s0 && st.KnownAt is { } k0 ? (s0 > k0 ? s0 : k0) : st.SeenAt ?? st.KnownAt;
+        foreach (var (dx, dz) in ChestCells)
+            if (looks.TryGetValue(st.Chest.Add(dx, 0, dz), out var at) && (record is not { } r || at > r)) return false;
+        return true;
+    }
+
+    private static readonly (int Dx, int Dz)[] ChestCells = [(0, 0), (1, 0), (-1, 0), (0, 1), (0, -1)];
+
+    /// <summary>One storage: a body's newer look replaces its record (unless the record changed since). True when it did.</summary>
+    private bool RefreshOneSeen(StorageState st, bool force, IReadOnlyDictionary<P3, DateTimeOffset>? looks = null)
+    {
+        if (!force && SeenAskedLately(st)) return false;
         bool changed = World is { } w && ReconcileStorage(st, w);
         _seenAsked[st.Chest] = Now;
         if (st.Missing) return changed;
+        if (looks != null && NoNewerLook(st, looks)) return changed;
         (IReadOnlyList<Stack> Contents, DateTimeOffset At)? seen;
         long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
         try { seen = Host.SeenChest(st.Chest); }

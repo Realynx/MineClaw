@@ -450,7 +450,7 @@ function WorkHeader({
               'w-11 rounded py-0.5 text-[11px] font-semibold',
               sort?.col === t ? 'bg-accent-soft' : 'text-muted hover:text-fg',
             )}
-            title={`Sort by ${WORK_LABELS[t]} skill`}
+            title={`Sort by ${WORK_LABELS[t]} skill${WORK_HINTS[t] ? ` · ${WORK_HINTS[t]}` : ''}`}
           >
             {WORK_LABELS[t]}
             {sortMark(sort, t)}
@@ -460,6 +460,12 @@ function WorkHeader({
     </tr>
   );
 }
+
+/** What a column covers where the name alone is ambiguous: a placed mine design is dug as mining, not construction. */
+const WORK_HINTS: Record<string, string> = {
+  mine: 'quarries, mine designations and mine designs',
+  build: 'construction, with the torches and ladders a mine design puts in',
+};
 
 /** " ▾" / " ▴" on the sorted column. */
 function sortMark(sort: SortKey, col: string): string {

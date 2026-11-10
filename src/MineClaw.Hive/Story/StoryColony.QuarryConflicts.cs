@@ -149,11 +149,11 @@ public sealed partial class StoryColony
 
     /// <summary>The highest build cell this pawn is offered: down in a quarry pit, nothing more than 3 above it while a builder up top
     /// can take it (live 11-05: rim placements went to a pawn at y 46, "its nearest support face is 18.7–23.0 blocks from my eyes").</summary>
-    private int BuildCap(PawnState p, PawnLive live)
+    private int BuildCap(PawnState p, PawnLive live, string work = WorkTypes.Build)
     {
         if (!live.Online || !InQuarryPit(live.Block)) return int.MaxValue;
         foreach (var o in Pawns.Values)
-            if (o != p && UpTopBuilder(o)) return live.Block.Y + 3;
+            if (o != p && UpTopBuilder(o, work)) return live.Block.Y + 3;
         return int.MaxValue;
     }
 
@@ -161,10 +161,11 @@ public sealed partial class StoryColony
     private bool InQuarryPit(P3 feet) =>
         Zix().Quarry.TryGetValue(ZoneCells.Key(feet.X, feet.Z), out var z) && feet.Y < QuarryTopOf(z) - 2;
 
-    /// <summary>A builder up top (not in a pit, not under ground) that will take the cells: idle now or building now.</summary>
-    private bool UpTopBuilder(PawnState o)
+    /// <summary>A pawn of that work (building; mining for a mine design's digs) up top (not in a pit, not under ground) that will take
+    /// the cells: idle now or at that work now.</summary>
+    private bool UpTopBuilder(PawnState o, string work)
     {
-        if (World is not { } w || !SurfacePawnFor(w, o, WorkTypes.Build)) return false;
+        if (World is not { } w || !SurfacePawnFor(w, o, work)) return false;
         return !InQuarryPit(Host.Live(o.Name).Block);
     }
 }

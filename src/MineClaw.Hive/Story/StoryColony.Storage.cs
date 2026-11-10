@@ -15,7 +15,41 @@ public sealed partial class StoryColony
 
     private int MaxStack(int id) => World?.Data is { } d && d.ItemExists(id) ? Math.Max(1, d.Item(id).MaxStack) : 64;
 
-    public StorageState? StorageAt(P3 at) => Storages.FirstOrDefault(s => s.Chest == at || s.DoubleWith == at);
+    /// <summary>The storage holding this cell (its chest or its double half): the first such in <see cref="Storages"/>' order.</summary>
+    public StorageState? StorageAt(P3 at)
+    {
+        // Asked for every chest of every stock scan (ChestOpen), so a list walk per call made each scan quadratic in the chests
+        // (live 11-10: 374 chests). The cell map is made again whenever the list or any storage's cells changed.
+        int version = ListVersion<StorageState>.Of(Storages);
+        long cells = StorageState.CellsVersion;
+        var map = _storageCells;
+        if (map == null || map.List != Storages || map.Version != version || map.Count != Storages.Count || map.Cells != cells)
+            _storageCells = map = MapStorageCells(version, cells);
+        return map.At.GetValueOrDefault(at);
+    }
+
+    /// <summary>StorageAt's map and what it was made from (published whole, so a reader never sees one half made).</summary>
+    private sealed record StorageCellMap(Dictionary<P3, StorageState> At, List<StorageState> List, int Version, int Count, long Cells);
+
+    private StorageCellMap? _storageCells;
+
+    private StorageCellMap MapStorageCells(int version, long cells)
+    {
+        var at = new Dictionary<P3, StorageState>(Storages.Count * 2);
+        foreach (var s in Storages)
+        {
+            at.TryAdd(s.Chest, s);
+            if (s.DoubleWith is { } d) at.TryAdd(d, s);
+        }
+        return new StorageCellMap(at, Storages, version, Storages.Count, cells);
+    }
+
+    /// <summary>List&lt;T&gt;'s own change count (every add, remove, insert, set, clear and sort moves it).</summary>
+    private static class ListVersion<T>
+    {
+        [System.Runtime.CompilerServices.UnsafeAccessor(System.Runtime.CompilerServices.UnsafeAccessorKind.Field, Name = "_version")]
+        public static extern ref int Of(List<T> list);
+    }
 
     private bool Accepts(StorageState s, int id, int meta) => Cats is { } c && c.Accepts(s.EffectiveFilter, id, meta);
 

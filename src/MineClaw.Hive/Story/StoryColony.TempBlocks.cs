@@ -83,7 +83,7 @@ public sealed partial class StoryColony
     {
         if (Now - _tempTick < TimeSpan.FromSeconds(3) || World is not { } w) return;
         _tempTick = Now;
-        var cells = BuildCellSet();
+        var cells = new BuildCells(() => BuildCellSet()); // made only when a temp block is there to check (51,000 cells live 11-10)
         AdoptBodyTemps(cells);
         if (Meta.TempBlocks is { Count: > 0 } temps)
             foreach (var t in temps.ToList()) TempCheck(w, t, cells);
@@ -94,7 +94,7 @@ public sealed partial class StoryColony
     }
 
     /// <summary>The pawns' clients' own temporary blocks (walk scaffolds, shelter boxes, clutch blocks) join the registry.</summary>
-    private void AdoptBodyTemps(HashSet<P3> buildCells)
+    private void AdoptBodyTemps(BuildCells buildCells)
     {
         foreach (var p in Pawns.Values)
         {
@@ -112,15 +112,28 @@ public sealed partial class StoryColony
     /// will remove it; forgetting that registry would let the replacement cleanup mine a live pillar.</summary>
     private HashSet<P3> BuildCellSet(bool includeReplacementAir = false)
     {
-        var set = new HashSet<P3>();
+        int n = 0;
+        foreach (var b in Builds) n += b.Ghosts.Count;
+        var set = new HashSet<P3>(n);
         var temps = ActiveTempCells(); // a temp left to the owner in a design's cell is the design's to clear: forgotten here
-        foreach (var b in Builds) foreach (var g in b.Ghosts)
-            if (includeReplacementAir || !ReplacementAir(b, g) && !(ReplacementBuild(b) && temps.Contains(g.At))) set.Add(g.At);
+        foreach (var b in Builds)
+        {
+            bool replacement = ReplacementBuild(b); // its spec read once a build, not per cell
+            foreach (var g in b.Ghosts)
+                if (includeReplacementAir || !(g.Remove && replacement) && !(replacement && temps.Contains(g.At))) set.Add(g.At);
+        }
         return set;
     }
 
+    /// <summary>The build cells (<see cref="BuildCellSet"/>), made on the first question.</summary>
+    private sealed class BuildCells(Func<HashSet<P3>> make)
+    {
+        private HashSet<P3>? _set;
+        public bool Contains(P3 at) => (_set ??= make()).Contains(at);
+    }
+
     /// <summary>One registered cell: gone (forgotten, its cleanup mark too), a build's cell (not ours to take), left behind (queued).</summary>
-    private void TempCheck(IStoryWorld w, TempBlockState t, HashSet<P3> buildCells)
+    private void TempCheck(IStoryWorld w, TempBlockState t, BuildCells buildCells)
     {
         if (!w.Loaded(t.At.X, t.At.Z)) return;
         int now = w.Block(t.At.X, t.At.Y, t.At.Z).Id;

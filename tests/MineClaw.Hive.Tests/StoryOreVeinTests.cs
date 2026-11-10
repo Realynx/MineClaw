@@ -12,7 +12,7 @@ public sealed class StoryOreVeinTests
     {
         var (c, h, w) = StoryRig.Make(pawns);
         foreach (var p in c.Pawns.Values)
-            foreach (var type in WorkTypes.All) p.Priorities[type] = type == (design ? WorkTypes.Build : WorkTypes.Mine) ? 1 : 0;
+            foreach (var type in WorkTypes.All) p.Priorities[type] = type == WorkTypes.Mine ? 1 : 0; // a mine design's digs are mining too
         c.DoneGrace = TimeSpan.Zero;
         w.Set(Seed.X, Seed.Y, Seed.Z, ore);
         w.Set(Next.X, Next.Y, Next.Z, ore);

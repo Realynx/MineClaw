@@ -346,8 +346,16 @@ public static class StoragePriority
 public sealed class StorageState
 {
     public bool Missing { get; set; }
-    public P3 Chest { get; set; }
-    public P3? DoubleWith { get; set; }
+    public P3 Chest { get => _chest; set { if (_chest != value) { _chest = value; CellsMoved(); } } }
+    public P3? DoubleWith { get => _doubleWith; set { if (_doubleWith != value) { _doubleWith = value; CellsMoved(); } } }
+    private P3 _chest;
+    private P3? _doubleWith;
+    private static long _cellsVersion;
+
+    /// <summary>Bumped whenever any storage's chest or double half moves: StoryColony.StorageAt's cell map is made again.</summary>
+    internal static long CellsVersion => Interlocked.Read(ref _cellsVersion);
+
+    private static void CellsMoved() => Interlocked.Increment(ref _cellsVersion);
     public string? Label { get; set; }
     public string Priority { get; set; } = "normal";
     public StorageFilter Filter { get; set; } = new();

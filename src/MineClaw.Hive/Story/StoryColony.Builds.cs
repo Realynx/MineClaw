@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using System.Text.Json.Nodes;
 using Microsoft.Extensions.Logging;
 
@@ -12,13 +13,20 @@ namespace MineClaw.Hive.Story;
 /// </summary>
 public sealed partial class StoryColony
 {
-    private GhostState? FindGhost(string? key)
+    private GhostState? FindGhost(string? key) => FindCell(key)?.G;
+
+    /// <summary>The ghost behind a cell id (<c>build|x,y,z</c>) and its build, or null; cells compared as numbers (a mine build's
+    /// thousands of cells were each formatted as text per lookup).</summary>
+    private (GhostState G, BuildState B)? FindCell(string? key)
     {
         if (key == null) return null;
         var parts = key.Split('|');
-        if (parts.Length != 2) return null;
+        if (parts.Length != 2 || ParseCell(parts[1]) is not { } at) return null;
         var b = Builds.FirstOrDefault(x => x.Id == parts[0]);
-        return b?.Ghosts.FirstOrDefault(g => g.At.ToString() == parts[1]);
+        if (b == null) return null;
+        foreach (var g in b.Ghosts)
+            if (g.At == at) return g.At.ToString() == parts[1] ? (g, b) : null; // the id as this cell writes it, not just the same numbers
+        return null;
     }
 
     /// <summary>add {items} | remove {ids} | reorder {ids} | pause {ids} | resume {ids}.</summary>
@@ -199,6 +207,7 @@ public sealed partial class StoryColony
     private void RemoveBuild(BuildState b)
     {
         Builds.Remove(b);
+        _mineCells.Remove(b);
         Removed("build", b.Id);
         _buildAlerted.Remove(b.Id);
         ForgetProbes(b); // its blocked cells' reasons and tries go with it (StoryColony.Reconcile.cs)
@@ -256,9 +265,32 @@ public sealed partial class StoryColony
         var from = live.Block;
         int builders = BuilderCount();
         int cap = BuildCap(p, live); // down in a quarry pit: the cells up top are a builder's up there (StoryColony.QuarryConflicts.cs)
-        foreach (var b in Builds.Where(b => b.Status is not ("paused" or "done")).OrderBy(b => b.Order))
-            if (BuildJobFor(w, p, live, b, builders, from, cap) is { } job) return job;
-        return null;
+        var queue = OpenBuildsInOrder();
+        try
+        {
+            foreach (var (b, _) in queue)
+                if (BuildJobFor(w, p, live, b, builders, from, cap) is { } job) return job;
+            return null;
+        }
+        finally
+        {
+            queue.Clear();
+            _buildQueue = queue;
+        }
+    }
+
+    /// <summary>The list <see cref="OpenBuildsInOrder"/> fills (taken while in use).</summary>
+    private List<(BuildState B, int At)>? _buildQueue = new();
+
+    /// <summary>The builds not paused or done, in queue order (equal orders as they stand in the list), without a new list per pick.</summary>
+    private List<(BuildState B, int At)> OpenBuildsInOrder()
+    {
+        var queue = _buildQueue ?? new();
+        _buildQueue = null;
+        for (int i = 0; i < Builds.Count; i++)
+            if (Builds[i].Status is not ("paused" or "done")) queue.Add((Builds[i], i));
+        CollectionsMarshal.AsSpan(queue).Sort(static (x, y) => x.B.Order != y.B.Order ? x.B.Order.CompareTo(y.B.Order) : x.At.CompareTo(y.At));
+        return queue;
     }
 
     /// <summary>Pawns that build now (build work enabled, not drafted, in game): each builder's fair share is the open cells over them.</summary>
@@ -274,7 +306,8 @@ public sealed partial class StoryColony
     private struct GhostScan
     {
         public BuildState Build;
-        public List<GhostState> Todo;
+        /// <summary>Its open work; null for a mine (<see cref="TodoOf"/>).</summary>
+        public List<GhostState>? Todo;
         public int Builders;
         public P3 From;
         public bool Mine;
@@ -298,13 +331,14 @@ public sealed partial class StoryColony
     /// <summary>This build's next job for the pawn, or null (and why it has none, as blocked work).</summary>
     private ActiveJob? BuildJobFor(IStoryWorld w, PawnState p, PawnLive live, BuildState b, int builders, P3 from, int cap = int.MaxValue)
     {
-        var todo = b.Ghosts.Where(g => g.Job && g.State is "todo" or "leased").ToList();
+        if (b.Kind == "mine") return MineJobFor(w, p, live, b, builders, from, cap, digs: false); // its blocks; its digs are mining (StoryColony.MineCells.cs)
+        var todo = TodoCells(b);
         if (todo.Count == 0) { FinishOrStuck(b); return null; }
         // A design placed with a basement: its blocks wait until the ground is dug out (dig, then place).
         if (DigFirst(b)) { Blocked($"build {b.Id}: its ground is dug out first"); return null; }
-        var scan = new GhostScan { Build = b, Todo = todo, Builders = builders, From = from, Mine = b.Kind == "mine" };
-        var open = CappedCells(b, OpenCells(b, todo, scan.Mine), cap);
-        if (!scan.Mine && OutOfView(w, open, from) is { } site)
+        var scan = new GhostScan { Build = b, Todo = todo, Builders = builders, From = from };
+        var open = CappedCells(b, OpenCells(b, todo), cap);
+        if (OutOfView(w, open, from) is { } site)
         {
             if (SiteSupplied(w, live, ref scan, open)) return SiteVisit(p, b, site);
             NoteBuildHeld(b, ref scan, open.Count); // nothing to place there yet: no walk, the material wait is said as in view
@@ -319,6 +353,12 @@ public sealed partial class StoryColony
         return null;
     }
 
+    /// <summary>The build's open work: its job cells to do or out with a pawn.</summary>
+    private static List<GhostState> TodoCells(BuildState b) => b.Ghosts.Where(g => g.Job && g.State is "todo" or "leased").ToList();
+
+    /// <summary>The scan's open work (a mine's search doesn't list it: made here when a pour or place job needs it).</summary>
+    private static List<GhostState> TodoOf(in GhostScan scan) => scan.Todo ?? TodoCells(scan.Build);
+
     /// <summary>No open cell left: done, unless some are blocked (those can't be placed: said as blocked work). Blocked cells a newer
     /// build took over are not that: with nothing else left the build is done (StoryColony.BuildConflicts.cs).</summary>
     private void FinishOrStuck(BuildState b)
@@ -332,15 +372,15 @@ public sealed partial class StoryColony
     /// <summary>
     /// The cells open now. The lowest unfinished level may need a scaffold; higher placements are independent once they already
     /// have a real support face. An unreachable or material-starved cell must not hold another completed floor's furnishings.
-    /// Pure demolition stays top-down. A mine opens a cell once a neighbour is open, from its entry outward and down.
+    /// Pure demolition stays top-down. A mine opens a cell once a neighbour is open, from its entry outward and down
+    /// (<see cref="MineJobFor"/>).
     /// The level is that of the cells still to do (open or out with a pawn): a blocked cell never pins it, so the digs under a
     /// blocked one go on and a floating cell over a blocked level gets its scaffold. Only water or lava in a design's empty space
     /// (<see cref="LiquidOver"/>) keeps the digs below its level closed: a pit dug under standing water floods.
     /// </summary>
-    private List<GhostState> OpenCells(BuildState b, List<GhostState> todo, bool mine)
+    private List<GhostState> OpenCells(BuildState b, List<GhostState> todo)
     {
         if (todo.Count == 0) return [];
-        if (mine) return todo.Where(g => g.State == "todo" && Exposed(g.At)).ToList();
         int floor = LiquidOver(b)?.At.Y ?? int.MinValue;
         var left = floor == int.MinValue ? todo : todo.Where(g => !(g.Remove && g.At.Y < floor)).ToList();
         if (left.Count == 0) return [];
@@ -419,17 +459,18 @@ public sealed partial class StoryColony
     private List<GhostState> CappedCells(BuildState b, List<GhostState> open, int cap)
     {
         if (cap == int.MaxValue || open.All(g => g.At.Y <= cap)) return open;
-        Blocked($"build {b.Id}: left to a builder up top (I'm down in a quarry pit)");
+        LeftUpTop(b);
         return open.Where(g => g.At.Y <= cap).ToList();
     }
 
-    /// <summary>A mine: top-down first, digs before its blocks (torches, ladders… one per job), nearest; a level: <see cref="Seeds"/>,
+    private void LeftUpTop(BuildState b) => Blocked($"build {b.Id}: left to a builder up top (I'm down in a quarry pit)");
+
+    /// <summary>A level (a mine orders its own: <see cref="MineOrder"/>): <see cref="Seeds"/>,
     /// spread out (a cell next to another pawn's batch comes after the rest: its neighbours are leased anyway). A level's cells with
     /// nothing to place against yet are left out (the client would say "nothing solid on any side"); when none of them has any and
     /// nothing else will give it, the level floats and its first cell goes on a scaffold (<see cref="FloatingSeed"/>).</summary>
     private List<GhostState> CellOrder(BuildState b, List<GhostState> open, ref GhostScan scan, P3 from)
     {
-        if (scan.Mine) return open.OrderByDescending(g => g.At.Y).ThenBy(g => g.Remove ? 0 : 1).ThenBy(g => g.At.Dist(from)).ToList();
         var busy = b.Ghosts.Where(g => g.State == "leased").Select(g => g.At).ToList();
         var seeds = Seeds(open, busy, from).ToList();
         scan.Unsupported = open.Count - seeds.Count;
@@ -442,10 +483,10 @@ public sealed partial class StoryColony
     }
 
     /// <summary>One cell tried as the seed of a batch: a dig, a pour, or a place job; null = not this one (done, taken, short…).</summary>
-    private ActiveJob? GhostCell(IStoryWorld w, PawnState p, PawnLive live, ref GhostScan scan, GhostState g)
+    private ActiveJob? GhostCell(IStoryWorld w, PawnState p, PawnLive live, ref GhostScan scan, GhostState g, string? key = null)
     {
         var b = scan.Build;
-        var key = $"g:{b.Id}|{g.At}";
+        key ??= $"g:{b.Id}|{g.At}";
         if (!Open(key, p.Name, g.At)) { NoteCellHold(ref scan, key, p.Name, g.At); return null; }
         if (Occupied(g.At) || BuildConflicted(g) || QuarryHeld(b, g)) return null;
         if (ReplacementBuild(b) && ActiveTempCells().Contains(g.At)) { scan.Temp ??= g.At; return null; }
@@ -470,7 +511,7 @@ public sealed partial class StoryColony
         var dt = PlanTool(p, live, DigBlockAt(g.At, g.Id));
         if (dt is { Wait: { } why }) { NoteBuildWait(b, why); Blocked($"build {b.Id}: {b.Reason}"); return null; }
         ClearBuildWait(b);
-        var job = Job(WorkTypes.Build, "dig", $"removing a block ({b.Label})", g.At, key, "ghost", $"{b.Id}|{g.At}", xp: 10);
+        var job = Job(CellWork(b, g), "dig", $"removing a block ({b.Label})", g.At, key, "ghost", $"{b.Id}|{g.At}", xp: 10);
         if (b.Kind == "preserve" || b.Spec?["replacement_clear"]?.GetValue<bool>() == true) job.Json["ordered"] = true;
         if (ReplacementBuild(b)) job.Json["replace"] = true;
         return Claim(b, [g], p.Name, WithTool(dt, job));
@@ -479,7 +520,7 @@ public sealed partial class StoryColony
     private ActiveJob? PourCell(PawnState p, PawnLive live, ref GhostScan scan, GhostState g)
     {
         var b = scan.Build;
-        var (pj, wait) = PourJob(p, live, b, g, scan.Todo, scan.Builders);
+        var (pj, wait) = PourJob(p, live, b, g, TodoOf(scan), scan.Builders);
         if (pj != null) return pj;
         if (wait) { Blocked($"build {b.Id}: {b.Reason ?? "waiting for water"}"); scan.SkipBuild = true; }
         return null;
@@ -576,7 +617,7 @@ public sealed partial class StoryColony
     private ActiveJob PlaceJob(IStoryWorld w, PawnState p, GhostScan scan, GhostState g, string key, int cur, ToolPlan? clearTool, CellSupply s)
     {
         var b = scan.Build;
-        int openCells = scan.Todo.Count(x => (x.Item ?? "") == s.Item); // open or in a batch now: every builder's share of the whole
+        int openCells = scan.Mine ? 1 : TodoOf(scan).Count(x => (x.Item ?? "") == s.Item); // open or in a batch now: every builder's share of the whole
         int cap = scan.Mine ? 1 : Math.Min(Math.Clamp((int)Math.Ceiling(openCells / (double)scan.Builders), 1, BatchMax), s.Have + s.Stored);
         var (cells, stand) = Batch(w, b, g, cap, scan.From, p.Name, PlaceInto(cur) ? -1 : cur);
         var scaffold = ScaffoldOf(scan, g); // a floating cell's: one more block, dug again
@@ -993,7 +1034,7 @@ public sealed partial class StoryColony
         if (_digsOpenRev != _rev) { _digsOpen.Clear(); _digsOpenRev = _rev; }
         if (_digsOpen.TryGetValue(o, out bool open)) return open;
         var todo = o.Ghosts.Where(g => g.Job && g.State is "todo" or "leased").ToList();
-        open = todo.Any(g => g.Remove && g.State == "leased") || OpenCells(o, todo, false).Any(g => g.Remove);
+        open = todo.Any(g => g.Remove && g.State == "leased") || OpenCells(o, todo).Any(g => g.Remove);
         return _digsOpen[o] = open;
     }
 
@@ -1085,8 +1126,8 @@ public sealed partial class StoryColony
     /// <summary>The ghost behind a cell id and its build; null when either is gone, or (unless <paramref name="anyState"/>) it is done.</summary>
     private (GhostState G, BuildState B)? OpenGhost(string id, bool anyState = false)
     {
-        if (FindGhost(id) is not { } g || !anyState && g.State == "done") return null;
-        return Builds.FirstOrDefault(x => x.Ghosts.Contains(g)) is { } b ? (g, b) : null;
+        if (FindCell(id) is not (var g, var b) || !anyState && g.State == "done") return null;
+        return (g, b);
     }
 
     /// <summary>One cell's report: built (done), turned the wrong way (misrotated), else a failure of that cell.</summary>
@@ -1252,7 +1293,7 @@ public sealed partial class StoryColony
                 break;
             case CellMiss.Pawn:
                 RestForPawn(p, key);
-                if (!UnreachableForSome(p, key, WorkTypes.Build)) return false;
+                if (!UnreachableForSome(p, key, CellWork(b, g))) return false;
                 break;
             case CellMiss.NotNow:
                 if (!CellRested(key)) return false;

@@ -660,7 +660,8 @@ export const StoryBuild = z.object({
   reason: z.string().nullish(),
   blocksTotal: z.number().int().default(0),
   blocksDone: z.number().int().default(0),
-  material: StoryMaterial.nullish(),
+  // a mine build has no block of its own: the bot sends "" for it
+  material: z.union([StoryMaterial, z.literal('')]).nullish(),
   order: z.number().int().default(0),
   created: When.nullish(),
   materials: z.array(StoryBuildMaterial).default([]),

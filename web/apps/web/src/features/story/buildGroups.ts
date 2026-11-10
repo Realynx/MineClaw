@@ -2,6 +2,17 @@ import type { StoryBuild } from '@mineclaw/contracts';
 
 export type BuildGroup = { key: string; title: string; grouped: boolean; builds: StoryBuild[]; active: StoryBuild[] };
 
+/** The work a queued build counts as: a placed mine design (kind `mine`) is mining; every other build is construction. */
+export type BuildWork = 'mine' | 'build';
+
+/** A placed mine design's dig is mining work (job type `mine`); the torches and ladders it puts in stay construction. */
+export const buildWork = (b: Pick<StoryBuild, 'kind'> | null | undefined): BuildWork =>
+  b?.kind === 'mine' ? 'mine' : 'build';
+
+/** A group reads as mining when every build in it is a mine design's part. */
+export const groupWork = (g: Pick<BuildGroup, 'builds'>): BuildWork =>
+  g.builds.length > 0 && g.builds.every((b) => buildWork(b) === 'mine') ? 'mine' : 'build';
+
 /** Old clients named parts but omitted group ids. Only coalesce a tightly bounded creation batch, never names alone. */
 function legacyPlacements(builds: readonly StoryBuild[]): Map<StoryBuild['id'], string> {
   const when = (b: StoryBuild) => (typeof b.created === 'number' ? b.created : Date.parse(b.created ?? ''));

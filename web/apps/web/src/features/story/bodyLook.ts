@@ -41,18 +41,25 @@ export function ghostSuperseded(reason: string | null | undefined): boolean {
   return reason?.startsWith('superseded by build ') === true;
 }
 
+/** The last answer of `hologramCells` (shared: callers only read it). */
+let lastCells: { ghosts: object; sig: string; out: { cells: HoloCell[]; rev: string } } | null = null;
+
 /** The queued cells to draw as holograms (queue order: the ghosts' own order) and the revision that gates rebuilding. A
  * `place` ghost with id 0 (air) has nothing to draw and is left out, and so is a cell a newer build took over. */
 export function hologramCells(st: Pick<StoryColonyState, 'ghosts' | 'builds'> | undefined): { cells: HoloCell[]; rev: string } {
   const builds = new Map((st?.builds ?? []).map((b) => [String(b.id), b.status] as const));
   const ghosts = st?.ghosts;
+  const sig = [...builds].map(([id, s]) => `${id}:${s}`).join(',');
+  // The map and the fly editor both ask on every colony delta; the cells only change with the ghosts or a build's status.
+  if (ghosts && lastCells?.ghosts === ghosts && lastCells.sig === sig) return lastCells.out;
   const cells: HoloCell[] = [];
   for (const g of ghosts?.blocks ?? []) {
     const cell = holoCell(g, builds);
     if (cell) cells.push(cell);
   }
-  const sig = [...builds].map(([id, s]) => `${id}:${s}`).join(',');
-  return { cells, rev: `${ghosts?.rev ?? 0}|${cells.length}|${sig}` };
+  const out = { cells, rev: `${ghosts?.rev ?? 0}|${cells.length}|${sig}` };
+  lastCells = ghosts ? { ghosts, sig, out } : null;
+  return out;
 }
 
 /** A ghost's hologram cell (null: nothing to draw). */

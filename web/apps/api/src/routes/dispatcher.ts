@@ -15,6 +15,7 @@ import {
   hasRole,
   parseBridgeJson,
   toCamel,
+  toCamelJson,
   toSnake,
   type RouteDef,
   type RouteId,
@@ -37,6 +38,7 @@ import { ApiHttpError, Errors, sendApiError, sendJson } from '../common/errors.j
 import { contextOf, header, parseQuery, readBody, type RequestContext } from '../common/http.js';
 import type { Logger } from '../common/logger.js';
 import type { LiveHub } from '../live/live-hub.js';
+import { contractSample } from '../live/contract-sample.js';
 import type { WebHostingSettings } from '../config/web-hosting.js';
 import type { HumanSkins } from '../skins/human-skins.js';
 import { VERSION } from '../version.js';
@@ -260,7 +262,7 @@ export class RouteDispatcher {
 
   private validate(id: RouteId, schema: z.ZodType | null | undefined, data: unknown): void {
     if (this.d.validateResponses === 'off' || !schema) return;
-    const r = schema.safeParse(data);
+    const r = schema.safeParse(contractSample(data));
     if (r.success) return;
     this.d.log.warn({ route: id, issues: issues(r.error) }, 'response does not match the contract');
     if (this.d.validateResponses === 'strict')
@@ -502,7 +504,7 @@ function relayRefusal(route: RouteDef, text: string, res: ServerResponse): boole
 async function readUpstreamJson(upstream: IncomingMessage): Promise<unknown> {
   const text = await readText(upstream, MAX_JSON_BYTES);
   try {
-    return toCamel(parseBridgeJson(text));
+    return toCamelJson(parseBridgeJson(text));
   } catch {
     throw Errors.upstreamError(502, 'upstream sent invalid JSON');
   }

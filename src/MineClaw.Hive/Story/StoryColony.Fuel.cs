@@ -67,7 +67,8 @@ public sealed partial class StoryColony
             int own = ownStacks.Sum(s => s.Count);
             if (own >= units) return (f, units, null, null);
             foreach (var stack in ownStacks) WoodTaken(wood, stack);
-            var fs = Storages.Where(s => s.Chest.Dist(need.Bench.Pos) <= need.Bill.Radius && ChestOpen(s.Chest))
+            // A chest with none of this fuel is left out before its stock is grouped (after ChestOpen, which notes lids).
+            var fs = Storages.Where(s => s.Chest.Dist(need.Bench.Pos) <= need.Bill.Radius && ChestOpen(s.Chest) && s.Contents.Any(Ok))
                 .OrderBy(s => s.Chest.Dist(need.Bench.Pos))
                 .SelectMany(s => FurnaceStock(s, need.ReservedInputs).Where(t => Ok(t) && WoodAvailable(wood, t.Id, t.Meta, t.Count) >= units - own)
                     .Select(t => (Store: s, Stack: t))).FirstOrDefault();

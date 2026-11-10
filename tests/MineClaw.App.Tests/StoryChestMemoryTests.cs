@@ -36,4 +36,25 @@ public sealed class StoryChestMemoryTests
         Assert.Null(host.KnownChest(unknown));
         Assert.Equal(4, Assert.Single(host.KnownChest(first)!).Id);
     }
+
+    [Fact]
+    public void Chest_looks_name_every_remembered_chest_of_the_dimension_with_when_it_was_read_in_one_query()
+    {
+        using var db = AgentDb.Open(null);
+        using var rag = new RagIndex(db, backgroundEmbedding: false);
+        var obs = new ObservationStore(rag);
+        var world = new WorldState(inventory: InventoryModel.Beta181) { Dimension = 0 };
+        var time = DateTimeOffset.Parse("2026-11-10T07:00:00Z");
+        var a = new P3(2, 64, 2); var b = new P3(-3, 12, 40); var nether = new P3(5, 70, 5); var noContents = new P3(9, 64, 9);
+        void Remember(P3 p, int seconds, int dim = 0) => obs.Upsert(new Observation("chest", p.ToString(), "chest")
+        { Contents = [new ItemCount(4, "cobblestone", 1)], ContentsAt = time.AddSeconds(seconds), Dimension = dim });
+        Remember(a, 0); Remember(b, 5); Remember(nether, 9, -1);
+        obs.Upsert(new Observation("chest", noContents.ToString(), "chest") { Dimension = 0 }); // seen, never opened
+        var host = new StoryHost(null, () => null, () => world, Beta181GameData.Instance, () => null, observations: obs);
+        var looks = host.ChestLooks()!;
+        Assert.Equal(2, looks.Count);
+        Assert.Equal(time, looks[a]);
+        Assert.Equal(time.AddSeconds(5), looks[b]);
+        Assert.Null(new StoryHost(null, () => null, () => world, Beta181GameData.Instance, () => null).ChestLooks());
+    }
 }

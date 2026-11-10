@@ -88,7 +88,7 @@ public sealed partial class StoryColony
                 changed |= ScanCell(s, z, col, i, p, held, counts, damage);
             }
         }
-        if (changed) { z.Preserve.Changed(); _dirty = true; }
+        if (changed) { z.Preserve.Changed(); _dirty = true; z.Rev = Touch(); } // stamped: a tick's save writes only rows whose revision moved
         return damage;
     }
 

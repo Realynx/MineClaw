@@ -369,6 +369,12 @@ public sealed class ObservationStore
         _db.Query($"SELECT {Cols} FROM observations WHERE removed IS NULL AND kind = $k AND {DimFilter()} ORDER BY last_seen DESC LIMIT $n",
             r => Map(r), ("$k", kind.Trim().ToLowerInvariant()), ("$dim", Dim(dimension)), ("$n", limit));
 
+    /// <summary>When each live row of a kind had its contents read (rows with contents only), by key (null dimension = current): one
+    /// query for a caller that would otherwise read every row to learn which changed.</summary>
+    public List<(string Key, DateTimeOffset ContentsAt)> ContentsTimes(string kind, int? dimension = null) =>
+        _db.Query($"SELECT key, contents_at FROM observations WHERE removed IS NULL AND contents_at IS NOT NULL AND kind = $k AND {DimFilter()}",
+            r => (r.GetString(0), AgentDb.FromUnixMs(r.GetInt64(1))), ("$k", kind.Trim().ToLowerInvariant()), ("$dim", Dim(dimension)));
+
     /// <summary>Counts of live observation kinds intersecting a region (null = current dimension).</summary>
     public Dictionary<string, int> ListKinds(Box region, int? dimension = null) =>
         _db.Query($"""

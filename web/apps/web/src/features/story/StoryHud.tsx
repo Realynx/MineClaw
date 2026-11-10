@@ -1192,7 +1192,19 @@ const HEADINGS: { [K in OptionsTool['kind']]: (t: Extract<OptionsTool, { kind: K
   }),
 };
 
+/** A placed mine design is mining work: its digs go to miners, only the blocks it puts in are construction. */
+function mineDesignHeading(t: Extract<OptionsTool, { kind: 'design' }>, y: { min: number; max: number }): ToolHeading {
+  const dig = t.blocks.filter((b) => b[3] === 0).length;
+  const put = t.blocks.length - dig;
+  return {
+    name: `Mine design: ${t.name}`,
+    hint: `${dig} cells to mine at y ${y.min}..${y.max}: click to queue it here as mining work (Q/E turns)${put ? `; its ${put} placed blocks are construction` : ''}.`,
+    icon: 'mine',
+  };
+}
+
 function toolHeadingOf(tool: OptionsTool): ToolHeading {
+  if (tool.kind === 'design' && tool.mine) return mineDesignHeading(tool, tool.mine);
   return (HEADINGS[tool.kind] as (t: OptionsTool) => ToolHeading)(tool);
 }
 
