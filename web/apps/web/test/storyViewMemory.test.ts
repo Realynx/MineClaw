@@ -51,12 +51,15 @@ it.each([
 });
 
 it('keeps the zoom within what the map can show, when read and when saved', () => {
+  // Zooming out has no practical limit: a far view is remembered as it was.
   localStorage.setItem(KEY, JSON.stringify({ ...view, zoom: 4000 }));
-  expect(loadView('fox')?.zoom).toBe(112);
+  expect(loadView('fox')?.zoom).toBe(4000);
+  localStorage.setItem(KEY, JSON.stringify({ ...view, zoom: 5e9 }));
+  expect(loadView('fox')?.zoom).toBe(1_000_000);
   localStorage.setItem(KEY, JSON.stringify({ ...view, zoom: 0.5 }));
   expect(loadView('fox')?.zoom).toBe(10);
-  saveView('fox', { ...view, zoom: 4000 });
-  expect(JSON.parse(localStorage.getItem(KEY)!)).toEqual({ ...view, zoom: 112 });
+  saveView('fox', { ...view, zoom: 5e9 });
+  expect(JSON.parse(localStorage.getItem(KEY)!)).toEqual({ ...view, zoom: 1_000_000 });
 });
 
 it('does not save what is not a view', () => {

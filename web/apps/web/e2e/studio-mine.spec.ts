@@ -5,7 +5,11 @@ import { expect, test, type Page } from '@playwright/test';
 // (still one custom component, clean), the design opened again in a new session (the same), then a combine after that save and
 // a reload without saving (still combined, "Unsaved changes" shown). MINE_PERF=1 also measures frame rates on software WebGL
 // (the projects run with the GPU off). SHOTS_DIR=<dir> saves screenshots.
+// Before the save, the combined component (the shared outliner's selected row) is dragged by its body with the mouse free:
+// Esc puts it back, a release moves it (one undo step puts it back again), and an Alt-drag over empty space still orbits.
 const shots = process.env.SHOTS_DIR;
+/** The mine plot's width (DESIGNER_MINE_PLOT): a drag goes toward its middle, where the component has room. */
+const MINE_PLOT = 256;
 const PRESET = 'preset-1.12.2-diamond-y11';
 const SECOND_PRESET = 'preset-1.12.2-lapis-iron-y16';
 
@@ -18,18 +22,38 @@ async function signIn(page: Page) {
   await page.waitForURL('**/live');
 }
 
+type Point = [number, number, number];
+interface Vec {
+  x: number;
+  y: number;
+  z: number;
+  set(x: number, y: number, z: number): Vec;
+  project(camera: Camera): Vec;
+}
+interface Camera {
+  position: { clone(): Vec };
+  updateMatrixWorld(): void;
+}
+
 type Hook = {
   studio: {
     id: number;
     designId: number | null;
-    canvas: { dug: Set<number>; size: number };
+    canvas: { dug: Set<number>; size: number; holes(): Point[] };
     terrain: { seed: string } | null;
   };
   world: { terrain: { surfaceRange(): { min: number; max: number } } | null };
-  overlay: { xrayCount: number };
+  overlay: { xrayCount: number; gizmo: { visible: boolean; position: { x: number; y: number; z: number } } };
   engine: () => {
     stats(): { fps: number; columns: number; sections: number; triangles: number; frameMs: number };
-    rig: { flyPos: { set(x: number, y: number, z: number): void }; flyYaw: number; flyPitch: number };
+    rig: {
+      flyPos: { set(x: number, y: number, z: number): void };
+      flyYaw: number;
+      flyPitch: number;
+      orbitYaw: number;
+    };
+    camera: Camera;
+    surface: HTMLElement;
   } | null;
 };
 
@@ -78,6 +102,73 @@ async function synced(page: Page) {
   await expect(page.getByTestId('sync-chip')).toHaveText('Synced');
 }
 
+/** The only custom component's corner, from its outliner row ("Custom component · x, y, z. Double-click to frame."). */
+async function customCorner(page: Page): Promise<Point> {
+  const title = (await customComponents(page).getAttribute('title')) ?? '';
+  const m = /(-?\d+), (-?\d+), (-?\d+)\. Double-click/.exec(title);
+  expect(m, `a corner in "${title}"`).not.toBeNull();
+  return [Number(m![1]), Number(m![2]), Number(m![3])];
+}
+
+/** Where canvas point `p` is drawn now, in client pixels (a mine's canvas y is world y). */
+async function screenOf(page: Page, p: Point): Promise<{ x: number; y: number }> {
+  return page.evaluate(([x, y, z]) => {
+    const e = (window as unknown as { __studio: Hook }).__studio.engine()!;
+    e.camera.updateMatrixWorld();
+    const v = e.camera.position.clone().set(x, y, z).project(e.camera);
+    const r = e.surface.getBoundingClientRect();
+    return { x: r.left + ((v.x + 1) / 2) * r.width, y: r.top + ((1 - v.y) / 2) * r.height };
+  }, p);
+}
+
+/**
+ * A point on the component's body to press: the dug cell drawn nearest the middle of the view, with nothing over the view
+ * there and well away from the selection's move handles (a press on those is the handles').
+ */
+async function bodyPoint(page: Page): Promise<{ x: number; y: number; cell: Point; minX: number; maxX: number }> {
+  const found = await page.evaluate(() => {
+    const h = (window as unknown as { __studio: Hook }).__studio;
+    const e = h.engine()!;
+    e.camera.updateMatrixWorld();
+    const r = e.surface.getBoundingClientRect();
+    const screen = (x: number, y: number, z: number) => {
+      const v = e.camera.position.clone().set(x, y, z).project(e.camera);
+      return { x: r.left + ((v.x + 1) / 2) * r.width, y: r.top + ((1 - v.y) / 2) * r.height, depth: v.z };
+    };
+    const g = h.overlay.gizmo;
+    const handles = g.visible ? screen(g.position.x, g.position.y, g.position.z) : null;
+    const mid = { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    let best: { x: number; y: number; cell: Point; d: number } | null = null;
+    let minX = Infinity;
+    let maxX = -Infinity;
+    for (const [x, y, z] of h.studio.canvas.holes()) {
+      minX = Math.min(minX, x);
+      maxX = Math.max(maxX, x);
+      const s = screen(x + 0.5, y + 0.5, z + 0.5);
+      if (s.depth > 1 || Math.abs(s.x - mid.x) > r.width * 0.3 || Math.abs(s.y - mid.y) > r.height * 0.3) continue;
+      if (handles && Math.hypot(s.x - handles.x, s.y - handles.y) < 160) continue;
+      const d = Math.hypot(s.x - mid.x, s.y - mid.y);
+      if ((best && d >= best.d) || document.elementFromPoint(s.x, s.y) !== e.surface) continue;
+      best = { x: s.x, y: s.y, cell: [x, y, z], d };
+    }
+    return best && { x: best.x, y: best.y, cell: best.cell, minX, maxX };
+  });
+  expect(found, 'a dug cell of the component in the middle of the view').not.toBeNull();
+  return found!;
+}
+
+/** The whole plan, as one string: the dug cells' count and coordinate sums (a move changes it, its undo restores it). */
+const plan = (page: Page) =>
+  hook(page, (h) => {
+    let x = 0;
+    let z = 0;
+    for (const p of h.studio.canvas.holes()) {
+      x += p[0];
+      z += p[2];
+    }
+    return `${h.studio.canvas.dug.size}:${x}:${z}`;
+  });
+
 test('mine designer: a combined component survives save, reload, a new session and an unsaved reload', async ({
   page,
 }) => {
@@ -106,6 +197,66 @@ test('mine designer: a combined component survives save, reload, a new session a
   await expect(customComponents(page)).toHaveCount(1);
   expect(await hook(page, (h) => h.studio.canvas.dug.size)).toBe(dug);
   if (shots) await page.screenshot({ path: `${shots}/studio-mine-combined.png` });
+
+  // The shared outliner selects the new component; framed, it is dragged by its body with the mouse free (a mine never
+  // locks it). Only its outline follows the mouse: Esc puts it back with nothing changed.
+  const selected = page.getByRole('listbox', { name: 'Mine components' }).getByRole('option', { selected: true });
+  await expect(selected).toHaveCount(1);
+  await expect(selected).toHaveAccessibleName(/^Custom component \d+$/);
+  const home = await customCorner(page);
+  const before = await plan(page);
+  await page.getByRole('button', { name: 'Frame selected component' }).click();
+  await page.waitForTimeout(1500); // the camera eases onto it
+  const body = await bodyPoint(page);
+  // Four cells along x on the component's own level, toward the side of the plot with more room.
+  const east = MINE_PLOT - 1 - body.maxX >= body.minX ? 1 : -1;
+  const a = await screenOf(page, [body.cell[0] + 0.5, home[1], body.cell[2] + 0.5]);
+  const b = await screenOf(page, [body.cell[0] + 0.5 + 4 * east, home[1], body.cell[2] + 0.5]);
+  const to = { x: body.x + b.x - a.x, y: body.y + b.y - a.y };
+  expect(Math.hypot(to.x - body.x, to.y - body.y)).toBeGreaterThan(10);
+  await page.mouse.move(body.x, body.y);
+  await page.mouse.down();
+  await page.mouse.move(to.x, to.y, { steps: 8 });
+  expect(await page.evaluate(() => !!document.pointerLockElement)).toBe(false);
+  await page.keyboard.press('Escape');
+  await page.mouse.up();
+  expect(await customCorner(page)).toEqual(home);
+  expect(await plan(page)).toBe(before);
+
+  // The same drag released: one move of the whole component across its level; one undo step puts it back.
+  await page.mouse.move(body.x, body.y);
+  await page.mouse.down();
+  await page.mouse.move(to.x, to.y, { steps: 8 });
+  await page.mouse.up();
+  await expect.poll(() => customCorner(page)).not.toEqual(home);
+  const moved = await customCorner(page);
+  expect(moved[1]).toBe(home[1]);
+  expect(Math.sign(moved[0] - home[0])).toBe(east);
+  await expect(customComponents(page)).toHaveAttribute('aria-selected', 'true');
+  expect(await plan(page)).not.toBe(before);
+  if (shots) await page.screenshot({ path: `${shots}/studio-mine-dragged.png` });
+  await page.keyboard.press('Control+z');
+  await expect.poll(() => customCorner(page)).toEqual(home);
+  await expect.poll(() => plan(page)).toBe(before);
+
+  // Alt+left-drag over empty space still orbits the camera, and moves nothing.
+  const yaw = await hook(page, (h) => h.engine()!.rig.orbitYaw);
+  const sky = await page.evaluate(() => {
+    const surface = (window as unknown as { __studio: Hook }).__studio.engine()!.surface;
+    const r = surface.getBoundingClientRect();
+    const at = { x: r.left + r.width / 2, y: r.top + r.height * 0.1 };
+    return { ...at, onView: document.elementFromPoint(at.x, at.y) === surface };
+  });
+  expect(sky.onView, 'nothing over the top of the view').toBe(true);
+  await page.mouse.move(sky.x, sky.y);
+  await page.keyboard.down('Alt');
+  await page.mouse.down();
+  await page.mouse.move(sky.x + 150, sky.y, { steps: 6 });
+  await page.mouse.up();
+  await page.keyboard.up('Alt');
+  await expect.poll(() => hook(page, (h) => h.engine()!.rig.orbitYaw)).not.toBe(yaw);
+  expect(await customCorner(page)).toEqual(home);
+  expect(await plan(page)).toBe(before);
 
   // Save (Ctrl+S from the name field): the saved bar, the range, a clean page and a synced canvas.
   await page.getByLabel('Design name').fill('deep diamond mine');

@@ -25,6 +25,8 @@ export interface RedstonePanelProps {
   stage: RefObject<HTMLElement | null>;
   /** The gate library's tab, once there is one. */
   library?: ReactNode;
+  /** The selected placed component: picking one (in the world too) shows the Library tab, where the outliner lists it. */
+  component?: string | null;
 }
 
 type Tab = 'library' | 'simulate' | 'probes' | 'inspector';
@@ -45,7 +47,7 @@ export function RedstonePanel(p: RedstonePanelProps) {
   return p.sim.api ? <Panel {...p} api={p.sim.api} /> : null;
 }
 
-function Panel({ sim, api, serverVersion, stage, library }: RedstonePanelProps & { api: SimControllerApi }) {
+function Panel({ sim, api, serverVersion, stage, library, component }: RedstonePanelProps & { api: SimControllerApi }) {
   const snap = useSimSnapshot(api);
   const [tab, setTab] = useState<Tab>(library ? 'library' : 'simulate');
   const root = useRef<HTMLElement>(null);
@@ -55,6 +57,11 @@ function Panel({ sim, api, serverVersion, stage, library }: RedstonePanelProps &
   useEffect(() => {
     if (selected) setTab('inspector');
   }, [selected]);
+  // So is a component picked: its row and details are on the Library tab.
+  const hasLibrary = !!library;
+  useEffect(() => {
+    if (component && hasLibrary) setTab('library');
+  }, [component, hasLibrary]);
 
   useEffect(() => {
     const within = (el: Element | null, node: Element | null) => !!el && !!node && el.contains(node);

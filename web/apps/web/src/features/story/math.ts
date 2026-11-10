@@ -119,11 +119,12 @@ export function nearest<T extends { key: string; at: Pt | null }>(items: readonl
 
 export const ZOOM_MIN = 10;
 /**
- * The farthest zoom (blocks of view height). The viewer draws a top-down / iso picture's whole ground (up to its 192-block
- * cover cap), so the ground never ends at the edges; the cost grows with the area. Measured on software WebGL over the
- * dense fixture world (scripts/perf.mjs --camera top): 33 fps at 112, 27 fps at 144.
+ * The farthest zoom (blocks of view height): no practical limit, so a whole colony or a big strip mine fits on screen. Only a
+ * numeric ceiling keeps the maths finite. The viewer still draws terrain only up to its cover cap (viewerQuality.coverCap,
+ * at most 192 blocks) around the look-at point, so zooming further shows the map's marks, zones and pawns over a bounded
+ * terrain patch rather than loading or meshing more world.
  */
-export const ZOOM_MAX = 112;
+export const ZOOM_MAX = 1_000_000;
 
 /**
  * Zoom around the cursor: the world point under the cursor stays put. `zoom` is the world height the view shows; one wheel

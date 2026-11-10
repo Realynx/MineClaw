@@ -19,7 +19,7 @@ export const PORT_COLOR = 0xfbbf24;
 export const JOINED_PORT_COLOR = 0x22c55e;
 
 /** A square on the floor of each cell (canvas coordinates), `inset` in from its edges: 4 segments per cell. */
-export function portMarks(cells: readonly V3[], inset = 0.2): Float32Array {
+export function portMarks(cells: readonly (readonly [number, number, number])[], inset = 0.2): Float32Array {
   const out = new Float32Array(cells.length * 24);
   let i = 0;
   for (const [x, y, z] of cells) {
@@ -31,6 +31,81 @@ export function portMarks(cells: readonly V3[], inset = 0.2): Float32Array {
     for (const v of [a, h, c, b, h, c, b, h, c, b, h, d, b, h, d, a, h, d, a, h, d, a, h, c]) out[i++] = v;
   }
   return out;
+}
+
+export type PortSide = 'north' | 'east' | 'south' | 'west';
+
+/** A port as its arrow shows it: its cell, the side of its component it sits on, what it carries, whether it is joined. */
+export interface PortArrow {
+  at: readonly [number, number, number];
+  side: PortSide;
+  kind: 'in' | 'out';
+  joined?: boolean;
+}
+
+const SIDE_STEP: Readonly<Record<PortSide, readonly [number, number]>> = {
+  north: [0, -1],
+  east: [1, 0],
+  south: [0, 1],
+  west: [-1, 0],
+};
+
+/**
+ * A chevron on the floor of each port cell, pointing the way its signal goes: into the component for an input, out of it
+ * for an output (2 segments per port). It sits inside the port's square, so the two read as one mark.
+ */
+export function portArrowMarks(arrows: readonly PortArrow[]): Float32Array {
+  const out = new Float32Array(arrows.length * 12);
+  let i = 0;
+  for (const a of arrows) {
+    const [sx, sz] = SIDE_STEP[a.side];
+    const dx = a.kind === 'out' ? sx : -sx,
+      dz = a.kind === 'out' ? sz : -sz;
+    const cx = a.at[0] + 0.5,
+      cz = a.at[2] + 0.5,
+      h = a.at[1] + 0.04;
+    const tipX = cx + dx * 0.22,
+      tipZ = cz + dz * 0.22;
+    const backX = cx - dx * 0.12,
+      backZ = cz - dz * 0.12;
+    // The wings spread across the signal's way (dz, -dx is a quarter turn of it).
+    for (const v of [
+      backX + dz * 0.22,
+      h,
+      backZ - dx * 0.22,
+      tipX,
+      h,
+      tipZ,
+      backX - dz * 0.22,
+      h,
+      backZ + dx * 0.22,
+      tipX,
+      h,
+      tipZ,
+    ])
+      out[i++] = v;
+  }
+  return out;
+}
+
+/**
+ * Ports given about a corner (`ports[i].at + at`, a dragged component's ports where its outline stands), joined where
+ * they say so or where a cell of `joined` is.
+ */
+export function portArrowsAt(
+  ports: readonly PortArrow[],
+  at: readonly [number, number, number],
+  joined: readonly (readonly [number, number, number])[],
+): PortArrow[] {
+  return ports.map((p) => {
+    const cell: [number, number, number] = [p.at[0] + at[0], p.at[1] + at[1], p.at[2] + at[2]];
+    return {
+      at: cell,
+      side: p.side,
+      kind: p.kind,
+      joined: !!p.joined || joined.some((j) => j[0] === cell[0] && j[1] === cell[1] && j[2] === cell[2]),
+    };
+  });
 }
 
 /** World y of canvas y 0 in the plot's mode (64 on a build plot, 0 on a mine). */
@@ -111,6 +186,8 @@ export class Overlay3D {
   private readonly placement = mineLines('mine-placement', MINE_PREVIEW_COLORS.placement, 14);
   private readonly ports = mineLines('mine-ports', PORT_COLOR, 15);
   private readonly joinedPorts = mineLines('mine-ports-joined', JOINED_PORT_COLOR, 16);
+  private readonly portArrows = mineLines('component-port-arrows', PORT_COLOR, 15);
+  private readonly joinedPortArrows = mineLines('component-port-arrows-joined', JOINED_PORT_COLOR, 16);
   private placementPositions: Float32Array | null = null;
   private flashUntil = 0;
   private flashStart = 0;
@@ -219,6 +296,7 @@ export class Overlay3D {
       this.joinedPorts,
       this.gizmo,
     );
+    this.group.add(this.portArrows, this.joinedPortArrows);
   }
 
   /** Keep editor handles, selection, grid and temporary ghosts out of a saved camera picture. */
@@ -318,16 +396,49 @@ export class Overlay3D {
     if (!cells) this.setMinePorts(null);
   }
 
-  /** Amber squares where another piece can be joined, green where the outline in view joins one (null hides both). */
+  /** The mine designer's name for setComponentPorts. */
   setMinePorts(open: readonly V3[] | null, joined: readonly V3[] = []): void {
+    this.setComponentPorts(open, joined);
+  }
+
+  /**
+   * Amber squares where another component can be joined, green where the outline in view joins one (null hides both).
+   * Shared by every component kind (mine pieces, redstone parts).
+   */
+  setComponentPorts(
+    open: readonly (readonly [number, number, number])[] | null,
+    joined: readonly (readonly [number, number, number])[] = [],
+  ): void {
     setMinePositions(this.ports, open?.length ? portMarks(open) : new Float32Array());
     setMinePositions(this.joinedPorts, open && joined.length ? portMarks(joined, 0.05) : new Float32Array());
+    if (!open) this.setPortArrows(null);
+  }
+
+  /**
+   * Which way each port's signal goes (in or out), amber where open and green where joined; null hides them. Ports may be
+   * given about a corner `at`, joined where a cell of `joined` is (see portArrowsAt). Call it after setComponentPorts,
+   * which hides them when it hides the squares.
+   */
+  setPortArrows(
+    ports: readonly PortArrow[] | null,
+    at: readonly [number, number, number] = [0, 0, 0],
+    joined: readonly (readonly [number, number, number])[] = [],
+  ): void {
+    const list = ports ? portArrowsAt(ports, at, joined) : [];
+    setMinePositions(this.portArrows, portArrowMarks(list.filter((a) => !a.joined)));
+    setMinePositions(this.joinedPortArrows, portArrowMarks(list.filter((a) => a.joined)));
   }
 
   /** Openings marked now (amber, then green), for tests and the e2e. */
   get portCounts(): [number, number] {
     const count = (l: THREE.LineSegments) => (l.visible ? l.geometry.drawRange.count / 8 : 0);
     return [count(this.ports), count(this.joinedPorts)];
+  }
+
+  /** Port arrows drawn now (amber, then green), for tests and the e2e. */
+  get portArrowCounts(): [number, number] {
+    const count = (l: THREE.LineSegments) => (l.visible ? l.geometry.drawRange.count / 4 : 0);
+    return [count(this.portArrows), count(this.joinedPortArrows)];
   }
 
   /** Violet, or red where the piece cannot stand (`refused`). */

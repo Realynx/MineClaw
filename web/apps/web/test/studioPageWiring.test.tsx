@@ -79,6 +79,9 @@ vi.mock('@/features/studio/studio-viewer', async () => {
     Raycaster: three.Raycaster,
     Vector2: three.Vector2,
     Vector3: three.Vector3,
+    // A redstone design's simulator, as on the page.
+    PowerOverlay: (await import('@/features/studio/redstone/powerOverlay')).PowerOverlay,
+    createSimulation: (await import('@mineclaw/redstone')).createSimulation,
   };
 });
 
@@ -563,5 +566,98 @@ describe('mine keys and panel wiring (WP5 to WP7)', () => {
     await waitFor(() => expect(screen.queryByTestId('studio-shortcuts')).toBeNull());
     fireEvent.click(screen.getByTestId('shortcuts-button'));
     expect(await screen.findByTestId('studio-shortcuts')).toBeInTheDocument();
+  });
+});
+
+describe('redstone component wiring', () => {
+  const redstoneSession = (): DesignerSession => ({
+    id: 43,
+    owner: 'fox',
+    model: 'main',
+    designId: null,
+    name: 'gates',
+    rev: 0,
+    blocks: [],
+    anchor: null,
+    messages: [],
+    costUsd: 0,
+    calls: 0,
+    version: '1.12.2',
+    palette: MOCK_DESIGNER_PALETTE,
+    plot: { size: 64, height: 48, depth: 16 },
+    revisions: [],
+    kind: 'redstone',
+  });
+  const cells = (studio: Studio) =>
+    JSON.stringify(studio.canvas.cells().sort((a, b) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2]));
+
+  /** Places a NOT at a typed corner from the Library tab and selects it in the outliner. */
+  async function selectedNot() {
+    const opened = await open(redstoneSession());
+    fireEvent.click(screen.getByRole('tab', { name: 'Library' }));
+    fireEvent.click(within(screen.getByRole('region', { name: 'Proven gates' })).getByRole('button', { name: 'NOT' }));
+    fireEvent.change(screen.getByLabelText('Place at x y z'), { target: { value: '10 0 10' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Place at' }));
+    const list = screen.getByRole('listbox', { name: 'Redstone components' });
+    fireEvent.click(within(list).getByRole('option', { name: 'NOT 1' }));
+    await waitFor(() => expect(opened.studio.selection).not.toBeNull());
+    return opened;
+  }
+
+  it('a selected component gets the drag hint in place of the raw turn, mirror and selection edits', async () => {
+    await selectedNot();
+    // Those would turn or edit its cells as plain blocks and unlink it; its keys and the gizmo move it whole.
+    expect(screen.queryByRole('toolbar', { name: 'Selection' })).toBeNull();
+    expect(screen.getByText(/Drag it or an axis/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Deselect' })).toBeInTheDocument();
+  });
+
+  it('dragging its gizmo handle moves only the outline, then commits one move on release', async () => {
+    const { studio } = await selectedNot();
+    const { overlay } = (window as unknown as { __studio: { overlay: Overlay3D } }).__studio;
+    const surface = screen.getByTestId('viewer-surface');
+    vi.spyOn(surface, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 0, 800, 600));
+    const camera = view.engine!.camera as PerspectiveCamera;
+    const aim = overlay.gizmo.position.clone();
+    camera.position.copy(aim).add(new Vector3(0, 0, 40));
+    camera.lookAt(aim);
+    camera.updateMatrixWorld();
+    const client = (p: Vector3) => {
+      const ndc = p.clone().project(camera);
+      return { clientX: (ndc.x + 1) * 400, clientY: (1 - ndc.y) * 300 };
+    };
+    const picks = (at: { clientX: number; clientY: number }) => {
+      const ray = new Raycaster();
+      ray.setFromCamera(new Vector2(at.clientX / 400 - 1, 1 - at.clientY / 300), camera);
+      return overlay.pickHandle(ray);
+    };
+    const grip = [0.75, 1, 1.5, 2]
+      .map((t) => client(aim.clone().add(new Vector3(t * overlay.gizmo.scale.x, 0, 0))))
+      .find((at) => picks(at) === 'x');
+    expect(grip).toBeDefined();
+    const before = cells(studio);
+    const label = studio.snapshot().undoLabel;
+    act(() => {
+      fireEvent.pointerDown(surface, { ...grip!, button: 0, pointerId: 7 });
+    });
+    for (const k of [4, 6, 8]) {
+      const along = client(aim.clone().add(new Vector3(overlay.gizmo.scale.x * 2 + k, 0, 0)));
+      act(() => {
+        fireEvent.pointerMove(window, { ...along, buttons: 1, pointerId: 7 });
+      });
+    }
+    // Nothing reached the canvas or the undo list while the handle was held.
+    expect(cells(studio)).toBe(before);
+    expect(studio.snapshot().undoLabel).toBe(label);
+    const end = client(aim.clone().add(new Vector3(overlay.gizmo.scale.x * 2 + 8, 0, 0)));
+    act(() => {
+      fireEvent.pointerUp(window, { ...end, button: 0, pointerId: 7 });
+    });
+    expect(cells(studio)).not.toBe(before);
+    expect(studio.snapshot().undoLabel).toBe('move NOT');
+    act(() => {
+      studio.undo();
+    });
+    expect(cells(studio)).toBe(before);
   });
 });

@@ -32,6 +32,24 @@ describe('studio chat panel', () => {
     expect(screen.getByRole<HTMLTextAreaElement>('textbox', { name: 'Message the designer' }).value).toBe('Connect the two tunnels');
   });
 
+  it('starts redstone chat collapsed like mine chat, and opens with the world shortcut', () => {
+    const ref = createRef<ChatPanelHandle>();
+    render(
+      <ChatPanel
+        {...base}
+        kind="redstone"
+        ref={ref}
+        onModel={() => undefined}
+        onSend={() => undefined}
+        onClose={() => undefined}
+      />,
+    );
+    expect(screen.getByRole('button', { name: 'Expand designer chat' }).getAttribute('aria-expanded')).toBe('false');
+    expect(screen.queryByRole('textbox', { name: 'Message the designer' })).toBeNull();
+    act(() => ref.current?.focus());
+    expect(document.activeElement).toBe(screen.getByRole('textbox', { name: 'Message the designer' }));
+  });
+
   it('starts build chat open and can collapse it', () => {
     render(<ChatPanel {...base} kind="build" onModel={() => undefined} onSend={() => undefined} onClose={() => undefined} />);
     fireEvent.click(screen.getByRole('button', { name: 'Collapse designer chat' }));

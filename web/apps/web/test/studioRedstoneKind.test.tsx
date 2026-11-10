@@ -319,6 +319,17 @@ describe('the redstone side panel', () => {
     expect(debuggerMount.panel).toHaveBeenLastCalledWith(expect.objectContaining({ selected: [3, 0, 2] }));
   });
 
+  it('shows the Library tab, where the outliner lists it, when a component is picked', () => {
+    const h = panel();
+    const library = <div data-testid="library" />;
+    h.rerender(<RedstonePanel sim={h.sim()} stage={h.stage} library={library} component={null} />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Simulate' }));
+    expect(screen.queryByTestId('library')).not.toBeInTheDocument();
+    h.rerender(<RedstonePanel sim={h.sim()} stage={h.stage} library={library} component="c1" />);
+    expect(screen.getByTestId('redstone-tab')).toHaveAttribute('data-tab', 'library');
+    expect(screen.getByTestId('library')).toBeInTheDocument();
+  });
+
   it('stops a live simulation with Stop and edit', () => {
     const h = panel();
     act(() => h.controller.start());
