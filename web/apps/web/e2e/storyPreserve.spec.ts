@@ -36,7 +36,7 @@ async function openColony(page: Page) {
   await page.getByLabel(/Authenticator code/).fill('123456');
   await page.getByRole('button', { name: 'Sign in' }).click();
   await page.waitForURL('**/live');
-  await page.getByRole('link', { name: 'Story Mode' }).click();
+  await page.getByRole('link', { name: 'Controller' }).click();
   await page.waitForURL('**/story**');
   await page.waitForFunction(() => (window as unknown as { __story?: StoryDebug }).__story?.ready());
   const count = page.getByLabel('Number of pawns');

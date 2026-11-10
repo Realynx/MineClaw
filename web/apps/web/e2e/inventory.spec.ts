@@ -18,7 +18,9 @@ test('clicking a body card opens its panel with the inventory grid', async ({ pa
   const errors: string[] = [];
   page.on('pageerror', (e) => errors.push(String(e)));
   await signIn(page);
-  await page.locator('[data-body="maid_chan"]').first().click();
+  // The card's text opens the bot's page (its thumbnail opens the bot's World pane instead).
+  const card = page.locator('[data-body="maid_chan"]').first();
+  await card.getByRole('link', { name: /^maid_chan: / }).click();
   await page.waitForURL('**/live/maid_chan');
 
   const grid = page.getByTestId('inventory-grid');
@@ -66,7 +68,10 @@ test('a 1.12.2 body shows its off hand and glinting enchanted gear', async ({ pa
   if (shots) await page.getByTestId('inventory-section').screenshot({ path: `${shots}/inventory-scout.png` });
 });
 
-test('clicking a body in the world view opens its floating panel', async ({ page }) => {
+// The Live hive's own world view, where this panel floated, was removed in 8ccfc2c9 ("Refine Controller workspace and Live
+// Hive controls"); a bot's World pane opens no body panel and BodyPanel is no longer mounted anywhere. Skipped until the owner
+// decides whether the floating panel comes back.
+test.skip('clicking a body in the world view opens its floating panel', async ({ page }) => {
   await signIn(page);
   await page.goto('/live?view=world');
   await expect(page.getByTestId('world-stage')).toBeVisible({ timeout: 30_000 });

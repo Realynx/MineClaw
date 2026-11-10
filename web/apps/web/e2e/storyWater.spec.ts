@@ -45,7 +45,7 @@ async function openColony(page: Page) {
   await page.getByLabel(/Authenticator code/).fill('123456');
   await page.getByRole('button', { name: 'Sign in' }).click();
   await page.waitForURL('**/live');
-  await page.getByRole('link', { name: 'Story Mode' }).click();
+  await page.getByRole('link', { name: 'Controller' }).click();
   await page.waitForURL('**/story**');
   await page.waitForFunction(() => (window as unknown as { __story?: Debug }).__story?.ready());
   const count = page.getByLabel('Number of pawns');
@@ -66,7 +66,7 @@ test('a water channel: the Water tab, a drawn canal previewed and queued as dig 
   await page.getByLabel(/Authenticator code/).fill('123456');
   await page.getByRole('button', { name: 'Sign in' }).click();
   await page.waitForURL('**/live');
-  await page.getByRole('link', { name: 'Story Mode' }).click();
+  await page.getByRole('link', { name: 'Controller' }).click();
   await page.waitForURL('**/story**');
   await page.waitForFunction(() => (window as unknown as { __story?: Debug }).__story?.ready());
   const count = page.getByLabel('Number of pawns');
@@ -87,7 +87,7 @@ test('a water channel: the Water tab, a drawn canal previewed and queued as dig 
   await expect(pal.locator('[data-entry="water_channel"]')).toHaveAttribute('data-tier', 'workbench');
   await expect(pal.locator('[data-entry="water_channel"]')).toHaveAttribute('data-unlocked', 'true');
   await expect(pal.locator('[data-entry="lava_source"]')).toHaveCount(0); // lava is off by default
-  await arch.getByRole('button', { name: 'Water channel' }).click();
+  await arch.getByRole('button', { name: 'Water channel', exact: true }).click();
   await expect(page.getByTestId('water-bar')).toBeVisible();
   await expect(page.getByTestId('water-dig')).toBeChecked(); // a canal is dug into the ground
   await page.keyboard.press('b');
@@ -149,7 +149,10 @@ test('a water channel: the Water tab, a drawn canal previewed and queued as dig 
     .toBe(true);
   if (shots) await page.screenshot({ path: `${shots}/story-water.png` });
   await page.keyboard.press('u');
-  await expect(page.getByTestId('queue-panel')).toContainText('water channel (4 sources)');
+  // The dig and the water are one group, titled by its first part; expanded, it lists the water channel.
+  const queue = page.getByTestId('queue-panel');
+  await queue.locator('button[aria-expanded="false"]').filter({ hasText: 'Clear blocks' }).first().click();
+  await expect(queue).toContainText('water channel (4 sources)');
 });
 
 test('a trench through solid ground: red dig outlines in the drag preview, the confirm bar and the queue; water once dug', async ({
@@ -179,7 +182,7 @@ test('a trench through solid ground: red dig outlines in the drag preview, the c
   await page.keyboard.press('b');
   const arch = page.getByTestId('architect');
   await arch.getByRole('button', { name: 'Water', exact: true }).click();
-  await arch.getByRole('button', { name: 'Water channel' }).click();
+  await arch.getByRole('button', { name: 'Water channel', exact: true }).click();
   await expect(page.getByTestId('water-dig')).toBeChecked();
   await page.keyboard.press('b');
   const at = async (x: number, z: number) => (await call(page, 'toPage', x + 0.5, lv, z + 0.5))!;

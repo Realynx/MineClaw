@@ -52,7 +52,7 @@ test('viewer settings persist across a reload and reach the viewers live', async
   await expect.poll(async () => (await viewer(page, 'quality')).entityDistance).toBe(48);
 
   // Story Mode zoomed all the way out: the quick popover puts mobs and players back as far as the ground (the whole map).
-  await page.getByRole('link', { name: 'Story Mode' }).click();
+  await page.getByRole('link', { name: 'Controller' }).click();
   await page.waitForURL('**/story**');
   await page.waitForFunction(() => (window as unknown as { __story?: { ready(): boolean } }).__story?.ready());
   await expect(page.getByTestId('story-controls')).toBeVisible();

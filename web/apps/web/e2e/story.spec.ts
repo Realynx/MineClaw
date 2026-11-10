@@ -44,7 +44,7 @@ async function signIn(page: Page, empty: boolean) {
 }
 
 async function openStory(page: Page) {
-  await page.getByRole('link', { name: 'Story Mode' }).click();
+  await page.getByRole('link', { name: 'Controller' }).click();
   await page.waitForURL('**/story**');
   await page.waitForFunction(() => (window as unknown as { __story?: StoryDebug }).__story?.ready());
 }
@@ -264,25 +264,24 @@ test('drafted pawns line up along a right-drag; the time of day slider', async (
   await page.waitForTimeout(400); // the preview reads the standing heights
   if (shots) await page.screenshot({ path: `${shots}/story-formation.png` });
   await page.mouse.up({ button: 'right' });
-  await expect.poll(() => orders.length).toBe(3);
+  // One request for the whole formation (`moves`): each pawn to its own cell, all or none.
+  await expect.poll(() => orders.length).toBe(1);
   await expect(page.getByTestId('order-menu')).toHaveCount(0);
-  const bodies = orders.map(body) as Array<{
-    pawns: string[];
-    order: { kind: string; target: { x: number; y: number; z: number } };
-  }>;
-  expect(bodies.map((o) => o.pawns.length)).toEqual([1, 1, 1]);
-  expect(bodies.map((o) => o.pawns[0]).sort()).toEqual([...names].sort());
-  expect(bodies.every((o) => o.order.kind === 'move')).toBe(true);
-  const cells = bodies.map((o) => `${o.order.target.x},${o.order.target.z}`);
+  const { moves } = body(orders[0]!) as {
+    moves: Array<{ pawn: string; target: { x: number; y: number; z: number } }>;
+  };
+  expect(moves).toHaveLength(3);
+  expect(moves.map((m) => m.pawn).sort()).toEqual([...names].sort());
+  const cells = moves.map((m) => `${m.target.x},${m.target.z}`);
   expect(new Set(cells).size).toBe(3);
-  for (const o of bodies) {
+  for (const m of moves) {
     // on the line (snapping to a standable cell moves a slot at most a few cells)
-    expect(Math.abs(o.order.target.z - a[1])).toBeLessThanOrEqual(3);
-    expect(o.order.target.x).toBeGreaterThanOrEqual(a[0] - 3);
-    expect(o.order.target.x).toBeLessThanOrEqual(b[0] + 3);
+    expect(Math.abs(m.target.z - a[1])).toBeLessThanOrEqual(3);
+    expect(m.target.x).toBeGreaterThanOrEqual(a[0] - 3);
+    expect(m.target.x).toBeLessThanOrEqual(b[0] + 3);
   }
   // Spread along the line, not bunched: the ends are a good part of the line apart.
-  const xs = bodies.map((o) => o.order.target.x);
+  const xs = moves.map((m) => m.target.x);
   expect(Math.max(...xs) - Math.min(...xs)).toBeGreaterThanOrEqual(5);
   await expect(page.getByTestId('story-toast')).toContainText('Formation: 3 pawns along the line');
 
@@ -474,13 +473,13 @@ test('storage, bills, the build queue and the angled view', async ({ page }) => 
   await page.keyboard.press('Escape');
   await page.keyboard.press('b');
   await arch.getByRole('button', { name: 'Structure' }).click();
-  await arch.getByRole('button', { name: 'Wall' }).click();
+  await arch.getByRole('button', { name: 'Wall', exact: true }).click();
   await expect(page.getByTestId('wall-height')).toHaveText('3');
   // B closes the Architect window: the tool and its material selector stay, the map is free to drag on.
   const reopen = async (tool: string) => {
     await page.keyboard.press('b');
     await arch.getByRole('button', { name: 'Structure' }).click();
-    await arch.getByRole('button', { name: tool }).click();
+    await arch.getByRole('button', { name: tool, exact: true }).click();
     await page.keyboard.press('b');
   };
   await page.keyboard.press('b');
@@ -1364,7 +1363,7 @@ test('the Architect palette: tiers unlock with designated benches; builds list t
   await arch.getByRole('button', { name: 'Structure' }).click();
   // Picking the fence arms the fence tool; a fence queued from it lists its materials (crafted from logs at the table).
   await pal.locator('[data-entry="fence"]').click();
-  await expect(arch.getByRole('button', { name: 'Fence' })).toHaveAttribute('aria-pressed', 'true');
+  await expect(arch.getByRole('button', { name: 'Fence', exact: true })).toHaveAttribute('aria-pressed', 'true');
   // The material selector has it too; the Architect window closes (B) so the drag has the map.
   await expect(page.getByTestId('material-bar').locator('[data-material="85:0"]')).toHaveAttribute(
     'aria-pressed',
@@ -1550,7 +1549,7 @@ test('the material selector: docked bottom-left with the tool options, keyboard 
   await page.keyboard.press('b');
   const arch = page.getByTestId('architect');
   await arch.getByRole('button', { name: 'Structure' }).click();
-  await arch.getByRole('button', { name: 'Floor' }).click();
+  await arch.getByRole('button', { name: 'Floor', exact: true }).click();
 
   // Docked bottom-left, above the tab bar; no centred popup; nothing over the map's centre.
   const bar = page.getByTestId('material-bar');
@@ -1595,13 +1594,13 @@ test('the material selector: docked bottom-left with the tool options, keyboard 
   // Wall: its materials (glass yes, the slab no) and the height control in the same bar; the floor keeps its choice.
   await page.keyboard.press('b');
   await arch.getByRole('button', { name: 'Structure' }).click();
-  await arch.getByRole('button', { name: 'Wall' }).click();
+  await arch.getByRole('button', { name: 'Wall', exact: true }).click();
   await expect(bar.getByTestId('wall-height')).toHaveText('3');
   await expect(list.locator('[data-material="20:0"]')).toBeVisible();
   await expect(list.locator('[data-material="44:0"]')).toHaveCount(0);
   await bar.getByRole('button', { name: 'Higher' }).click();
   await expect(bar.getByTestId('wall-height')).toHaveText('4');
-  await arch.getByRole('button', { name: 'Floor' }).click();
+  await arch.getByRole('button', { name: 'Floor', exact: true }).click();
   await expect.poll(chosen).toBe(key);
   await expect(page.getByTestId('recent-materials').locator(`[data-recent="${key}"]`)).toBeVisible();
 });

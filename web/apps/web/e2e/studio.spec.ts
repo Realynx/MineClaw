@@ -215,12 +215,12 @@ test('design studio: build, ask the AI, edit by hand, save', async ({ page }) =>
   await page.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(page.getByTestId('saved-bar')).toContainText('saved as design #100');
   await expect(page.getByTestId('studio')).toHaveAttribute('data-dirty', '0');
-  await expect(page.getByRole('link', { name: 'Build in Story Mode' })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Build in Controller' })).toBeVisible();
   if (shots) await page.screenshot({ path: `${shots}/studio-saved.png` });
   await page.getByRole('link', { name: 'Open in Designs' }).click();
   await page.waitForURL('**/designs?id=100'); // saved: no question
   await expect(page.getByRole('dialog', { name: 'Leave without saving?' })).toHaveCount(0);
-  await expect(page.getByRole('button', { name: /e2e hut/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /^#100 e2e hut/ })).toBeVisible();
   await expect(page.getByText('“first draft from the studio”', { exact: false })).toBeVisible();
   if (shots) await page.screenshot({ path: `${shots}/designs-list.png` });
 });

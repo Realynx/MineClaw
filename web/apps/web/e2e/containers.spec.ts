@@ -36,7 +36,8 @@ test('clicking a chest in the Live world view opens its contents; a chest nobody
   const errors: string[] = [];
   page.on('pageerror', (e) => errors.push(String(e)));
   await signIn(page);
-  await page.goto('/live?view=world');
+  // The world view is a bot's World pane (the hive page no longer has one).
+  await page.goto('/live/maid_chan?pane=world');
   await expect(page.getByTestId('world-stage')).toBeVisible({ timeout: 30_000 });
   await page.waitForFunction(() => !!(window as unknown as { __mcxWorld?: unknown }).__mcxWorld, null, { timeout: 30_000 });
 
@@ -111,7 +112,7 @@ function story<K extends keyof StoryDebug>(page: Page, method: K, ...args: Param
 test('in Story Mode the chest inspector shows the chest contents next to its storage filters', async ({ page }) => {
   await signIn(page);
   // The seeded colony uses the island's chests as storage.
-  await page.getByRole('link', { name: 'Story Mode' }).click();
+  await page.getByRole('link', { name: 'Controller' }).click();
   await page.waitForURL('**/story**');
   await page.waitForFunction(() => (window as unknown as { __story?: StoryDebug }).__story?.ready());
   await story(page, 'focus', 1, -3);

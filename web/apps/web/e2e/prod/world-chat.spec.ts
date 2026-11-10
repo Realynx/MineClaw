@@ -37,11 +37,22 @@ test('chat bar in fullscreen: frees the mouse, chips work, closes without Esc, t
   // Lock, aim at the ground and set it as the target block.
   await canvas.click({ position: { x: 720, y: 450 } });
   await expect.poll(() => locked(page)).toBe(true);
-  await expect(page.getByTestId('aim-readout')).toContainText(/\d+, \d+, \d+/);
-  await page.mouse.down();
-  await page.mouse.up();
   const selection = page.getByTestId('selection');
-  await expect(selection).toContainText(/\d+, \d+, \d+/);
+  // maid_chan walks a small circle around this spot and can pass under the crosshair between the aim and the click: a click
+  // that picked it is undone (Ctrl+click clears the selected bots) and the ground is clicked again.
+  await expect(async () => {
+    if ((await selection.count()) && (await selection.textContent())?.includes('Selected')) {
+      await page.keyboard.down('Control');
+      await page.mouse.down();
+      await page.mouse.up();
+      await page.keyboard.up('Control');
+    }
+    await expect(page.getByTestId('aim-readout')).toContainText(/\d+, \d+, \d+/, { timeout: 2000 });
+    await page.mouse.down();
+    await page.mouse.up();
+    await expect(selection).toContainText(/\d+, \d+, \d+/, { timeout: 2000 });
+    await expect(selection).not.toContainText('Selected', { timeout: 500 });
+  }).toPass({ timeout: 30_000 });
   const target = await selection.textContent();
 
   // T opens the bar and really frees the mouse; a chip is clickable and the mouse stays free.

@@ -4,7 +4,7 @@ import { expect, test, type Page } from '@playwright/test';
 const PAGES: Array<{ path: string; check: (p: Page) => Promise<void> }> = [
   { path: '/live', check: (p) => expect(p.getByRole('heading', { name: 'Live hive' })).toBeVisible() },
   { path: '/live?view=tree', check: (p) => expect(p.getByRole('tree', { name: 'Hive hierarchy' })).toBeVisible() },
-  { path: '/live?view=world', check: (p) => expect(p.getByLabel('Follow bot')).toBeVisible() },
+  { path: '/live/maid_chan?pane=world', check: (p) => expect(p.getByTestId('world-stage')).toBeVisible() },
   { path: '/live/maid_chan', check: (p) => expect(p.getByRole('region', { name: 'Chat with maid_chan' })).toBeVisible() },
   { path: '/memory-activity', check: (p) => expect(p.getByRole('application', { name: /Memory activity map/ })).toBeVisible() },
   { path: '/overview', check: (p) => expect(p.getByRole('heading', { name: 'RAPTOR tree' })).toBeVisible() },
