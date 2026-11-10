@@ -260,3 +260,16 @@ it('retargets distinct queued owners and pinned aliases when an emptied original
   await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(3));
   expect(send.mock.calls[2]?.[1]).toBe('edited');
 });
+
+it("keeps a trench cell's dig and its pour in the holograms, and an edit replaces the queued cells at its cell", () => {
+  // A water channel's trench: the dig (id 0) and the pour (water) are queued at the same cell; the viewer needs both.
+  const dig: HoloCell = { x: 5, y: 64, z: 5, id: 0, meta: 0, build: 'b2', state: 'todo' };
+  const pour: HoloCell = { x: 5, y: 64, z: 5, id: 9, meta: 0, build: 'b3', state: 'todo' };
+  expect(editHolograms([dig, pour], [])).toEqual([dig, pour]);
+  const send = vi.fn(() => new Promise<EditReply>(() => undefined));
+  const q = new FlyEditQueue(send, vi.fn());
+  q.enqueue([[5, 64, 5, 4, 0]]);
+  const out = editHolograms([dig, pour, ghost(3)], q.overlays);
+  expect(out.filter((c) => c.x === 5 && c.z === 5).map((c) => c.id)).toEqual([4]);
+  expect(out).toContainEqual(ghost(3));
+});

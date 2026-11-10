@@ -281,11 +281,17 @@ export function editCells(
   ];
 }
 
+/**
+ * The queued cells with the freecam's unconfirmed edits over them: an edit replaces the queued cells at its cell. Queued cells
+ * are never merged among themselves: a trench cell carries both its dig and its pour, and the viewer draws the dig outline
+ * until the cell is dug and the water after (merging them by cell left only the pour, which waits underground: no outline).
+ */
 export function editHolograms(base: readonly HoloCell[], pending: readonly PendingCell[]): HoloCell[] {
-  const cells = new Map(base.map((c) => [`${c.x},${c.y},${c.z}`, c]));
+  if (!pending.length) return [...base];
+  const edits = new Map<string, HoloCell>();
   for (const p of pending) {
     const [x, y, z, id, meta] = p.cell;
-    cells.set(key(p.cell), {
+    edits.set(key(p.cell), {
       x,
       y,
       z,
@@ -295,7 +301,7 @@ export function editHolograms(base: readonly HoloCell[], pending: readonly Pendi
       state: p.failed ? 'blocked' : 'todo',
     });
   }
-  return [...cells.values()];
+  return [...base.filter((c) => !edits.has(`${c.x},${c.y},${c.z}`)), ...edits.values()];
 }
 
 /** Full-cell plan raycast, independent of whether the physical block has been built yet. */
