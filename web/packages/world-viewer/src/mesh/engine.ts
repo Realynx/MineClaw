@@ -100,12 +100,13 @@ export class MeshEngine {
     return pick(this.store, this.table, dim, o, d, maxDist, cut);
   }
 
-  /** [blocks] id, meta and packed light (or -1) at each integer point; id -1 where the column is not held. */
+  /** [blocks] id, meta and packed light (or -1) at each integer point; id -1 where the column is not held. Below y = 0 and
+   * at or above the held column's height is air (id 0, light -1). */
   blocksAt(dim: number, pts: number[]): number[] {
     const out: number[] = [];
     for (let i = 0; i + 2 < pts.length; i += 3) {
       const b = this.store.blockAt(dim, Math.floor(pts[i]), Math.floor(pts[i + 1]), Math.floor(pts[i + 2]));
-      if (!b) out.push(-1, 0, -1);
+      if (!b) out.push(this.store.get(dim, Math.floor(pts[i]) >> 4, Math.floor(pts[i + 2]) >> 4) ? 0 : -1, 0, -1);
       else {
         const l = b.col.light;
         out.push(b.id, b.meta, l ? lightPacked(l, Math.floor(pts[i]) & 15, Math.floor(pts[i + 1]), Math.floor(pts[i + 2]) & 15) : -1);

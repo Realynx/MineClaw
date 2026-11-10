@@ -49,6 +49,10 @@ export const BURSTS: Record<string, BurstStyle> = {
   // ParticleSmokeNormal at a random point of the block, still at first (the smoke drifts up).
   spawner_flame: { colour: [1, 0.62, 0.18], jitter: 0.12, count: 1, speed: 0.05, spread: 1, life: 1100, size: 0.07, gravity: 0 },
   spawner_smoke: { colour: [0.32, 0.32, 0.32], jitter: 0.25, count: 1, speed: 0.08, spread: 1, life: 1300, size: 0.11, gravity: -1.5 },
+  // A block breaking: chips in the block's own colour (given per burst) thrown out of the cell and falling.
+  block_break: { colour: [0.5, 0.5, 0.5], jitter: 0.12, count: 24, speed: 2.2, spread: 0.9, life: 700, size: 0.1, gravity: 9 },
+  // One chip off the face being dug.
+  block_hit: { colour: [0.5, 0.5, 0.5], jitter: 0.12, count: 1, speed: 1, spread: 0.3, life: 500, size: 0.08, gravity: 6 },
 };
 
 const MAX_PARTICLES = 1024;
@@ -62,10 +66,22 @@ export class Particles {
     return ((this.seed >>> 0) % 100000) / 100000;
   }
 
-  burst(kind: string, dim: number, x: number, y: number, z: number, now: number): void {
+  /** `colour` replaces the style's own; `scale` thins the count (at least one particle). */
+  burst(
+    kind: string,
+    dim: number,
+    x: number,
+    y: number,
+    z: number,
+    now: number,
+    colour?: readonly [number, number, number],
+    scale = 1,
+  ): void {
     const s = BURSTS[kind];
     if (!s) return;
-    for (let i = 0; i < s.count && this.list.length < MAX_PARTICLES; i++) {
+    const c = colour ?? s.colour;
+    const count = scale === 1 ? s.count : Math.max(1, Math.round(s.count * scale));
+    for (let i = 0; i < count && this.list.length < MAX_PARTICLES; i++) {
       const a = this.rnd() * Math.PI * 2, e = (this.rnd() - 0.3) * Math.PI * 0.8, v = s.speed * (0.4 + this.rnd() * 0.6);
       const j = 1 + (this.rnd() - 0.5) * 2 * (s.jitter ?? 0);
       this.list.push({
@@ -78,9 +94,9 @@ export class Particles {
         vz: Math.sin(a) * Math.cos(e) * v,
         born: now,
         life: s.life * (0.6 + this.rnd() * 0.4),
-        r: Math.min(1, s.colour[0] * j),
-        g: Math.min(1, s.colour[1] * j),
-        b: Math.min(1, s.colour[2] * j),
+        r: Math.min(1, c[0] * j),
+        g: Math.min(1, c[1] * j),
+        b: Math.min(1, c[2] * j),
         size: s.size,
         gravity: s.gravity,
       });

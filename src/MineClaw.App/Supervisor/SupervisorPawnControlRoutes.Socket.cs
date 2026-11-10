@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net.WebSockets;
 using System.Text.Json;
 
@@ -27,6 +28,7 @@ public sealed partial class SupervisorPawnControlRoutes
     internal async Task SocketAsync(WebSocket socket, SupervisorRequest request, CancellationToken shutdown, SupervisorPerf? perf = null)
     {
         PawnControlSessions.SocketAttachment? attachment = null;
+        bool told = false;
         using var send = new SemaphoreSlim(1);
         using var stop = CancellationTokenSource.CreateLinkedTokenSource(shutdown);
         CancellationTokenSource? bound = null;
@@ -42,13 +44,20 @@ public sealed partial class SupervisorPawnControlRoutes
             attachment = sessions.Attach(body, Header(request, "X-MCX-User")!, Text(first.RootElement, "session"));
             bound = CancellationTokenSource.CreateLinkedTokenSource(stop.Token, attachment.Closed.Token);
             // State delivery and receiving input run independently. An acknowledgement cannot serialize movement.
-            receive = ReceiveInputs(socket, send, attachment, bound.Token);
+            // The reader does not end with the lease: cancelling a pending receive aborts the socket, and the closing frame that
+            // names the reason must still go out.
+            receive = ReceiveInputs(socket, send, attachment, stop.Token);
             publish = PublishState(socket, send, attachment, bound.Token, perf?.MonitorPublication("control"));
             await await Task.WhenAny(receive, publish).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is PawnControlException or JsonException or ArgumentException)
         {
-            try { await SendSocketJson(socket, send, new { type = "error", message = ex is PawnControlException ? ex.Message : "Invalid control frame." }, stop.Token).ConfigureAwait(false); }
+            told = true;
+            try
+            {
+                await SendSocketJson(socket, send, attachment?.EndReason is { } reason ? EndFrame(reason)
+                    : new { type = "error", message = ex is PawnControlException ? ex.Message : "Invalid control frame." }, stop.Token).ConfigureAwait(false);
+            }
             catch (Exception e) when (e is WebSocketException or OperationCanceledException or ObjectDisposedException) { }
         }
         catch (Exception ex) when (ex is WebSocketException or OperationCanceledException or ObjectDisposedException) { }
@@ -56,17 +65,26 @@ public sealed partial class SupervisorPawnControlRoutes
         {
             if (attachment != null) sessions.Detach(attachment);
             bound?.Cancel();
-            stop.Cancel();
-            foreach (var task in new[] { receive, publish })
-                if (task != null) try { await task.ConfigureAwait(false); } catch { }
-            bound?.Dispose();
+            if (publish != null) try { await publish.ConfigureAwait(false); } catch { }
             if (socket.State is WebSocketState.Open or WebSocketState.CloseReceived)
                 try
                 {
                     using var closeTimeout = new CancellationTokenSource(250);
-                    await socket.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "Control ended", closeTimeout.Token).ConfigureAwait(false);
+                    // The close itself says nothing, so the browser learns from this frame why its takeover ended.
+                    if (!told && attachment?.EndReason is { } reason)
+                        await SendSocketJson(socket, send, EndFrame(reason), closeTimeout.Token).ConfigureAwait(false);
+                    await send.WaitAsync(closeTimeout.Token).ConfigureAwait(false);
+                    try { await socket.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "Control ended", closeTimeout.Token).ConfigureAwait(false); }
+                    finally { send.Release(); }
                 }
                 catch (Exception ex) when (ex is WebSocketException or OperationCanceledException or ObjectDisposedException) { }
+            // The browser answers the close at once, which ends the reader. Cancelling a pending read instead resets the connection,
+            // and a reset can discard the closing frame before the browser has read it.
+            if (receive != null && socket.State == WebSocketState.CloseSent)
+                try { await receive.WaitAsync(TimeSpan.FromSeconds(1)).ConfigureAwait(false); } catch { }
+            stop.Cancel();
+            if (receive != null) try { await receive.ConfigureAwait(false); } catch { }
+            bound?.Dispose();
         }
     }
 
@@ -124,18 +142,32 @@ public sealed partial class SupervisorPawnControlRoutes
         }
     }
 
+    /// <summary>How long a state frame waits for the pawn's next tick before it goes out anyway (dead, riding, frozen), so the
+    /// browser's watchdog never starves. Settable for tests.</summary>
+    internal TimeSpan StateFallback { get; set; } = TimeSpan.FromMilliseconds(100);
+    /// <summary>The least time between two state frames: a burst of catch-up ticks becomes a few frames, not one per tick.</summary>
+    internal static readonly TimeSpan StateSpacing = TimeSpan.FromMilliseconds(20);
+
+    /// <summary>One state frame per game tick, sent as soon as the tick has its sample: no free-running timer whose phase against
+    /// the tick differs per session.</summary>
     private async Task PublishState(WebSocket socket, SemaphoreSlim send, PawnControlSessions.SocketAttachment attachment, CancellationToken ct,
         SupervisorPerf.PublicationMonitor? monitor)
     {
-        using var tick = new PeriodicTimer(TimeSpan.FromMilliseconds(50));
-        do
+        long lastTick = -1;
+        while (true)
         {
             var data = sessions.SocketState(attachment);
             await SendSocketJson(socket, send, new { type = "state", sampled_at_ms = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), data }, ct).ConfigureAwait(false);
+            var sent = Stopwatch.GetTimestamp();
             monitor?.Sent();
+            if (data.State.Tick is { } tick) lastTick = tick;
+            await sessions.NextStateAsync(attachment, lastTick, StateFallback, ct).ConfigureAwait(false);
+            var early = StateSpacing - Stopwatch.GetElapsedTime(sent);
+            if (early > TimeSpan.Zero) await Task.Delay(early, ct).ConfigureAwait(false);
         }
-        while (await tick.WaitForNextTickAsync(ct).ConfigureAwait(false));
     }
+
+    private static object EndFrame(string reason) => new { type = "error", reason, message = PawnControlSessions.EndMessage(reason) };
 
     private static async Task SendSocketJson(WebSocket socket, SemaphoreSlim send, object value, CancellationToken ct)
     {

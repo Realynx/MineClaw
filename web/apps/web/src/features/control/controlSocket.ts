@@ -5,7 +5,8 @@ import type { PlayerInput } from './playerInput';
 const Incoming = z.discriminatedUnion('type', [
   z.object({ type: z.literal('state'), data: PawnControlSession, sampledAtMs: z.number().optional() }),
   z.object({ type: z.literal('action'), requestId: z.string(), data: PawnControlActionResponse }),
-  z.object({ type: z.literal('error'), message: z.string() }),
+  // `reason` names a server-side ending (PAWN_CONTROL_END_REASONS); an older server sends the message alone.
+  z.object({ type: z.literal('error'), message: z.string(), reason: z.string().nullish() }),
 ]);
 // These envelopes contain a typed control DTO, unlike opaque domain `data` in general API responses.
 const controlCase = { opaque: new Set<string>() };
@@ -25,7 +26,7 @@ export class PawnControlSocket {
 
   constructor(body: string, private readonly session: PawnControlSession, csrf: string,
     private readonly onState: (reply: PawnControlSession, at: number, sampledAtMs?: number) => void,
-    private readonly onEnd: (reason: string) => void) {
+    private readonly onEnd: (reason: string, code?: string) => void) {
     this.leaseMs = session.leaseTimeoutMs;
     const url = new URL(`/api/bodies/${encodeURIComponent(body)}/control/socket`, location.href);
     url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -39,8 +40,11 @@ export class PawnControlSocket {
     }, 50);
   }
 
-  input(input: PlayerInput): boolean {
-    return this.ready && this.send({ type: 'input', session: this.session.session, seq: ++this.inputSeq, ...input });
+  /** Sends one input frame and returns its `seq` (1 or more), or 0 when nothing was sent. */
+  input(input: PlayerInput): number {
+    if (!this.ready) return 0;
+    const seq = ++this.inputSeq;
+    return this.send({ type: 'input', session: this.session.session, seq, ...input }) ? seq : 0;
   }
 
   action(command: Omit<PawnControlActionRequest, 'session'>): Promise<PawnControlActionResponse> {
@@ -78,7 +82,7 @@ export class PawnControlSocket {
     try {
       if (typeof raw !== 'string' || raw.length > 262_144) throw new Error('Invalid control frame.');
       const message = Incoming.parse(toCamel(JSON.parse(raw) as unknown, controlCase));
-      if (message.type === 'error') { this.fail(message.message); return; }
+      if (message.type === 'error') { this.fail(message.message, message.reason ?? undefined); return; }
       if (message.type === 'state') {
         if (message.data.session !== this.session.session) throw new Error('Wrong control session.');
         this.lastState = performance.now(); this.leaseMs = message.data.leaseTimeoutMs; this.ready = true;
@@ -91,8 +95,8 @@ export class PawnControlSocket {
     } catch { this.fail('Invalid control update. Take control again.'); }
   }
 
-  private fail(reason: string): void {
+  private fail(reason: string, code?: string): void {
     if (this.stopped) return;
-    this.dispose(); this.onEnd(reason);
+    this.dispose(); this.onEnd(reason, code);
   }
 }

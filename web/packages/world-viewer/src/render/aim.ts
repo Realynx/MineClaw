@@ -77,6 +77,59 @@ export function botAlong(
   return best;
 }
 
+/** A block pick along a ray: the worker's whole-cell walk, or a wrapper around it. */
+export type BlockPick = (o: V3, d: V3, max: number) => Promise<PickHit | null>;
+
+/** The face a ray enters a cell by when it crosses into it along +x, +y or +z; the next number along -x, -y or -z. */
+const ENTRY_FACE = [4, 0, 2];
+/** Far too small to see, yet still a different number beside any block coordinate of a world (up to 3e7). */
+const HAIR = 1e-7;
+
+/**
+ * Where a ray leaves the cell it starts in: a point just inside the next cell, the distance travelled to it and the
+ * face of that cell the ray enters by. Sides and ties (z first, then y) are the worker's. Null without a direction.
+ */
+export function leaveCell(o: V3, d: V3): { origin: V3; travelled: number; face: number } | null {
+  const u = unit(d);
+  let axis = -1,
+    t = Infinity;
+  for (let i = 0; i < 3; i++) {
+    if (u[i] === 0) continue;
+    const low = Math.floor(o[i]);
+    const ti = (u[i] > 0 ? low + 1 - o[i] : o[i] - low) / Math.abs(u[i]);
+    if (ti <= t) {
+      t = ti;
+      axis = i;
+    }
+  }
+  if (axis < 0) return null;
+  const origin: V3 = [0, 0, 0];
+  for (let i = 0; i < 3; i++) {
+    const low = Math.floor(o[i]);
+    // A cell owns its lower faces, so a hair below a boundary is the cell under it. Across the exit axis the point
+    // goes just inside the next cell; along the others it stays within the old one, so a ray through an edge or a
+    // corner still visits the cells in the worker's order.
+    if (i === axis) origin[i] = u[i] > 0 ? low + 1 : low - HAIR;
+    else origin[i] = Math.min(Math.max(o[i] + u[i] * t, low), low + 1 - HAIR);
+  }
+  return { origin, travelled: t, face: ENTRY_FACE[axis] + (u[axis] > 0 ? 0 : 1) };
+}
+
+/**
+ * A pick that starts where the ray leaves the cell it begins in, so that cell is never the answer. In first person the
+ * eye can sit inside a plant, a ladder or a door, and the whole-cell pick would return that cell whichever way the
+ * player looks. `max` stays the reach from the true origin.
+ */
+export function beyondOwnCell(pick: BlockPick): BlockPick {
+  return async (o, d, max) => {
+    const out = leaveCell(o, d);
+    if (!out || out.travelled > max) return null;
+    const hit = await pick(out.origin, d, max - out.travelled);
+    // The worker names no face for the cell a walk starts in; here that cell was entered from the eye's own.
+    return hit && hit.face < 0 ? { ...hit, face: out.face } : hit;
+  };
+}
+
 /** Distance from the eye to where the ray enters block (x, y, z). */
 function blockDistance(o: V3, d: V3, x: number, y: number, z: number): number {
   return (

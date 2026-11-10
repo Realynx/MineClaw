@@ -616,6 +616,22 @@ export class EntityLayer {
     }
   }
 
+  /** Block chips at (x, y, z) in the block's colour (0xRRGGBB): a break's burst or one chip of a hit; `scale` thins them
+   * (software rendering draws half). */
+  blockBurst(
+    dim: number,
+    x: number,
+    y: number,
+    z: number,
+    rgb: number,
+    now: number,
+    kind: 'block_break' | 'block_hit' = 'block_break',
+    scale = 1,
+  ): void {
+    const colour: [number, number, number] = [((rgb >> 16) & 255) / 255, ((rgb >> 8) & 255) / 255, (rgb & 255) / 255];
+    this.particles.burst(kind, dim, x, y, z, now, colour, scale);
+  }
+
   /** The entity event animations: swings, hurts, deaths, sparks, eating, teleport puffs, lightning bolts. */
   applyEvents(events: EntityEvent[], now: number): void {
     for (const ev of events) {

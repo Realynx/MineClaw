@@ -132,7 +132,9 @@ export class CameraRig {
     const mv = flyMove(lookDir(this.flyYaw, 0), k, controller);
     if (mv.lengthSq() > 0) this.flyPos.addScaledVector(mv.normalize(), v);
     this.flyPos.y = Math.max(-64, Math.min(320, this.flyPos.y));
-    const dir = lookDir(this.flyYaw, this.flyPitch);
+    // An app may write flyPitch itself (hand control of a pawn sends exactly ±90). Straight up or down has no heading
+    // left for lookAt, which then picks a fixed axis: the view would snap north-up and stop turning with the yaw.
+    const dir = lookDir(this.flyYaw, Math.max(-89.9, Math.min(89.9, this.flyPitch)));
     return { pos: this.flyPos.clone(), quat: lookQuat(this.flyPos, this.flyPos.clone().add(dir), UP), fov: this.fov };
   }
 

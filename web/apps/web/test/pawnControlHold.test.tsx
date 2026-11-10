@@ -37,7 +37,11 @@ vi.mock('@/features/control/usePawnControl', () => ({
     inventoryAt: 0,
     error: '',
     input: { current: f.input },
-    camera: { current: { position: () => f.pose } },
+    inputChanged: vi.fn(),
+    pose: { current: null },
+    reach: { current: undefined },
+    aimInput: { current: null },
+    camera: { current: { position: () => f.pose, onGround: () => true } },
     action: vi.fn(),
     end: vi.fn(),
     retry: vi.fn(),
@@ -55,7 +59,17 @@ afterEach(() => {
 it('holds the takeover view until its camera has a pose, then puts the eyes at the pawn', () => {
   render(<PawnControlView body="maid_chan_70" returnTo="/story" />);
   const rig = { flyPos: { set: vi.fn() }, flyYaw: 0, flyPitch: 0 };
-  const engine = { rig, playerCollision: vi.fn() } as unknown as Parameters<
+  const engine = {
+    rig,
+    playerCollision: vi.fn(),
+    setPlayerReach: vi.fn(),
+    setBreak: vi.fn(),
+    setHologramPreview: vi.fn(),
+    blockBurst: vi.fn(),
+    blockAt: () => null,
+    aim: () => null,
+    runtime: { version: '1.12.2', blockListeners: new Set() },
+  } as unknown as Parameters<
     NonNullable<WorldViewerProps['onBeforeFrame']>
   >[0];
   // No pose yet: the viewer holds the frame, so nothing is drawn (or asked of the world) at the rig's default camera.

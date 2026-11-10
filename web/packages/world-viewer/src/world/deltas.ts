@@ -17,6 +17,8 @@ export interface DeltaEvents {
   onError?(e: unknown): void;
   /** A column's block entities changed: refetch them. */
   onBlockEntities?(dim: Dim, cx: number, cz: number): void;
+  /** Changes as they arrive ([x, y, z, id, meta], in rev order), before the frame's flush and the worker patch. */
+  onReceived?(dim: Dim, blocks: ReadonlyArray<readonly [number, number, number, number, number]>): void;
 }
 
 type Change5 = [number, number, number, number, number];
@@ -99,6 +101,7 @@ export class BlockDeltaFeed {
     let list = this.pending.get(dim);
     if (!list) this.pending.set(dim, (list = []));
     for (const b of blocks) list.push([b[0], b[1], b[2], b[3], b[4]]);
+    this.ev.onReceived?.(dim, blocks);
   }
 
   /** The stream reconnected or the server lost our revision: refetch through the index hash-diff. */

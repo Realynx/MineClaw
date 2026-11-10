@@ -4,6 +4,7 @@ export { WorldViewer, type WorldViewerProps, type WorldViewerHandle } from './re
 export { WorldViewerProvider, WorldThumbnail, useWorldRuntime, disposeWorldRuntimes, type WorldViewerProviderProps, type WorldThumbnailProps } from './react/WorldThumbnail';
 export { WorldViewerEngine, type EngineOptions } from './render/engine';
 export type { PlayerCollisionBox, PlayerCollisionResult } from './render/playerCollision';
+export { breakStage } from './render/breakOverlay';
 export type { BotBadge } from './render/botBadges';
 export { aimAt, botAlong, rayBox, outlineOf, type AimTarget, type AimBot, type AimRay } from './render/aim';
 export { WorldRuntime, type RuntimeOptions, type RuntimeMemory, type RuntimeView, type ViewSetup } from './render/runtime';

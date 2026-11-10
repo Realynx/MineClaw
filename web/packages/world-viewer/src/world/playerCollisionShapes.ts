@@ -27,6 +27,12 @@ const offsets = [
   [-1, 0],
 ] as const;
 const full: CollisionTuple = [0, 0, 0, 1, 1, 1];
+const betaLadder: Partial<Record<number, CollisionTuple>> = {
+  2: [0, 0, 0.875, 1, 1, 1],
+  3: [0, 0, 0, 1, 1, 0.125],
+  4: [0.875, 0, 0, 1, 1, 1],
+  5: [0, 0, 0, 0.125, 1, 1],
+};
 const shapeId = (id: number, meta: number): number => {
   const states = COLLISION_STATES[id];
   return typeof states === 'number' ? states : (states?.[meta & 15] ?? 1);
@@ -52,6 +58,8 @@ export function playerBlockBoxes(
   if (version === 'b1.8.1' && id === 54) boxes.push(full);
   else if (version === 'b1.8.1' && id === 44) boxes.push([0, 0, 0, 1, 0.5, 1]);
   else if (version === 'b1.8.1' && id === 85) boxes.push([0, 0, 0, 1, 1.5, 1]);
+  // Beta's ladder is 0.125 thick (1.12.2's is 0.1875, as in the shared data).
+  else if (version === 'b1.8.1' && id === 65) boxes.push(betaLadder[meta] ?? [0, 0, 0, 1, 1, 0.125]);
   else if (isStairs(id)) stairBoxes(nb, meta, version, boxes);
   else if (isDoor(id)) doorBoxes(nb, id, meta, boxes);
   else if (isFence(id) || isPane(id) || id === 139) joinedBoxes(nb, id, boxes);

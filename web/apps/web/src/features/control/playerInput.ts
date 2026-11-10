@@ -20,11 +20,14 @@ export function movement(keys: ReadonlySet<string>, look: Pick<PlayerInput, 'yaw
 
 export interface PlayerBindings {
   input: PlayerInput;
-  action: (kind: 'attack' | 'use' | 'release' | 'cancel' | 'drop', wholeStack?: boolean) => void;
+  /** `repeat` marks the 250 ms re-send of a held attack: the server digs on but hits a mob once per click. */
+  action: (kind: 'attack' | 'use' | 'release' | 'cancel' | 'drop', wholeStack?: boolean, repeat?: boolean) => void;
   inventory: () => void;
   lockChanged: (locked: boolean) => void;
   hotbarChanged: (slot: number) => void;
   inputChanged?: (kind: PlayerInputChange) => void;
+  /** Middle click: the hotbar slot to select for the aimed block (pick block), or null to change nothing. */
+  pick?: () => number | null;
 }
 export type PlayerInputChange = 'movement' | 'look' | 'hotbar' | 'stop';
 
@@ -77,6 +80,12 @@ export function bindPlayerInput(surface: HTMLElement, callbacks: PlayerBindings)
     callbacks.inputChanged?.('look');
   };
   const press = (event: PointerEvent) => {
+    if (locked() && event.button === 1) {
+      event.preventDefault();
+      const slot = callbacks.pick?.();
+      if (slot !== null && slot !== undefined && slot !== input.hotbar) choose(slot);
+      return;
+    }
     if (!locked() || (event.button !== 0 && event.button !== 2)) return;
     cleared = false;
     event.preventDefault(); heldButtons.add(event.button);
@@ -93,7 +102,7 @@ export function bindPlayerInput(surface: HTMLElement, callbacks: PlayerBindings)
   // Repeated primary/use requests do not restart an in-progress dig/use on the client.
   const timer = setInterval(() => {
     if (!locked()) return;
-    if (heldButtons.has(0)) callbacks.action('attack');
+    if (heldButtons.has(0)) callbacks.action('attack', undefined, true);
     else if (heldButtons.has(2)) callbacks.action('use');
   }, 250);
   surface.addEventListener('pointerdown', press);
@@ -117,4 +126,24 @@ export function bindPlayerInput(surface: HTMLElement, callbacks: PlayerBindings)
     document.removeEventListener('pointerlockchange', onLock);
     document.removeEventListener('visibilitychange', hidden);
   };
+}
+
+/** Blocks whose item has another id: the item a pick-block takes from the hotbar for them. */
+const PICKED_ITEM: Readonly<Record<number, number>> = {
+  26: 355, 55: 331, 59: 295, 62: 61, 63: 323, 64: 324, 68: 323, 71: 330, 74: 73, 75: 76, 83: 338, 92: 354, 93: 356, 94: 356,
+  104: 361, 105: 362, 115: 372, 117: 379, 118: 380, 124: 123, 132: 287, 140: 390, 144: 397, 149: 404, 150: 404,
+};
+
+/** Pick block: the hotbar slot (0..8) holding the aimed block's item, preferring the same meta (wool colour, wood kind);
+ * null when no slot holds it. */
+export function pickSlot(block: { id: number; meta: number }, hotbar: ReadonlyArray<{ id: number; meta: number } | null | undefined>): number | null {
+  const id = PICKED_ITEM[block.id] ?? block.id;
+  let any: number | null = null;
+  for (let i = 0; i < 9; i++) {
+    const item = hotbar[i];
+    if (!item || item.id !== id) continue;
+    if (id === block.id && item.meta === block.meta) return i;
+    any ??= i;
+  }
+  return any;
 }

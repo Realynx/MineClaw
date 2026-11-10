@@ -26,14 +26,41 @@ public sealed class LivePawnControlBody(Body body, StoryColony colony) : IPawnCo
         return colony == null ? null : new LivePawnControlBody(body, colony);
     }
 
+    public double? Reach => Client.HumanReach;
+
+    public bool Dead => body.Client?.World.Player.IsDead == true;
+
+    public long? InventoryVersion => body.Client?.World.Inventory.Version;
+
+    // The tick's sample is published before the tick wakes its waiters, so the next state is that tick's.
+    public Task NextStateAsync(long afterTick, TimeSpan max, CancellationToken ct) =>
+        body.Client is { } client ? client.WaitHumanSampleAsync(afterTick, max, ct) : Task.Delay(max, ct);
+
     public PawnControlState State()
     {
         var world = Client.World;
         var player = world.Player;
+        // Position, velocity and the acknowledged input come from one tick's sample, never from two different moments.
+        if (Client.HumanSample() is { } s)
+            return new(s.Position.X, s.Position.Y, s.Position.Z, s.Yaw, s.Pitch, world.Dimension,
+                player.Health, player.Food, player.HeldSlot, s.OnGround, world.Inventory.ActiveWindow.Id,
+                s.Tick, s.AckSeq, s.AckWaitMs, s.Velocity.X, s.Velocity.Y, s.Velocity.Z, s.Teleports, s.Impulses, s.UsingItem, s.Stopped,
+                new(s.SpeedAmplifier, s.SlownessAmplifier, s.JumpBoostAmplifier), Dig(s.Dig), Aim(s.Aim), Broke(s.Broke),
+                Client.HumanArmor(), player.Air);
+        // No tick has moved the body by the player's keys (riding, or the takeover has just begun or ended): where the pawn is
+        // now, marked stopped and without a tick, so the browser follows it instead of predicting from an old sample.
         var p = player.Position;
         return new(p.X, p.Y, p.Z, player.Physics.Yaw, player.Physics.Pitch, world.Dimension,
-            player.Health, player.Food, player.HeldSlot, player.Physics.OnGround, world.Inventory.ActiveWindow.Id);
+            player.Health, player.Food, player.HeldSlot, player.Physics.OnGround, world.Inventory.ActiveWindow.Id, Stopped: true,
+            Armor: Client.HumanArmor(), Air: player.Air);
     }
+
+    // The browser drops a frame whose progress is outside 0..1 or whose face is not -1..5, and that ends the takeover.
+    private static PawnControlDig? Dig(HumanControlDig? d) => d is null ? null
+        : new(d.Pos.X, d.Pos.Y, d.Pos.Z, Face(d.Face), Math.Clamp(d.Progress, 0, 1), d.Id, d.Meta);
+    private static PawnControlAim Aim(RaycastHit? hit) => hit is { } h ? new(h.Pos.X, h.Pos.Y, h.Pos.Z, Face(h.Face)) : PawnControlAim.Nothing;
+    private static PawnControlBroke? Broke(HumanControlBroke? b) => b is null ? null : new(b.Count, b.Pos.X, b.Pos.Y, b.Pos.Z, b.Id, b.Meta);
+    private static int Face(BlockFace face) => Math.Clamp((int)face, -1, 5);
 
     public PawnControlInventory Inventory()
     {
@@ -60,7 +87,9 @@ public sealed class LivePawnControlBody(Body body, StoryColony colony) : IPawnCo
     }
 
     public void Input(PawnControlInput input) => Client.SetHumanInput(new MoveInput(input.Forward, input.Strafe, input.Jump,
-        input.Sneak, input.Sprint, input.Yaw, input.Pitch), input.Hotbar);
+        input.Sneak, input.Sprint, input.Yaw, input.Pitch), input.Hotbar, input.Seq);
+
+    public void Stop(long seq) => Client.StopHumanInput();
 
     public Task<ActionResult> ActionAsync(PawnControlAction action, CancellationToken ct, CancellationToken holdRelease = default) => ExecuteAction(action, null, ct, holdRelease);
 
@@ -72,7 +101,7 @@ public sealed class LivePawnControlBody(Body body, StoryColony colony) : IPawnCo
 
     private Task<ActionResult> ExecuteAction(PawnControlAction action, HumanControlAim? aim, CancellationToken ct, CancellationToken holdRelease) => Client.HumanActionAsync(action.Kind,
         action.Target is { } p ? new BlockPos(p.X, p.Y, p.Z) : null, action.EntityId, action.Face, action.WindowId,
-        action.Slot, action.Button ?? 0, action.Shift, action.WholeStack, ct, holdRelease, aim);
+        action.Slot, action.Button ?? 0, action.Shift, action.WholeStack, ct, holdRelease, aim, action.Repeat);
 
     public void End()
     {

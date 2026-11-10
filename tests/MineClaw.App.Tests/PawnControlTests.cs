@@ -8,6 +8,7 @@ using MineClaw.Bot.Game;
 using MineClaw.Agent.Events;
 using MineClaw.Agent.Tools;
 using MineClaw.Hive.Story;
+using MineClaw.Protocol.Packets;
 
 namespace MineClaw.App.Tests;
 
@@ -28,7 +29,15 @@ public sealed partial class PawnControlTests
         public readonly TaskCompletionSource Started = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public bool HoldAction;
         public TaskCompletionSource? DiscreteAction;
-        public PawnControlState State() => new(2, 64, 3, 15, -20, 0, 20, 18, 2, true);
+        /// <summary>What an action answers; null = it succeeds with its kind as the message.</summary>
+        public ActionResult? Result;
+        public bool Dead { get; set; }
+        public long? InventoryVersion { get; set; }
+        /// <summary>The tick the state reports (null = none); <see cref="NextState"/> replaces the 50 ms default wait for the next one.</summary>
+        public Func<long?>? Tick;
+        public Func<long, TimeSpan, CancellationToken, Task>? NextState;
+        public PawnControlState State() => new(2, 64, 3, 15, -20, 0, 20, 18, 2, true, Tick: Tick?.Invoke());
+        public Task NextStateAsync(long afterTick, TimeSpan max, CancellationToken ct) => NextState?.Invoke(afterTick, max, ct) ?? Task.Delay(50, ct);
         public PawnControlInventory Inventory() => new(0, "player", "Inventory", 46, 9, 9, 36, [], null);
         public void Begin() { Begins++; BeginWork?.Invoke(); }
         public void End() => Ends++;
@@ -40,8 +49,22 @@ public sealed partial class PawnControlTests
             if (DiscreteAction is { } discrete) await discrete.Task.WaitAsync(ct);
             using var held = CancellationTokenSource.CreateLinkedTokenSource(ct, holdRelease);
             if (HoldAction) await Task.Delay(Timeout.Infinite, held.Token);
-            return ActionResult.Success(action.Kind);
+            return Result ?? ActionResult.Success(action.Kind);
         }
+    }
+
+    /// <summary>A real client on the fake game server, wrapped as the colony pawn the supervisor hands to a browser.</summary>
+    private static async Task<(MinecraftClient Client, LivePawnControlBody Live)> LivePawnAsync(FakeServer game)
+    {
+        var client = new MinecraftClient(new ClientOptions { Username = "maid_chan_101", ConnectionFactory = game.CreateClientConnection,
+            TickInterval = TimeSpan.FromMilliseconds(5), HostileAlertRadius = 0, AutoRespawn = false });
+        using var connectTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        await client.ConnectAsync(connectTimeout.Token);
+        var port = new MinecraftGameClient(client);
+        var body = new MineClaw.Bot.Bodies.Body("maid_chan_101", false, port, port, new ActivityManager(new ToolRegistry(), new EventQueue()));
+        var colony = new StoryColony(new ColonyMeta { Id = "takeover" }, new SupervisorStoryRouteTests.Host(new SupervisorStoryRouteTests.World()));
+        colony.Joined([body.Name]);
+        return (client, new LivePawnControlBody(body, colony));
     }
 
     [Fact]
@@ -173,6 +196,51 @@ public sealed partial class PawnControlTests
     }
 
     [Fact]
+    public async Task A_repeat_of_a_running_dig_returns_the_running_task()
+    {
+        var body = new Body { HoldAction = true };
+        using var sessions = new PawnControlSessions(_ => body, startTimer: false);
+        var lease = sessions.Acquire("101", "alice", "tab");
+        var digging = sessions.ActionAsync("101", "alice", lease.Session, new(1, "attack"));
+        await body.Started.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        // The held button's repeats differ from the click only by `repeat`: the dig carries on, never restarted.
+        Assert.Same(digging, sessions.ActionAsync("101", "alice", lease.Session, new(2, "attack", Repeat: true)));
+        Assert.Same(digging, sessions.ActionAsync("101", "alice", lease.Session, new(3, "attack", Repeat: true)));
+        Assert.Equal(1, body.Actions);
+        Assert.False(digging.IsCompleted);
+        sessions.Release("101", "alice", lease.Session);
+        Assert.False((await digging.WaitAsync(TimeSpan.FromSeconds(2))).Ok);
+    }
+
+    [Fact]
+    public async Task A_repeat_with_a_mob_under_the_crosshair_sends_no_second_hit()
+    {
+        using var game = new FakeServer();
+        var (client, live) = await LivePawnAsync(game);
+        await using var disposeClient = client;
+        Assert.True(SpinWait.SpinUntil(() => client.World.Player.OnGround, TimeSpan.FromSeconds(3)));
+        using var sessions = new PawnControlSessions(_ => live, startTimer: false);
+        var lease = sessions.Acquire("101", "alice", "tab");
+        sessions.Input("101", "alice", lease.Session, new(1, 0, 0, 0, 0));
+        client.World.Entities.SpawnPlayer(77, "target", new MineClaw.World.Vec3d(8.5, 64, 10.5), 0, 0, 0);
+        int Hits() => game.Got<UseEntityPacket>().Count(p => p.TargetEntityId == 77 && p.LeftClick);
+
+        var click = await sessions.ActionAsync("101", "alice", lease.Session, new(1, "attack"));
+        Assert.StartsWith("attacked", click.Message);
+        var repeat = await sessions.ActionAsync("101", "alice", lease.Session, new(2, "attack", Repeat: true));
+        Assert.True(repeat.Ok, repeat.Message);
+        // A right click on the mob after it: packets arrive in order, so once it is in, a hit from the repeat would be too.
+        Assert.Equal("used entity", (await sessions.ActionAsync("101", "alice", lease.Session, new(3, "use"))).Message);
+        Assert.True(SpinWait.SpinUntil(() => game.Got<UseEntityPacket>().Any(p => p.TargetEntityId == 77 && !p.LeftClick), TimeSpan.FromSeconds(3)));
+        Assert.Equal(1, Hits());
+        // A new click hits again.
+        Assert.StartsWith("attacked", (await sessions.ActionAsync("101", "alice", lease.Session, new(4, "attack"))).Message);
+        Assert.True(SpinWait.SpinUntil(() => Hits() == 2, TimeSpan.FromSeconds(3)));
+        // Nor did the repeat dig the block behind the mob.
+        Assert.DoesNotContain(game.Got<PlayerDiggingPacket>(), p => p.Status == PlayerDiggingPacket.StatusStarted);
+    }
+
+    [Fact]
     public async Task Mouse_release_preserves_the_initial_discrete_click_but_stops_held_use()
     {
         var click = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -270,5 +338,98 @@ public sealed partial class PawnControlTests
         Assert.Equal(400, (await Send("action", new { session, seq = 1, kind = "inventory_click", slot = 4 }))!.Status);
         Assert.Equal(200, (await Send("action", new { session, seq = 1, kind = "inventory_click", slot = -999, windowId = 0 }))!.Status);
         Assert.Equal(200, (await Send("release", new { session }))!.Status);
+    }
+
+    [Fact]
+    public async Task Finished_actions_carry_a_code_for_how_they_ended()
+    {
+        Assert.Equal("dug", PawnControlSessions.ActionCode(true, MinecraftClient.HumanDugMessage));
+        Assert.Equal("placed", PawnControlSessions.ActionCode(true, MinecraftClient.HumanPlacedMessage));
+        Assert.Null(PawnControlSessions.ActionCode(true, "used block")); // sent, but the game server did not fill the cell
+        Assert.Equal("aim_changed", PawnControlSessions.ActionCode(false, MinecraftClient.HumanDigStoppedMessage));
+        Assert.Equal("cancelled", PawnControlSessions.ActionCode(false, "action cancelled"));
+        Assert.Null(PawnControlSessions.ActionCode(false, "The server did not break that block."));
+        Assert.Null(PawnControlSessions.ActionCode(true, "swung hand"));
+
+        var body = new Body { Result = ActionResult.Fail(MinecraftClient.HumanDigStoppedMessage) };
+        using var sessions = new PawnControlSessions(_ => body, startTimer: false);
+        var lease = sessions.Acquire("101", "alice", "tab");
+        Assert.Null(lease.Reach); // this body does not say how far it reaches
+        // On the acknowledgement, and on the status that later state frames repeat.
+        Assert.Equal("aim_changed", (await sessions.ActionAsync("101", "alice", lease.Session, new(1, "attack"))).Code);
+        Assert.Equal(new PawnControlActionStatus(1, false, false, MinecraftClient.HumanDigStoppedMessage, "aim_changed"),
+            sessions.Input("101", "alice", lease.Session, new(1, 0, 0, 0, 0)).Action);
+        body.Result = ActionResult.Success(MinecraftClient.HumanDugMessage);
+        Assert.Equal("dug", (await sessions.ActionAsync("101", "alice", lease.Session, new(2, "attack"))).Code);
+
+        // A held action replaced by a newer one ends as cancelled. The cancel request itself succeeds with the same words, and
+        // that is no ending for the browser to act on.
+        body.Result = null; body.HoldAction = true;
+        var held = sessions.ActionAsync("101", "alice", lease.Session, new(3, "use"));
+        var cancel = await sessions.ActionAsync("101", "alice", lease.Session, new(4, "cancel"));
+        var replaced = await held.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.Equal((false, "action cancelled", "cancelled"), (replaced.Ok, replaced.Message, replaced.Code));
+        Assert.Equal((true, "action cancelled", (string?)null), (cancel.Ok, cancel.Message, cancel.Code));
+    }
+
+    [Fact]
+    public void An_aim_at_nothing_is_written_as_null_and_an_unreported_aim_is_left_out()
+    {
+        static JsonObject Wire(PawnControlState state) => JsonNode.Parse(SupervisorJson.Bytes(state))!.AsObject();
+        var state = new PawnControlState(2, 64, 3, 15, -20, 0, 20, 18, 2, true);
+        // A body that reports no ticks writes exactly what it always did.
+        Assert.Equal(new[] { "dim", "food", "held_slot", "hp", "on_ground", "pitch", "window_id", "x", "y", "yaw", "z" }, Wire(state).Select(p => p.Key).Order(StringComparer.Ordinal));
+        var nothing = Wire(state with { Aim = PawnControlAim.Nothing });
+        Assert.True(nothing.ContainsKey("aim"));
+        Assert.Null(nothing["aim"]);
+        Assert.Equal("""{"x":8,"y":64,"z":10,"face":2}""", Wire(state with { Aim = new(8, 64, 10, 2) })["aim"]!.ToJsonString());
+        // And back: null is "nothing in reach", a missing member is "not reported".
+        PawnControlState Read(PawnControlState written) => JsonSerializer.Deserialize<PawnControlState>(SupervisorJson.Bytes(written), SupervisorJson.Options)!;
+        Assert.Same(PawnControlAim.Nothing, Read(state with { Aim = PawnControlAim.Nothing }).Aim);
+        Assert.Equal(new PawnControlAim(8, 64, 10, 2), Read(state with { Aim = new(8, 64, 10, 2) }).Aim);
+        Assert.Null(Read(state).Aim);
+    }
+
+    [Fact]
+    public async Task The_deadman_stops_a_live_pawn_through_its_own_keys_and_its_state_says_stopped()
+    {
+        using var game = new FakeServer();
+        var (client, live) = await LivePawnAsync(game);
+        await using var disposeClient = client;
+        var clock = new Clock();
+        using var sessions = new PawnControlSessions(_ => live, clock, startTimer: false);
+        var lease = sessions.Acquire("101", "alice", "tab");
+        Assert.Equal(client.HumanReach, lease.Reach);
+        sessions.Input("101", "alice", lease.Session, new(7, 0, 0, 90, 10));
+        clock.Now += TimeSpan.FromMilliseconds(PawnControlSessions.InputTimeoutMs + 1);
+        sessions.Sweep();
+        // The very next tick already says so: the pawn's own input timeout is still far off.
+        var sample = await client.WaitHumanSampleAsync(client.TickCount, TimeSpan.FromSeconds(3));
+        Assert.True(sample is { Stopped: true, AckSeq: 7 });
+        Assert.True(live.State() is { Stopped: true, AckSeq: 7, Yaw: 90f, Pitch: 10f, Tick: not null });
+    }
+
+    [Fact]
+    public async Task A_pawn_the_game_server_carries_is_reported_where_it_is_stopped_and_without_a_tick()
+    {
+        using var game = new FakeServer();
+        var (client, live) = await LivePawnAsync(game);
+        await using var disposeClient = client;
+        using var sessions = new PawnControlSessions(_ => live, startTimer: false);
+        sessions.Acquire("101", "alice", "tab");
+        Assert.True(SpinWait.SpinUntil(() => live.State().Tick != null, TimeSpan.FromSeconds(3)));
+        // Riding: the client's ticks go on, but none moves the body by the player's keys.
+        game.Send(new AttachEntityPacket { EntityId = FakeServer.EntityId, VehicleId = 600 });
+        PawnControlState? riding = null;
+        Assert.True(SpinWait.SpinUntil(() => client.RidingEntityId == 600 && (riding = live.State()).Tick == null, TimeSpan.FromSeconds(3)));
+        var at = client.World.Player.Position;
+        Assert.Equal((at.X, at.Y, at.Z), (riding!.X, riding.Y, riding.Z));
+        // The state of an older server plus "stopped" and the HUD's armour and air, and nothing an old walking sample would have said.
+        Assert.Equal(new[] { "air", "armor", "dim", "food", "held_slot", "hp", "on_ground", "pitch", "stopped", "window_id", "x", "y", "yaw", "z" },
+            JsonNode.Parse(SupervisorJson.Bytes(riding))!.AsObject().Select(p => p.Key).Order(StringComparer.Ordinal));
+        Assert.True(riding.Stopped);
+        Assert.Equal((0, 300), (riding.Armor, riding.Air)); // nothing worn, breathing air
+        game.Send(new AttachEntityPacket { EntityId = FakeServer.EntityId, VehicleId = -1 });
+        Assert.True(SpinWait.SpinUntil(() => live.State().Tick != null, TimeSpan.FromSeconds(3)));
     }
 }

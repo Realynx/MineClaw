@@ -29,10 +29,16 @@ export function StoryAudio({
   viewer,
   view,
   dim = 0,
+  play,
+  heard,
 }: {
   viewer: RefObject<WorldViewerHandle | null>;
   view: 'top' | 'angled' | 'fly';
   dim?: number;
+  /** Filled with a way to play sound events the page makes itself (the controlled pawn's own actions). */
+  play?: RefObject<((events: EntityEvent[]) => void) | null>;
+  /** When set, the world stream's events pass through it first: the page drops the echoes of sounds it made itself. */
+  heard?: RefObject<((events: EntityEvent[]) => EntityEvent[]) | null>;
 }) {
   const qc = useQueryClient(),
     audio = useRef<ControllerAudio | null>(null),
@@ -83,6 +89,7 @@ export function StoryAudio({
       });
       audio.current = player;
       player.setVolume(volumeRef.current);
+      if (play) play.current = (events) => player.receive(events);
     });
     const enable = () => {
       if (viewer.current?.engine()?.surface.isConnected)
@@ -92,7 +99,9 @@ export function StoryAudio({
     document.addEventListener('keydown', enable);
     const off = subscribeEntityFrames(() => {
       const frame = qc.getQueryData<WorldEntities>(liveKeys.entities);
-      if (frame?.events) audio.current?.receive(frame.events as EntityEvent[]);
+      if (!frame?.events || !audio.current) return;
+      const events = frame.events as EntityEvent[];
+      audio.current.receive(heard?.current ? heard.current(events) : events);
     });
     return () => {
       alive = false;
@@ -101,8 +110,9 @@ export function StoryAudio({
       document.removeEventListener('keydown', enable);
       audio.current?.dispose();
       audio.current = null;
+      if (play) play.current = null;
     };
-  }, [qc, viewer]);
+  }, [qc, viewer, play, heard]);
   const change = (value: number) => {
     value = Math.max(0, Math.min(1, Math.round(value * 100) / 100));
     volumeRef.current = value;

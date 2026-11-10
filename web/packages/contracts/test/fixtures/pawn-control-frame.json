@@ -1,0 +1,62 @@
+{
+  "type": "state",
+  "sampled_at_ms": 1794241000050,
+  "data": {
+    "session": "5F2C9A7E41D08B36C1E4A9D27F60B3185F2C9A7E41D08B36",
+    "body": "maid_chan_102",
+    "expires_at": "2026-11-09T08:16:43.1234567+00:00",
+    "input_timeout_ms": 350,
+    "lease_timeout_ms": 3000,
+    "state": {
+      "x": 229.5,
+      "y": 64,
+      "z": 381.3,
+      "yaw": 270,
+      "pitch": 12.5,
+      "dim": 0,
+      "hp": 18,
+      "food": 17,
+      "held_slot": 6,
+      "on_ground": true,
+      "window_id": 0,
+      "tick": 48213,
+      "ack_seq": 912,
+      "ack_wait_ms": 31.5,
+      "vx": 0.1178,
+      "vy": -0.0784,
+      "vz": -0.0012,
+      "teleports": 2,
+      "impulses": 1,
+      "using_item": false,
+      "stopped": false,
+      "effects": { "speed": 1, "slowness": -1, "jump_boost": 0 },
+      "dig": { "x": 231, "y": 65, "z": 381, "face": 4, "progress": 0.35, "id": 1, "meta": 0 },
+      "aim": { "x": 231, "y": 64, "z": 381, "face": 4 },
+      "broke": { "count": 3, "x": 230, "y": 65, "z": 381, "id": 17, "meta": 2 },
+      "armor": 7,
+      "air": 300
+    },
+    "inventory": {
+      "window_id": 0,
+      "kind": "player",
+      "title": "Inventory",
+      "slot_count": 45,
+      "container_slots": 0,
+      "main_start": 9,
+      "hotbar_start": 36,
+      "slots": [
+        { "slot": 36, "id": 4, "meta": 0, "count": 63 },
+        { "slot": 42, "id": 257, "meta": 12, "count": 1 }
+      ],
+      "version": 118
+    },
+    "action": {
+      "seq": 41,
+      "pending": false,
+      "ok": false,
+      "message": "Dig stopped because the aim, held item or control input changed.",
+      "code": "aim_changed"
+    },
+    "reach": 4.25
+  }
+}
