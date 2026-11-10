@@ -34,8 +34,15 @@ export function ghostDigs(g: NonNullable<StoryColonyState['ghosts']>['blocks'][n
   return g[7] === 'dig' || (g[7] === undefined && g[3] === 0);
 }
 
+/** Whether a ghost's reason says a newer build took its cell over (the director's "superseded by build b7: newer design owns
+ * this cell"). That is no failure and nothing can be done about it, so the map draws no hologram and no failed-cell ring for
+ * it, and Retry leaves it alone. */
+export function ghostSuperseded(reason: string | null | undefined): boolean {
+  return reason?.startsWith('superseded by build ') === true;
+}
+
 /** The queued cells to draw as holograms (queue order: the ghosts' own order) and the revision that gates rebuilding. A
- * `place` ghost with id 0 (air) has nothing to draw and is left out. */
+ * `place` ghost with id 0 (air) has nothing to draw and is left out, and so is a cell a newer build took over. */
 export function hologramCells(st: Pick<StoryColonyState, 'ghosts' | 'builds'> | undefined): { cells: HoloCell[]; rev: string } {
   const builds = new Map((st?.builds ?? []).map((b) => [String(b.id), b.status] as const));
   const ghosts = st?.ghosts;
@@ -54,7 +61,7 @@ function holoCell(
   builds: ReadonlyMap<string, string>,
 ): HoloCell | null {
   const state = holoState(g[6], builds.get(String(g[5])));
-  if (!state) return null;
+  if (!state || ghostSuperseded(g[8])) return null;
   // The 8th element (the bot since the mine designer): `dig` cells carry the block expected there (the world's when queued),
   // so they are told apart by kind, not by id 0; they draw as red outlines until the cell is air. Older 7-element ghosts:
   // id 0 = dig.

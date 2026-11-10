@@ -282,6 +282,88 @@ public sealed class StoryBuildCraftingTests
         Assert.True(c.State()["options"]!["detect_benches"]!.GetValue<bool>());
     }
 
+    /// <summary>A cell a newer build took over, or one a quarry digs, is never placed as things stand, yet it kept its build's share of
+    /// the stock (and its auto crafts): a later build waited with "the planks in storage are reserved for an earlier build".</summary>
+    [Fact]
+    public void Superseded_and_quarry_held_cells_reserve_nothing()
+    {
+        var (c, _, _, _) = Rig(table: false, furnace: false, new Stack(5, 0, 4));
+        JsonObject Of(int id, params (int X, int Y, int Z)[] cells) => new() { ["kind"] = "block", ["blocks"] = Cells(cells), ["material"] = new JsonArray(id, 0) };
+        BuildState B(string id) => c.Builds.Single(b => b.Id == id);
+        // An older planks build whose two cells a newer cobblestone build took over.
+        var old = Build(c, Of(5, (20, 64, 5), (21, 64, 5)));
+        Build(c, Of(4, (20, 64, 5), (21, 64, 5)));
+        Assert.All(B(old).Ghosts, g => Assert.StartsWith("superseded by build ", g.Reason));
+        // Two planks cells in a quarry's columns.
+        Assert.Null(c.ZoneOp("add", "mine", Area.Of(30, 63, 30, 33, 63, 33)).Error);
+        var dug = Build(c, Of(5, (31, 63, 31), (32, 63, 31)));
+        Assert.All(B(dug).Ghosts, g => Assert.StartsWith("conflicts with quarry ", g.Reason));
+        // The four planks the colony has go to the build that can use them.
+        var last = Build(c, Of(5, (40, 64, 5), (41, 64, 5), (42, 64, 5), (43, 64, 5)));
+        c.EnsureMaterials();
+        Assert.Empty(B(old).Materials);
+        Assert.Empty(B(dug).Materials);
+        var m = B(last).Materials.Single();
+        Assert.Equal((4, 4, 0), (m.Need, m.Have, m.Short));
+    }
+
+    /// <summary>Fetches skip a chest whose lid a solid block shuts, but its contents still counted as stock: the materials list said
+    /// "have 4, short 0", no craft was ordered, and the build waited with "need 4 planks" until the block on the lid went.</summary>
+    [Fact]
+    public void Items_in_a_chest_that_cannot_open_are_not_stock()
+    {
+        var (c, _, w, clock) = Rig(table: false, furnace: false, new Stack(5, 0, 8));
+        w.Set(Chest.X, Chest.Y, Chest.Z, 54, 2);
+        w.Set(Chest.X, Chest.Y + 1, Chest.Z, 1); // stone on the lid
+        Build(c, new JsonObject { ["kind"] = "block", ["blocks"] = Cells((20, 64, 5), (21, 64, 5), (22, 64, 5), (23, 64, 5)), ["material"] = new JsonArray(5, 0) });
+        c.EnsureMaterials();
+        var m = c.Builds.Single().Materials.Single();
+        Assert.Equal((4, 0, 4), (m.Need, m.Have, m.Short));
+        // The lid clear again: the planks are stock.
+        w.Set(Chest.X, Chest.Y + 1, Chest.Z, 0);
+        clock.Now += TimeSpan.FromSeconds(10);
+        c.MaterialsChanged();
+        c.EnsureMaterials();
+        m = c.Builds.Single().Materials.Single();
+        Assert.Equal((4, 4, 0), (m.Need, m.Have, m.Short));
+    }
+
+    /// <summary>Only the Architect's chest builds were crafted as immediate tasks; a design's chests (a <c>block</c> build, the
+    /// storehouse) waited at priority 5 behind every owner bill, a "forever" one for good ("waiting for N chest (being crafted)").</summary>
+    [Fact]
+    public void A_designs_chests_are_crafted_before_owner_bills()
+    {
+        var (c, _, _, _) = Rig(table: true, furnace: false, new Stack(5, 0, 16), new Stack(296, 0, 30));
+        Assert.Null(c.BillsOp("add", new JsonObject { ["bench"] = Table.Json(), ["bill"] = new JsonObject { ["recipe"] = "craft:bread", ["mode"] = "forever" } }).Error);
+        Build(c, new JsonObject { ["kind"] = "block", ["blocks"] = Cells((20, 64, 5)), ["material"] = new JsonArray(54, 2) });
+        c.EnsureMaterials();
+        Assert.Contains(AutoBills(c), x => x.ForItem == "chest");
+        var craft = c.Next(0);
+        Assert.Equal("craft", craft["kind"]!.GetValue<string>());
+        Assert.Contains("chest", craft["item"]!.GetValue<string>());
+    }
+
+    /// <summary>A bench the colony placed near home could land in a finished design's empty space (StationSpot only avoided live
+    /// builds): the room dug it out, the spot was free again, and the next bench went there (C11).</summary>
+    [Fact]
+    public void A_bench_is_never_put_into_a_designs_room()
+    {
+        var (c, _, w, _) = Rig(table: false, furnace: false, new Stack(17, 0, 8));
+        w.Set(2, 65, 2, 4);
+        var room = new JsonObject { ["kind"] = "block", ["blocks"] = Cells((2, 65, 2)), ["material"] = new JsonArray(4, 0) };
+        room["replace_area"] = new JsonArray(-2, 64, -2, 2, 65, 2); // home's 5×5 around, two high
+        Build(c, room);
+        c.Reconcile(w);
+        var air = c.Builds.Single(b => b.Kind == "remove");
+        Assert.Equal("done", air.Status);
+        var inRoom = air.Ghosts.Select(g => g.At).ToHashSet();
+        Build(c, new JsonObject { ["kind"] = "fence", ["blocks"] = Cells((0, 64, 5), (1, 64, 5), (2, 64, 5)) });
+        var j = c.Next(0);
+        Assert.Equal("crafting_table", j["block"]!.GetValue<string>());
+        var at = j["at"]!.GetValue<string>().Split(',').Select(int.Parse).ToArray();
+        Assert.DoesNotContain(new P3(at[0], at[1], at[2]), inRoom);
+    }
+
     private sealed class FakeClock : TimeProvider
     {
         public DateTimeOffset Now = DateTimeOffset.Parse("2026-11-03T12:00:00Z");

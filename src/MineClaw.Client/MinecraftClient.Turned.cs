@@ -144,7 +144,8 @@ public sealed partial class MinecraftClient
         if (World.Inventory.CountItem(itemId, damage) == 0) return $"no {ItemName(itemId, damage ?? 0)} in inventory";
         if (!World.IsLoaded(pos.X, pos.Z)) return $"{Fmt(pos)} is not loaded";
         int existing = World.GetBlock(pos);
-        return Aiming.IsReplaceable(World, existing) ? null : $"{Fmt(pos)} is occupied by {BlockName(existing, World.GetMeta(pos))}";
+        if (!Aiming.IsReplaceable(World, existing)) return $"{Fmt(pos)} is occupied by {BlockName(existing, World.GetMeta(pos))}";
+        return ChestRefusal(pos, itemId);
     }
 
     /// <summary>Walks to the first stand that has the click: the click, or why there is none.</summary>

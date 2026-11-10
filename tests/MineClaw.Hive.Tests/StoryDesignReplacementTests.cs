@@ -62,8 +62,10 @@ public sealed class StoryDesignReplacementTests
         Assert.False(c.Holds(c.P(), old["id"]!.GetValue<string>()));
         Assert.DoesNotContain(c.State()["ghosts"]!["blocks"]!.AsArray(), g => g![5]!.GetValue<string>() == airBuild.Id);
 
-        // The already-sent block packet lands after superseding the old job. Its final report is stale.
+        // The already-sent block packet lands after superseding the old job. Its final report is stale. The client logs the block
+        // that appeared where it just clicked, cut or not (MinecraftClient.cs): the hive's placed-block log puts it on the pawn.
         w.Set(5, 64, 12, 5);
+        h.Placed.Add((new P3(5, 64, 12), 5, c.P()));
         Assert.False(c.Report(c.P(), old["id"]!.GetValue<string>(), "done", null, null));
         c.Reconcile(w);
         Assert.Equal("done", air.State);
@@ -83,6 +85,82 @@ public sealed class StoryDesignReplacementTests
         Assert.Contains(c.State(since)["removed"]!["ghosts"]!.AsArray(), g => g!.GetValue<string>() == $"{airBuild.Id}|5,64,12");
         Assert.DoesNotContain(c.State()["ghosts"]!["blocks"]!.AsArray(), g => g![5]!.GetValue<string>() == airBuild.Id);
         Assert.Single(airBuild.Ghosts); // owned internally after its map marker disappears
+    }
+
+    /// <summary>A finished design's room (1.12.2) with a chest at 4,64,12 and empty space at 5 and 6: one pawn that only builds.</summary>
+    private static (StoryColony C, FakeStoryHost H, FakeStoryWorld W, GhostState Air) FinishedRoom(ManualTime? clock = null)
+    {
+        var (c, h, w) = StoryRig.Make(1, Release1122GameData.Instance, clock);
+        foreach (var t in WorkTypes.All) c.Pawns[c.P()].Priorities[t] = t == WorkTypes.Build ? 1 : 0;
+        h.Lives[c.P()] = FakeStoryHost.Live(0, 64, 4, inv: [new Stack(4, 0, 20)]);
+        w.Set(4, 64, 12, 54, 4);
+        var room = Block(54, [4, 64, 12]);
+        room["material"] = new JsonArray(54, 4);
+        room["replace_area"] = new JsonArray(4, 64, 12, 6, 64, 12);
+        Assert.Null(c.BuildsOp("add", new JsonArray(room), null).Error);
+        c.Reconcile(w);
+        Assert.All(c.Builds, b => Assert.Equal("done", b.Status));
+        var air = c.Builds.Single(b => b.Kind == "remove").Ghosts.Single(g => g.At == new P3(5, 64, 12));
+        Assert.Equal("done", air.State);
+        return (c, h, w, air);
+    }
+
+    /// <summary>Every block that appeared in a finished design's empty space was dug out, for good, whoever put it there: a storage
+    /// sign the owner hung on a chest of the storehouse too (C11). Only what the hive's own bots placed is removed now.</summary>
+    [Fact]
+    public void A_block_the_owner_put_into_a_designs_room_is_left_alone()
+    {
+        var (c, _, w, air) = FinishedRoom();
+        w.Set(5, 64, 12, 68, 5); // a wall sign on the chest's east side
+        for (int i = 0; i < 3; i++) c.Reconcile(w);
+        Assert.Equal("done", air.State);
+        Assert.NotEqual("dig", c.Next()["kind"]?.GetValue<string>());
+        Assert.Equal(68, w.Block(5, 64, 12).Id);
+    }
+
+    /// <summary>The owner's block stays for good, so every 5 s pass read the whole placed-block log again (every body's, thousands of
+    /// rows) under the colony lock. The same block in the same cell is answered from the last read for a minute; a new block reads it.</summary>
+    [Fact]
+    public void The_owners_block_in_a_designs_room_reads_the_placed_block_log_once_a_minute()
+    {
+        var clock = new ManualTime();
+        var (c, h, w, air) = FinishedRoom(clock);
+        w.Set(5, 64, 12, 68, 5); // the owner's sign
+        int before = h.PlacedReads;
+        for (int i = 0; i < 11; i++)
+        {
+            c.Reconcile(w);
+            clock.Now += TimeSpan.FromSeconds(5);
+        }
+        Assert.Equal(before + 1, h.PlacedReads);
+        clock.Now += TimeSpan.FromSeconds(5); // a minute since that read
+        c.Reconcile(w);
+        Assert.Equal(before + 2, h.PlacedReads);
+        Assert.Equal("done", air.State);
+        // A pawn's block in the next cell is new to the colony: the log is read at once, and the block is taken out.
+        w.Set(6, 64, 12, 4);
+        h.Placed.Add((new P3(6, 64, 12), 4, c.P()));
+        c.Reconcile(w);
+        Assert.Equal(before + 3, h.PlacedReads);
+        c.Reconcile(w);
+        Assert.Equal(before + 3, h.PlacedReads);
+        Assert.Equal("todo", c.Builds.Single(b => b.Kind == "remove").Ghosts.Single(g => g.At == new P3(6, 64, 12)).State);
+        Assert.Equal("done", air.State); // the owner's sign stays
+    }
+
+    [Fact]
+    public void A_pawns_late_block_in_a_designs_room_is_still_removed()
+    {
+        var (c, h, w, air) = FinishedRoom();
+        w.Set(5, 64, 12, 4);
+        h.Placed.Add((new P3(5, 64, 12), 4, c.P()));
+        c.Reconcile(w);
+        Assert.Equal("done", air.State); // seen once: it may be a moment's view
+        c.Reconcile(w);
+        Assert.Equal("todo", air.State);
+        var dig = c.Next();
+        Assert.Equal("dig", dig["kind"]!.GetValue<string>());
+        Assert.Equal("5,64,12", dig["at"]!.GetValue<string>());
     }
 
     [Fact]
@@ -107,6 +185,65 @@ public sealed class StoryDesignReplacementTests
         Assert.Equal("todo", air.State); // removing the newer directive restores the intentionally empty room
     }
 
+    /// <summary>A placed design's empty-space cell that a later build took over, with that build's block standing in it.</summary>
+    private static (StoryColony C, FakeStoryWorld W, BuildState AirBuild, GhostState Air, BuildState Later) SupersededAir()
+    {
+        var (c, _, w) = StoryRig.Make();
+        foreach (var t in WorkTypes.All) c.Pawns[c.P()].Priorities[t] = t == WorkTypes.Build ? 1 : 0;
+        var replacement = Block(4, [4, 64, 12], [6, 64, 12]);
+        replacement["replace_area"] = new JsonArray(4, 64, 12, 6, 64, 12);
+        Assert.Null(c.BuildsOp("add", new JsonArray(replacement), null).Error);
+        var airBuild = c.Builds.Single(b => b.Kind == "remove");
+        var air = Assert.Single(airBuild.Ghosts);
+        Assert.Null(c.BuildsOp("add", new JsonArray(Block(5, [5, 64, 12])), null).Error);
+        var later = c.Builds.Last();
+        w.Set(5, 64, 12, 5);
+        Assert.Equal("blocked", air.State);
+        return (c, w, airBuild, air, later);
+    }
+
+    /// <summary>Retry reopened every cell that was not done, superseded ones too, and ran no conflict pass: until the next reconcile a
+    /// builder was handed the older design's empty-space cell as a dig that ignores protection, and removed the newer build's block.</summary>
+    [Fact]
+    public void Retry_never_reopens_a_superseded_cell()
+    {
+        var (c, w, airBuild, air, later) = SupersededAir();
+        Assert.Equal(0, c.FailedCells()); // superseded is not failed: "Retry failed cells (N)" has nothing to count
+
+        Assert.Equal(0, c.RetryBuilds("retry_all", null, null).Result!["reopened"]!.GetValue<int>());
+        Assert.Equal(0, c.RetryBuilds("retry", [airBuild.Id], [air.At]).Result!["reopened"]!.GetValue<int>());
+        Assert.Equal("blocked", air.State);
+        Assert.Contains("superseded by build " + later.Id, air.Reason);
+        var job = c.Next();
+        Assert.NotEqual("dig", job["kind"]?.GetValue<string>());
+        Assert.Equal(5, w.Block(5, 64, 12).Id);
+        Assert.Equal(0, c.FailedCells());
+
+        // The same once a pass has run (the older build then counts as done) and the retry names the build and the cell.
+        c.Report(c.P(), job["id"]!.GetValue<string>(), "done", null, null);
+        c.Reconcile(w);
+        Assert.Equal(0, c.RetryBuilds("retry", [airBuild.Id], [air.At]).Result!["reopened"]!.GetValue<int>());
+        Assert.Equal("blocked", air.State);
+        Assert.NotEqual("dig", c.Next()["kind"]?.GetValue<string>());
+    }
+
+    [Fact]
+    public void Removing_the_newer_build_gives_the_older_cell_back_as_work()
+    {
+        var (c, w, airBuild, air, later) = SupersededAir();
+        c.Reconcile(w);
+        Assert.Equal("done", airBuild.Status); // only a superseded cell is left of it: no failure, nothing to do
+        Assert.Equal("blocked", air.State);
+
+        Assert.Null(c.BuildsOp("remove", null, [later.Id]).Error);
+        c.Reconcile(w);
+        Assert.Equal("todo", air.State);
+        Assert.Equal("queued", airBuild.Status); // a done build is scanned by no pawn: the cell would wait for good
+        var dig = c.Next();
+        Assert.Equal("dig", dig["kind"]!.GetValue<string>());
+        Assert.Equal("5,64,12", dig["at"]!.GetValue<string>());
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -119,6 +256,7 @@ public sealed class StoryDesignReplacementTests
         void AddPole()
         {
             w.Set(at.X, at.Y, at.Z, 3);
+            h.Placed.Add((at, 3, c.P())); // the pawn's own block: the placed-block log has it
             h.Temps[c.P()] = [(at, 3)];
             c.Temporary(c.P(), at.ToString(), true, "reach pillar");
         }
@@ -276,6 +414,24 @@ public sealed class StoryDesignReplacementTests
         var access = c.Builds.Single().Ghosts.Single(g => g.At == held);
         Assert.Equal("todo", access.State); // matching temporary dirt is not prematurely accepted as the permanent design
         Assert.Contains(c.Meta.TempBlocks!, t => t.At == held);
+    }
+
+    /// <summary>Inside a placed design every cell is a ghost (its blocks or its empty space), and no scaffold went on any build's cell:
+    /// a block with nothing under it but the design's own cleared empty space waited for good.</summary>
+    [Fact]
+    public void A_scaffold_may_stand_in_the_designs_own_empty_space()
+    {
+        var (c, h, _) = StoryRig.Make();
+        foreach (var t in WorkTypes.All) c.Pawns[c.P()].Priorities[t] = t == WorkTypes.Build ? 1 : 0;
+        h.Lives[c.P()] = FakeStoryHost.Live(0, 64, 4, inv: [new Stack(5, 0, 20)]);
+        var design = Block(5, [4, 65, 12]);
+        design["replace_area"] = new JsonArray(4, 64, 12, 4, 65, 12);
+        Assert.Null(c.BuildsOp("add", new JsonArray(design), null).Error);
+        var air = Assert.Single(c.Builds.Single(b => b.Kind == "remove").Ghosts);
+        Assert.Equal(("done", new P3(4, 64, 12)), (air.State, air.At)); // the empty space under the block, already empty
+        var job = c.Next();
+        Assert.Equal("place", job["kind"]!.GetValue<string>());
+        Assert.Equal("4,64,12", job["scaffold"]!["4,65,12"]!.GetValue<string>());
     }
 
     [Fact]

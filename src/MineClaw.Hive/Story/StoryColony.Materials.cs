@@ -56,7 +56,9 @@ public sealed partial class StoryColony
     private Dictionary<(int Id, int Meta), int> Pool(IStoryWorld w)
     {
         var pool = new Dictionary<(int, int), int>();
-        foreach (var s in Storages) if (!ChestUnreachable(s.Chest)) foreach (var c in s.Contents) PoolAdd(pool, c.Id, c.Meta, c.Count); // nobody gets there: not stock
+        // Nobody gets there, it is gone, or a block shuts its lid: not stock (fetches skip it too: ChestOpen).
+        foreach (var s in Storages)
+            if (!s.Missing && !ChestUnreachable(s.Chest) && LidBlocked(s.Chest) == null) foreach (var c in s.Contents) PoolAdd(pool, c.Id, c.Meta, c.Count);
         var cats = StoryCategories.For(w.Data);
         foreach (var p in Pawns.Values) PoolPawn(pool, cats, p);
         // A reserved furnace load is already committed, even while its pawn is fetching the input.
@@ -325,8 +327,11 @@ public sealed partial class StoryColony
             if (!acc.Mats.Select(m => m.Key).SequenceEqual(b.Materials.Select(m => m.Key))) { b.Materials = acc.Mats; b.Rev = c.Bump(); }
         }
 
+        /// <summary>The cells the build still places, by item. A blocked cell counts (it is tried again), but not one a newer build
+        /// took over, a quarry digs or the chest rule refuses: it is never placed as things stand, so it holds no stock and orders no
+        /// craft.</summary>
         private IEnumerable<IGrouping<string, GhostState>> Groups(BuildState b) =>
-            b.Ghosts.Where(g => g.Job && !g.Remove && g.State is "todo" or "leased" or "blocked")
+            b.Ghosts.Where(g => g.Job && !g.Remove && g.State is "todo" or "leased" or "blocked" && !Conflicted(g) && !StoryConstruction.ChestRuleHeld(g))
                 .GroupBy(g => g.Item ?? (w.Data.ItemExists(g.Id) ? w.Data.Item(g.Id).Name : g.Id.ToString()));
 
         /// <summary>One item of a build: held from stock, the rest crafted or said short. Liquid sources take a bucket (kept, never
@@ -590,11 +595,12 @@ public sealed partial class StoryColony
     }
 
     /// <summary>A free cell near home for a bench the colony places: air with solid ground under it and air above, not a build's cell,
-    /// not the home cell, nobody standing there. Null when there's none (or no home).</summary>
+    /// not the home cell, nobody standing there. Null when there's none (or no home). Every build's cell counts, a finished or paused
+    /// one's too: a bench put into a done design's empty space was dug out by it, and the spot was free for the next bench (C11).</summary>
     private P3? StationSpot(IStoryWorld w)
     {
         if (Home() is not { } home) return null;
-        var ghosts = Builds.Where(Builds_Live).SelectMany(b => b.Ghosts).Select(g => g.At).ToHashSet();
+        var ghosts = Builds.SelectMany(b => b.Ghosts).Select(g => g.At).ToHashSet();
         for (int r = 2; r <= 8; r++)
             for (int dx = -r; dx <= r; dx++)
                 for (int dz = -r; dz <= r; dz++)

@@ -29,6 +29,7 @@ import {
   type WaterToolId,
 } from '@mineclaw/contracts';
 import { hasFacing, rotateMeta, withFacing, type Dir } from '../studio/facing';
+import { ghostSuperseded } from './bodyLook';
 
 type V3 = [number, number, number];
 
@@ -1141,6 +1142,15 @@ export interface FailedCell {
   build: string | number;
   cell: V3;
   reason: string;
+  /** The ghost's state: `blocked`, `misrotated`, or open (`todo`, `leased`, …) and resting after a miss. */
+  state: string;
+}
+
+/** A cell waiting for the block in it to be dug out (`clear`): not failed, but its reason is worth a tooltip. */
+export interface ClearCell {
+  build: string | number;
+  cell: V3;
+  reason: string;
 }
 
 type GhostLike = readonly [number, number, number, number, number, string | number, string, (string | null)?, (string | null)?];
@@ -1151,24 +1161,87 @@ function outsideGridRect(g: GhostLike, rect: readonly [number, number, number, n
   return g[0] < Math.min(x1, x2) || g[0] > Math.max(x1, x2) || g[2] < Math.min(z1, z2) || g[2] > Math.max(z1, z2);
 }
 
-/** A ghost's failure: blocked, or a failure's reason (null when it hasn't failed, or is done or unsupported). */
+/** A ghost's failure: blocked, or a failure's reason (null when it hasn't failed, or is done or unsupported). Two kinds of cell
+ * carry a reason without having failed: one waiting for the block in it to be dug out (`clear`), and one a newer build took
+ * over (superseded). */
 function ghostFailure(g: GhostLike): string | null {
   const state = g[6];
-  if (state === 'done' || state === 'unsupported') return null;
+  if (state === 'done' || state === 'unsupported' || state === 'clear') return null;
   const reason = g[8] ?? null;
+  if (ghostSuperseded(reason)) return null;
   if (state !== 'blocked' && !reason) return null;
   return reason ?? 'blocked after repeated failures';
 }
 
-/** The failed cells among the state's ghosts (never done or unsupported ones), in a grid rect [x1, z1, x2, z2] when given. */
-export function failedCells(ghosts: readonly GhostLike[], rect: readonly [number, number, number, number] | null = null): FailedCell[] {
+/** The start of the colony's chest-rule reason (StoryConstruction.ChestRule): the game refuses that chest, so a retry changes
+ * nothing; the cell opens by itself once the chest beside it is gone. */
+const CHEST_RULE = "vanilla can't place a chest here";
+
+/** A blocked cell the game's chest rule holds: drawn as blocked, but no Retry picks it up. */
+export const chestRuleCell = (f: { reason: string }) => f.reason.startsWith(CHEST_RULE);
+
+/** The start of a cell's reason when a quarry digs it (StoryColony.QuarryConflictWords): it did not fail, and a retry leaves it. */
+const QUARRY_HELD = 'conflicts with quarry ';
+
+/** A blocked cell no retry touches (the chest rule, a quarry's): drawn, but neither counted nor picked up by Retry. */
+const noRetryCell = (f: { reason: string }) => chestRuleCell(f) || f.reason.startsWith(QUARRY_HELD);
+
+/** The failed cells among the state's ghosts (never done or unsupported ones), in a grid rect [x1, z1, x2, z2] when given. Retry's
+ * catch by default; `marked` adds the chest rule's blocked cells, which the map draws but a retry leaves as they are. */
+export function failedCells(
+  ghosts: readonly GhostLike[],
+  rect: readonly [number, number, number, number] | null = null,
+  marked = false,
+): FailedCell[] {
   const out: FailedCell[] = [];
   for (const g of ghosts) {
     const reason = ghostFailure(g);
     if (reason === null || (rect && outsideGridRect(g, rect))) continue;
-    out.push({ build: g[5], cell: [g[0], g[1], g[2]], reason });
+    if (!marked && noRetryCell({ reason })) continue;
+    out.push({ build: g[5], cell: [g[0], g[1], g[2]], reason, state: g[6] });
   }
   return out;
+}
+
+const clearColumns = new WeakMap<object, Map<string, ClearCell>>();
+
+/** The cells to clear (`clear`, with what holds them) by column `x,z`, the lowest first; built once per ghost list. */
+export function clearCellsByColumn(ghosts: readonly GhostLike[]): Map<string, ClearCell> {
+  const hit = clearColumns.get(ghosts);
+  if (hit) return hit;
+  const m = new Map<string, ClearCell>();
+  for (const g of ghosts) {
+    if (g[6] !== 'clear') continue;
+    const k = `${g[0]},${g[2]}`;
+    const had = m.get(k);
+    if (!had || g[1] < had.cell[1])
+      m.set(k, { build: g[5], cell: [g[0], g[1], g[2]], reason: g[8] ?? 'holds another block' });
+  }
+  clearColumns.set(ghosts, m);
+  return m;
+}
+
+/** What a build cell's state is called in the map's tooltip. */
+function cellStateWords(state: string): string {
+  if (state === 'blocked') return 'blocked';
+  if (state === 'misrotated') return 'wrong rotation';
+  return 'resting after';
+}
+
+/**
+ * The map's tooltip over a build cell: its state and why. A failed cell names its state (blocked, wrong rotation, or resting after
+ * a miss) and the Retry tool; a cell to clear says so, without Retry (a retry changes nothing there). Before, every such cell said
+ * "failed", also one that was only resting or turned the wrong way.
+ */
+export function cellTitle(failed: FailedCell | undefined, clear?: ClearCell): string {
+  if (failed) {
+    const head = `Build ${failed.build}: ${failed.cell.join(',')}`;
+    const words = cellStateWords(failed.state);
+    const body = failed.reason.startsWith(words) ? failed.reason : `${words}: ${failed.reason}`;
+    return noRetryCell(failed) ? `${head} ${body}` : `${head} ${body} (Retry tool: O)`;
+  }
+  if (clear) return `Build ${clear.build}: ${clear.cell.join(',')} to clear: ${clear.reason}`;
+  return '';
 }
 
 /** Failed cells by build: one retry request per build (`{op:"retry", id, cells}`). */

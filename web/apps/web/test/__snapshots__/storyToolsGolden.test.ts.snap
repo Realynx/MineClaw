@@ -11989,6 +11989,7 @@ exports[`failedCells > states, reasons and rects 1`] = `
         0,
       ],
       "reason": "blocked after repeated failures",
+      "state": "blocked",
     },
     {
       "build": "b1",
@@ -11998,6 +11999,7 @@ exports[`failedCells > states, reasons and rects 1`] = `
         0,
       ],
       "reason": "no path",
+      "state": "blocked",
     },
     {
       "build": "b2",
@@ -12007,6 +12009,7 @@ exports[`failedCells > states, reasons and rects 1`] = `
         5,
       ],
       "reason": "can't reach",
+      "state": "waiting",
     },
     {
       "build": 4,
@@ -12016,6 +12019,7 @@ exports[`failedCells > states, reasons and rects 1`] = `
         9,
       ],
       "reason": "blocked after repeated failures",
+      "state": "blocked",
     },
   ],
   "flipped": [
@@ -12027,6 +12031,7 @@ exports[`failedCells > states, reasons and rects 1`] = `
         0,
       ],
       "reason": "blocked after repeated failures",
+      "state": "blocked",
     },
     {
       "build": "b1",
@@ -12036,6 +12041,7 @@ exports[`failedCells > states, reasons and rects 1`] = `
         0,
       ],
       "reason": "no path",
+      "state": "blocked",
     },
     {
       "build": "b2",
@@ -12045,6 +12051,7 @@ exports[`failedCells > states, reasons and rects 1`] = `
         5,
       ],
       "reason": "can't reach",
+      "state": "waiting",
     },
   ],
   "left": [
@@ -12056,6 +12063,7 @@ exports[`failedCells > states, reasons and rects 1`] = `
         9,
       ],
       "reason": "blocked after repeated failures",
+      "state": "blocked",
     },
   ],
   "none": [],
@@ -12068,6 +12076,7 @@ exports[`failedCells > states, reasons and rects 1`] = `
         0,
       ],
       "reason": "blocked after repeated failures",
+      "state": "blocked",
     },
     {
       "build": "b1",
@@ -12077,6 +12086,7 @@ exports[`failedCells > states, reasons and rects 1`] = `
         0,
       ],
       "reason": "no path",
+      "state": "blocked",
     },
     {
       "build": "b2",
@@ -12086,6 +12096,7 @@ exports[`failedCells > states, reasons and rects 1`] = `
         5,
       ],
       "reason": "can't reach",
+      "state": "waiting",
     },
   ],
 }

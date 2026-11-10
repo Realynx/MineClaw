@@ -644,7 +644,8 @@ public sealed partial class StoryColony
         if (j.Source == "need") _needFails.Remove(p.Name);
         LearnFrom(p, j);
         _fails.Remove(p.Name);
-        if (j.Lease != null) { _leaseFails.Remove(j.Lease); _softFails.Remove(j.Lease); }
+        // A build batch always ends done, also when its first cell was "not now": that cell's soft count ends when it is built (CellDone).
+        if (j.Lease != null) { _leaseFails.Remove(j.Lease); if (j.Source != "ghost") _softFails.Remove(j.Lease); }
         Reached(p, j); // it isn't stuck; a rescue's blocks arrived (StoryColony.Rescue.cs)
         if (WorkTypes.Known(j.Type)) _lastWork[p.Name] = j.Type; // what it gathers next keeps its loot (KeepGathering)
         if (j.Type == WorkTypes.Mine && j.Source == "zone" && j.Kind == "dig" && j.SourceId is { } zone)
@@ -685,6 +686,7 @@ public sealed partial class StoryColony
         ["zone"] = static (c, _, j, _) => c.ZoneWorkDone(j),
         ["crop"] = static (c, _, j, _) => c.ZoneWorkDone(j),
         ["sow"] = static (c, _, j, _) => c.ZoneWorkDone(j),
+        ["site"] = static (c, _, j, _) => c.SiteVisited(j), // a build out of view: a pawn went to load it (StoryColony.Builds.cs)
     };
 
     /// <summary>A zone's job done: its scans start over (a quarry rescans at once); a harvest counts toward the zone's planting bills.</summary>
@@ -780,7 +782,8 @@ public sealed partial class StoryColony
         || why.StartsWith("busy", StringComparison.OrdinalIgnoreCase) || why.Contains("a hive claim", StringComparison.OrdinalIgnoreCase)
         || why.Contains("is not loaded", StringComparison.OrdinalIgnoreCase)
         // A placement out of reach from where the pawn got to, or with someone in the cell: it walks again next time.
-        || why.Contains("couldn't get closer", StringComparison.OrdinalIgnoreCase) || why.Contains("standing in it", StringComparison.OrdinalIgnoreCase);
+        || why.Contains("couldn't get closer", StringComparison.OrdinalIgnoreCase) || why.Contains("standing in it", StringComparison.OrdinalIgnoreCase)
+        || why.Contains("I'm in the way of", StringComparison.OrdinalIgnoreCase); // the client's own words for a pawn in the cell
 
     private void Failed(PawnState p, ActiveJob j, string? note)
     {
@@ -809,6 +812,8 @@ public sealed partial class StoryColony
         // A furnace with nothing to collect yet, or a load left without fuel (a refuel follows): no failure (StoryColony.Refuel.cs).
         if (MissingContainer(p, note) || StaleFetch(p, j, note) || ToolFailure(note) || ContainerUnreachable(p, note) || FurnaceNotReady(j, why)) return;
         NoteDropMiss(p, j, why); // the spot it missed them at: several misses there and its drops rest, whatever their ids (StoryColony.DropSpots.cs)
+        // A build job's failure is its first open cell's, sorted like a cell's report: only one about the cell counts (StoryColony.Builds.cs).
+        if (j.Source == "ghost" && BatchMissed(p, j, why)) return;
         // Unreachable from where this pawn stands, a stuck pawn, a monster it couldn't find: its own rest, not the target's failure
         // (live 11-04: one pawn in a hole failed grass after grass for everyone; StoryColony.Rescue.cs).
         if (PawnOnly(p, j, why)) return;
@@ -876,7 +881,8 @@ public sealed partial class StoryColony
     /// </summary>
     private bool SoftFailure(PawnState p, ActiveJob j, string why)
     {
-        if (j.Source is not ("designation" or "ghost") || j.Lease == null || !Transient(why) || Unreachable(why)) return false;
+        // A build job's "not now" was sorted by its cell already (BatchMissed): one that gets here counts.
+        if (j.Source != "designation" || j.Lease == null || !Transient(why) || Unreachable(why)) return false;
         int soft = _softFails[j.Lease] = _softFails.GetValueOrDefault(j.Lease) + 1;
         if (soft < SoftLimit)
         {

@@ -108,7 +108,9 @@ internal sealed class FakeStoryHost(FakeStoryWorld world) : IStoryHost
     }
     /// <summary>The hive's placed-block log: every block a bot placed that still stands, and who.</summary>
     public List<(P3 At, int Id, string Bot)> Placed { get; } = new();
-    public IReadOnlyList<(P3 At, int Id, string Bot)> PlacedByBots() => Placed.ToList();
+    public IReadOnlyList<(P3 At, int Id, string Bot)> PlacedByBots() { PlacedReads++; return Placed.ToList(); }
+    /// <summary>How often the placed-block log was read (each read copies every body's log).</summary>
+    public int PlacedReads;
     /// <summary>The server's seats (free, kept for regulars); null = unknown.</summary>
     public (int Free, int Kept)? SeatsNow;
     public (int Free, int Kept)? Seats() => SeatsNow;

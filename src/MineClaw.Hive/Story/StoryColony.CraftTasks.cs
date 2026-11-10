@@ -46,9 +46,11 @@ public sealed partial class StoryColony
 
     /// <summary>
     /// A build of the Architect's chest (storage the owner placed): its chest is crafted before other work. Live 11-06: storage was full,
-    /// Fox placed 14 chests, and their crafts queued behind a "forever" bread bill and every build at the crafters' priority.
+    /// Fox placed 14 chests, and their crafts queued behind a "forever" bread bill and every build at the crafters' priority. A design's
+    /// chests (a live <c>block</c> build that needs chests: the storehouse) are the same storage and come first too (owner's default, C10).
     /// </summary>
-    private bool IsChestBuild(string id) => Builds.Any(b => b.Id == id && b.Kind == "chest" && b.Status != "done");
+    private bool IsChestBuild(string id) => Builds.Any(b => b.Id == id && b.Status != "done"
+        && (b.Kind == "chest" || b.Kind == "block" && b.Status != "paused" && b.Materials.Any(m => m.Item == "chest")));
 
     /// <summary>
     /// An immediate craft task this pawn can do (the recipe's work enabled), taken before its other work: a missing tool holds the

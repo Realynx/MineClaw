@@ -59,6 +59,44 @@ public class ChestPairsTests
     }
 
     [Fact]
+    public void Placement_refuses_a_chest_beside_a_double_chest_or_between_two_and_names_them()
+    {
+        // Beside a pair, in line or round the corner: refused, naming the half it would touch.
+        var pair = new Grid((0, 64, 0, Normal), (1, 64, 0, Normal));
+        Assert.False(ChestPairs.CanPlace(pair, P(2, 64, 0), Normal, out var inLine));
+        Assert.Equal(new ChestPairs.Clash(P(1, 64, 0), null), inLine);
+        Assert.Equal("it would touch the double chest at 1,64,0", inLine.Words);
+        Assert.False(ChestPairs.CanPlace(pair, P(0, 64, 1), Normal, out var corner));
+        Assert.Equal(P(0, 64, 0), corner.At);
+        // Between two singles: refused, naming both.
+        var gap = new Grid((0, 64, 0, Normal), (2, 64, 0, Normal));
+        Assert.False(ChestPairs.CanPlace(gap, P(1, 64, 0), Normal, out var between));
+        Assert.Equal("it would sit between the chests at 0,64,0 and 2,64,0", between.Words);
+        Assert.Equal("can't place a chest at 1,64,0: it would sit between the chests at 0,64,0 and 2,64,0", ChestPairs.Refusal(P(1, 64, 0), between));
+        // Beside one single, a gap from a pair, stacked or diagonal: allowed.
+        Assert.True(ChestPairs.CanPlace(new Grid((0, 64, 0, Normal)), P(1, 64, 0), Normal, out _));
+        Assert.True(ChestPairs.CanPlace(pair, P(3, 64, 0), Normal, out _));
+        Assert.True(ChestPairs.CanPlace(pair, P(1, 65, 0), Normal, out _));
+        Assert.True(ChestPairs.CanPlace(pair, P(2, 64, 1), Normal, out _));
+        // Only the same kind counts: a trapped chest beside a normal pair (1.12.2), an ender chest anywhere.
+        Assert.True(ChestPairs.CanPlace(pair, P(2, 64, 0), Trapped, out _));
+        Assert.True(ChestPairs.CanPlace(pair, P(2, 64, 0), Ender, out _));
+        var trappedPair = new Grid((0, 64, 0, Trapped), (1, 64, 0, Trapped));
+        Assert.False(ChestPairs.CanPlace(trappedPair, P(2, 64, 0), Trapped, out _));
+        Assert.True(ChestPairs.CanPlace(trappedPair, P(2, 64, 0), Normal, out _));
+    }
+
+    [Fact]
+    public void An_unknown_neighbour_is_no_chest()
+    {
+        int pairBeyond(BlockPos q) => q == P(1, 64, 0) ? -1 : q == P(2, 64, 0) ? Normal : 0;
+        // The pair's near half is unloaded: nothing known touches the cell.
+        Assert.True(ChestPairs.CanPlace(pairBeyond, P(0, 64, 0), Normal));
+        int pair(BlockPos q) => q == P(1, 64, 0) || q == P(2, 64, 0) ? Normal : q == P(3, 64, 0) ? -1 : 0;
+        Assert.False(ChestPairs.CanPlace(pair, P(0, 64, 0), Normal));
+    }
+
+    [Fact]
     public void A_chest_lease_through_one_half_blocks_the_other_half()
     {
         var west = ClaimKey.Chest(P(1, 64, 1));

@@ -156,6 +156,13 @@ public sealed partial class StoryColony
     /// <summary>The cells of the pawns' registered temporary blocks.</summary>
     private HashSet<P3> TempCellSet() => Meta.TempBlocks is { Count: > 0 } t ? t.Select(x => x.At).ToHashSet() : [];
 
+    /// <summary>The cells of the temporary blocks a pawn still takes back: not left to the owner (<see cref="TempBlockState.DeferredReason"/>)
+    /// nor kept on the owner's word (<see cref="TempBlockState.Cancelled"/>). Builds step around only these; one given up on is an
+    /// ordinary block in a design's cell (cleared, with a reason on the map), and forgotten once the build owns the cell. The preserve
+    /// snapshot keeps the full set (<see cref="TempCellSet"/>): a pawn's block is never part of what is preserved.</summary>
+    private HashSet<P3> ActiveTempCells() =>
+        Meta.TempBlocks is { Count: > 0 } t ? t.Where(x => x.DeferredReason == null && !x.Cancelled).Select(x => x.At).ToHashSet() : [];
+
     /// <summary>After a paint, an erase or a removal: each preserved zone's snapshot follows its cells; a merged-in zone's snapshot is kept
     /// for its cells; repair builds of zones that went (or stopped preserving) go.</summary>
     private void PreserveZonesChanged(ZonePaintResult r, Dictionary<string, PreserveSnap>? before)

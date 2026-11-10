@@ -83,7 +83,7 @@ public partial class FakeServer
         {
             foreach (int id in ids) r.Add(id, rule);
         }
-        Each(p => p.Toward, 61, 62, 54); // BlockFurnace / BlockChest (no neighbour chest here): the front toward the player
+        Each(p => p.Toward, 61, 62, 54); // BlockFurnace / BlockChest: the front toward the player (a pair: JoinChestPair)
         Each(p => p.Modern ? PistonFacing(p) : p.Toward, 23); // b1.8.1 BlockDispenser.postPlace: the furnace's rule
         Each(PistonFacing, 29, 33);
         Each(p => (p.Quarter + 2) & 3, 86, 91); // BlockPumpkin: (yaw quarter + 2) & 3
@@ -98,6 +98,44 @@ public partial class FakeServer
         Each(p => p.Quarter, 107); // BlockFenceGate: the look's quarter
         return r;
     }
+
+    /// <summary>Vanilla's chest rule (b1.8.1 BlockChest.canPlace, 1.12.2 BlockChest.canPlaceBlockAt): never beside a double chest of
+    /// its kind, nor between two of them. Refused, the cell stays as it was and the client is told so (the server's block change after
+    /// a refused click). Always on: acceptance tests must not pass on layouts the game refuses.</summary>
+    private bool ChestRefused(int x, int y, int z, int placed)
+    {
+        if (!MineClaw.World.ChestPairs.IsPairable(placed)
+            || MineClaw.World.ChestPairs.CanPlace(q => Blocks.GetValueOrDefault((q.X, q.Y, q.Z)), new MineClaw.World.BlockPos(x, y, z), placed)) return false;
+        Send(new BlockChangePacket { X = x, Y = y, Z = z, BlockId = (byte)Blocks.GetValueOrDefault((x, y, z)), Metadata = (byte)Metas.GetValueOrDefault((x, y, z)) });
+        return true;
+    }
+
+    /// <summary>
+    /// A chest placed beside one of its kind makes a double chest whose halves face one way (1.12.2 BlockChest.onBlockPlacedBy and
+    /// checkForSurroundingChests; b1.8.1 postPlace and onPlace alike). The placer's facing across the pair is both halves'; along it
+    /// (no front would show) both face south for an east-west pair or east for a north-south one, unless the older half faced north
+    /// (west). Vanilla also turns a pair away from full blocks beside it; this model leaves that out. → the placed half's meta.
+    /// </summary>
+    private int JoinChestPair(int x, int y, int z, int placed, int meta)
+    {
+        if (!OrientBlocks || !MineClaw.World.ChestPairs.IsPairable(placed) || meta is < 2 or > 5) return meta;
+        foreach (var (dx, dz) in PairSides)
+        {
+            var n = (x + dx, y, z + dz);
+            if (Blocks.GetValueOrDefault(n) != placed) continue;
+            int old = Metas.GetValueOrDefault(n);
+            bool eastWest = dx != 0;
+            int joined = (eastWest ? meta is 2 or 3 : meta is 4 or 5) ? meta : eastWest ? (old == 2 ? 2 : 3) : (old == 4 ? 4 : 5);
+            Metas[n] = joined;
+            Send(new BlockChangePacket { X = n.Item1, Y = y, Z = n.Item3, BlockId = (byte)placed, Metadata = (byte)joined });
+            Mirror?.Invoke(n.Item1, y, n.Item3, placed, joined);
+            return joined;
+        }
+        return meta;
+    }
+
+    /// <summary>North, south, west, east: the order vanilla reads a new chest's neighbours in.</summary>
+    private static readonly (int Dx, int Dz)[] PairSides = [(0, -1), (0, 1), (-1, 0), (1, 0)];
 
     /// <summary>EnumFacing.getDirectionFromEntityLiving / b1.8.1 BlockPiston.c: up or down when the placer stands close by and its
     /// eyes are well above or below, else toward the player.</summary>

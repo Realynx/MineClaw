@@ -60,7 +60,7 @@ public sealed partial class StoryColony
                 foreach (var g in target.Cells) destinations[g.At] = edit;
             }
             RetireEditedCells(selected, destinations);
-            var temps = TempCellSet();
+            var temps = ActiveTempCells();
             foreach (var g in ghosts)
             {
                 var build = destinations[g.At];
@@ -69,6 +69,7 @@ public sealed partial class StoryColony
                 build.Ghosts.Add(g);
                 if (g.Remove && g.State == "done") Removed("ghost", $"{build.Id}|{g.At}");
             }
+            ChestRuleCells(world, ghosts.Select(g => (destinations[g.At], g)), null); // chests the game can't place: blocked, alerted (StoryColony.Builds.cs)
             foreach (var build in edited)
             {
                 SaveSparseBuildSpec(build);

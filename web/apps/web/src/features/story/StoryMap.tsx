@@ -83,6 +83,8 @@ import {
   type EntityLite,
   type Target,
   failedCells,
+  cellTitle,
+  clearCellsByColumn,
   stalledIn,
 } from './tools';
 import { COLORS, pawnColor } from './visuals';
@@ -1231,7 +1233,7 @@ export const StoryMap =forwardRef<StoryMapHandle, StoryMapProps>(function StoryM
   const syncCellTitle = (cv: HTMLCanvasElement, cell: V3 | null) => {
     const blocks = p.current.state?.ghosts?.blocks ?? EMPTY_GHOSTS;
     const f = cell ? failedModel(blocks).byColumn.get(`${cell[0]},${cell[2]}`) : undefined;
-    const title = f ? `Build ${f.build}: ${f.cell.join(',')} failed: ${f.reason} (Retry tool: O)` : '';
+    const title = cellTitle(f, cell && !f ? clearCellsByColumn(blocks).get(`${cell[0]},${cell[2]}`) : undefined);
     if (cv.title !== title) cv.title = title;
   };
 

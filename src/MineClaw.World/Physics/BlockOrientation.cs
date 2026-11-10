@@ -333,6 +333,29 @@ public static class BlockOrientation
         return false;
     }
 
+    /// <summary>
+    /// The faces a click can use to place (id, meta), as a mask with bit <c>1 &lt;&lt; (int)face</c> per face: the clicked block is the
+    /// cell minus that face's normal (the top face is the block under it). A wall torch has its wall's face, a door the top face, a
+    /// 1.12.2 top slab the sides and the underside; a block whose facing is the player's yaw alone (a chest, a furnace) and a block
+    /// that does not turn have all six (63). Worked out once per (id, meta, version) from the same stands as <see cref="Reachable"/>.
+    /// </summary>
+    public static int PlaceFaces(int id, int meta, bool modern) => FaceCache.GetOrAdd((id, meta & 15, modern), k => PlaceFacesCore(k.Id, k.Meta, k.Modern));
+
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<(int Id, int Meta, bool Modern), int> FaceCache = new();
+
+    private const int AllFaces = 63;
+
+    private static int PlaceFacesCore(int id, int meta, bool modern)
+    {
+        if (!Turns(id, meta, modern)) return AllFaces; // any click is as good (the client places it against any face)
+        var at = new BlockPos(0, 64, 0);
+        int mask = 0;
+        foreach (var feet in new Vec3d[] { new(0.5, 64, 3.5), new(1.5, 65, 0.5), new(0.5, 62, 1.5) })
+            foreach (var t in SolveCore(id, Damage(id, meta), meta, at, feet, modern, false, _ => true))
+                mask |= 1 << (int)t.Face;
+        return mask == 0 ? AllFaces : mask;
+    }
+
     /// <summary>The item damage that places (id, meta): its variant bits (a log's wood, a slab's material, an anvil's wear).</summary>
     public static int Damage(int id, int meta) => id switch
     {

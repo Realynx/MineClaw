@@ -544,8 +544,10 @@ public partial class FakeServer : IDisposable
         var (x, y, z) = PlacedCell(place);
         int placed = place.HeldItem.Id == 295 ? 59 : place.HeldItem.Id; // seeds on farmland plant wheat crops
         if (placed == 59 && Blocks.GetValueOrDefault((x, y, z)) != 0) return;
+        if (ChestRefused(x, y, z, placed)) return; // vanilla's canPlace: the client is told the cell is still what it was
         Blocks[(x, y, z)] = placed;
         int meta = OrientedMeta(place, placed, place.HeldItem.Damage, x, y, z) ?? PlainPlacedMeta(place); // facing, axis, half (FakeServer.Placement.cs)
+        meta = JoinChestPair(x, y, z, placed, meta); // a chest placed beside one: both halves face one way (FakeServer.Placement.cs)
         if (meta != 0) Metas[(x, y, z)] = meta;
         else Metas.Remove((x, y, z));
         RegisterStation(x, y, z, placed);

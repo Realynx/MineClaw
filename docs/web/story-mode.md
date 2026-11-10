@@ -1492,6 +1492,38 @@ Execution:
   `blocked` with `reason:"need 34 wooden planks"` and an alert. It goes on by itself once some is stored (a Chop, Mine or Haul
   pawn, or a bill, can supply it).
 - A ghost that failed 3 times is `blocked`.
+  Only failures that are the cell's own count (below); some block a cell at once (a chest the game's chest rule refuses, a clear
+  refused for good, a pour with nothing to pour against), and a blocked cell reopened for a try has one failure left.
+  A blocked ghost is tried again by itself (added 2026-11-09; before, only the owner's Retry reopened it, also across restarts
+  and deploys). Each reconcile pass looks at a build's blocked cells by reason (the reason with its coordinates and numbers left
+  out). A reason gets up to 4 cells reopened (the lowest: y, then x, z) 10 minutes after its cells blocked, then after 30, then
+  every 60, and on the first pass after a restart (the waits are kept in memory only). A reopened cell is `todo` with its reason
+  kept and one failure left: failing again it is blocked at once, with no second alert; going in, it reopens every cell blocked
+  with that reason as a fresh start. No more are reopened while a reason's cells are still out, and a reopened cell is handed
+  to a pawn 4 times at most: still open then (the pawn never got there), it is blocked again until its reason's next try; a
+  miss that is not the cell's (below) is not one of those 4. A blocked cell right beside a cell that was just finished
+  (its support, the wall it hangs on) is tried on the next pass whatever the wait. Never tried this way: superseded and quarry
+  cells, `cannot clear …` cells, a clear the pawn's dig refused for good (it reopens once the block in the way is gone), pours,
+  and a cell holding its own block turned wrong. Superseded and quarry cells also reserve no materials and order no crafts.
+  Tests: `StoryBlockedCellRecoveryTests`.
+  Only a failure that is the cell's own counts (added 2026-11-09; before, every text a pawn sent that was not a known "not now"
+  counted, and so did any build job that failed as a whole). One classifier sorts a cell's report and a build job's whole
+  failure. Not about the cell (`access pillar cleanup pending`, tool trouble, and for a whole job `dead`, `not in game`,
+  `human is controlling this pawn`, an interrupted or cancelled batch): the cell rests 15 s for everyone and nothing counts. Not
+  now (`I'm in the way of`, someone standing in it, `is occupied by`, a server refusal while a mob, player or pawn stands in the
+  cell): 15 s, and the fifth in a row counts, also for a batch's first cell. Supply (`N block(s) needed`: no dirt or cobblestone
+  to climb with): the cell rests 30 s for that pawn and never counts; the build says once "pawns have no dirt or cobblestone to
+  climb with: store some". That pawn's miss (`out of reach …`, no path): the cell rests for that pawn (30 s, 1 min, then 5 min)
+  and counts once every builder missed it: the online pawns with Build on and not drafted, 1 to 3 (designations count the pawns
+  doing their own work type the same way; before, every online pawn counted, so one or two builders never got there). Every
+  miss leaves its text as the cell's reason. A cell with a mob, a player or another pawn in it (by its live position) is not
+  offered. Tests: `StoryCellFailureKindsTests`.
+  A server refusal is said in the director's words (added 2026-11-10): the cell's and the build's reason say `the server refused
+  the block at x,y,z (something in the cell, or a rule of that block)` for the client's `server undid my placement at …
+  (protected area?)` and `stopped after 3 identical server refusals at …`, unless the chest rule names it (see "Chests in a
+  design"). The client's own text is unchanged (LLM bots read it). A build's `can't place at x,y,z: …` stays on its queue row while
+  that cell is blocked, also when the build turns active again after a material wait (before, turning active cleared it and the
+  row said nothing); it goes when that cell is built or reopened.
 - Facing, axis and half are the design's: each turned cell is placed the way its meta says (see "Rotation" below). Pillaring is
   the goto tool's own; a cell with nothing at all to place against gets a scaffold block (see "Builds reconcile with the world").
 
@@ -1503,6 +1535,12 @@ clearing before construction. It permanently removes overlapping cells from olde
 and interrupts their active batches. Cancelling the new design does not resurrect the old one. Cells outside the bounds
 retain their previous ownership. These explicit replacement clears may remove old containers and placed objects;
 ordinary build repairs keep their existing protection rules. Footing, reach, unbreakable-block and harvest checks still apply.
+Once an empty-space cell is cleared (`done`), a block that appears in it later is dug out again only when the hive's placed-block
+log says a bot put it there (a canceled builder's late placement, a pawn's pillar; `IStoryHost.PlacedByBots`, read once per
+reconcile pass and only when such a cell holds a block; a block already asked about is answered from that read for a minute). The owner's blocks (a storage sign on a chest, a torch) and what grows
+there stay (added 2026-11-10; before, every such block was dug out for good). Tests:
+`StoryDesignReplacementTests.A_block_the_owner_put_into_a_designs_room_is_left_alone`,
+`StoryDesignReplacementTests.A_pawns_late_block_in_a_designs_room_is_still_removed`.
 
 Ordinary wall and roof batches enable temporary access (`reach: true`). A builder uses stationary placement from its
 current footing and finishes every currently supported, reachable cell before taking its shared pillar down for another
@@ -1647,6 +1685,9 @@ Now:
   wants facing east"), an alert says so, and it counts as finished for the build. The map keeps drawing it as a blocked hologram over
   the block, even once the build is done. A retry (`builds {op:retry}` / `retry_all`, the Retry tool) counts it as a failed cell:
   it starts over with its one take-back again (a container is only looked at again: turned by hand, it is done).
+  Since 2026-11-10 a container is dug out for its rotation only in a placed design and only once the colony has seen it empty
+  (see "Retrying failed build cells"), and a plan-editor cell's `wrong exact state` that is a turn is `misrotated` too. The map's
+  tooltip over such a cell says "wrong rotation: …", not "failed".
 - **Not decided by the click:** rails (their shape follows the neighbours), a chest beside a chest of its kind (both halves take
   the newer one's facing, so a designed double chest faces one way; three in a row can't be placed in vanilla), an end rod on an
   end rod. Signs, banners and skulls stay unsupported ghosts.
@@ -1656,6 +1697,38 @@ transcription of the vanilla rules over every face, quarter, half and a ring of 
 the fake server: a furnace, stairs each way, a wall torch, a log on its side, an upside-down stair, a top slab, a piston pointing
 up from a stand over it), `StoryRotationTests` (the director), and `StoryFakeServerTests.A_pawn_builds_a_design_with_each_block_turned_as_drawn`
 (a pawn, both versions).
+
+### Chests in a design (added 2026-11-10)
+
+Fox 11-09: "Even now, there's some blocked blocks on the storehouse build." Vanilla (both versions) never places a chest beside a
+double chest of its kind, nor between two chests of its kind (`ChestPairs.CanPlace`; a trapped chest never pairs with a chest, an
+ender chest never pairs). A row of chests was handed to pawns whole: every third one came back `server undid my placement …
+(protected area?)` three times and stood blocked with a reason that pointed at protection.
+
+- **At queue time** (`builds {op:add}`, and cells changed with the plan editor) the request's chest cells are walked in a fixed order
+  (y, z, x) over the world's chests, every other build's chest cells still to place and the cells accepted so far, so what is
+  accepted is single chests and lone pairs, which go in in any order. A refused cell is queued `blocked` from the start with
+  `vanilla can't place a chest here: it would touch the double chest at x,y,z (use a trapped chest or leave a gap)` (or `it would
+  sit between the chests at … and …`; b1.8.1 says only `leave a gap`). The answer's `warnings` says `build bN: 2 chests left
+  blocked at …: <reason>`, and one alert per build says it too. No pawn is sent to such a cell, it reserves no materials, orders
+  no craft and is never one of the blocked-cell tries. Six chests in a row: four are built.
+- **The pawn client** refuses a chest the same way before any click: `can't place a chest at x,y,z: it would touch the double
+  chest at …` (no 1.5 s wait, no "(protected area?)", nothing learned about spawn protection). The colony stores the rule's
+  reason above and blocks the cell at once, one trip. This covers builds queued before the rule and chests nobody designed.
+- **The reconcile pass** gives a cell the server refused (`server undid my placement`, `didn't appear`, `identical server
+  refusals`) the rule's reason when the world's chests explain it (the storehouse's cells blocked before the rule), and opens a
+  cell the rule blocked once the rule allows it over the world and every build's chest cells still to come (the chest beside it
+  is gone).
+- **Shut lids.** A request's chest with a full opaque block on top (the request's own block there, else the world's) won't open:
+  the answer warns `N chests of this design sit under a solid block and will not open (x,y,z; …)`. Nothing is blocked.
+- **Stock in a shut chest** (a block on its lid, or a storage chest that is gone) is not stock: the materials pass leaves it out as
+  fetches do, so the build's material says `short` and auto crafts start, instead of "have 4" while the build waited with "need 4".
+- The fake server refuses a chest by the same rule and turns a new pair one way (across the pair: the placer's facing for both
+  halves; along it: south, or east, unless the older half faced north, or west), so acceptance tests stop passing on layouts the
+  game refuses.
+
+Tests: `StoryChestLayoutTests`, `StoryBuildCraftingTests.Items_in_a_chest_that_cannot_open_are_not_stock`, `ChestPairsTests`,
+`ContainerPlacementTests.A_third_chest_beside_a_pair_is_refused_before_any_click`.
 
 ### Builds reconcile with the world (added 2026-11-05)
 
@@ -1715,6 +1788,35 @@ Now:
   **scaffold**: the job carries `scaffold: {"x,y,z": "x,y,z"}`, the pawn places one of the batch's blocks at the spot (under the cell
   first, else beside it; never a build cell), places the cell against it, and digs the scaffold again. The fetch takes one block more.
   "Nothing solid on any side" from a pawn whose view lagged a neighbour's placement is a "not now" refusal, not a failure.
+- **The face it hangs on, and what a block goes into, are the client's rules too** (added 2026-11-10; before, a wall torch, ladder,
+  door, hopper or top slab was offered as soon as any neighbour stood, and failed `out of reach even from a pillar: no visible face
+  from the column` until blocked). `BlockOrientation.PlaceFaces(id, meta, modern)` names the faces a click can use to get a cell's
+  meta (a wall torch its wall, a door the block under it, a 1.12.2 top slab the sides and underside; a chest, a furnace or a block
+  that does not turn any face). A turned cell is offered, and joins a batch, only once the block behind one of those faces can be
+  clicked (or was laid earlier in the batch); until then it waits under "nothing to place against yet", with no failure and no trip.
+  A scaffold goes only to a cell with nothing at all to click, never to a torch, ladder, button or lever (dug back, it would drop
+  them), and a turned block's scaffold is on one of its faces. A cell holding a dead bush, a vine or a two-tall plant is `clear`
+  (dug first, by hand), since the client places only into air, liquids, fire, snow layer and tall grass (`Aiming.IsReplaceable`).
+  Blocks that stand only on the block under them and have no orientation rule (rails, redstone dust) are not covered yet. Tests:
+  `StoryPlaceReadinessTests`, `BlockOrientationTests.PlaceFaces_names_the_faces_a_meta_can_come_from`.
+- **A blocked cell holds nothing else back** (added 2026-11-10). The level a build works on is that of its cells still to do (open
+  or out with a pawn); before, a blocked cell counted, so one blocked dig kept every level below it closed ("the level below is
+  still being built") and a floating cell over a blocked level never got its scaffold. A placed design's blocks wait for its digs
+  only while one is out with a pawn or open now. Water or lava in a design's empty space stays `cannot clear water` (no bucket
+  work): everything else is built beside it, each placement clearing its own cell, and the digs below its level stay closed (a
+  pit under standing water floods), with the note `water at x,y,z can't be cleared: the N cells under it wait`. Other notes now
+  name their hold instead of "its open cells are taken or backing off": a forbidden zone, a spot where a pawn got stuck, a pawn's
+  temporary block in the cell. A temporary block left to the owner (`Left for you to remove …`) or kept on the owner's word no
+  longer freezes the design cell under it: it is an ordinary block in the way (`clear`, dug first), and the registry forgets it
+  once the build owns the cell (the preserve snapshot still treats it as air). Another build's blocked cell that no try is spent
+  on (a chest the game refuses, a refused clear) is no longer waited for as support, so a cell leaning on it gets a scaffold, and
+  a scaffold may stand in a design's empty space already cleared. A build whose open cells are all in columns no body has loaded
+  (they read as air) sends one pawn there with a `go` job (`dist` 8, lease `site:<build>`, resting 2 minutes after each visit).
+  Only when something could go in on arrival: an open cell's item carried or in storage (not reserved for an earlier build), or a
+  pour; else nobody walks and the build says what it waits for, as in view.
+  Tests: `StoryBasementTests`, `StoryReconcileTests.A_floating_cell_above_a_blocked_lowest_level_gets_its_scaffold`,
+  `StoryReconcileTests.A_cell_that_leans_on_an_unbuildable_neighbour_gets_a_scaffold`,
+  `StoryDesignReplacementTests.A_scaffold_may_stand_in_the_designs_own_empty_space`, `StoryTempBlocksTests`, `StoryBlockedWorkTests`.
 
 - **Natural drift is not a mismatch** (live 11-05, the first hour: dirt floors reopened ×22 in 7 minutes as grass spread over them
   and pawns tilled them, and the clears of the farmland were refused as a farm). A small table per version (`StoryDrift`) counts as
@@ -1861,6 +1963,10 @@ fill." The Retry tool only covered designations; a build cell that failed three 
 - A failed cell keeps its last reason (`GhostState.Reason`), sent as the ghost's 9th element: the map draws a dashed red ring with a
   cross on each failed cell (holograms on or off), and hovering one names it in the map's tooltip ("Build b3: 4,63,12 failed: …
   (Retry tool: O)").
+  Since 2026-11-10 the tooltip names the cell's state instead of "failed": `blocked: …`, `wrong rotation: …` or `resting after: …`
+  (a miss it rests from, or a blocked cell's try), each with "(Retry tool: O)"; a cell waiting for the block in it to be dug out
+  says `to clear: holds stone: dug out first`, without the Retry tool (a retry changes nothing there). `cellTitle` and
+  `clearCellsByColumn` in `tools.ts`; `FailedCell` carries the ghost's `state`. Test: `storyFailedCells.test.ts`.
 - The Retry tool's drag (O) takes the failed designations and the failed build cells in the box (one `retry {id, cells}` per build),
   and its live count counts both (before, its count was always 0 and a drag sent nothing); "Retry all failed (N)" counts both and
   sends `retry_all`. The build queue shows "Retry failed cells (N)" on a build with failed cells.
@@ -1868,6 +1974,27 @@ fill." The Retry tool only covered designations; a build cell that failed three 
   reason, or by "no block face", "protected", an unreachable pond), and a water build blocked by those reasons is queued again.
 - The mock director fails a pour cell with nothing under it at queue time (blocked, with the reason) so the retry UI has something
   to show; the bot refuses such an item outright.
+- Since 2026-11-09 a retry never touches a cell a newer build took over (`superseded by build …`) or a quarry digs. Such a cell
+  did not fail: it is not counted (`FailedCells`, "Retry failed cells (N)", the Retry tool's count) and not reopened, and the
+  retry runs the conflict pass before any pawn is woken. Before, a retry reopened superseded cells without that pass, and a
+  builder could be handed a placed design's superseded empty-space cell as a dig that removed the newer build's block. On the
+  map a superseded cell has no ring and no hologram, and a cell waiting to be cleared (`clear`) is not a failed cell either. A
+  build with nothing left but superseded cells is `done` (it was `blocked` with no reason, and its idle note said "N blocks can't
+  be placed"); removing the newer build queues it again. A build with nothing open that a quarry holds keeps its status and
+  reason through a retry.
+- A retry of a misrotated container only looks at it again (see "Rotation"). It is dug out for its rotation only in a placed
+  design (`replace_area`, or a cell changed with the plan editor), and only when the chest is storage whose record a pawn's look
+  vouches for (at most 10 minutes old) and that record is empty, with both halves of a double chest in the one record. Before,
+  such a design dug the chest out with its contents. `placed with wrong exact state …` (a plan-editor cell) that is a turn is
+  `misrotated` like `wrong rotation`, not a counted failure.
+- Blocked cells are also tried again without a retry, a few per reason (see "Construction": "A ghost that failed 3 times").
+  Tests: `StoryDesignReplacementTests`, `StoryRotationTests`, `StoryBlockedCellRecoveryTests`, `storyFailedCells.test.ts` (web).
+- A cell the chest rule blocked is not a failed cell either: it is not counted (`FailedCells`, "Retry failed cells (N)", the Retry
+  tool's count and drag) and a retry sends no pawn to it. A retry asks the rule at once, over the world and every build's chest
+  cells still to come: a cell it allows now opens (and counts as reopened); the rest stay blocked with the rule's reason, which the
+  answer's `reasons` gives when the retry named such a cell or the build has nothing else open. The map still draws them blocked;
+  their tooltip names the rule without "(Retry tool: O)". Before, a retry reopened them and counted them: one wasted trip each (the
+  pawn client refused before any click). Tests: `StoryChestLayoutTests.Retry_*`, `storyFailedCells.test.ts`.
 
 **Tests.** `StoryWaterTests` (director: checks, flow, dig before pour, fill-source choice, bucket fetch and auto bill, infinite
 sources, irrigation), `StoryPourSdkTests` (the SDK), `StoryFakeServerTests.A_pawn_digs_a_canal_fills_its_bucket_at_a_pool_and_pours_each_cell_a_source`
@@ -1930,6 +2057,9 @@ and delivery that chose them failed, ×241 in 7 hours; Fox placed 14 chests when
   when every pawn has failed it, "Chest at X won't open for the pawns".
 - A chest a colony build places (the Architect's chest, a design's chests) is storage once built, taking anything; one built
   beside a single storage chest makes it a double chest. The chest of an Architect chest build is crafted as an immediate task.
+  So are a design's chests (added 2026-11-10: a live `block` build that needs chests, such as a storehouse; before, they waited at
+  priority 5 behind every owner bill). A bench the colony places itself never goes into any build's cell, a finished design's
+  empty space included (before, the room dug it out and the next bench went to the same spot).
 
 Web (added 2026-11-03): clicking a chest opens its inspector with the storage settings and the chest's contents as the game's grid
 (27 or 54 slots) with how fresh they are ("Seen 3 min ago by maid_chan_102", "Open right now by …", "Story storage ledger", "Not
@@ -2091,6 +2221,7 @@ of the list for crafting." (Live 11-05: one table listed 20 finished "wooden hoe
   need's one-off (hoe, rod, seeds), a water build's bucket chain, the chest of an Architect chest build (storage the owner is
   waiting for). A pawn with Craft (or Cook) work takes an immediate task before any other work, whatever its priorities (live
   11-05: the pickaxe bill sat "crafting one" for 30 minutes while every crafter hauled at priority 2).
+  Since 2026-11-10 the chests of a design's live `block` build (a storehouse) are immediate too.
 - **State:** `craft_tasks: [{id, item, label, count, reason, for, for_item, priority: immediate|normal, bench:[x,y,z]|null, status:
   queued|crafting|waiting|paused, blocked}]` (every state, full or delta), `count` what is still to make, `blocked` what held it up
   at its last try ("no sticks: checked 2 chests …"). Hand crafts (a 2×2 recipe while there is no table) are listed with `bench:
