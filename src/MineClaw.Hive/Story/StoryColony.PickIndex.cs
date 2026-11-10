@@ -79,6 +79,44 @@ public sealed partial class StoryColony
     /// <summary>The world's entities, read once per pick (each read walks every entity the view tracks).</summary>
     private IReadOnlyList<StoryEntity> Ents() => _pickEnts ??= World?.Entities() ?? [];
 
+    /// <summary>The bodies a block can't be placed into (<see cref="Bodies"/>), and the entity list they were made from.</summary>
+    private readonly List<(string Name, double X, double Y, double Z)> _bodies = new();
+    private IReadOnlyList<StoryEntity>? _bodiesOf;
+
+    /// <summary>
+    /// Living bodies where they stand: monsters, animals and players the world sees, and online pawns by their own live position (the
+    /// world's copy of a pawn lags behind it). Made once per pick, with <see cref="Ents"/>: it is remade whenever that list is, so
+    /// none of the places that start a fresh entity read has to know about it.
+    /// </summary>
+    private List<(string Name, double X, double Y, double Z)> Bodies()
+    {
+        var ents = Ents();
+        if (ReferenceEquals(ents, _bodiesOf)) return _bodies;
+        _bodies.Clear();
+        foreach (var e in ents)
+            if (e.Kind == "mob" || e.Kind == "player" && !Pawns.ContainsKey(e.Name)) _bodies.Add((e.Name, e.X, e.Y, e.Z));
+        foreach (var o in Pawns.Values)
+            if (Host.Live(o.Name) is { Online: true } l) _bodies.Add((o.Name, l.X, l.Y, l.Z));
+        _bodiesOf = ents;
+        return _bodies;
+    }
+
+    /// <summary>A body standing at x,y,z (0.6 wide, 1.8 tall, as a player; most monsters are about that) overlaps the cell: the server
+    /// refuses a block there.</summary>
+    internal static bool InBox(P3 cell, double x, double y, double z) =>
+        x + 0.3 > cell.X && x - 0.3 < cell.X + 1 && z + 0.3 > cell.Z && z - 0.3 < cell.Z + 1 && y + 1.8 > cell.Y && y < cell.Y + 1;
+
+    /// <summary>Someone is in the cell now (read fresh, not the pick's list: a pawn's report comes between picks).</summary>
+    private bool BodyIn(P3 cell)
+    {
+        if (World is { } w)
+            foreach (var e in w.Entities())
+                if (e.Kind is "mob" or "player" && InBox(cell, e.X, e.Y, e.Z)) return true;
+        foreach (var o in Pawns.Values)
+            if (Host.Live(o.Name) is { Online: true } l && InBox(cell, l.X, l.Y, l.Z)) return true;
+        return false;
+    }
+
     /// <summary>Is the cell open to a pawn: air, a plant, snow, a torch, a liquid (a dig can be made from or through it)?</summary>
     private static bool OpenCell(int id) => id == 0 || StoryBlocks.Replaceable.Contains(id) || StoryBlocks.Plants.Contains(id) || id is 50 or 78;
 

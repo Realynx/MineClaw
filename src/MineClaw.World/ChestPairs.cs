@@ -43,6 +43,64 @@ public static class ChestPairs
         return found;
     }
 
+    /// <summary>Why vanilla refuses a chest: the neighbour that is half of a double chest (<see cref="Other"/> null), or the two
+    /// same-kind neighbours it would sit between.</summary>
+    public readonly record struct Clash(BlockPos At, BlockPos? Other)
+    {
+        /// <summary>The refusal in words, e.g. "it would touch the double chest at 1,64,0".</summary>
+        public string Words => Other is { } o
+            ? $"it would sit between the chests at {At.X},{At.Y},{At.Z} and {o.X},{o.Y},{o.Z}"
+            : $"it would touch the double chest at {At.X},{At.Y},{At.Z}";
+    }
+
+    /// <summary>The start of the pawn client's refusal (<see cref="Refusal"/>): the colony reads it back as the chest rule.</summary>
+    public const string RefusalStart = "can't place a chest at ";
+
+    /// <summary>The pawn client's words for a chest it won't click into <paramref name="p"/>.</summary>
+    public static string Refusal(BlockPos p, Clash c) => $"{RefusalStart}{p.X},{p.Y},{p.Z}: {c.Words}";
+
+    /// <summary>
+    /// Vanilla's <c>canPlace</c> for chest <paramref name="id"/> at <paramref name="p"/> (b1.8.1 BlockChest.canPlace, 1.12.2
+    /// BlockChest.canPlaceBlockAt): refused when two horizontal neighbours are the same kind, or one is and has a same-kind neighbour of
+    /// its own (a double chest). <paramref name="blockAt"/> gives a cell's id, or -1 when it is unknown (unloaded): an unknown
+    /// neighbour is no chest, so the answer is yes. Any other block (an ender chest, a non-chest) is always allowed here.
+    /// </summary>
+    public static bool CanPlace(Func<BlockPos, int> blockAt, BlockPos p, int id, out Clash clash)
+    {
+        clash = default;
+        if (!IsPairable(id)) return true;
+        BlockPos? first = null, second = null;
+        foreach (var o in Sides)
+        {
+            var q = p + o;
+            if (blockAt(q) != id) continue;
+            if (HasOther(blockAt, q, p, id)) { clash = new Clash(q, null); return false; }
+            if (first == null) first = q;
+            else second ??= q;
+        }
+        if (second is not { } b) return true;
+        clash = new Clash(first!.Value, b);
+        return false;
+    }
+
+    /// <inheritdoc cref="CanPlace(Func{BlockPos, int}, BlockPos, int, out Clash)"/>
+    public static bool CanPlace(Func<BlockPos, int> blockAt, BlockPos p, int id) => CanPlace(blockAt, p, id, out _);
+
+    /// <summary><see cref="CanPlace(Func{BlockPos, int}, BlockPos, int, out Clash)"/> over a world view (an unloaded column is unknown).</summary>
+    public static bool CanPlace(IBlockAccess w, BlockPos p, int id, out Clash clash) =>
+        CanPlace(q => w.IsLoaded(q.X, q.Z) ? w.GetBlock(q.X, q.Y, q.Z) : -1, p, id, out clash);
+
+    /// <summary>The chest at <paramref name="q"/> has a same-kind horizontal neighbour other than <paramref name="except"/>.</summary>
+    private static bool HasOther(Func<BlockPos, int> blockAt, BlockPos q, BlockPos except, int id)
+    {
+        foreach (var o in Sides)
+        {
+            var r = q + o;
+            if (r != except && blockAt(r) == id) return true;
+        }
+        return false;
+    }
+
     /// <summary>True when <paramref name="a"/> is the west/north half of the pair (a, b): its slots come first (0-26).</summary>
     public static bool IsFirst(BlockPos a, BlockPos b) => a.X != b.X ? a.X < b.X : a.Z < b.Z;
 

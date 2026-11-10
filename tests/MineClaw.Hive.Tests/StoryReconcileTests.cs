@@ -147,6 +147,38 @@ public sealed class StoryReconcileTests
         Assert.Null(floor.Ghosts[0].Reason);
     }
 
+    /// <summary>An older build whose last unfinished cells a newer build took over showed as blocked for good, with no reason: a
+    /// finished floor the owner later paved a part of. Nothing of it failed and nothing can be done about it: it is done.</summary>
+    [Theory, MemberData(nameof(Versions))]
+    public void A_build_left_with_only_superseded_cells_is_done(string v)
+    {
+        var (c, _, w) = Rig(v, new Stack(1, 0, 8));
+        w.Set(4, 64, 12, 3, 0);
+        w.Set(5, 64, 12, 3, 0);
+        var floor = Add(c, 3, 0, [4, 64, 12], [5, 64, 12]);
+        c.Reconcile(w);
+        Assert.Equal("done", floor.Status);
+        var pavement = Add(c, 1, 0, [4, 64, 12]);
+        Assert.Equal("blocked", floor.Ghosts[0].State);
+        Assert.Contains("superseded by build " + pavement.Id, floor.Ghosts[0].Reason);
+        for (int i = 0; i < 3; i++) c.Reconcile(w);
+        Assert.Equal("done", floor.Status);
+        Assert.Null(floor.Reason);
+        Assert.Equal(0, c.FailedCells());
+        var shown = c.State()["builds"]!.AsArray().Single(b => b!["id"]!.GetValue<string>() == floor.Id)!;
+        Assert.Equal("done", shown["status"]!.GetValue<string>());
+
+        // Another cell of it that cannot be built for a reason of its own still shows the build as blocked.
+        var (c2, _, w2) = Rig(v, new Stack(1, 0, 8));
+        w2.Set(5, 64, 12, 1, 0); // stone where the floor's other cell goes, and the pawn's dig of it was refused for good
+        var held = Add(c2, 3, 0, [4, 64, 12], [5, 64, 12]);
+        Add(c2, 1, 0, [4, 64, 12]);
+        held.Ghosts[1].State = "blocked";
+        held.Ghosts[1].Reason = "can't clear the cell 5,64,12: won't dig stone at 5,64,12: a placed stone (someone's floor, wall or path)";
+        for (int i = 0; i < 3; i++) c2.Reconcile(w2);
+        Assert.Equal("blocked", held.Status);
+    }
+
     [Theory, MemberData(nameof(Versions))]
     public void A_new_design_interrupts_a_leased_old_floor_batch(string v)
     {
@@ -268,6 +300,42 @@ public sealed class StoryReconcileTests
         Assert.Equal("place", s["kind"]!.GetValue<string>());
         Assert.Equal("4,64,12", s["scaffold"]!["4,65,12"]!.GetValue<string>());
         Assert.Equal(2, s["fetch"]!.AsArray().Sum(f => f!["n"]!.GetValue<int>())); // the block and its scaffold
+    }
+
+    /// <summary>A build's only cell on its lowest level is blocked: that level used to stay the build's level, so a higher cell with
+    /// nothing to place against was never open and never got its scaffold ("the level below is still being built", for good).</summary>
+    [Theory, MemberData(nameof(Versions))]
+    public void A_floating_cell_above_a_blocked_lowest_level_gets_its_scaffold(string v)
+    {
+        var (c, _, _) = Rig(v, new Stack(5, 0, 8));
+        var b = Add(c, 5, 0, [4, 64, 12], [8, 65, 12]);
+        var low = b.Ghosts.Single(g => g.At.Y == 64);
+        low.State = "blocked";
+        low.Reason = "server undid my placement at 4,64,12 (protected area?)";
+        var j = Pick(c);
+        Assert.Equal("place", j["kind"]!.GetValue<string>());
+        Assert.Equal(["8,65,12"], Strs(j["cells"]));
+        Assert.Equal("8,64,12", j["scaffold"]!["8,65,12"]!.GetValue<string>());
+        Assert.Equal("blocked", low.State);
+    }
+
+    /// <summary>Another build's cell that no try is spent on (here a chest the game refuses beside a double chest) was waited for as
+    /// support to come: a cell resting on it waited for good. It is now no support to come, so the cell gets a scaffold.</summary>
+    [Theory, MemberData(nameof(Versions))]
+    public void A_cell_that_leans_on_an_unbuildable_neighbour_gets_a_scaffold(string v)
+    {
+        var (c, _, w) = Rig(v, new Stack(5, 0, 8));
+        w.Set(3, 64, 12, 54, 2);
+        w.Set(4, 64, 12, 54, 2); // a double chest
+        w.Set(6, 64, 12, 1);     // something a scaffold beside the planks can stand on
+        var chest = Add(c, 54, 0, [5, 64, 12]).Ghosts.Single();
+        Assert.Equal("blocked", chest.State);
+        Assert.True(StoryConstruction.IsChestRule(chest.Reason));
+        Add(c, 5, 0, [5, 65, 12]); // planks over the chest cell: nothing else beside them
+        var j = Pick(c);
+        Assert.Equal("place", j["kind"]!.GetValue<string>());
+        Assert.Equal(["5,65,12"], Strs(j["cells"]));
+        Assert.Equal("6,65,12", j["scaffold"]!["5,65,12"]!.GetValue<string>());
     }
 
     /// <summary>Live 11-05 after the reconcile went out: dirt floors reopened ×22 in 7 minutes as grass spread over them and pawns

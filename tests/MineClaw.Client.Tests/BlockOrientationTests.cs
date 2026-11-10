@@ -167,6 +167,37 @@ public class BlockOrientationTests
         Assert.True(BlockOrientation.Same(5, 0, 3, true));         // planks: nothing to turn
     }
 
+    /// <summary>The faces a click can use to get a meta (bit = 1 &lt;&lt; face: D1 U2 N4 S8 W16 E32), which the colony director asks
+    /// before it offers a turned cell: a wall torch needs its wall, never just the floor; a chest any neighbour.</summary>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void PlaceFaces_names_the_faces_a_meta_can_come_from(bool modern)
+    {
+        const int down = 1, up = 2, north = 4, south = 8, west = 16, east = 32, all = 63, sides = north | south | west | east;
+        Assert.Equal(east, BlockOrientation.PlaceFaces(50, 1, modern));  // on the west wall: the east face of the block west of it
+        Assert.Equal(west, BlockOrientation.PlaceFaces(50, 2, modern));
+        Assert.Equal(south, BlockOrientation.PlaceFaces(50, 3, modern));
+        Assert.Equal(north, BlockOrientation.PlaceFaces(50, 4, modern));
+        Assert.Equal(up, BlockOrientation.PlaceFaces(50, 5, modern));    // on the floor: the top face of the block under it
+        Assert.Equal(north, BlockOrientation.PlaceFaces(65, 2, modern));
+        Assert.Equal(south, BlockOrientation.PlaceFaces(65, 3, modern));
+        Assert.Equal(west, BlockOrientation.PlaceFaces(65, 4, modern));
+        Assert.Equal(east, BlockOrientation.PlaceFaces(65, 5, modern));
+        Assert.Equal(all, BlockOrientation.PlaceFaces(54, 2, modern));   // a chest: the yaw alone decides
+        Assert.Equal(all, BlockOrientation.PlaceFaces(61, 5, modern));   // a furnace
+        Assert.Equal(all, BlockOrientation.PlaceFaces(5, 0, modern));    // planks don't turn
+        Assert.Equal(up, BlockOrientation.PlaceFaces(64, 0, modern));    // a door stands on the block under it
+        if (modern)
+        {
+            Assert.Equal(sides | down, BlockOrientation.PlaceFaces(44, 8, modern)); // a top slab: a side high, or the underside
+            Assert.Equal(south, BlockOrientation.PlaceFaces(154, 2, modern));       // a hopper feeding north: that block's south face
+            Assert.Equal(sides | up, BlockOrientation.PlaceFaces(53, 0, modern));   // upright stairs: the underside would turn them over
+            Assert.Equal(sides | down, BlockOrientation.PlaceFaces(53, 4, modern)); // upside-down stairs
+        }
+        else Assert.Equal(all, BlockOrientation.PlaceFaces(53, 0, modern));         // b1.8.1 stairs: the yaw alone decides
+    }
+
     /// <summary>The client's forward model against the fake server's separate transcription of the vanilla rules, over every face,
     /// every quarter, both halves and a ring of stands (pistons' 3D rule), both versions.</summary>
     [Theory]

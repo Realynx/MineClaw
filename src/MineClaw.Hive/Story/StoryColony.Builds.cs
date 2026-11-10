@@ -8,7 +8,7 @@ namespace MineClaw.Hive.Story;
 /// is on gets a batch of them (one item, one stand spot, one fetch), each cell leased to it until it reports that cell. Order: queue
 /// order, then bottom-up (support first), then blocks touching something solid, then nearest, away from other builders. A pawn
 /// fetches the material from storage (or uses its own); none anywhere → the build is blocked with "need N item" and an alert until
-/// some arrives. Never a block where a player (pawn or not) stands.
+/// some arrives. Never a block where a player (pawn or not), a monster or an animal stands.
 /// </summary>
 public sealed partial class StoryColony
 {
@@ -51,6 +51,8 @@ public sealed partial class StoryColony
         if (PrepareDesignReplacement(w, made) is { } replaceError) return (null, replaceError);
         ReplaceOldDesignCells(made);
         var flow = QueueBuilds(w, made);
+        ChestRuleCells(w, made.SelectMany(b => b.Ghosts.Select(g => (b, g))), warnings); // chests the game can't place: blocked now, said
+        ShutChestsSaid(w, made, warnings);
         BuildConflictsPass();
         BuildsInQuarries(made, warnings); // a quarry digs them: blocked now, said (StoryColony.QuarryConflicts.cs)
         BuildsOverPreserved(made, warnings); // the build's while it stands, then kept as it leaves them (StoryColony.Preserve.cs)
@@ -93,7 +95,7 @@ public sealed partial class StoryColony
         b.Label = $"{b.Kind} ({b.BlocksTotal} block{(b.BlocksTotal == 1 ? "" : "s")}{(b.Material.Length > 0 && b.Kind != "remove" ? ", " + b.Material : "")})";
         var r = Touch();
         b.Rev = r;
-        var temps = ReplacementBuild(b) ? TempCellSet() : null;
+        var temps = ReplacementBuild(b) ? ActiveTempCells() : null;
         foreach (var g in b.Ghosts)
         {
             MarkBuiltAlready(w, g, r);
@@ -122,6 +124,60 @@ public sealed partial class StoryColony
                       + string.Join("; ", odd.Select(g => g.Reason ?? "special placement").Distinct().Take(3)));
     }
 
+    /// <summary>
+    /// The new chest cells (of <paramref name="cells"/>, with their builds) the game would refuse are blocked from the start with the
+    /// rule's reason (Fox 11-10: such a design is still queued), said in <paramref name="warnings"/> and once per build as an alert; no
+    /// pawn is sent to them. Other builds' chest cells still to come count as chests (StoryConstruction.Chests.cs).
+    /// </summary>
+    private void ChestRuleCells(IStoryWorld w, IEnumerable<(BuildState B, GhostState G)> cells, List<string>? warnings)
+    {
+        var mine = new Dictionary<GhostState, BuildState>(ReferenceEqualityComparer.Instance);
+        var at = new HashSet<P3>();
+        foreach (var (b, g) in cells)
+        {
+            at.Add(g.At);
+            if (g.State == "todo" && StoryConstruction.IsChest(g)) mine[g] = b;
+        }
+        if (mine.Count == 0) return;
+        var refused = StoryConstruction.UnbuildableChests(mine.Keys, w, ChestsToCome(new Dictionary<P3, int>(), at));
+        foreach (var hit in refused.GroupBy(r => mine[r.Ghost]))
+        {
+            var b = hit.Key;
+            foreach (var (g, clash) in hit)
+            {
+                g.State = "blocked";
+                g.Reason = StoryConstruction.ChestRuleReason(clash.Words, g.Id, Modern);
+                g.Rev = Touch();
+            }
+            int n = hit.Count();
+            string where = string.Join("; ", hit.Take(3).Select(r => r.Ghost.At)) + (n > 3 ? "; …" : "");
+            string text = $"{n} chest{(n == 1 ? "" : "s")} left blocked at {where}: {hit.First().Ghost.Reason}";
+            warnings?.Add($"build {b.Id}: {text}");
+            if (_cellAlerted.Add($"{b.Id}|{StoryConstruction.ChestRule}")) Alert("warn", $"Build {b.Id}: {text}");
+        }
+    }
+
+    /// <summary>Every build's chest cells still to place, but not at <paramref name="except"/>, into <paramref name="into"/>: open, out
+    /// with a pawn, or blocked for a reason a later try may mend (not the chest rule's, not a newer build's or a quarry's).</summary>
+    private Dictionary<P3, int> ChestsToCome(Dictionary<P3, int> into, HashSet<P3>? except = null)
+    {
+        foreach (var b in Builds)
+            foreach (var g in b.Ghosts)
+                if (StoryConstruction.IsChest(g) && except?.Contains(g.At) != true
+                    && (g.State is "todo" or "leased" || g.State == "blocked" && !Conflicted(g) && !StoryConstruction.ChestRuleHeld(g)))
+                    into[g.At] = g.Id;
+        return into;
+    }
+
+    /// <summary>The request's chests under a full opaque block won't open (both versions): said, nothing blocked.</summary>
+    private static void ShutChestsSaid(IStoryWorld w, List<BuildState> made, List<string> warnings)
+    {
+        var shut = StoryConstruction.ShutChests(made.SelectMany(b => b.Ghosts), w);
+        if (shut.Count == 0) return;
+        warnings.Add($"{shut.Count} chest{(shut.Count == 1 ? "" : "s")} of this design sit under a solid block and will not open ("
+                     + string.Join("; ", shut.Take(3)) + (shut.Count > 3 ? "; …" : "") + ")");
+    }
+
     private (JsonNode? Result, string? Error) ToggleBuilds(string op, IReadOnlyList<string>? ids)
     {
         if (ids is not { Count: > 0 }) return (null, "ids required");
@@ -145,6 +201,7 @@ public sealed partial class StoryColony
         Builds.Remove(b);
         Removed("build", b.Id);
         _buildAlerted.Remove(b.Id);
+        ForgetProbes(b); // its blocked cells' reasons and tries go with it (StoryColony.Reconcile.cs)
         foreach (var k in _leases.Keys.Where(k => k.StartsWith("g:" + b.Id + "|", StringComparison.Ordinal)).ToList()) _leases.Remove(k);
     }
 
@@ -162,11 +219,12 @@ public sealed partial class StoryColony
 
     private bool Solid(P3 p) => World is { } w && w.Block(p.X, p.Y, p.Z).Id is var id && !StoryBlocks.Replaceable.Contains(id);
 
+    /// <summary>A body is in the cell (a player, a monster or animal, another pawn: the server refuses a block into any of them). The
+    /// picking pawn's own body is not in the way: it places from its stand, and steps out of the cell first ("I'm in the way of").</summary>
     private bool Occupied(P3 at)
     {
-        foreach (var e in Ents())
-            if (e.Kind == "player" && (int)Math.Floor(e.X) == at.X && (int)Math.Floor(e.Z) == at.Z && (at.Y == (int)Math.Floor(e.Y) || at.Y == (int)Math.Floor(e.Y) + 1))
-                return true;
+        foreach (var (name, x, y, z) in Bodies())
+            if (InBox(at, x, y, z) && !string.Equals(name, _pickPawn, StringComparison.OrdinalIgnoreCase)) return true;
         return false;
     }
 
@@ -232,6 +290,9 @@ public sealed partial class StoryColony
         public int Unsupported;
         /// <summary>A floating level's seed and the spot its scaffold block goes (dug again once the cell stands).</summary>
         public (P3 Seed, P3 Spot)? Scaffold;
+        /// <summary>The first free cell passed over for a forbidden zone, for a spot where a pawn got stuck, or for a pawn's
+        /// temporary block standing in it (the blocked-work note names the hold).</summary>
+        public P3? Forbid, Stuck, Temp;
     }
 
     /// <summary>This build's next job for the pawn, or null (and why it has none, as blocked work).</summary>
@@ -243,6 +304,12 @@ public sealed partial class StoryColony
         if (DigFirst(b)) { Blocked($"build {b.Id}: its ground is dug out first"); return null; }
         var scan = new GhostScan { Build = b, Todo = todo, Builders = builders, From = from, Mine = b.Kind == "mine" };
         var open = CappedCells(b, OpenCells(b, todo, scan.Mine), cap);
+        if (!scan.Mine && OutOfView(w, open, from) is { } site)
+        {
+            if (SiteSupplied(w, live, ref scan, open)) return SiteVisit(p, b, site);
+            NoteBuildHeld(b, ref scan, open.Count); // nothing to place there yet: no walk, the material wait is said as in view
+            return null;
+        }
         foreach (var g in CellOrder(b, open, ref scan, from))
         {
             if (GhostCell(w, p, live, ref scan, g) is { } job) return job;
@@ -252,10 +319,12 @@ public sealed partial class StoryColony
         return null;
     }
 
-    /// <summary>No open cell left: done, unless some are blocked (those can't be placed: said as blocked work).</summary>
+    /// <summary>No open cell left: done, unless some are blocked (those can't be placed: said as blocked work). Blocked cells a newer
+    /// build took over are not that: with nothing else left the build is done (StoryColony.BuildConflicts.cs).</summary>
     private void FinishOrStuck(BuildState b)
     {
-        if (b.Ghosts.Count(g => g.Job && g.State == "blocked") is var stuckCells and > 0) { Blocked($"build {b.Id}: {stuckCells} blocks can't be placed"); return; }
+        if (SupersededOnly(b)) return;
+        if (b.Ghosts.Count(g => g.Job && g.State == "blocked" && !BuildConflicted(g)) is var stuckCells and > 0) { Blocked($"build {b.Id}: {stuckCells} blocks can't be placed"); return; }
         b.Status = "done";
         b.Rev = Touch();
     }
@@ -264,16 +333,86 @@ public sealed partial class StoryColony
     /// The cells open now. The lowest unfinished level may need a scaffold; higher placements are independent once they already
     /// have a real support face. An unreachable or material-starved cell must not hold another completed floor's furnishings.
     /// Pure demolition stays top-down. A mine opens a cell once a neighbour is open, from its entry outward and down.
+    /// The level is that of the cells still to do (open or out with a pawn): a blocked cell never pins it, so the digs under a
+    /// blocked one go on and a floating cell over a blocked level gets its scaffold. Only water or lava in a design's empty space
+    /// (<see cref="LiquidOver"/>) keeps the digs below its level closed: a pit dug under standing water floods.
     /// </summary>
     private List<GhostState> OpenCells(BuildState b, List<GhostState> todo, bool mine)
     {
-        var left = b.Ghosts.Where(g => g.Job && !Conflicted(g) && g.State is "todo" or "leased" or "blocked").ToList();
+        if (todo.Count == 0) return [];
+        if (mine) return todo.Where(g => g.State == "todo" && Exposed(g.At)).ToList();
+        int floor = LiquidOver(b)?.At.Y ?? int.MinValue;
+        var left = floor == int.MinValue ? todo : todo.Where(g => !(g.Remove && g.At.Y < floor)).ToList();
         if (left.Count == 0) return [];
         bool digs = left.All(g => g.Remove);
         int lowest = digs ? left.Max(g => g.At.Y) : left.Min(g => g.At.Y);
-        if (mine) return todo.Where(g => g.State == "todo" && Exposed(g.At)).ToList();
-        if (digs) return todo.Where(g => g.State == "todo" && g.At.Y == lowest).ToList();
-        return todo.Where(g => g.State == "todo" && (g.At.Y == lowest || !g.Remove && HasSupport(g.At))).ToList();
+        if (digs) return left.Where(g => g.State == "todo" && g.At.Y == lowest).ToList();
+        return left.Where(g => g.State == "todo" && (g.At.Y == lowest || !g.Remove && FaceReady(g))).ToList();
+    }
+
+    /// <summary>The highest cell of the build's dig work that holds water or lava it can't clear (a design's empty space under a
+    /// river: blocked "cannot clear water"), or null.</summary>
+    private static GhostState? LiquidOver(BuildState b)
+    {
+        GhostState? top = null;
+        foreach (var g in b.Ghosts)
+            if (g.Remove && g.State == "blocked" && StoryBlocks.Liquids.Contains(g.Id) && g.Reason?.StartsWith(CannotClearWords, StringComparison.Ordinal) == true
+                && (top == null || g.At.Y > top.At.Y)) top = g;
+        return top;
+    }
+
+    /// <summary>The nearest open cell, when every open cell is a placement in a column no body has loaded (the colony's view reads it
+    /// as air: nothing to place against and no scaffold spot, so no job would ever be made there), else null. A dig is handed out
+    /// unloaded and its pawn's arrival loads the site.</summary>
+    private static GhostState? OutOfView(IStoryWorld w, List<GhostState> open, P3 from)
+    {
+        GhostState? near = null;
+        foreach (var g in open)
+        {
+            if (g.Remove || w.Loaded(g.At.X, g.At.Z)) return null;
+            if (near == null || g.At.Dist(from) < near.At.Dist(from)) near = g;
+        }
+        return near;
+    }
+
+    /// <summary>
+    /// Some open cell of a build out of view could go in on arrival: its item is carried, or stored and not reserved for an earlier
+    /// build (as <see cref="PlaceCell"/> asks it), or it is a pour. Else each item that is out is noted (<see cref="OutOfItem"/>) and
+    /// nobody walks there: a far build short of its chests sent a pawn there and back every <see cref="SiteRest"/> until they came.
+    /// </summary>
+    private bool SiteSupplied(IStoryWorld w, PawnLive live, ref GhostScan scan, List<GhostState> open)
+    {
+        var b = scan.Build;
+        foreach (var g in open)
+        {
+            if (StoryConstruction.IsLiquid(g)) return true;
+            var item = g.Item ?? w.Data.Item(g.Id).Name;
+            if (scan.OutOf?.Contains(item) == true) continue;
+            var ik = KeyOfItem(w, item, g.Id);
+            if (live.Inventory.Any(s => s.Id == ik.Id && s.Meta == ik.Meta && s.Count > 0)) return true;
+            var mat = b.Materials.FirstOrDefault(m => m.Item == item);
+            bool reservedAway = mat is { Have: 0 };
+            if (!reservedAway && Stored(ik, scan.From).Sum(s => s.N) > 0) return true;
+            OutOfItem(w, ref scan, item, ik, mat, reservedAway);
+        }
+        return false;
+    }
+
+    /// <summary>How long a site a pawn went to rests before another pawn is sent there (it loads while a body is by it).</summary>
+    public static readonly TimeSpan SiteRest = TimeSpan.FromMinutes(2);
+
+    /// <summary>A build out of everyone's view: one pawn goes to its nearest open cell (the site's lease), and the site loads with it.</summary>
+    private ActiveJob? SiteVisit(PawnState p, BuildState b, GhostState site)
+    {
+        var key = "site:" + b.Id;
+        if (!Open(key, p.Name, site.At)) { Blocked($"build {b.Id}: out of everyone's view: a pawn is on its way to load it"); return null; }
+        return Job(WorkTypes.Build, "go", $"going to the site of {b.Label} (out of view)", site.At, key, "site", b.Id, "moving", f => f["dist"] = 8, xp: 0);
+    }
+
+    /// <summary>A site visit ended: its build is in view while the pawn is there; the site rests a little before the next one.</summary>
+    private void SiteVisited(ActiveJob j)
+    {
+        if (j.Lease != null) _skip[j.Lease] = Now + SiteRest;
     }
 
     /// <summary>The open cells no higher than <paramref name="cap"/> (a pawn down in a quarry pit); the ones left out are said.</summary>
@@ -307,8 +446,9 @@ public sealed partial class StoryColony
     {
         var b = scan.Build;
         var key = $"g:{b.Id}|{g.At}";
-        if (!Open(key, p.Name, g.At) || Occupied(g.At) || BuildConflicted(g) || QuarryHeld(b, g)) return null;
-        if (ReplacementBuild(b) && TempCellSet().Contains(g.At)) return null;
+        if (!Open(key, p.Name, g.At)) { NoteCellHold(ref scan, key, p.Name, g.At); return null; }
+        if (Occupied(g.At) || BuildConflicted(g) || QuarryHeld(b, g)) return null;
+        if (ReplacementBuild(b) && ActiveTempCells().Contains(g.At)) { scan.Temp ??= g.At; return null; }
         if (g.Remove) return DigCell(w, p, live, b, g, key);
         // A liquid source: poured from a bucket filled at a still source (StoryColony.Water.cs).
         if (StoryConstruction.IsLiquid(g)) return PourCell(p, live, ref scan, g);
@@ -322,10 +462,10 @@ public sealed partial class StoryColony
         if (!Open("b:" + g.At, p.Name, g.At)) return null;
         if (w.Block(g.At.X, g.At.Y, g.At.Z).Id == 0 && w.Loaded(g.At.X, g.At.Z))
         {
-            if (ReplacementAir(b, g)) CellDone(b, g); else { g.State = "done"; g.Rev = Touch(); }
+            if (ReplacementAir(b, g)) CellDone(b, g); else { g.State = "done"; g.Rev = Touch(); CellFinished(b, g); }
             return null;
         }
-        if (ReplacementAir(b, g) && TempCellSet().Contains(g.At)) return null;
+        if (ReplacementAir(b, g) && ActiveTempCells().Contains(g.At)) return null;
         // A dug cell takes its material's tool (a mine design's ore: the right pickaxe), else the build waits for one.
         var dt = PlanTool(p, live, DigBlockAt(g.At, g.Id));
         if (dt is { Wait: { } why }) { NoteBuildWait(b, why); Blocked($"build {b.Id}: {b.Reason}"); return null; }
@@ -348,15 +488,28 @@ public sealed partial class StoryColony
     /// <summary>
     /// The cell already holds the ghost's block: done, never a job. There but turned the wrong way: taken back and placed again once
     /// (a clear), unless it was tried already or it holds things (a chest, a furnace: never broken open for its rotation); then the
-    /// cell says so on the map.
+    /// cell says so on the map. A placed design takes a container back only when the colony knows it empty (<see cref="SeenEmpty"/>).
     /// </summary>
     private bool CellSettled(BuildState b, GhostState g, string key, int cur, int curMeta)
     {
         if (cur == 0) return false;
         if (Matches(g, cur, curMeta, Modern)) { CellDone(b, g); return true; }
-        if (!WrongTurn(g, cur, curMeta, Modern) || _turnRedo.GetValueOrDefault(key) < 1 && (!KeepsItems(cur) || ReplacementBuild(b))) return false;
+        if (!WrongTurn(g, cur, curMeta, Modern)) return false;
+        if (_turnRedo.GetValueOrDefault(key) < 1 && (!KeepsItems(cur) || ReplacementBuild(b) && SeenEmpty(g.At))) return false;
         Misrotated(b, g, curMeta);
         return true;
+    }
+
+    /// <summary>
+    /// The colony knows the container in this cell is empty: it is a storage whose record a body's look vouches for (not older than
+    /// <see cref="SeenStale"/>: a player may have used it since) and that record holds nothing. A double chest counts as one: the
+    /// record must cover both halves. No record (a furnace, a chest that is not storage), or one nobody has looked into, is not known
+    /// empty: such a block is never dug for its rotation, since what it holds would spill.
+    /// </summary>
+    private bool SeenEmpty(P3 at)
+    {
+        if (StorageAt(at) is not { Missing: false, SeenAt: { } seen, Contents.Count: 0 } s || Now - seen > SeenStale) return false;
+        return DoubleHalf(at) is not { } half || s.Chest == half || s.DoubleWith == half;
     }
 
     /// <summary>What a batch of one item has to place with: carried, and stored (its own share when an earlier build reserved the rest).</summary>
@@ -368,7 +521,7 @@ public sealed partial class StoryColony
         var b = scan.Build;
         // A block in the way is dug first: with its tool (stone in a wall's line takes a pickaxe). The batch clears only cells of
         // that same block (one tool per job).
-        var clearTool = !StoryBlocks.Replaceable.Contains(cur) ? PlanTool(p, live, cur) : null;
+        var clearTool = !PlaceInto(cur) ? PlanTool(p, live, cur) : null;
         if (clearTool is { Wait: { } cwhy }) { NoteBuildWait(b, cwhy); Blocked($"build {b.Id}: {b.Reason}"); return null; }
         var item = g.Item ?? w.Data.Item(g.Id).Name;
         if (scan.OutOf?.Contains(item) == true) return null;
@@ -384,7 +537,7 @@ public sealed partial class StoryColony
             OutOfItem(w, ref scan, item, ik, mat, reservedAway);
             return null; // the level's other materials may still go in
         }
-        if (b.Status != "active") { b.Status = "active"; b.Reason = null; b.Rev = Touch(); }
+        if (b.Status != "active") { b.Status = "active"; b.Reason = CellReasonKept(b); b.Rev = Touch(); }
         return PlaceJob(w, p, scan, g, key, cur, clearTool, new CellSupply(item, have, stored, stores));
     }
 
@@ -425,11 +578,11 @@ public sealed partial class StoryColony
         var b = scan.Build;
         int openCells = scan.Todo.Count(x => (x.Item ?? "") == s.Item); // open or in a batch now: every builder's share of the whole
         int cap = scan.Mine ? 1 : Math.Min(Math.Clamp((int)Math.Ceiling(openCells / (double)scan.Builders), 1, BatchMax), s.Have + s.Stored);
-        var (cells, stand) = Batch(w, b, g, cap, scan.From, p.Name, StoryBlocks.Replaceable.Contains(cur) ? -1 : cur);
+        var (cells, stand) = Batch(w, b, g, cap, scan.From, p.Name, PlaceInto(cur) ? -1 : cur);
         var scaffold = ScaffoldOf(scan, g); // a floating cell's: one more block, dug again
         var (fetch, takes) = BatchFetch(s.Stores, Math.Max(0, cells.Count + (scaffold != null ? 1 : 0) - s.Have));
         var want = w.Data.BlockExists(g.Id) ? w.Data.Block(g.Id).Name : null;
-        var clear = cells.Where(c => !StoryBlocks.Replaceable.Contains(w.Block(c.At.X, c.At.Y, c.At.Z).Id)).Select(c => c.At.ToString()).ToList();
+        var clear = cells.Where(c => !PlaceInto(w.Block(c.At.X, c.At.Y, c.At.Z).Id)).Select(c => c.At.ToString()).ToList();
         var label = cells.Count == 1 ? $"building {b.Label}" : $"building {b.Label}: {cells.Count} blocks";
         var item = s.Item;
         var job = Job(WorkTypes.Build, "place", label, g.At, key, "ghost", $"{b.Id}|{g.At}", "working",
@@ -487,9 +640,31 @@ public sealed partial class StoryColony
             Blocked(h.Note);
         }
         else if (scan.InFlight) Blocked($"build {b.Id}: its last items are on their way with another builder");
+        else if (openCount == 0 && UnderLiquid(b) is { } wet) Blocked($"build {b.Id}: {wet}");
         else if (openCount == 0) Blocked($"build {b.Id}: the level below is still being built");
         else if (scan.Unsupported == openCount) Blocked($"build {b.Id}: {openCount} blocks have nothing to place against yet (the blocks beside or under them go in first)");
+        else if (scan.Forbid is { } fz) Blocked($"build {b.Id}: its open cells are in a forbidden zone ({fz})");
+        else if (scan.Stuck is { } ss) Blocked($"build {b.Id}: its open cells are by a spot where a pawn got stuck ({ss})");
+        else if (scan.Temp is { } tb) Blocked($"build {b.Id}: a pawn's temporary block stands in its cell at {tb} (taken back first)");
         else Blocked($"build {b.Id}: its open cells are taken or backing off");
+    }
+
+    /// <summary>"water at x,y,z can't be cleared: the N cells under it wait" when water or lava in the build's empty space holds its
+    /// digs below (<see cref="OpenCells"/>), else null.</summary>
+    private static string? UnderLiquid(BuildState b)
+    {
+        if (LiquidOver(b) is not { } top) return null;
+        int under = b.Ghosts.Count(g => g.Job && g.Remove && g.State is "todo" or "leased" && g.At.Y < top.At.Y);
+        if (under == 0) return null;
+        return $"{(top.Id is 10 or 11 ? "lava" : "water")} at {top.At} can't be cleared: the {under} cell{(under == 1 ? " under it waits" : "s under it wait")}";
+    }
+
+    /// <summary>A free cell (not taken, not resting) the picker passed over: for a forbidden zone or for a stuck spot, kept for the note.</summary>
+    private void NoteCellHold(ref GhostScan scan, string key, string pawn, P3 at)
+    {
+        if (!Free(key, pawn) || Skipped(key) || Skipped(PawnKey(key, pawn))) return; // taken or backing off: the catch-all says so
+        if (Forbidden(at)) scan.Forbid ??= at;
+        else if (NearHazard(at, pawn)) scan.Stuck ??= at;
     }
 
     /// <summary>The build's held status and reason; said once per reason (the build turns active between, while its other materials go in).</summary>
@@ -663,12 +838,12 @@ public sealed partial class StoryColony
     private bool BatchTakes(IStoryWorld w, BuildState b, GhostState seed, GhostState x, string pawn, int clearId)
     {
         if (!BatchKin(seed, x) || !NearSeedLevel(seed, x) || QuarryConflict(x) != null) return false;
-        if (ReplacementBuild(b) && TempCellSet().Contains(x.At)) return false;
+        if (ReplacementBuild(b) && ActiveTempCells().Contains(x.At)) return false;
         var key = $"g:{b.Id}|{x.At}";
         if (!Open(key, pawn, x.At) || Occupied(x.At)) return false;
         var (cur, curMeta) = w.Block(x.At.X, x.At.Y, x.At.Z);
         if (CellSettled(b, x, key, cur, curMeta)) return false;
-        return StoryBlocks.Replaceable.Contains(cur) || cur == clearId; // another block to clear: another tool, another job
+        return PlaceInto(cur) || cur == clearId; // another block to clear: another tool, another job
     }
 
     /// <summary>Another open job cell of the seed's item and facing.</summary>
@@ -689,14 +864,13 @@ public sealed partial class StoryColony
         // A wall's builder works from outside only: no cells it would have to walk to (it could end up inside and be walled in).
         bool walled = Footprint(b).Walled;
         var rest = cand.Where(c => (stand is not { } s || c.At != s && c.At != s.Add(0, 1, 0)) && (!walled || InReach(c.At))).ToList();
-        bool SolidOrPlaced(P3 c) => inBatch.Contains(c) || Clickable(c); // the client's own support rule
         while (batch.Count < cap && rest.Count > 0)
         {
             GhostState? next = null;
             double best = double.MaxValue;
             foreach (var c in rest)
             {
-                if (!StoryConstruction.Supported(c.At, SolidOrPlaced)) continue;
+                if (!FaceReady(c, inBatch)) continue; // the client's own rule: its face's block stands or was laid before it
                 double score = (InReach(c.At) ? 0 : 100_000) + c.At.Y * 1000 + c.At.Dist(batch[^1].At);
                 if (score < best) { best = score; next = c; }
             }
@@ -797,16 +971,30 @@ public sealed partial class StoryColony
 
     /// <summary>
     /// A build of a placed design (items sharing a <c>group</c>, the dig item queued first) whose ground isn't dug out yet: an
-    /// earlier build of its group still has cells to remove.
+    /// earlier build of its group has a dig out with a pawn or open now (<see cref="DigsOpen"/>).
     /// </summary>
     private bool DigFirst(BuildState b)
     {
         static string? Group(BuildState x) => x.Spec?["group"] is JsonValue v && v.TryGetValue<string>(out var s) && s.Length > 0 ? s : null;
         // A mine orders its own cells (a block goes in once its cell is open).
         if (b.Kind == "mine" || Group(b) is not { } group || b.Ghosts.All(g => g.Remove)) return false;
-        // A dig that keeps failing (blocked) doesn't hold the build forever: a placement digs its own cell anyway.
-        return Builds.Any(o => o != b && o.Order < b.Order && o.Status != "done" && Group(o) == group
-                               && o.Ghosts.Any(g => g.Remove && g.State is "todo" or "leased"));
+        // A dig that keeps failing (blocked) doesn't hold the build forever: a placement digs its own cell anyway. Nor do digs that
+        // wait under water: the placements go on beside it, each clearing its own cell.
+        return Builds.Any(o => o != b && o.Order < b.Order && o.Status != "done" && Group(o) == group && DigsOpen(o));
+    }
+
+    /// <summary>Per dig build: whether it has a dig out with a pawn or open now. Kept while the colony's revision stands (every
+    /// change to a cell touches it), so a pick asks once per build, not once per placement build of its group.</summary>
+    private readonly Dictionary<BuildState, bool> _digsOpen = new(ReferenceEqualityComparer.Instance);
+    private long _digsOpenRev = -1;
+
+    private bool DigsOpen(BuildState o)
+    {
+        if (_digsOpenRev != _rev) { _digsOpen.Clear(); _digsOpenRev = _rev; }
+        if (_digsOpen.TryGetValue(o, out bool open)) return open;
+        var todo = o.Ghosts.Where(g => g.Job && g.State is "todo" or "leased").ToList();
+        open = todo.Any(g => g.Remove && g.State == "leased") || OpenCells(o, todo, false).Any(g => g.Remove);
+        return _digsOpen[o] = open;
     }
 
     /// <summary>A cell with an open neighbour (air or anything a pawn walks through): a mine cell a pawn can reach and dig.</summary>
@@ -825,6 +1013,9 @@ public sealed partial class StoryColony
             {
                 _leases[$"g:{b.Id}|{c.At}"] = (pawn, until);
                 if (c.State == "todo") { c.State = "leased"; c.Rev = Touch(); }
+                // A miss's text (MissSaid) is why the cell rested; taken again, it rests no more. A counted failure's reason stays.
+                if (c.Reason != null && !_ghostFails.ContainsKey($"{b.Id}|{c.At}")) { c.Reason = null; c.Rev = Touch(); }
+                TryHanded(c); // a blocked cell reopened for a try is handed out a few times at most (StoryColony.Reconcile.cs)
             }
         };
         return j;
@@ -903,8 +1094,10 @@ public sealed partial class StoryColony
     {
         if (ReportedBuilt(p.Name, g, status)) { CellDone(b, g); return; }
         // Placed, but turned the wrong way: the client already took it back and tried once more (or couldn't): the cell says so.
+        // An exact-state cell (the plan editor's) says "wrong exact state" for the same thing; one that is not a turn stays a failure.
         if (View(p.Name, g) is var (tid, tmeta) && WrongTurn(g, tid, tmeta, Modern)
-            && (status.Contains("wrong rotation", StringComparison.OrdinalIgnoreCase) || status == "done"))
+            && (status.Contains("wrong rotation", StringComparison.OrdinalIgnoreCase) || status.Contains("wrong exact state", StringComparison.OrdinalIgnoreCase)
+                || status == "done"))
         {
             var key = "g:" + id;
             _turnRedo[key] = _turnRedo.GetValueOrDefault(key) + 1;
@@ -951,6 +1144,14 @@ public sealed partial class StoryColony
     /// first open cell.</summary>
     private void BatchFailed(PawnState p, ActiveJob j, string why)
     {
+        var first = FirstOpen(p, j);
+        j.Cells?.Clear();
+        if (first is (var fg, var fb, var fid)) CellFailed(p, fb, fg, fid, why, counted: true);
+    }
+
+    /// <summary>A failed job's cells that are built are done; the first that is not, or null.</summary>
+    private (GhostState G, BuildState B, string Id)? FirstOpen(PawnState p, ActiveJob j)
+    {
         (GhostState G, BuildState B, string Id)? first = null;
         foreach (var id in JobCells(j))
         {
@@ -958,8 +1159,127 @@ public sealed partial class StoryColony
             if (!g.Remove && Built(p.Name, g)) { CellDone(b, g); continue; }
             first ??= (g, b, id);
         }
+        return first;
+    }
+
+    /// <summary>
+    /// A build job failed as a whole: its first open cell's miss, sorted as a cell's report is (<see cref="MissKind"/>). True = handled,
+    /// not the cell's failure. False = <c>Failed</c> goes on: a stuck pawn's miss and a reach miss rest that pawn (<c>PawnOnly</c>, which
+    /// counts against the cell once every builder missed it), and a failure that counts is backed off and struck (<see cref="BatchFailed"/>).
+    /// </summary>
+    private bool BatchMissed(PawnState p, ActiveJob j, string why)
+    {
+        if (_stuck.ContainsKey(p.Name) || FirstOpen(p, j) is not (var g, var b, var id)) return false;
+        why = RefusalWords(why);
+        var kind = MissKind(g, why, whole: true);
+        if (kind is CellMiss.Cell or CellMiss.Pawn || ReachOnly(why) || !CellMissed(p, b, g, id, why, kind)) return false;
         j.Cells?.Clear();
-        if (first is (var fg, var fb, var fid)) CellFailed(p, fb, fg, fid, why, counted: true);
+        return true;
+    }
+
+    /// <summary>Whose a build cell's miss is. Only <see cref="Cell"/> counts against it at once.</summary>
+    private enum CellMiss
+    {
+        /// <summary>The cell's own: counts (three and it is blocked).</summary>
+        Cell,
+        /// <summary>Not about the cell at all (the pawn's pillar still coming down, its tool, its death, a hand on it, its job cut): rests
+        /// a moment, never counts.</summary>
+        NotCell,
+        /// <summary>Not now (someone in the cell, another block in it since): rests a moment; the fifth in a row counts.</summary>
+        NotNow,
+        /// <summary>The pawn had no blocks to climb with: rests for that pawn, never counts; the build says so once.</summary>
+        Supply,
+        /// <summary>That pawn couldn't reach it: rests for that pawn; counts once every builder missed it.</summary>
+        Pawn,
+    }
+
+    /// <summary>
+    /// One classifier for a pawn's cell report and a build job's whole failure (<paramref name="whole"/>: also the job's end, a dead or
+    /// hand-controlled body). Before 11-09 every text a pawn reported about a cell that was not a known "not now" counted a strike, so
+    /// three pawns still taking their pillar down, short of dirt to climb with, or standing in the cell blocked it for good (C3).
+    /// </summary>
+    private CellMiss MissKind(GhostState g, string why, bool whole)
+    {
+        if (why.Contains("access pillar cleanup pending", StringComparison.Ordinal) || ToolFailure(why) || whole && JobCut(why)) return CellMiss.NotCell;
+        if (why.Contains("block(s) needed", StringComparison.Ordinal)) return CellMiss.Supply;
+        if (OutOfReach(why) || Unreachable(why)) return CellMiss.Pawn;
+        if (Transient(why) || why.Contains("is occupied by", StringComparison.OrdinalIgnoreCase)) return CellMiss.NotNow;
+        // The server took the block back: the vanilla rule for a body in the cell (one walked in after the pick), else the cell's.
+        bool refused = why.Contains("server undid my placement", StringComparison.Ordinal) || why.Contains("didn't appear", StringComparison.Ordinal)
+                       || why.StartsWith(ServerRefused, StringComparison.Ordinal);
+        return refused && BodyIn(g.At) ? CellMiss.NotNow : CellMiss.Cell;
+    }
+
+    /// <summary>The start of the director's words for a placement the server took back (<see cref="RefusalWords"/>).</summary>
+    private const string ServerRefused = "the server refused the block at ";
+
+    /// <summary>The pawn client's "server undid my placement at x,y,z (protected area?)" or "stopped after 3 identical server refusals at
+    /// x,y,z; …" in the director's words. The client guesses protection, but a body in the cell or a rule of the block (a chest beside a
+    /// double chest) took it back as often, and the cell's reason pointed the owner the wrong way (C9). The client's text stays as it
+    /// is: LLM bots read it.</summary>
+    private static string RefusalWords(string why) =>
+        ClientRefusal.Match(why) is { Success: true } m ? $"{ServerRefused}{m.Groups[1].Value} (something in the cell, or a rule of that block)" : why;
+
+    private static readonly System.Text.RegularExpressions.Regex ClientRefusal =
+        new(@"(?:server undid my placement|stopped after 3 identical server refusals) at (-?\d+,-?\d+,-?\d+)", System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    /// <summary>The body's action never ran or was cut (MinecraftClient.Actions.cs, the build batch's own stop): not the target's doing.</summary>
+    private static bool JobCut(string why) =>
+        why is "dead" or "not in game" or "stopped" || why.StartsWith("human is controlling", StringComparison.Ordinal)
+        || why.StartsWith("cancelled", StringComparison.Ordinal) || why.Contains("interrupted", StringComparison.Ordinal);
+
+    /// <summary>A cell's rest for a pawn that had no blocks to climb with.</summary>
+    private static readonly TimeSpan SupplyRest = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// A miss that is not (yet) the cell's failure rests it and says why; true = handled. Not about the cell: everyone waits
+    /// <see cref="SoftRest"/>. Supply: that pawn waits <see cref="SupplyRest"/>, and the build says once what is missing. Its reach:
+    /// that pawn waits longer each time, until every builder missed it (false: it counts). Not now: <see cref="SoftRest"/>, until the
+    /// <see cref="SoftLimit"/>-th in a row (false: it counts).
+    /// </summary>
+    private bool CellMissed(PawnState p, BuildState b, GhostState g, string id, string why, CellMiss kind)
+    {
+        var key = "g:" + id;
+        switch (kind)
+        {
+            case CellMiss.NotCell:
+                _skip[key] = Now + SoftRest;
+                break;
+            case CellMiss.Supply:
+                RestForPawn(p, key, SupplyRest);
+                if (_cellAlerted.Add(b.Id + "|no blocks to climb with"))
+                    Alert("warn", $"Build {b.Id}: pawns have no dirt or cobblestone to climb with: store some", p.Name);
+                break;
+            case CellMiss.Pawn:
+                RestForPawn(p, key);
+                if (!UnreachableForSome(p, key, WorkTypes.Build)) return false;
+                break;
+            case CellMiss.NotNow:
+                if (!CellRested(key)) return false;
+                break;
+            default:
+                return false;
+        }
+        MissSaid(g, why);
+        return true;
+    }
+
+    /// <summary>A build job's miss rested for its pawn (Rescue.cs <c>RestForPawn</c>): its seed cell says why too.</summary>
+    private void CellMissSaid(string id, string why)
+    {
+        if (OpenGhost(id) is (var g, _)) MissSaid(g, why);
+    }
+
+    /// <summary>A miss that did not count: the cell is open again and its reason is the miss's text (the map's tooltip says why it rests:
+    /// no cell waits without one), and, when the cell was reopened for a try, this was not one of its tries.</summary>
+    private void MissSaid(GhostState g, string why)
+    {
+        if (g.State is not ("todo" or "leased")) return; // blocked or done meanwhile: its own reason stands
+        bool changed = g.State == "leased" || g.Reason != why;
+        if (g.State == "leased") g.State = "todo";
+        g.Reason = why;
+        if (changed) g.Rev = Touch();
+        TryNotCounted(g); // StoryColony.Reconcile.cs
     }
 
     private void CellDone(BuildState b, GhostState g)
@@ -968,7 +1288,18 @@ public sealed partial class StoryColony
         g.State = "done";
         g.Holds = g.HoldsWords = null;
         g.Rev = Touch();
+        CellReasonGone(b, g);
         MaterialsChanged();
+        CellFinished(b, g); // blocked cells beside it, or of the reason it was reopened to try, get their turn (StoryColony.Reconcile.cs)
+        if (_softFails.Count > 0 || _unreachBy.Count > 0 || _pawnFails.Count > 0)
+        {
+            // Its "not now"s in a row and the pawns that missed it end here, not when a batch ends (a batch always ends done), and
+            // so do each pawn's misses of it (reopened, it starts fresh; kept, they piled up for every cell ever missed).
+            var key = $"g:{b.Id}|{g.At}";
+            _softFails.Remove(key);
+            _unreachBy.Remove(key);
+            if (_pawnFails.Count > 0) ForgetPawnFails(key);
+        }
         if (ReplacementAir(b, g)) Removed("ghost", $"{b.Id}|{g.At}");
         if (b.Kind != "preserve") // a preserved zone's repair puts back what was there: it makes nothing new the colony's
         {
@@ -989,14 +1320,16 @@ public sealed partial class StoryColony
     }
 
     /// <summary>
-    /// One cell that didn't go in. "Not now" (out of reach from where the pawn got to, someone in the cell, the cell taken by something
-    /// else since: the next pick clears it) rests it a little and doesn't count, up to <see cref="SoftLimit"/> in a row; anything else
-    /// counts, and the third failure blocks the cell with an alert. <paramref name="counted"/>: the job's own failure (the picker
-    /// already rested it and handled its soft case).
+    /// One cell that didn't go in. A miss that is not the cell's (<see cref="MissKind"/>: its pawn's reach or supply, the pawn's own
+    /// trouble, "not now") rests it and says why without counting (<see cref="CellMissed"/>); anything else counts, and the third
+    /// failure blocks the cell with an alert. <paramref name="counted"/>: the job's own failure (sorted and rested already: Failed).
     /// </summary>
     private void CellFailed(PawnState p, BuildState b, GhostState g, string id, string why, bool counted = false)
     {
         var key = "g:" + id;
+        // The pawn client refused a chest the game would refuse, before any click: the chest rule's reason (StoryConstruction.Chests.cs).
+        if (StoryConstruction.ChestRuleOfRefusal(g, why, Modern) is { } rule) why = rule;
+        else why = RefusalWords(why);
         // A missing prerequisite is not a failed build, even after many attempts or a whole-job failure.
         if (!g.Remove && !StoryConstruction.IsLiquid(g) && NoFaceYet(why))
         {
@@ -1007,31 +1340,34 @@ public sealed partial class StoryColony
         if (!counted)
         {
             _log.LogInformation("story {Colony}: {Pawn} cell {At} failed: {Why}", Id, p.Name, g.At, why);
-            if (CellRested(key, why)) return;
+            if (CellMissed(p, b, g, id, why, MissKind(g, why, whole: false))) return;
         }
         int n = _ghostFails[id] = Math.Max(_ghostFails.GetValueOrDefault(id), BlockedAtOnce(g, why, counted) ? 2 : 0) + 1;
         if (!counted) _skip[key] = Now + Backoff(n);
         if (g.State is "leased" or "todo") g.State = n >= 3 ? "blocked" : "todo";
         g.Reason = why; // the cell's last failure: the map's marker says it, Retry clears it (StoryColony.BuildRetry.cs)
         g.Rev = Touch();
-        if (n >= 3) SayCellBlocked(p, b, g, why);
+        if (n < 3) return;
+        SayCellBlocked(p, b, g, why);
+        if (g.State == "blocked") CellBlockedNow(b, g); // its reason is tried again later, a few cells at a time (StoryColony.Reconcile.cs)
     }
 
     /// <summary>
     /// A failure no retry will mend, so the cell is blocked at once: a pour cell with nothing to pour against (live 11-04: 371 of them,
     /// each tried 6 times), or a clear the pawn's dig refused for good (protected, a chest, a never-break mark: never tried again and
-    /// again, live 11-05).
+    /// again, live 11-05), or a chest the game's chest rule refuses (the pawn client's refusal before any click: no try mends it while
+    /// the chest beside it stands; the reconcile pass reopens it when that is gone).
     /// </summary>
     private static bool BlockedAtOnce(GhostState g, string why, bool counted) =>
-        StoryConstruction.IsLiquid(g) && why.Contains("nothing beside or under", StringComparison.Ordinal) || !counted && ClearRefused(why);
+        StoryConstruction.IsLiquid(g) && why.Contains("nothing beside or under", StringComparison.Ordinal) || !counted && ClearRefused(why)
+        || StoryConstruction.IsChestRule(why);
 
     /// <summary>"Nothing solid on any side": the pawn's view had no face to click yet (a neighbour placed a moment ago): not now.</summary>
     private static bool NoFaceYet(string why) => why.Contains("nothing solid on any side", StringComparison.Ordinal);
 
     /// <summary>A "not now" failure rests the cell a little instead of counting, up to <see cref="SoftLimit"/> in a row.</summary>
-    private bool CellRested(string key, string why)
+    private bool CellRested(string key)
     {
-        if (!Transient(why) && !why.Contains("is occupied by", StringComparison.OrdinalIgnoreCase)) return false;
         int soft = _softFails[key] = _softFails.GetValueOrDefault(key) + 1;
         if (soft < SoftLimit) { _skip[key] = Now + SoftRest; return true; }
         _softFails.Remove(key);

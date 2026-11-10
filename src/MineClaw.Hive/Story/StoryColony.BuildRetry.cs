@@ -9,7 +9,9 @@ namespace MineClaw.Hive.Story;
 /// <c>blocked</c> for good, and one resting after a failure waited out its back-off. <c>POST …/builds {op:"retry", id|ids, cells?}</c>
 /// reopens a build's failed or resting cells (all of them, or the given ones), <c>{op:"retry_all"}</c> every build's: their failure
 /// counts, rests and per-pawn skips are forgotten, a blocked build is queued again, and its checks run at once, so a reason that still
-/// holds (no bucket, no water to fill from, a block in the cell) is said now instead of after three more failures.
+/// holds (no bucket, no water to fill from, a block in the cell) is said now instead of after three more failures. Cells a newer build
+/// took over (superseded) or a quarry digs are neither counted nor reopened; nor are cells the game's chest rule blocks, which open
+/// only when the rule allows them (asked at once).
 /// </summary>
 public sealed partial class StoryColony
 {
@@ -25,10 +27,12 @@ public sealed partial class StoryColony
         return a;
     }
 
-    /// <summary>A cell that failed (blocked, or resting after a failure, or with failures on record).</summary>
+    /// <summary>A cell that failed (blocked, or resting after a failure, or with failures on record). A cell a newer build or a quarry
+    /// holds is not one: it did not fail, and a retry cannot give it back (the newer build or the quarry leaving does). Nor is a chest
+    /// cell the game's chest rule blocks: the game refuses it, and it opens by itself once the rule allows it (StoryColony.Reconcile.cs).</summary>
     private bool CellFailedNow(BuildState b, GhostState g)
     {
-        if (!g.Job || g.State is "done" or "unsupported") return false;
+        if (!g.Job || g.State is "done" or "unsupported" || Conflicted(g) || StoryConstruction.ChestRuleHeld(g)) return false;
         var id = $"{b.Id}|{g.At}";
         return g.State is "blocked" or "misrotated" || _ghostFails.ContainsKey(id) || _softFails.ContainsKey("g:" + id) || _skip.ContainsKey("g:" + id);
     }
@@ -51,6 +55,7 @@ public sealed partial class StoryColony
             var reasons = new JsonArray();
             int reopened = hit.Sum(b => RetryBuild(b, cellSet, reasons));
             MaterialsChanged();
+            BuildConflictsPass(); // before any pawn is woken: a cell a newer build owns is never handed out as the older build's
             WakeIdle();
             return (new JsonObject
             {
@@ -63,7 +68,12 @@ public sealed partial class StoryColony
     /// run now (a reason that still holds blocks it again and joins <paramref name="reasons"/>). → how many cells reopened.</summary>
     private int RetryBuild(BuildState b, HashSet<P3>? cellSet, JsonArray reasons)
     {
-        var targets = b.Ghosts.Where(g => g.Job && g.State is not ("done" or "unsupported") && (cellSet == null || cellSet.Contains(g.At))).ToList();
+        // Never a cell a newer build or a quarry holds: reopened, a superseded empty-space cell was handed out as a dig that removed
+        // the newer build's block before the next pass blocked it again.
+        var targets = b.Ghosts.Where(g => g.Job && g.State is not ("done" or "unsupported") && !Conflicted(g) && (cellSet == null || cellSet.Contains(g.At))).ToList();
+        // Nor a cell the chest rule blocks: reopened, it cost a pawn a trip only for the client to refuse it. The rule is asked now.
+        var ruled = targets.Where(StoryConstruction.ChestRuleHeld).ToList();
+        targets.RemoveAll(StoryConstruction.ChestRuleHeld);
         int reopened = 0;
         foreach (var g in targets)
         {
@@ -73,7 +83,13 @@ public sealed partial class StoryColony
             reopened++;
             g.Rev = Touch();
         }
-        if (b.Status is "blocked" or "waiting") { b.Status = "queued"; b.Reason = null; }
+        reopened += RetryChestRule(b, ruled);
+        if (cellSet == null) ForgetProbes(b); // the whole build starts over: so do its reasons' waits (StoryColony.Reconcile.cs)
+        // A build with nothing open that a quarry (or a newer build) holds, or the chest rule, stays as it is: the next pass would only
+        // block it again, without the reason it has now.
+        bool open = b.Ghosts.Any(g => g.Job && g.State is "todo" or "leased");
+        bool held = !open && b.Ghosts.Any(g => Conflicted(g) || StoryConstruction.ChestRuleHeld(g));
+        if (b.Status is "blocked" or "waiting" && !held) { b.Status = "queued"; b.Reason = null; }
         if (b.Status == "done" && b.Ghosts.Any(g => g.Job && g.State == "todo")) b.Status = "queued"; // a misrotated cell reopened
         b.Rev = Touch();
         _buildAlerted.Remove(b.Id);
@@ -84,7 +100,27 @@ public sealed partial class StoryColony
             b.Reason = why;
             reasons.Add(new JsonObject { ["id"] = b.Id, ["reason"] = why });
         }
+        // The rule still refuses a chest the owner asked for by cell, or one that is all the build has left: said now.
+        else if ((cellSet != null || !open) && ruled.FirstOrDefault(StoryConstruction.ChestRuleHeld) is { } still)
+            reasons.Add(new JsonObject { ["id"] = b.Id, ["reason"] = still.Reason });
         return reopened;
+    }
+
+    /// <summary>A retry's chest-rule cells: the rule is asked now, over the world and every build's chest cells still to come (as the
+    /// reconcile pass asks it). One it allows opens; the rest stay blocked with the rule's reason, no trip spent. → how many opened.</summary>
+    private int RetryChestRule(BuildState b, List<GhostState> ruled)
+    {
+        if (ruled.Count == 0 || World is not { } w) return 0;
+        _chestsAheadRead = false; // the last pass's gathering is stale: this retry just opened cells
+        int opened = 0;
+        foreach (var g in ruled)
+        {
+            if (!w.Loaded(g.At.X, g.At.Z) || !PlaceInto(w.Block(g.At.X, g.At.Y, g.At.Z).Id)) continue;
+            ChestRuleNow(w, b, g);
+            if (g.State == "todo") opened++;
+        }
+        _chestsAheadRead = false;
+        return opened;
     }
 
     /// <summary>A cell starts over: blocked → todo, its failure count, rest, soft failures and per-pawn skips forgotten.</summary>
@@ -95,6 +131,7 @@ public sealed partial class StoryColony
         if (g.State is "blocked" or "misrotated") g.State = "todo";
         _turnRedo.Remove(key); // a misrotated cell gets its one take-back again (StoryColony.Builds.cs)
         g.Reason = null;
+        _sampled.Remove(g); // no longer one of its reason's tries (StoryColony.Reconcile.cs)
         _ghostFails.Remove(id);
         _softFails.Remove(key);
         _leaseFails.Remove(key);

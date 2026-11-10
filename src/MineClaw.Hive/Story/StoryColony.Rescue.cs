@@ -11,7 +11,7 @@ namespace MineClaw.Hive.Story;
 /// <list type="bullet">
 /// <item><b>A failure is the pawn's own</b> when the target is out of reach from where it stands ("no path", "no route",
 /// "unreachable", a monster it couldn't find): the target rests for that pawn only and others take it. Only when
-/// <see cref="UnreachPawns"/> different pawns couldn't reach it (fewer when the colony has fewer online) is it the target's failure.
+/// <see cref="UnreachPawns"/> different pawns couldn't reach it (fewer when fewer online pawns do its work) is it the target's failure.
 /// A stuck pawn's failures never count against a target.</item>
 /// <item><b>Getting out</b> is the pawn's (<c>story.go</c>/<c>story.escape</c>: walk out, dig a staircase, nerd-pole, dig walls for
 /// blocks). The colony sees what the pawn can't: <see cref="StuckStreak"/> unreachable targets in a row, or a pawn under ground with
@@ -149,13 +149,17 @@ public sealed partial class StoryColony
     /// <summary>The target rests for this pawn only (a guard's monster a short while, else longer each time); no way there is noted.</summary>
     private void RestForPawn(PawnState p, ActiveJob j, string why, bool guard)
     {
-        if (MissKey(j) is { } lease)
-        {
-            var key = PawnKey(lease, p.Name);
-            int n = _pawnFails[key] = _pawnFails.GetValueOrDefault(key) + 1;
-            _skip[key] = Now + (guard ? MobRest : PawnBackoff(n));
-        }
+        if (MissKey(j) is { } lease) RestForPawn(p, lease, guard ? MobRest : null);
         if (NoWay.IsMatch(why)) NoteUnreachable(p, j);
+        if (j.Source == "ghost" && j.SourceId is { } cell) CellMissSaid(cell, why); // the build cell says why it rests (StoryColony.Builds.cs)
+    }
+
+    /// <summary>The target (a lease key, or a build cell's) rests for this pawn only: <paramref name="rest"/>, else longer each time.</summary>
+    private void RestForPawn(PawnState p, string key, TimeSpan? rest = null)
+    {
+        var pk = PawnKey(key, p.Name);
+        int n = _pawnFails[pk] = _pawnFails.GetValueOrDefault(pk) + 1;
+        _skip[pk] = Now + (rest ?? PawnBackoff(n));
     }
 
     // Several zone guards share a mob without an exclusive lease, but it remains one stable target for each pawn's failure history.
@@ -165,12 +169,31 @@ public sealed partial class StoryColony
     /// pillar for every pawn that tried: the designation waits with why (no failure, no alert).</summary>
     private bool UnreachableForEveryone(PawnState p, string lease, ActiveJob j, string why)
     {
-        if (!_unreachBy.TryGetValue(lease, out var by)) _unreachBy[lease] = by = new(StringComparer.OrdinalIgnoreCase);
-        by.Add(p.Name);
-        int online = Pawns.Values.Count(o => Host.Live(o.Name).Online);
-        if (by.Count < Math.Clamp(online, 1, UnreachPawns)) return true;
-        _unreachBy.Remove(lease);
+        if (UnreachableForSome(p, lease, j.Type)) return true;
         return OutOfReach(why) && ReachWait(j, why);
+    }
+
+    /// <summary>The pawn missed the target (a lease key, or a build cell's): true while fewer different pawns missed it than do its work
+    /// (clamped to 1..<see cref="UnreachPawns"/>); false once that many did, and the count starts over.</summary>
+    private bool UnreachableForSome(PawnState p, string key, string type)
+    {
+        if (!_unreachBy.TryGetValue(key, out var by)) _unreachBy[key] = by = new(StringComparer.OrdinalIgnoreCase);
+        by.Add(p.Name);
+        if (by.Count < Math.Clamp(WorkersOf(type), 1, UnreachPawns)) return true;
+        _unreachBy.Remove(key);
+        return false;
+    }
+
+    /// <summary>Online pawns that could be sent to a target of this work type: the work on (1-4) and not drafted. A job of no work type
+    /// counts every online pawn. Counting every online pawn for all (before 11-09) meant one or two builders among farmers and haulers
+    /// never reached the count: an unreachable cell or mark was walked to for good and never got its reason.</summary>
+    private int WorkersOf(string type)
+    {
+        bool known = WorkTypes.Known(type);
+        int n = 0;
+        foreach (var o in Pawns.Values)
+            if ((!known || o.Priorities.GetValueOrDefault(type) is >= 1 and <= 4 && !o.Drafted) && Host.Live(o.Name).Online) n++;
+        return n;
     }
 
     /// <summary>A run of unreachable targets: the colony takes the pawn for stuck (an escape job).</summary>
@@ -243,7 +266,12 @@ public sealed partial class StoryColony
             if (st.Asked) Alert("info", $"{p.Display} is out (was stuck at {st.At})", p.Name);
             if (st.Attempts > 0) _log.LogInformation("story {Colony}: {Pawn} is out (stuck at {At} after {N} escape attempt(s))", Id, p.Name, st.At, st.Attempts);
         }
-        if (MissKey(j) is { } key) { _unreachBy.Remove(key); _pawnFails.Remove(PawnKey(key, p.Name)); _quarryMiss.Remove(key); }
+        if (MissKey(j) is { } key)
+        {
+            // A build batch ends done also when its first cell was missed: that cell's misses end when it is built (CellDone).
+            if (j.Source != "ghost") { _unreachBy.Remove(key); _pawnFails.Remove(PawnKey(key, p.Name)); }
+            _quarryMiss.Remove(key);
+        }
         if (j.Source == "rescue" && j.SourceId is { } who && _stuck.TryGetValue(who, out var s)) s.Delivered = true;
         // A dig batch's cells are done one by one as plain jobs (no OreOrigin): their mark still names it here.
         if (j.Source == "designation" && (j.OreOrigin ?? Designations.FirstOrDefault(d => d.Id == j.SourceId)?.OreOrigin) is { Source: "zone" } vein)
@@ -255,7 +283,9 @@ public sealed partial class StoryColony
     internal void ForgetPawnFails(string key)
     {
         _unreachBy.Remove(key);
-        foreach (var k in _pawnFails.Keys.Where(k => k.StartsWith(key + "|", StringComparison.Ordinal)).ToList()) { _pawnFails.Remove(k); _skip.Remove(k); }
+        // Removing while walking the keys is safe for Dictionary (since .NET Core 3.0), so nothing is copied.
+        foreach (var k in _pawnFails.Keys)
+            if (k.Length > key.Length && k[key.Length] == '|' && k.StartsWith(key, StringComparison.Ordinal)) { _pawnFails.Remove(k); _skip.Remove(k); }
     }
 
     /// <summary>Is the pawn stuck (said so itself, or suspected by the colony)? Tests, the inspector.</summary>

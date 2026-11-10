@@ -83,6 +83,118 @@ public sealed class StoryBlockedWorkTests
         Assert.Equal(c.P(0), blocked[0]!["pawns"]![0]!.GetValue<string>());
     }
 
+    /// <summary>A build held by water in its empty space, a forbidden zone, a stuck spot or a pawn's temporary block said only "the
+    /// level below is still being built" or "its open cells are taken or backing off". The note now names the hold.</summary>
+    [Theory]
+    [InlineData("water", "build b1: water at 4,64,12 can't be cleared: the 4 cells under it wait")]
+    [InlineData("forbidden", "build b1: its open cells are in a forbidden zone (8,64,8)")]
+    [InlineData("stuck", "build b1: its open cells are by a spot where a pawn got stuck (8,64,8)")]
+    [InlineData("temp", "build b1: a pawn's temporary block stands in its cell at 5,64,12 (taken back first)")]
+    public void The_note_says_which_hold_keeps_a_build_from_going_on(string hold, string note)
+    {
+        var clock = new Clock(DateTimeOffset.Parse("2026-11-10T10:00:00Z"));
+        var (c, h, w) = StoryRig.Make(pawns: 2, time: clock);
+        Only(c, WorkTypes.Build);
+        var cobble = new Stack(4, 0, 8);
+        h.Lives[c.P(0)] = hold == "water" ? FakeStoryHost.Live(0, 64, 3) : FakeStoryHost.Live(0, 64, 3, inv: cobble);
+        h.Lives[c.P(1)] = FakeStoryHost.Live(30, 64, 30);
+        var block = new JsonObject { ["kind"] = "block", ["blocks"] = Cells((8, 64, 8)), ["material"] = "cobblestone" };
+        switch (hold)
+        {
+            case "water": // the design's empty space holds still water over stone: the digs under it wait; its block has no stock
+                w.Set(4, 64, 12, 9);
+                block["blocks"] = Cells((5, 64, 12));
+                block["replace_area"] = new JsonArray(4, 62, 12, 5, 64, 12);
+                break;
+            case "stuck":
+                h.Lives[c.P(1)] = FakeStoryHost.Live(8, 64, 7);
+                c.Stuck(c.P(1), "boxed in");
+                break;
+            case "temp": // another pawn stands on its pillar in the design's cell
+                var at = new P3(5, 64, 12);
+                w.Set(at.X, at.Y, at.Z, 3);
+                h.Lives[c.P(1)] = FakeStoryHost.Live(5.5, 65, 12.5);
+                h.Temps[c.P(1)] = [(at, 3)];
+                c.Temporary(c.P(1), at.ToString(), true, "reach pillar");
+                block["blocks"] = Cells((5, 64, 12));
+                block["replace_area"] = new JsonArray(5, 64, 12, 5, 64, 12);
+                break;
+        }
+        Assert.Null(c.BuildsOp("add", new JsonArray(block), null).Error);
+        if (hold == "forbidden") Assert.Null(c.ZoneOp("add", "forbidden", Area.Of(7, 60, 7, 9, 70, 9)).Error);
+        Assert.NotEqual("place", Kind(c.Next(0)));
+        clock.Now += TimeSpan.FromSeconds(2);
+        c.Tick();
+        Assert.Equal("waiting: " + note, c.IdleReasonOf(c.P(0)));
+    }
+
+    /// <summary>A placement nobody has in view reads as air: nothing to place against, no scaffold spot, so no job and nobody sent
+    /// there, for good. One pawn now goes to its nearest open cell (the existing go job), and only one.</summary>
+    [Fact]
+    public void A_build_out_of_everyones_view_sends_one_pawn_to_its_site()
+    {
+        var clock = new Clock(DateTimeOffset.Parse("2026-11-10T10:00:00Z"));
+        var (c, h, w) = StoryRig.Make(pawns: 2, time: clock);
+        Only(c, WorkTypes.Build);
+        for (int i = 0; i < 2; i++) h.Lives[c.P(i)] = FakeStoryHost.Live(0, 64, 3, inv: new Stack(4, 0, 8));
+        w.Unloaded.Add((40, 40));
+        w.Unloaded.Add((41, 40));
+        Assert.Null(c.BuildsOp("add", new JsonArray(new JsonObject
+        {
+            ["kind"] = "block", ["blocks"] = Cells((41, 64, 40), (40, 64, 40)), ["material"] = "cobblestone",
+        }), null).Error);
+        var go = c.Next(0);
+        Assert.Equal(("go", "40,64,40", 8), (Kind(go), go["at"]!.GetValue<string>(), go["dist"]!.GetValue<int>()));
+        Assert.NotEqual("go", Kind(c.Next(1))); // the site's lease: one pawn goes
+        // Once a body is there the site is in view and the build goes on as ever.
+        Assert.True(c.Report(c.P(0), go["id"]!.GetValue<string>(), "done", null, null));
+        w.Unloaded.Clear();
+        h.Lives[c.P(0)] = FakeStoryHost.Live(38, 64, 40, inv: new Stack(4, 0, 8));
+        Assert.Equal("place", Kind(c.Next(0)));
+    }
+
+    /// <summary>The site visit went out before any stock check: a far build whose material was out sent a pawn there and back every
+    /// two minutes (it arrived, found nothing to place, left, and the site unloaded) until the material came. Nobody walks now, and
+    /// the build says what it needs as it would in view.</summary>
+    [Fact]
+    public void A_build_out_of_view_with_nothing_to_place_sends_nobody()
+    {
+        var clock = new Clock(DateTimeOffset.Parse("2026-11-10T10:00:00Z"));
+        var (c, h, w) = StoryRig.Make(pawns: 2, time: clock);
+        Only(c, WorkTypes.Build);
+        for (int i = 0; i < 2; i++) h.Lives[c.P(i)] = FakeStoryHost.Live(0, 64, 3); // no cobblestone carried or stored
+        w.Unloaded.Add((40, 40));
+        w.Unloaded.Add((41, 40));
+        Assert.Null(c.BuildsOp("add", new JsonArray(new JsonObject
+        {
+            ["kind"] = "block", ["blocks"] = Cells((41, 64, 40), (40, 64, 40)), ["material"] = "cobblestone",
+        }), null).Error);
+        JsonObject Pick(int i)
+        {
+            var j = c.Next(i)!;
+            if (j["id"] is not null) c.Report(c.P(i), j["id"]!.GetValue<string>(), "done", null, null);
+            return j;
+        }
+        for (int k = 0; k < 3; k++)
+        {
+            Assert.NotEqual("go", Kind(Pick(0)));
+            Assert.NotEqual("go", Kind(Pick(1)));
+            clock.Now += TimeSpan.FromMinutes(3); // past the site's rest
+        }
+        var idle = c.Next(0)!;
+        Assert.NotEqual("go", Kind(idle));
+        clock.Now += TimeSpan.FromSeconds(2);
+        c.Tick();
+        var why = c.IdleReasonOf(c.P(0));
+        Assert.NotNull(why);
+        Assert.Contains("need 2 cobblestone", why);
+        if (idle["id"] is not null) c.Report(c.P(0), idle["id"]!.GetValue<string>(), "done", null, null);
+        // Cobblestone carried: the pawn goes to the site after all.
+        h.Lives[c.P(0)] = FakeStoryHost.Live(0, 64, 3, inv: new Stack(4, 0, 8));
+        clock.Now += TimeSpan.FromSeconds(5);
+        Assert.Equal("go", Kind(c.Next(0)));
+    }
+
     [Fact]
     public void A_bill_whose_count_is_met_is_no_work_and_a_suspended_one_says_why()
     {

@@ -113,7 +113,7 @@ public sealed partial class StoryColony
     private HashSet<P3> BuildCellSet(bool includeReplacementAir = false)
     {
         var set = new HashSet<P3>();
-        var temps = TempCellSet();
+        var temps = ActiveTempCells(); // a temp left to the owner in a design's cell is the design's to clear: forgotten here
         foreach (var b in Builds) foreach (var g in b.Ghosts)
             if (includeReplacementAir || !ReplacementAir(b, g) && !(ReplacementBuild(b) && temps.Contains(g.At))) set.Add(g.At);
         return set;

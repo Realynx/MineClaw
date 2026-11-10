@@ -131,6 +131,75 @@ public sealed class ContainerPlacementTests
         Assert.True(await SneakReleased(s));
     }
 
+    /// <summary>Vanilla refuses a chest beside a double chest. The client clicked anyway, waited 1.5 s and said "didn't appear …
+    /// (protected area?)"; now it says why before any click, on every build path of both versions.</summary>
+    [Theory]
+    [InlineData("plain", false)]
+    [InlineData("face", false)]
+    [InlineData("against", false)]
+    [InlineData("turned", false)]
+    [InlineData("stationary", false)]
+    [InlineData("plain", true)]
+    [InlineData("against", true)]
+    [InlineData("turned", true)]
+    [InlineData("stationary", true)]
+    public async Task A_third_chest_beside_a_pair_is_refused_before_any_click(string path, bool modern)
+    {
+        var (c, s) = await Harness.StartAsync(srv =>
+        {
+            Setup(srv, Blocks.Stone);
+            srv.Blocks[(Target.X + 1, Target.Y, Target.Z)] = Blocks.Chest;
+            srv.Blocks[(Target.X + 2, Target.Y, Target.Z)] = Blocks.Chest;
+        }, o => o with { SneakAtEdgesWhenIdle = false }, release1122: modern);
+        await using var _ = c;
+        using var __ = s;
+        Assert.True(await Harness.WaitAsync(() => c.World.GetBlock(Target.X + 2, Target.Y, Target.Z) == Blocks.Chest));
+        var result = await Place(c, path);
+        Assert.False(result.Ok);
+        Assert.Equal($"can't place a chest at {Target.X},{Target.Y},{Target.Z}: it would touch the double chest at {Target.X + 1},{Target.Y},{Target.Z}", result.Message);
+        Assert.DoesNotContain(s.Received, p => p is PlayerBlockPlacementPacket);
+        Assert.Equal(0, c.World.GetBlock(Target));
+        Assert.Equal(4, c.World.Inventory.CountItem(Blocks.Chest));
+    }
+
+    [Fact]
+    public async Task A_chest_placed_beside_one_turns_the_pair_one_way_on_the_simulator()
+    {
+        var (c, s) = await Harness.StartAsync(srv =>
+        {
+            Setup(srv, Blocks.Stone);
+            srv.Blocks[(Target.X + 1, Target.Y, Target.Z)] = Blocks.Chest;
+            srv.Metas[(Target.X + 1, Target.Y, Target.Z)] = 2;
+        }, o => o with { SneakAtEdgesWhenIdle = false }, release1122: true);
+        await using var _ = c;
+        using var __ = s;
+        // Facing south, across the east-west pair: the older half, which faced north, turns with it.
+        var r = await c.PlaceTurnedAsync(Target, Blocks.Chest, null, 3);
+        Assert.True(r.Ok, r.Message);
+        Assert.Equal(3, s.Metas[(Target.X, Target.Y, Target.Z)]);
+        Assert.Equal(3, s.Metas[(Target.X + 1, Target.Y, Target.Z)]);
+        Assert.True(await Harness.WaitAsync(() => c.World.GetMeta(Target.X + 1, Target.Y, Target.Z) == 3));
+    }
+
+    [Fact]
+    public async Task The_simulator_refuses_a_third_chest_the_client_did_not_know_of()
+    {
+        var (c, s) = await Harness.StartAsync(srv =>
+        {
+            Setup(srv, Blocks.Stone);
+            srv.Blocks[(Target.X + 1, Target.Y, Target.Z)] = Blocks.Chest;
+        }, o => o with { SneakAtEdgesWhenIdle = false }, release1122: true);
+        await using var _ = c;
+        using var __ = s;
+        Assert.True(await Harness.WaitAsync(() => c.World.GetBlock(Target.X + 1, Target.Y, Target.Z) == Blocks.Chest));
+        lock (s.BlockLock) s.Blocks[(Target.X + 2, Target.Y, Target.Z)] = Blocks.Chest; // the server's, not yet told: a pair now
+        var result = await Place(c, "plain");
+        Assert.False(result.Ok);
+        Assert.Contains(s.Received, p => p is PlayerBlockPlacementPacket { Direction: not PlayerBlockPlacementPacket.NoDirection });
+        Assert.False(s.Blocks.ContainsKey((Target.X, Target.Y, Target.Z)));
+        Assert.Equal(0, c.World.GetBlock(Target));
+    }
+
     [Theory]
     [InlineData("plain")]
     [InlineData("against")]

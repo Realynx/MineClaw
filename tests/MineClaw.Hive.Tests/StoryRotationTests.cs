@@ -14,9 +14,11 @@ public sealed class StoryRotationTests
 {
     private static readonly P3 Chest = new(0, 64, 9);
 
-    private static (StoryColony C, FakeStoryHost H, FakeStoryWorld W) Rig(IGameData data, params Stack[] stock)
+    private static (StoryColony C, FakeStoryHost H, FakeStoryWorld W) Rig(IGameData data, params Stack[] stock) => Rig(data, (TimeProvider?)null, stock);
+
+    private static (StoryColony C, FakeStoryHost H, FakeStoryWorld W) Rig(IGameData data, TimeProvider? time, params Stack[] stock)
     {
-        var (c, h, w) = StoryRig.Make(1, data);
+        var (c, h, w) = StoryRig.Make(1, data, time);
         foreach (var p in c.Pawns.Values) foreach (var t in WorkTypes.All) p.Priorities[t] = t == WorkTypes.Build ? 1 : 0;
         h.Lives[c.P()] = FakeStoryHost.Live(0, 64, 4);
         w.Set(Chest.X, Chest.Y, Chest.Z, 54, 3);
@@ -160,6 +162,121 @@ public sealed class StoryRotationTests
         w2.Set(6, 64, 12, 96, 1 | 4);
         c2.Next();
         Assert.Equal("done", b2.Ghosts.Single().State);
+    }
+
+    /// <summary>The pawn's next job; anything but a build job (idle, a walk) is ended at once so the pick after it is a fresh one.</summary>
+    private static JsonObject Pick(StoryColony c)
+    {
+        var j = c.Next();
+        if (j["kind"]?.GetValue<string>() is not ("place" or "dig") && j["id"] is not null) c.Report(c.P(), Id(j), "done", null, null);
+        return j;
+    }
+
+    private static List<string> Clears(JsonObject j) => j["clear"]?.AsArray().Select(x => x!.GetValue<string>()).ToList() ?? [];
+
+    /// <summary>A placed design (palette placement: it replaces its volume) with one chest drawn facing south at <paramref name="at"/>.</summary>
+    private static GhostState PlaceChestDesign(StoryColony c, P3 at)
+    {
+        var item = Block(54, 3, [at.X, at.Y, at.Z]);
+        item["replace_area"] = new JsonArray(at.X, at.Y, at.Z, at.X, at.Y, at.Z);
+        return Add(c, item).Ghosts.Single();
+    }
+
+    /// <summary>A cell changed with the plan editor is checked for its exact meta, and the client words a wrong one "wrong exact state".
+    /// That was read as an ordinary failure: a strike, and on the next pick the chest was dug out and placed again, twice, then the
+    /// cell was blocked (a chest's facing is the game's to decide beside another chest).</summary>
+    [Fact]
+    public void A_wrong_exact_state_that_is_a_turn_is_misrotated_not_a_strike()
+    {
+        var clock = new ManualTime();
+        var (c, _, w) = Rig(Release1122GameData.Instance, clock, new Stack(54, 0, 4));
+        Assert.Null(c.EditBuildCells(null, new JsonArray(new JsonArray(4, 64, 12, 54, 3))).Error);
+        var b = c.Builds.Single();
+        var g = b.Ghosts.Single();
+        var j = c.Next();
+        Assert.Equal("place", j["kind"]!.GetValue<string>());
+        Assert.True(j["exact_state"]!.GetValue<bool>());
+        w.Set(4, 64, 12, 54, 2); // placed, and the game turned it north
+        c.Report(c.P(), Id(j), "progress", "cell 4,64,12 failed: placed with wrong exact state at 4,64,12: wants 54:3, got 54:2", null);
+        Assert.Equal("misrotated", g.State);
+        Assert.Contains("facing north", g.Reason);
+        c.Report(c.P(), Id(j), "done", "batch: 0/1 placed", null);
+        Assert.Equal("done", b.Status); // finished for the build, like any wrong turn
+        // No strike and no rest to wait out: no later job digs the chest out to place it again, and a retry only looks at it again.
+        clock.Now += TimeSpan.FromMinutes(11);
+        Assert.NotEqual("place", Pick(c)["kind"]?.GetValue<string>());
+        Assert.Null(c.RetryBuilds("retry_all", null, null).Error);
+        Assert.DoesNotContain("4,64,12", Clears(Pick(c)));
+        Assert.Equal("misrotated", g.State);
+    }
+
+    /// <summary>Live risk named in the diagnosis: a placed design's chest that stands turned wrong was dug out for its rotation, its
+    /// contents on the floor (the override for palette placements ignored that it holds items).</summary>
+    [Fact]
+    public void Retry_never_digs_out_a_chest_that_holds_items()
+    {
+        var clock = new ManualTime();
+        var (c, _, w) = Rig(Release1122GameData.Instance, clock, new Stack(54, 0, 4));
+        var at = new P3(4, 64, 12);
+        w.Set(at.X, at.Y, at.Z, 54, 2); // a chest facing north, the colony's storage, looked into a moment ago: it holds diamonds
+        c.StorageOp("set", [at], null, null, null);
+        c.AddContents(c.StorageAt(at)!, new Stack(264, 0, 5));
+        c.StorageAt(at)!.SeenAt = clock.Now;
+        var g = PlaceChestDesign(c, at);
+        Assert.DoesNotContain(at.ToString(), Clears(Pick(c)));
+        Assert.Equal("misrotated", g.State);
+        Assert.Contains("facing north", g.Reason);
+
+        Assert.Null(c.RetryBuilds("retry_all", null, null).Error);
+        Assert.Equal("todo", g.State);
+        Assert.DoesNotContain(at.ToString(), Clears(Pick(c)));
+        Assert.Equal("misrotated", g.State);
+    }
+
+    [Theory]
+    [InlineData("none")]   // not a storage: the colony has no record of what it holds
+    [InlineData("unseen")] // a storage nobody has looked into: its empty record is not knowledge
+    [InlineData("stale")]  // looked into long ago: a player may have used it since
+    [InlineData("half")]   // a double chest whose other half the record does not cover
+    public void A_chest_not_known_empty_is_never_taken_back_for_its_rotation(string record)
+    {
+        var clock = new ManualTime();
+        var (c, _, w) = Rig(Release1122GameData.Instance, clock, new Stack(54, 0, 4));
+        var at = new P3(4, 64, 12);
+        w.Set(at.X, at.Y, at.Z, 54, 2);
+        if (record != "none") c.StorageOp("set", [at], null, null, null);
+        if (record is "stale" or "half") c.StorageAt(at)!.SeenAt = clock.Now;
+        if (record == "stale") clock.Now += StoryColony.SeenStale + TimeSpan.FromMinutes(1);
+        if (record == "half") w.Set(at.X + 1, at.Y, at.Z, 54, 2); // joined since the record was made
+        var g = PlaceChestDesign(c, at);
+        Assert.DoesNotContain(at.ToString(), Clears(Pick(c)));
+        Assert.Equal("misrotated", g.State);
+    }
+
+    /// <summary>The one case a container is taken back: a placed design, and the colony's record of the chest was looked into lately
+    /// and is empty (nothing can spill). One take-back, as for any turned block; a retry grants one more.</summary>
+    [Fact]
+    public void Retry_may_take_back_a_chest_known_empty_once()
+    {
+        var clock = new ManualTime();
+        var (c, _, w) = Rig(Release1122GameData.Instance, clock, new Stack(54, 0, 4));
+        var at = new P3(4, 64, 12);
+        w.Set(at.X, at.Y, at.Z, 54, 2);
+        c.StorageOp("set", [at], null, null, null);
+        c.StorageAt(at)!.SeenAt = clock.Now;
+        var g = PlaceChestDesign(c, at);
+        const string Wrong = "cell 4,64,12 failed: placed with wrong rotation at 4,64,12: facing north, wants facing south";
+        for (int round = 0; round < 2; round++)
+        {
+            var j = Pick(c);
+            Assert.Equal("place", j["kind"]!.GetValue<string>());
+            Assert.Contains(at.ToString(), Clears(j));
+            c.Report(c.P(), Id(j), "progress", Wrong, null); // the game turned it north again
+            Assert.Equal("misrotated", g.State);
+            c.Report(c.P(), Id(j), "done", "batch: 0/1 placed", null);
+            Assert.NotEqual("place", Pick(c)["kind"]?.GetValue<string>()); // its one take-back is spent
+            Assert.Null(c.RetryBuilds("retry_all", null, null).Error);
+        }
     }
 
     [Fact]

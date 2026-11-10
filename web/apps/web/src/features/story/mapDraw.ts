@@ -130,7 +130,7 @@ const failedModels = new WeakMap<object, { cells: FailedCell[]; byColumn: Map<st
 export function failedModel(blocks: GhostBlocks) {
   const hit = failedModels.get(blocks);
   if (hit) return hit;
-  const cells = failedCells(blocks);
+  const cells = failedCells(blocks, null, true); // the chest rule's blocked cells too: drawn, though no Retry takes them
   const byColumn = new Map<string, FailedCell>();
   for (const f of cells) if (!byColumn.has(`${f.cell[0]},${f.cell[2]}`)) byColumn.set(`${f.cell[0]},${f.cell[2]}`, f);
   const m = { cells, byColumn };

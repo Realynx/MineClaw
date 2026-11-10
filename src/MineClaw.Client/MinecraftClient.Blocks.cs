@@ -256,8 +256,20 @@ public sealed partial class MinecraftClient
         int existing = World.GetBlock(pos);
         if (!Aiming.IsReplaceable(World, existing)) return $"{Fmt(pos)} is occupied by {BlockName(existing, World.GetMeta(pos))}";
         if (!World.IsLoaded(pos.X, pos.Z)) return $"{Fmt(pos)} is not loaded";
+        if (ChestRefusal(pos, itemId) is { } chest) return chest;
         if (EditBlocked(pos)) return BlockedReason(pos);
         return World.KeepAir.Refusal(pos, World.Dimension, itemId);
+    }
+
+    /// <summary>
+    /// A chest vanilla won't place here (<see cref="ChestPairs.CanPlace(IBlockAccess, BlockPos, int, out ChestPairs.Clash)"/>: beside a
+    /// double chest, or between two), said before any click. The server would take it back after the click, which read as "didn't
+    /// appear … (protected area?)" after a 1.5 s wait and could teach a spawn-protection region that isn't there.
+    /// </summary>
+    private string? ChestRefusal(BlockPos pos, int itemId)
+    {
+        int block = PlaceRules.BlockOf(itemId);
+        return !ChestPairs.IsPairable(block) || ChestPairs.CanPlace(World, pos, block, out var clash) ? null : ChestPairs.Refusal(pos, clash);
     }
 
     private async Task<ActionResult> PlaceSneakingAsync(BlockPos pos, int itemId, CancellationToken ct, bool allowPathing, int? damage = null,

@@ -20,6 +20,45 @@ public sealed class StoryTempBlocksTests
     private static List<DesignationState> Cleanups(StoryColony c) =>
         c.Designations.Where(d => d.Kind == "deconstruct" && d.Auto && (d.Label ?? "").Contains("temporary")).ToList();
 
+    /// <summary>A pawn's pillar block stood in a placed design's cell while the design was built, and its cleanup was given up
+    /// ("Left for you to remove …") or cancelled. The registry kept it for good, and every build path stepped around a registered
+    /// temporary block: the design cell under it was never built and never said why. Such a block is now an ordinary block in the
+    /// way (cleared, with a reason on the map), and the registry forgets it once the build owns the cell.</summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void A_temporary_block_left_to_the_owner_no_longer_freezes_the_design_cell_under_it(bool cancelled)
+    {
+        var clock = new ManualTime();
+        var (c, h, w) = StoryRig.Make(time: clock);
+        Only(c, WorkTypes.Build);
+        var pawn = c.P();
+        var at = new P3(5, 64, 12);
+        w.Set(at.X, at.Y, at.Z, 3);
+        h.Lives[pawn] = FakeStoryHost.Live(5.5, 65, 12.5); // on its pillar: the design is queued around live access
+        h.Temps[pawn] = [(at, 3)];
+        c.Temporary(pawn, at.ToString(), true, "reach pillar");
+        var design = new JsonObject { ["kind"] = "block", ["material"] = new JsonArray(4, 0), ["blocks"] = new JsonArray(new JsonArray(at.X, at.Y, at.Z)) };
+        design["replace_area"] = new JsonArray(at.X, at.Y, at.Z, at.X, at.Y, at.Z);
+        Assert.Null(c.BuildsOp("add", new JsonArray(design), null).Error);
+        var cell = Assert.Single(c.Builds.Single().Ghosts);
+        var temp = Assert.Single(c.Meta.TempBlocks!);
+        // Later its cleanup is given up: out of reach twice, or the owner said keep it.
+        if (cancelled) temp.Cancelled = true; else temp.DeferredReason = "out of reach";
+        h.Temps[pawn] = [];
+        h.Lives[pawn] = FakeStoryHost.Live(0, 64, 4, inv: new Stack(4, 0, 8));
+
+        c.Reconcile(w);
+        Assert.Equal("clear", cell.Holds); // the map says what is in the way
+        var job = c.Next();
+        Assert.Equal("place", job["kind"]!.GetValue<string>());
+        Assert.Equal(at.ToString(), job["at"]!.GetValue<string>());
+        Assert.Equal(at.ToString(), Assert.Single(job["clear"]!.AsArray())!.GetValue<string>());
+        clock.Now += TimeSpan.FromSeconds(6);
+        c.Tick();
+        Assert.Null(c.Meta.TempBlocks); // the design's cell now: not the registry's
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

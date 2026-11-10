@@ -95,7 +95,7 @@ public sealed class StoryBuildEditTests
     [Fact]
     public void Delete_and_replace_interleaved_keep_air_owned_and_publish_correct_delta_keys()
     {
-        var (c, _, w) = Rig();
+        var (c, h, w) = Rig();
         var id = Id(c.EditBuildCells(null, Cells([3, 64, 3, 4, 0])));
         long first = c.State()["rev"]!.GetValue<long>();
         Assert.Equal(id, Id(c.EditBuildCells(id, Cells([3, 64, 3, 0, 0]))));
@@ -105,6 +105,7 @@ public sealed class StoryBuildEditTests
         Assert.Contains(id + "|" + A, c.State(first)["removed"]!["ghosts"]!.AsArray().Select(n => n!.GetValue<string>()));
         Assert.Empty(c.State()["ghosts"]!["blocks"]!.AsArray());
         w.Set(A.X, A.Y, A.Z, 5); // an already-sent old placement lands after cancellation
+        h.Placed.Add((A, 5, c.P())); // a pawn's: the placed-block log has it (a block someone else put there stays)
         c.Reconcile(w); c.Reconcile(w);
         Assert.Equal("todo", air.State);
         long second = c.State()["rev"]!.GetValue<long>();
@@ -186,6 +187,7 @@ public sealed class StoryBuildEditTests
         Assert.Contains(expansion.Ghosts, g => g.At == A && g.Remove);
         Assert.Contains(expansion.Ghosts, g => g.At == C && g.Id == 17 && g.Meta == 4);
         w.Set(A.X, A.Y, A.Z, 5);
+        h.Placed.Add((A, 5, c.P())); // a pawn's block: the placed-block log has it
         loaded.Reconcile(w); loaded.Reconcile(w);
         Assert.Equal("todo", saved.Ghosts.Single(g => g.At == A).State);
     }
