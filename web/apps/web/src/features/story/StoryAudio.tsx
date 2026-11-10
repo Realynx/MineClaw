@@ -60,7 +60,8 @@ export function StoryAudio({
       const surface = new CentreSurface();
       const player = new module.ControllerAudio(() => {
         const engine = viewer.current?.engine();
-        if (!engine?.surface.isConnected) return null;
+        // Until a frame has placed the camera it sits at the world origin; hearing from there would play the wrong place.
+        if (!engine?.surface.isConnected || !engine.posed) return null;
         const camera = engine.camera,
           m = camera.matrixWorld.elements,
           topDown = current.current.view !== 'fly';

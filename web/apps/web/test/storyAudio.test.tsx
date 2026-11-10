@@ -30,7 +30,7 @@ type Cut = { x: number; y: number; z: number; r: number };
 function fakeEngine(cut: Cut | null = null) {
   const stacks = vi.fn((..._query: unknown[]) => Promise.resolve([3, 70, 4, 2, 0, 3]));
   return {
-    surface: { isConnected: true }, runtime: { version: '1.12.2', host: { stacks } },
+    surface: { isConnected: true }, posed: true, runtime: { version: '1.12.2', host: { stacks } },
     camera: { matrixWorld: { elements: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0] }, position: { x: 3, y: 70, z: 4 } },
     rig: { target: { x: 3, y: 64, z: 4 } }, pickCut: () => cut,
   };
@@ -82,6 +82,9 @@ it('keeps sound compact until clicked, persists mute and restores the previous l
   expect(screen.getByLabelText('Sound volume')).toHaveTextContent('40%');
   expect(players[1]!.setVolume).toHaveBeenLastCalledWith(0.4);
   expect(players[1]!.listener()).toMatchObject({ position: [3, 64, 4], topDown: true });
+  engine.posed = false; // camera not yet placed by a frame: still at the world origin
+  expect(players[1]!.listener()).toBeNull();
+  engine.posed = true;
   engine.surface.isConnected = false;
   expect(players[1]!.listener()).toBeNull();
   act(() => players[1]!.onReady?.(false));
