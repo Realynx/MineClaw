@@ -200,8 +200,8 @@ chat-format fallback table described above.
 
 - Game behaviour (physics, lighting, combat, hunger, crafting and the network protocol) is re-implemented in C# and
   TypeScript for interoperability, using as references the wiki.vg protocol pages, the Bukkit mc-dev sources for Beta 1.8
-  and a 1.12.2 client decompiled locally from a legally obtained client jar with MCP (stable_39) mappings
-  (`docs/handoff/decompile-1.12.2.md`). Code comments cite the vanilla class and method names (and some numeric
+  and a 1.12.2 client decompiled locally from a legally obtained client jar with MCP (stable_39) mappings.
+  Code comments cite the vanilla class and method names (and some numeric
   constants) they follow. The decompiled client is kept outside the repository; no decompiled or Mojang source code is
   included.
 - The Minecraft Wiki (numeric ore-height tables in `web/apps/web/src/features/studio/mine/ore-heights.json`), Mojang release
