@@ -20,7 +20,7 @@ export const ChatPanel = forwardRef<
   ChatPanelHandle,
   {
     messages: DesignerMessage[];
-    kind?: 'build' | 'mine';
+    kind?: 'build' | 'mine' | 'redstone';
     models: DesignerModel[];
     model: string;
     onModel: (id: string) => void;
@@ -37,7 +37,8 @@ export const ChatPanel = forwardRef<
   }
 >(function ChatPanel(p, ref) {
   const [text, setText] = useState('');
-  const [collapsed, setCollapsed] = useState(p.kind === 'mine');
+  // The mine and redstone editors need the room; the chat stays one click (or T) away.
+  const [collapsed, setCollapsed] = useState(p.kind === 'mine' || p.kind === 'redstone');
   const panelId = useId();
   const focusWhenOpen = useRef(false);
   const input = useRef<HTMLTextAreaElement>(null);

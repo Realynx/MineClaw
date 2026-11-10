@@ -10,7 +10,8 @@ import type * as ViewerMod from './studio-viewer';
 import type { NoticeOptions } from './studioSave';
 import { MineModuleController } from './mine/MineModuleController';
 import { decodeModuleDrag, joinedPortCells, MINE_MODULE_MIME, moduleCells, moduleName, openPortCells, snapModuleAt, type MineModuleInstance, type MineModuleSpec } from './mine/modules';
-import { mineRayBox } from './mine/placementRay';
+import { ComponentDrag, immediately, type ComponentDragHandlers, type ComponentPress } from './components/dragSession';
+import { nearestHit, rayFromPointer } from './components/levelRay';
 import { minePlacementPoint, modulePlacementHeight, surfaceModuleAt, type PlacementHeight, type PlacementHeightMode } from './mine/placementHeight';
 import { modulePlacementPreview } from './mine/placementPreview';
 import { pictureDistance } from './PictureControls';
@@ -22,6 +23,13 @@ const NONE: readonly MineModuleInstance[] = [];
 const noSubscription = () => () => undefined;
 type ComponentClip = { spec: MineModuleSpec; level: number };
 const plus = (a: V3, b: V3): V3 => [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
+/** Each cell a piece digs as a one-cell box: a press picks the piece through the terrain. */
+function* cellBoxes(item: MineModuleInstance): Iterable<readonly [V3, V3]> {
+  for (const cell of moduleCells(item.spec, item.at).cells) {
+    const at: V3 = [cell[0], cell[1], cell[2]];
+    yield [at, at];
+  }
+}
 
 /** Pointer placement and selection; the controller owns cells, overlapping modules and undo history. */
 export function useMinePlacement(p: {
@@ -68,10 +76,9 @@ export function useMinePlacement(p: {
   const dragging = useRef<{ id: string; spec: MineModuleSpec; at: V3; min: V3; max: V3 } | null>(null);
   /**
    * A press on a component's body: past a few pixels it drags the piece across its own level, snapped to a neighbour's
-   * port, through the same preview and single commit as a handle drag. `grab` is where the press met the piece's level.
+   * port, through the same preview and single commit as a handle drag. The press's `grab` is where it met the piece's level.
    */
-  const bodyPress = useRef<{ pointer: number; x: number; y: number; id: string; spec: MineModuleSpec; at: V3; grab: V3; started: boolean; delta: V3 } | null>(null);
-  const cancelBody = useRef<() => void>(() => undefined);
+  const bodyDrag = useRef<ComponentDrag | null>(null);
   const selected = modules.find((m) => m.id === selectedId) ?? null;
   const live = useRef({ ...p, modules, placing, heightMode, fixedY, placementHeight, connection, clipboard, selectedId, checked });
   useEffect(() => { live.current = { ...p, modules, placing, heightMode, fixedY, placementHeight, connection, clipboard, selectedId, checked }; });
@@ -216,15 +223,7 @@ export function useMinePlacement(p: {
     if (mode === 'fixed') live.current.onWorkLevel?.(live.current.fixedY);
   }, [clearPreview]);
 
-  const rayAt = useCallback((x: number, y: number) => {
-    const engine = viewer.current?.engine();
-    if (!engine) return null;
-    const rect = engine.surface.getBoundingClientRect();
-    if (!rect.width || !rect.height) return null;
-    const ray = new mod.Raycaster();
-    ray.setFromCamera(new mod.Vector2((x - rect.left) / rect.width * 2 - 1, 1 - (y - rect.top) / rect.height * 2), engine.camera);
-    return ray;
-  }, [mod, viewer]);
+  const rayAt = useCallback((x: number, y: number) => rayFromPointer(mod, viewer.current?.engine(), x, y), [mod, viewer]);
 
   const preview = useCallback((x: number, y: number, spec = live.current.placing) => {
     pointerAt.current = [x, y];
@@ -312,7 +311,7 @@ export function useMinePlacement(p: {
     const surface = bound.current;
     if (!controller || !surface) return null;
     // Escape during a body drag puts the piece back (before the page's Escape clears the selection).
-    if (event.key === 'Escape' && bodyPress.current?.started) return () => cancelBody.current();
+    if (event.key === 'Escape' && bodyDrag.current?.moved) return () => bodyDrag.current?.cancel();
     if (live.current.placing) {
       if (event.key === 'Escape') return cancel;
       const plain = !event.ctrlKey && !event.metaKey && !event.altKey;
@@ -373,23 +372,17 @@ export function useMinePlacement(p: {
       if (!live.current.selecting) return;
       const ray = rayAt(event.clientX, event.clientY);
       if (!ray || overlay.pickHandle(ray)) return;
-      let nearest: { id: string; distance: number } | null = null;
-      for (const item of controller.snapshot()) {
-        if (item.visible === false) continue;
-        for (const cell of moduleCells(item.spec, item.at).cells) {
-          const at: V3 = [cell[0], cell[1], cell[2]];
-          const distance = mineRayBox(ray.ray, at, at);
-          if (distance !== null && (!nearest || distance < nearest.distance)) nearest = { id: item.id, distance };
-        }
-      }
+      const visible = controller.snapshot().filter((item) => item.visible !== false);
+      const nearest = nearestHit(ray.ray, visible, cellBoxes);
       if (!nearest) return;
       event.preventDefault(); event.stopImmediatePropagation(); select(nearest.id); surface.focus();
       const item = controller.snapshot().find((m) => m.id === nearest.id);
       const terrain = live.current.studio.terrain;
       const grab = item && terrain && minePlacementPoint(ray.ray, terrain, item.spec, { mode: 'fixed', surface: false, level: item.at[1] });
-      bodyPress.current = item && grab && live.current.canEdit
-        ? { pointer: event.pointerId, x: event.clientX, y: event.clientY, id: item.id, spec: item.spec, at: item.at, grab, started: false, delta: [0, 0, 0] }
-        : null;
+      if (item && grab && live.current.canEdit) {
+        const { pointerId, clientX: x, clientY: y } = event;
+        bodyDrag.current?.press({ pointerId, x, y, id: item.id, origin: item.at, grab });
+      } else bodyDrag.current?.cancel();
     };
     const move = (event: PointerEvent) => { if (live.current.placing && !event.altKey && !(event.buttons & 4)) preview(event.clientX, event.clientY); };
     const leave = () => { overlay.setMinePlacement(null); lastPreview.current = ''; pointerAt.current = null; setHover(null); setRefused(null); };
@@ -460,51 +453,44 @@ export function useMinePlacement(p: {
   }, [controller, endDrag, select]);
   const dragCancel = useCallback(() => { if (dragging.current) endDrag(); }, [endDrag]);
 
-  // A body drag (see bodyPress): window listeners, so the pointer may leave the view while it is held.
+  // A body drag (see bodyDrag): window listeners, so the pointer may leave the view while it is held.
   useEffect(() => {
-    const BODY_DRAG_PX = 5;
-    const stop = () => {
-      const b = bodyPress.current;
-      bodyPress.current = null;
-      if (b?.started) dragCancel();
+    const delta = (at: V3, press: ComponentPress): V3 => [at[0] - press.origin[0], 0, at[2] - press.origin[2]];
+    const handlers: ComponentDragHandlers = {
+      start: (press) => {
+        if (studio.terrain && dragStart() && dragging.current?.id === press.id) return true;
+        dragCancel();
+        return false;
+      },
+      target: (x, y, press) => {
+        const spec = dragging.current?.spec;
+        const ray = rayAt(x, y);
+        const level = { mode: 'fixed', surface: false, level: press.origin[1] } as const;
+        const point = spec && ray && studio.terrain && minePlacementPoint(ray.ray, studio.terrain, spec, level);
+        if (!spec || !point) return null;
+        // Across its own level only (the handles move it up and down), snapped to the nearest open port of another piece.
+        const [x0, y0, z0] = press.origin;
+        const at: V3 = [x0 + point[0] - press.grab[0], y0, z0 + point[2] - press.grab[2]];
+        const snapped = snapModuleAt(spec, at, live.current.modules, press.id);
+        return [snapped[0], y0, snapped[2]];
+      },
+      preview: (at, press) => {
+        dragPreview(delta(at, press));
+      },
+      commit: (at, press) => {
+        dragCommit(delta(at, press));
+      },
+      cancel: () => {
+        dragCancel();
+      },
     };
-    cancelBody.current = stop;
-    const move = (event: PointerEvent) => {
-      const b = bodyPress.current;
-      if (!b || event.pointerId !== b.pointer || !studio.terrain) return;
-      if (!b.started) {
-        if (Math.hypot(event.clientX - b.x, event.clientY - b.y) < BODY_DRAG_PX) return;
-        if (!dragStart() || dragging.current?.id !== b.id) { dragCancel(); bodyPress.current = null; return; }
-        b.started = true;
-      }
-      const ray = rayAt(event.clientX, event.clientY);
-      const point = ray && minePlacementPoint(ray.ray, studio.terrain, b.spec, { mode: 'fixed', surface: false, level: b.at[1] });
-      if (!point) return;
-      // Across its own level only (the handles move it up and down), snapped to the nearest open port of another piece.
-      const at: V3 = [b.at[0] + point[0] - b.grab[0], b.at[1], b.at[2] + point[2] - b.grab[2]];
-      const snapped = snapModuleAt(b.spec, at, live.current.modules, b.id);
-      const delta: V3 = [snapped[0] - b.at[0], 0, snapped[2] - b.at[2]];
-      if (delta[0] === b.delta[0] && delta[2] === b.delta[2]) return;
-      b.delta = delta;
-      dragPreview(delta);
-    };
-    const up = (event: PointerEvent) => {
-      const b = bodyPress.current;
-      if (!b || event.pointerId !== b.pointer) return;
-      bodyPress.current = null;
-      if (b.started) dragCommit(b.delta);
-    };
-    const cancelled = (event: PointerEvent) => { if (event.pointerId === bodyPress.current?.pointer) stop(); };
-    window.addEventListener('pointermove', move);
-    window.addEventListener('pointerup', up, true);
-    window.addEventListener('pointercancel', cancelled, true);
-    window.addEventListener('blur', stop);
+    // Each move previews at once, as it always has: browsers already deliver pointer moves about once per frame.
+    const drag = new ComponentDrag(handlers, { schedule: immediately });
+    bodyDrag.current = drag;
+    drag.bind(window);
     return () => {
-      stop();
-      window.removeEventListener('pointermove', move);
-      window.removeEventListener('pointerup', up, true);
-      window.removeEventListener('pointercancel', cancelled, true);
-      window.removeEventListener('blur', stop);
+      drag.unbind();
+      if (bodyDrag.current === drag) bodyDrag.current = null;
     };
   }, [dragCancel, dragCommit, dragPreview, dragStart, rayAt, studio]);
 

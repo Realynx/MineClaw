@@ -556,6 +556,21 @@ it touches the world, and a save is an ordinary design, so the bot can build it 
   free cell between them and a snap joins an input port to an output port. The debugger (`redstone/debugger/`) and the
   components save in the design's `redstoneAuthoring` text through one store (`redstone/authoring.ts`). The 40 fps check
   with a running simulation on software WebGL has not been measured.
+- **Studio components module (added 2026-11-10).** `features/studio/components/` holds what the mine pieces and the
+  redstone components share: `levelRay.ts` (the camera ray under the pointer, the cell where it meets a canvas level with
+  the plot's base taken off, ray-box picking), `dragSession.ts` (`ComponentDrag`: a press becomes a drag past 5 px, the
+  preview runs at most once per frame, the release commits once, Esc / pointercancel / lost capture / blur put it back),
+  `outline.ts` (a piece's outline worked out once per drag, and `showDragPreview`, one frame of a redstone piece in hand)
+  and `ComponentOutliner.tsx` (the outliner list, ticks,
+  Combine checklist and row actions; `mine/MineComponents.tsx` and `redstone/RedstoneOutliner.tsx` wrap it). The
+  controllers stay per kind (`MineModuleController`, `RedstoneComponentController`). Redstone components are dragged with
+  the mouse free in the fly view: `redstone/redstoneInput.ts` (`bindComponentPointer`, a capture-phase listener on the
+  stage that takes a press on a component before the engine would lock the mouse; `RedstoneComponentDrag`;
+  `bindPlaceGhost`, the Library's placing ghost; `componentKeyAction`) and `redstone/useRedstoneComponents.ts` (the React wiring), so the world viewer is unchanged. The
+  overlay draws ports for any kind (`setComponentPorts`, plus `setPortArrows` for the in and out chevrons). Combined
+  redstone components remember their parts and an instance what its box covered, as optional `redstoneAuthoring` fields.
+  A redstone design's chat starts collapsed, like a mine's. Details: docs/design/redstone-designer.md and
+  docs/design/mine-layout-palette.md.
 
 ## Administration (added 2026-11-03)
 

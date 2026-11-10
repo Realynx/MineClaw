@@ -1,13 +1,13 @@
 'use client';
 
 /**
- * The redstone panel's Library tab: the proven gates of the design's game version, the components placed in it (turn,
- * mirror, move, rename, unlink, remove), and the user's own components: saved from a selection with ports picked around
- * it, taken from another saved redstone design, and kept in this browser's quick library (export and import as JSON).
+ * The redstone panel's Library tab: the proven gates of the design's game version, the outliner of the components placed
+ * in it (./RedstoneOutliner), and the user's own components: saved from a selection with ports picked around it, taken
+ * from another saved redstone design, and kept in this browser's quick library (export and import as JSON).
  */
 import type { DesignerSession } from '@mineclaw/contracts';
 import type { ComponentCategory, Pos, RedstoneVersion } from '@mineclaw/redstone';
-import { FlipHorizontal2, FlipVertical2, MousePointerClick, RotateCw, Trash2, Unlink } from 'lucide-react';
+import { MousePointerClick, RotateCw, Trash2 } from 'lucide-react';
 import { useState, useSyncExternalStore } from 'react';
 import { Button } from '@/components/ui/primitives';
 import { useApi } from '@/lib/api/query';
@@ -21,10 +21,10 @@ import {
   importLibrary,
   loadQuickLibrary,
   saveQuickLibrary,
-  type ComponentInstance,
   type CustomDef,
 } from './componentData';
 import type { PlaceableDef } from './RedstoneComponentController';
+import { parsePos, RedstoneOutliner } from './RedstoneOutliner';
 import type { RedstoneComponents } from './useRedstoneComponents';
 
 /** Another saved design's cells, as the tab inserts it (the page asks the designer; tests pass their own). */
@@ -111,8 +111,8 @@ export function LibraryTab(p: {
         </label>
         {components.pick?.kind === 'place' ? (
           <p className="mt-1 text-info" role="status">
-            Click in the world where the box’s corner goes{snapOn ? ' (near the output to join)' : ''}; right click
-            cancels.
+            Click in the world where the box’s corner goes{snapOn ? ' (near the output to join)' : ''}; right click or
+            Esc cancels.
           </p>
         ) : null}
         <div className="mt-1 flex items-center gap-1">
@@ -123,7 +123,7 @@ export function LibraryTab(p: {
         </div>
       </section>
       <BuiltIns defs={defs} chosen={chosen} setChosen={setChosen} version={version} />
-      <Placed components={components} defs={defs} />
+      <RedstoneOutliner components={components} defs={defs} />
       <Own components={components} defs={defs} chosen={chosen} setChosen={setChosen} studio={studio} />
       <InsertDesign components={components} studio={studio} load={p.loadDesign ?? loadSaved} />
     </div>
@@ -147,13 +147,6 @@ function PlaceAt({ onPlace, disabled }: { onPlace: (at: Pos) => void; disabled: 
       </Button>
     </span>
   );
-}
-
-/** Three whole numbers, by spaces or commas. */
-export function parsePos(text: string): Pos | null {
-  const parts = text.trim().split(/[\s,]+/);
-  if (parts.length !== 3 || !parts.every((s) => /^-?\d+$/.test(s))) return null;
-  return [Number(parts[0]), Number(parts[1]), Number(parts[2])];
 }
 
 function BuiltIns(p: {
@@ -199,102 +192,6 @@ function BuiltIns(p: {
         );
       })}
     </section>
-  );
-}
-
-function Placed({ components, defs }: { components: RedstoneComponents; defs: readonly PlaceableDef[] }) {
-  const c = components.controller!;
-  const list = components.snap.components;
-  return (
-    <section className={sectionClass} aria-label="Placed components">
-      <h3 className={headClass}>In this design ({list.length})</h3>
-      {list.length === 0 ? <p className="text-muted">Nothing placed yet.</p> : null}
-      <ul className="mt-1 space-y-1">
-        {list.map((inst) => (
-          <PlacedRow key={inst.id} inst={inst} name={defs.find((d) => d.id === inst.def)?.name ?? inst.def} c={c} />
-        ))}
-      </ul>
-    </section>
-  );
-}
-
-function PlacedRow({
-  inst,
-  name,
-  c,
-}: {
-  inst: ComponentInstance;
-  name: string;
-  c: NonNullable<RedstoneComponents['controller']>;
-}) {
-  const [at, setAt] = useState(inst.at.join(' '));
-  const ports = c.placedOf(inst.id)?.ports ?? [];
-  return (
-    <li className="rounded border border-border px-1.5 py-1" data-testid="placed-component">
-      <div className="flex items-center gap-1">
-        <input
-          aria-label={`Label of ${inst.id}`}
-          defaultValue={inst.label ?? ''}
-          placeholder={name}
-          onBlur={(e) => e.target.value !== (inst.label ?? '') && c.rename(inst.id, e.target.value)}
-          className="h-5 min-w-0 flex-1 rounded border border-transparent bg-transparent px-1 text-fg hover:border-border"
-        />
-        <button type="button" className={smallButton} aria-label={`Turn ${inst.id}`} onClick={() => c.turn(inst.id)}>
-          <RotateCw className="size-3.5" />
-        </button>
-        <button
-          type="button"
-          className={smallButton}
-          aria-label={`Mirror ${inst.id} east-west`}
-          onClick={() => c.mirror(inst.id, 'x')}
-        >
-          <FlipHorizontal2 className="size-3.5" />
-        </button>
-        <button
-          type="button"
-          className={smallButton}
-          aria-label={`Mirror ${inst.id} north-south`}
-          onClick={() => c.mirror(inst.id, 'z')}
-        >
-          <FlipVertical2 className="size-3.5" />
-        </button>
-        <button
-          type="button"
-          className={smallButton}
-          aria-label={`Unlink ${inst.id}`}
-          title="Keep the blocks as plain cells"
-          onClick={() => c.detach(inst.id)}
-        >
-          <Unlink className="size-3.5" />
-        </button>
-        <button
-          type="button"
-          className={smallButton}
-          aria-label={`Remove ${inst.id}`}
-          onClick={() => c.remove(inst.id)}
-        >
-          <Trash2 className="size-3.5" />
-        </button>
-      </div>
-      <div className="mt-0.5 flex items-center gap-1 text-muted">
-        <span>{name} at</span>
-        <input
-          aria-label={`Corner of ${inst.id}`}
-          value={at}
-          onChange={(e) => setAt(e.target.value)}
-          onBlur={() => {
-            const to = parsePos(at);
-            if (!to || to.join(' ') === inst.at.join(' ') || !c.move(inst.id, to)) setAt(inst.at.join(' '));
-          }}
-          className="h-5 w-20 rounded border border-border bg-surface px-1 font-mono text-fg"
-        />
-      </div>
-      {ports.length > 0 ? (
-        <p className="mt-0.5 font-mono text-[10px] text-muted">
-          {ports.map((port) => `${port.kind === 'in' ? '→' : '←'}${port.name} ${port.at.join(',')}`).join('  ')}
-        </p>
-      ) : null}
-    </li>
   );
 }
 

@@ -3,7 +3,8 @@
  *
  * In the envelope (./authoring.ts): `components`, the placed instances (`{ id, def, at, turns, mirror, label? }`, `def`
  * a library id such as `gate.xor` or a custom id), and `customDefs`, the user's own definitions the design uses
- * (`{ id, name, layout, version? }`). The quick library is a list of the same definitions kept per browser and per
+ * (`{ id, name, layout, version? }`). Newer studios add `under` to an instance and `parts` to a combined definition; both
+ * are optional, so an older envelope reads as before. The quick library is a list of the same definitions kept per browser and per
  * account (`mineclaw.redstone.library.v1:<owner>`), with an export and import as JSON; there is no server table for it.
  * Anything read from storage or a saved text is checked entry by entry, and what does not fit is dropped.
  */
@@ -20,6 +21,22 @@ export interface ComponentInstance {
   turns: number;
   mirror: Mirror;
   label?: string;
+  /**
+   * What the box covered before the component took it, as `[dx, dy, dz, value]` from `at` (value: id * 16 + meta, air 0,
+   * undisturbed ground -1), only where that was not bare. Saved so a remove after a reload gives those blocks back.
+   */
+  under?: UnderCell[];
+}
+
+export type UnderCell = readonly [dx: number, dy: number, dz: number, value: number];
+
+/** One component inside a combined one: its box's min corner from the combined box's, in the combined layout's frame. */
+export interface ComponentPart {
+  def: string;
+  at: Pos;
+  turns: number;
+  mirror: Mirror;
+  label?: string;
 }
 
 /** A component the user made: from a selection, from another saved design, or from an imported library. */
@@ -29,6 +46,8 @@ export interface CustomDef {
   layout: ComponentLayout;
   /** The game version it was drawn for; another version may still use it, with a warning. */
   version?: RedstoneVersion;
+  /** The components it was combined from; ungrouping gives them back (without, it ungroups to plain blocks). */
+  parts?: ComponentPart[];
 }
 
 export const MAX_COMPONENTS = 256;
@@ -53,15 +72,56 @@ function readPos(v: unknown, lo = -1024, hi = 1024): Pos | null {
 }
 
 function readInstance(v: unknown): ComponentInstance | null {
-  if (!isObject(v) || !isId(v.id) || !isId(v.def) || !isInt(v.turns, 0, 3)) return null;
-  const at = readPos(v.at);
+  if (!isObject(v) || !isId(v.id)) return null;
+  const part = readPart(v, -1024, 1024);
+  if (!part) return null;
+  const c: ComponentInstance = { id: v.id, ...part };
+  const under = readUnder(v.under);
+  if (under.length) c.under = under;
+  return c;
+}
+
+/** Where and how a component lies, without an id (an instance's fields, or a part's). */
+function readPart(v: unknown, lo: number, hi: number): ComponentPart | null {
+  if (!isObject(v) || !isId(v.def) || !isInt(v.turns, 0, 3)) return null;
+  const at = readPos(v.at, lo, hi);
   const mirror =
     v.mirror === 'x' || v.mirror === 'z' ? v.mirror : v.mirror === null || v.mirror === undefined ? null : undefined;
   if (!at || mirror === undefined) return null;
-  const c: ComponentInstance = { id: v.id, def: v.def, at, turns: v.turns, mirror };
+  const c: ComponentPart = { def: v.def, at, turns: v.turns, mirror };
   const label = typeof v.label === 'string' ? v.label.trim().slice(0, MAX_LABEL) : '';
   if (label) c.label = label;
   return c;
+}
+
+/** The valid entries only: a bad one loses that cell's memory, never the instance. */
+function readUnder(v: unknown): UnderCell[] {
+  if (!Array.isArray(v)) return [];
+  const out: UnderCell[] = [];
+  for (const e of v.slice(0, MAX_DEF_SIDE ** 3)) {
+    if (!Array.isArray(e) || e.length !== 4) continue;
+    const [dx, dy, dz, value] = e as unknown[];
+    if (
+      isInt(dx, 0, MAX_DEF_SIDE - 1) &&
+      isInt(dy, 0, MAX_DEF_SIDE - 1) &&
+      isInt(dz, 0, MAX_DEF_SIDE - 1) &&
+      isInt(value, -1, 4095)
+    )
+      out.push([dx, dy, dz, value]);
+  }
+  return out;
+}
+
+/** All of them or none: a combined component missing a part would ungroup to a different circuit. */
+function readParts(v: unknown): ComponentPart[] | null {
+  if (!Array.isArray(v) || v.length === 0 || v.length > MAX_COMPONENTS) return null;
+  const out: ComponentPart[] = [];
+  for (const p of v) {
+    const part = readPart(p, 0, MAX_DEF_SIDE - 1);
+    if (!part) return null;
+    out.push(part);
+  }
+  return out;
 }
 
 function readLayout(v: unknown): ComponentLayout | null {
@@ -102,6 +162,8 @@ function readDef(v: unknown): CustomDef | null {
   if (!name || !layout) return null;
   const d: CustomDef = { id: v.id, name, layout };
   if (v.version === 'b1.8.1' || v.version === '1.12.2') d.version = v.version;
+  const parts = readParts(v.parts);
+  if (parts) d.parts = parts;
   return d;
 }
 
@@ -133,8 +195,17 @@ export function writeInstance(c: ComponentInstance): ComponentInstance {
     turns: c.turns,
     mirror: c.mirror,
     ...(c.label ? { label: c.label } : {}),
+    ...(c.under?.length ? { under: c.under.map((u) => [u[0], u[1], u[2], u[3]] as const) } : {}),
   };
 }
+
+const writePart = (p: ComponentPart): ComponentPart => ({
+  def: p.def,
+  at: pos(p.at),
+  turns: p.turns,
+  mirror: p.mirror,
+  ...(p.label ? { label: p.label } : {}),
+});
 
 export function writeDef(d: CustomDef): CustomDef {
   return {
@@ -146,6 +217,7 @@ export function writeDef(d: CustomDef): CustomDef {
       ports: d.layout.ports.map((p) => ({ name: p.name, kind: p.kind, at: pos(p.at), side: p.side })),
     },
     ...(d.version ? { version: d.version } : {}),
+    ...(d.parts?.length ? { parts: d.parts.map(writePart) } : {}),
   };
 }
 
