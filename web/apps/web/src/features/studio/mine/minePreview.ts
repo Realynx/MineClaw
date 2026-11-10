@@ -13,6 +13,10 @@ export interface MinePreview {
 export type PreviewTerrain = Pick<MineTerrain, 'state' | 'version'>;
 const key = (x: number, y: number, z: number): string => `${x},${y},${z}`;
 const atKey = (p: readonly number[]): string => key(p[0]!, p[1]!, p[2]!);
+/** A number per cell for the hot sets below: exact for coordinates from -2048 to 2047, far beyond any plot and its rim. */
+export const cellKey = (x: number, y: number, z: number): number =>
+  ((x + 2048) * 4096 + (y + 2048)) * 4096 + (z + 2048);
+const atCell = (p: readonly number[]): number => cellKey(p[0]!, p[1]!, p[2]!);
 
 /** Matches World.OreIdentity: lit redstone is the same vein; beta has no emerald or quartz. */
 export function oreFamily(id: number, version: string): number {
@@ -32,18 +36,18 @@ export function minePreview(
   dug: Iterable<readonly [number, number, number]>,
   placed: Iterable<Readonly<Cell>> = [],
 ): MinePreview {
-  const plans = new Map<string, V3>();
-  const blocks = new Map<string, number>();
-  for (const c of placed) if (c[3] > 0) blocks.set(atKey(c), c[3]);
+  const plans = new Map<number, V3>();
+  const blocks = new Map<number, number>();
+  for (const c of placed) if (c[3] > 0) blocks.set(atCell(c), c[3]);
   for (const p of dug) {
-    if (p[1] < 0 || p[1] >= 128 || blocks.has(atKey(p))) continue;
-    plans.set(atKey(p), [...p]);
+    if (p[1] < 0 || p[1] >= 128 || blocks.has(atCell(p))) continue;
+    plans.set(atCell(p), [...p]);
   }
-  const veins = new Map<string, V3>();
+  const veins = new Map<number, V3>();
   const queue: Array<{ p: V3; family: number }> = [];
   const familyAt = (p: V3) => oreFamily(terrain.state(...p) >> 4, terrain.version);
   const expose = (p: V3, family: number) => {
-    const k = atKey(p);
+    const k = atCell(p);
     if (veins.has(k) || blocks.has(k) || p[1] < 1 || p[1] >= 128) return;
     const ore = familyAt(p);
     if (!ore || (family !== 0 && family !== ore)) return;

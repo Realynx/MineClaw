@@ -442,6 +442,19 @@ it touches the world, and a save is an ordinary design, so the bot can build it 
   pieces into a named custom component; Ctrl/Cmd+C, V and D copy, paste and duplicate all nested settings and offsets.
   Group edits share canvas undo/redo and preserve overlapping excavation and manual edits. Component metadata is stored
   locally per owner/session and saved revision; older 64-column metadata is migrated without changing its coordinates.
+- **Mine saving and editing (added 2026-11-10).** The layout is also saved with each design revision (`mine_authoring`), and
+  canvas edits reach the bot one request at a time per session, in order, each under 200 000 bytes (`studio.ts`: 413 halves
+  the request, 429 / 409 / 5xx / network errors retry with backoff, any other 4xx stops until Retry; the anchor, a message and a
+  save wait in the same line, and a save refuses while edits are unsent). The header shows a sync chip, "Unsaved changes"
+  and a primary Save while dirty; Ctrl+S saves; a save is checked against the bot's canvas ("Resync and save again"). Restore
+  keeps the components that still match and says how many were dropped (`MineModuleController`). Editing: a gizmo drag
+  commits one move on release, held arrow keys are one undo step, readouts wait for 200 ms of stillness, a piece in hand takes
+  [ ] / R / Esc, refused placements show red with the reason, Delete over a selection removes the plan and never digs,
+  Ungroup / Ctrl+G / Ctrl+Shift+G, "Work at Y n", "New mine" on the Designs page, and the ? shortcut sheet with a hint line
+  that follows the state (`StudioShortcuts.tsx`). Story Mode queues a placed mine in parts, one item per request
+  (`story/mode/releaseMine.ts`). A piece also drags by its body across its level, snapping to openings marked in amber;
+  Ctrl / Shift-click ticks outliner rows to combine; "Open in studio" offers to resume a session this browser left unsaved
+  (`studioSave.ts`). Details: docs/design/mine-layout-palette.md.
 - **Leaving unsaved work.** The studio tracks every cell changed since the last save (or since it opened: an untouched new
   design is clean; an undo back to the saved state is clean). While dirty, `lib/navGuard` (generic, installed by the shell)
   asks "Leave without saving?" (Save and leave / Leave / Stay) on in-app links (a capture-phase click listener ahead of

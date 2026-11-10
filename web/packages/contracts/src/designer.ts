@@ -222,6 +222,17 @@ export const DesignerMessageResponse = z.object({
 });
 export type DesignerMessageResponse = z.infer<typeof DesignerMessageResponse>;
 
+/**
+ * The largest canvas (or message) body the bridge and the bot read, in bytes: `BridgeAuthMiddleware.JsonBodyLimit` and
+ * `DesignerRoutes.MaxBodyBytes` in C#. The three must agree: a larger body is answered 413 before it is looked at.
+ */
+export const DESIGNER_CANVAS_BODY_CAP = 256 * 1024;
+/**
+ * What the browser puts into one canvas request at most, in bytes of the body the bot reads. The room up to the cap is for
+ * what the bridge adds on the way (who is designing) and for the rest of the request around the edits.
+ */
+export const DESIGNER_CANVAS_BATCH_BYTES = 200_000;
+
 export const DesignerCanvasRequest = z
   .object({
     rev: z.number().int().min(0),

@@ -1462,6 +1462,11 @@ run; nothing is queued (see "Water").
   quarry stairs, protected builds and forbidden cells remain intact, and unknown terrain or liquid/falling-block hazards
   defer extra digging. Extra mining remains visible work that can be cancelled. The designer's dig estimate still counts the
   planned excavation and exposed walls, so following veins can yield more than those numbers.
+  **Queued in parts (added 2026-11-10).** The web queues a placed mine one item per `{op:"add"}` request, in order (the dig
+  top-down, then the blocks put in), all with the design's `group`; AI bodies in the selection get one directive with the first
+  part (a directive per part would cost a brain turn each); a refused directive is said on its own and never stops the parts. An item closes at 4096 cells or about 56 000 bytes of cell JSON, so each request stays under the supervisor's
+  64 KiB Story body cap at any coordinates. The first failure stops the rest ("queued N of M parts"); a mine that needs more
+  than 64 parts is refused, never cut short. A build design is still queued in one request (its items must arrive together).
 - **group:** the items of one placed design. A design with a basement (Design Studio dug cells) is queued as a `remove`
   item of its dug cells first, then its block items, all with the same `group`: its blocks wait until that dig is done.
   The design's ground floor goes on the clicked level and the basement under it.

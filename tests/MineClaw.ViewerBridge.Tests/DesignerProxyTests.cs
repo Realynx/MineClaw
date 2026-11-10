@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 using MineClaw.ViewerBridge.Supervisor;
 using MineClaw.ViewerBridge.Security;
@@ -24,6 +25,34 @@ public class DesignerProxyTests
         Assert.Equal(413, (await h.PostAsync("/v1/sup/designer/sessions/17/canvas", body, roles: "design")).Status);
         Assert.Equal(413, (await h.PostAsync("/v1/sup/admin/memory", body, roles: "admin")).Status);
         Assert.Equal(413, (await h.PostAsync("/v1/sup/designer/sessions/17/save", new string('a', (int)BridgeAuthMiddleware.DesignerSaveBodyLimit + 1), roles: "design")).Status);
+    }
+
+    /// <summary>
+    /// The browser puts at most 200 000 bytes of edits into one canvas request (<c>DESIGNER_CANVAS_BATCH_BYTES</c> in
+    /// web/packages/contracts/src/designer.ts, with 32 768 bytes of room demanded up to the cap): a request of that size has to
+    /// pass, or the studio's edits stop reaching the bot.
+    /// </summary>
+    [Fact]
+    public async Task A_canvas_request_as_large_as_the_browser_sends_reaches_the_supervisor()
+    {
+        const int batchBytes = 200_000;
+        Assert.True(batchBytes + 32_768 < BridgeAuthMiddleware.JsonBodyLimit);
+
+        await using var h = await BridgeHost.StartAsync();
+        h.Sup.Routes["/api/designer/sessions/17/canvas"] = _ => FakeSupervisor.Json("""{"rev":1,"applied":9000,"stale":false,"fixed":[]}""");
+        const string head = """{"rev":0,"ops":[{"kind":"dig","label":"a floor","cells":[""", cell = "[255,127,255,252,15]", tail = "]}]}";
+        var sb = new StringBuilder(head);
+        int cells = 0;
+        for (; sb.Length + cell.Length + 1 + tail.Length <= batchBytes; cells++) sb.Append(cells > 0 ? "," : "").Append(cell);
+        string body = sb.Append(' ', batchBytes - sb.Length - tail.Length).Append(tail).ToString();
+        Assert.Equal(batchBytes, Encoding.UTF8.GetByteCount(body));
+
+        var (status, _) = await h.PostAsync("/v1/sup/designer/sessions/17/canvas", body, roles: "design", player: "builder");
+        Assert.Equal(200, status);
+        var sent = Assert.Single(h.Sup.Seen, s => s.Target == "/api/designer/sessions/17/canvas");
+        using var doc = JsonDocument.Parse(sent.Body);
+        Assert.Equal(cells, doc.RootElement.GetProperty("ops")[0].GetProperty("cells").GetArrayLength());
+        Assert.Equal("builder", doc.RootElement.GetProperty("player").GetString());
     }
 
     [Theory]

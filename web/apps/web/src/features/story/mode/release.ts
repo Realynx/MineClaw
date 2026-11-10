@@ -37,6 +37,7 @@ import { quarryModeNow } from '../zones/quarry';
 import { zoneBody, zoneInto, zoneToast } from '../zones/zonePaint';
 import { retryFailed } from './actions';
 import type { Story } from './commands';
+import { releaseMine } from './releaseMine';
 import { placeWater } from './water';
 
 type ToolOf<K extends MapTool['kind']> = Extract<MapTool, { kind: K }>;
@@ -143,6 +144,11 @@ async function releaseDesign(c: Story, tool: ToolOf<'design'>, r: DragResult) {
     items = tool.mine ? mineItems(placed, tool.name) : designItems(placed, tool.name);
   } catch (e) {
     c.say(errorText(e), 'warn');
+    return;
+  }
+  // A mine goes one item per request (all in one would pass the 64 KiB body cap); a build's items arrive together.
+  if (tool.mine) {
+    await releaseMine(c, items, tool.name, placed.length);
     return;
   }
   await c.run(

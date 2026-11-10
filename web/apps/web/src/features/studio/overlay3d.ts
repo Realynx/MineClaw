@@ -12,6 +12,26 @@ import { MINE_PREVIEW_COLORS, previewOutline, volumeOutline, type MinePreview } 
 const MAX_GHOSTS = 4096;
 /** X-ray cubes at most (the rest of a crowded window is left out). */
 export const MAX_XRAY = 6000;
+/** A mine piece's outline where it cannot be placed or moved to. */
+export const REFUSED_COLOR = 0xef4444;
+/** The openings other pieces can join while one is placed or moved, and the ones it joins there. */
+export const PORT_COLOR = 0xfbbf24;
+export const JOINED_PORT_COLOR = 0x22c55e;
+
+/** A square on the floor of each cell (canvas coordinates), `inset` in from its edges: 4 segments per cell. */
+export function portMarks(cells: readonly V3[], inset = 0.2): Float32Array {
+  const out = new Float32Array(cells.length * 24);
+  let i = 0;
+  for (const [x, y, z] of cells) {
+    const a = x + inset,
+      b = x + 1 - inset,
+      c = z + inset,
+      d = z + 1 - inset,
+      h = y + 0.03;
+    for (const v of [a, h, c, b, h, c, b, h, c, b, h, d, b, h, d, a, h, d, a, h, d, a, h, c]) out[i++] = v;
+  }
+  return out;
+}
 
 /** World y of canvas y 0 in the plot's mode (64 on a build plot, 0 on a mine). */
 const base = (): number => plotMode().baseY;
@@ -89,6 +109,8 @@ export class Overlay3D {
   private readonly planned = mineLines('mine-planned', MINE_PREVIEW_COLORS.planned, 12);
   private readonly veins = mineLines('mine-veins', MINE_PREVIEW_COLORS.veins, 13);
   private readonly placement = mineLines('mine-placement', MINE_PREVIEW_COLORS.placement, 14);
+  private readonly ports = mineLines('mine-ports', PORT_COLOR, 15);
+  private readonly joinedPorts = mineLines('mine-ports-joined', JOINED_PORT_COLOR, 16);
   private placementPositions: Float32Array | null = null;
   private flashUntil = 0;
   private flashStart = 0;
@@ -193,6 +215,8 @@ export class Overlay3D {
       this.planned,
       this.veins,
       this.placement,
+      this.ports,
+      this.joinedPorts,
       this.gizmo,
     );
   }
@@ -288,11 +312,34 @@ export class Overlay3D {
   /** A violet module footprint at its proposed placement, distinct from committed cyan digs and amber veins. */
   setMinePlacement(cells: Iterable<readonly [number, number, number]> | null): void {
     this.placementPositions = null;
+    this.placementTone(false);
     setMinePositions(this.placement, cells ? volumeOutline(cells) : new Float32Array());
+    // The openings belong to the outline in view: they go with it.
+    if (!cells) this.setMinePorts(null);
   }
 
-  /** A prepared local outline uploads once; moving it updates only the object's translation. */
-  setMinePlacementGeometry(positions: Float32Array | null, at: V3 = [0, 0, 0]): void {
+  /** Amber squares where another piece can be joined, green where the outline in view joins one (null hides both). */
+  setMinePorts(open: readonly V3[] | null, joined: readonly V3[] = []): void {
+    setMinePositions(this.ports, open?.length ? portMarks(open) : new Float32Array());
+    setMinePositions(this.joinedPorts, open && joined.length ? portMarks(joined, 0.05) : new Float32Array());
+  }
+
+  /** Openings marked now (amber, then green), for tests and the e2e. */
+  get portCounts(): [number, number] {
+    const count = (l: THREE.LineSegments) => (l.visible ? l.geometry.drawRange.count / 8 : 0);
+    return [count(this.ports), count(this.joinedPorts)];
+  }
+
+  /** Violet, or red where the piece cannot stand (`refused`). */
+  private placementTone(refused: boolean): void {
+    (this.placement.material as THREE.LineBasicMaterial).color.setHex(
+      refused ? REFUSED_COLOR : MINE_PREVIEW_COLORS.placement,
+    );
+  }
+
+  /** A prepared local outline uploads once; moving it updates only the object's translation. `refused` draws it red. */
+  setMinePlacementGeometry(positions: Float32Array | null, at: V3 = [0, 0, 0], refused = false): void {
+    this.placementTone(refused);
     if (!positions) { this.placement.visible = false; return; }
     if (positions !== this.placementPositions) {
       setMinePositions(this.placement, positions);

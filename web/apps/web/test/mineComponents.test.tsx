@@ -226,4 +226,103 @@ describe('Mine Designer components', () => {
     fireEvent.blur(screen.getByLabelText('Component name'));
     expect(onUpdateModule).toHaveBeenCalledWith('group', expect.objectContaining({ label: 'Main access', parts: group.spec.parts }));
   });
+
+  it('names every kind of piece, says how many cells it digs, and ungroups only a group', () => {
+    const onUpdateModule = vi.fn(), onUngroupModule = vi.fn(), onUpdatePlacement = vi.fn();
+    const view = render(<ModuleSettings disabled={false} modules={modules} selectedModule="tunnel" onUpdateModule={onUpdateModule} onUngroupModule={onUngroupModule} />);
+    const name = screen.getByLabelText('Component name');
+    expect(name).toHaveValue('Tunnel');
+    expect(screen.getByTestId('module-cells')).toHaveTextContent('32 cells to dig');
+    expect(screen.queryByRole('button', { name: 'Ungroup' })).toBeNull();
+    // An unchanged name changes nothing; a new one is the piece's label.
+    fireEvent.blur(name);
+    expect(onUpdateModule).not.toHaveBeenCalled();
+    fireEvent.change(name, { target: { value: '  North drift ' } });
+    fireEvent.blur(name);
+    expect(onUpdateModule).toHaveBeenLastCalledWith('tunnel', expect.objectContaining({ kind: 'tunnel', length: 16, label: 'North drift' }));
+    // Emptied, a named layout goes back to its kind's name.
+    const named = modules.map((m) => m.id === 'tunnel' ? { ...m, spec: { ...m.spec, label: 'North drift' } } : m);
+    view.rerender(<ModuleSettings disabled={false} modules={named} selectedModule="tunnel" onUpdateModule={onUpdateModule} onUngroupModule={onUngroupModule} />);
+    fireEvent.change(screen.getByLabelText('Component name'), { target: { value: '' } });
+    fireEvent.blur(screen.getByLabelText('Component name'));
+    expect(onUpdateModule).toHaveBeenCalledTimes(2);
+    expect(onUpdateModule).toHaveBeenLastCalledWith('tunnel', expect.objectContaining({ kind: 'tunnel', label: undefined }));
+    // The piece in hand can be named before it is placed, and its count does not depend on where it would go.
+    view.rerender(<ModuleSettings disabled={false} modules={modules} placingModule={{ ...defaultModule('chamber'), length: 5, width: 4 }} onUpdatePlacement={onUpdatePlacement} />);
+    expect(screen.getByTestId('module-cells')).toHaveTextContent('60 cells to dig');
+    fireEvent.change(screen.getByLabelText('Component name'), { target: { value: 'Store room' } });
+    fireEvent.blur(screen.getByLabelText('Component name'));
+    expect(onUpdatePlacement).toHaveBeenLastCalledWith(expect.objectContaining({ kind: 'chamber', label: 'Store room' }));
+    // A group offers Ungroup.
+    const group: MineModuleInstance = { id: 'group', at: [30, 30, 30], spec: { ...defaultModule('custom'), parts: [{ spec: defaultModule('tunnel'), at: [0, 0, 0] }, { spec: defaultModule('tunnel'), at: [0, 0, 4] }] } };
+    view.rerender(<ModuleSettings disabled={false} modules={[group]} selectedModule="group" onUngroupModule={onUngroupModule} />);
+    expect(screen.getByTestId('module-cells')).toHaveTextContent('64 cells to dig');
+    fireEvent.click(screen.getByRole('button', { name: 'Ungroup' }));
+    expect(onUngroupModule).toHaveBeenCalledExactlyOnceWith('group');
+  });
+
+  it('duplicates or deletes a piece from its own row without selecting it', () => {
+    const onDuplicateModule = vi.fn(), onRemoveModule = vi.fn(), onSelectModule = vi.fn();
+    const view = render(<MineComponents modules={modules} selectedModule="chamber" onDuplicateModule={onDuplicateModule} onRemoveModule={onRemoveModule} onSelectModule={onSelectModule} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Duplicate Spiral shaft 3' }));
+    expect(onDuplicateModule).toHaveBeenCalledExactlyOnceWith('spiral');
+    fireEvent.click(screen.getByRole('button', { name: 'Delete Tunnel 1' }));
+    expect(onRemoveModule).toHaveBeenCalledExactlyOnceWith('tunnel');
+    expect(onSelectModule).not.toHaveBeenCalled();
+    view.rerender(<MineComponents modules={modules} selectedModule="chamber" onDuplicateModule={onDuplicateModule} onRemoveModule={onRemoveModule} disabled />);
+    expect(screen.getByRole('button', { name: 'Duplicate Chamber 2' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Delete Chamber 2' })).toBeDisabled();
+  });
+
+  it('keeps the Combine checklist with the page when the page holds it, so Ctrl+G sees the ticks', () => {
+    const onCheckModules = vi.fn(), onCombineModules = vi.fn();
+    const props = { modules, selectedModule: 'chamber', onCheckModules, onCombineModules };
+    const view = render(<MineComponents {...props} checkedModules={null} />);
+    expect(screen.queryByRole('region', { name: 'Combine mine components' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Combine components' }));
+    expect(onCheckModules).toHaveBeenLastCalledWith(['chamber']);
+    view.rerender(<MineComponents {...props} checkedModules={['chamber']} />);
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Combine Spiral shaft 3' }));
+    expect(onCheckModules).toHaveBeenLastCalledWith(['chamber', 'spiral']);
+    view.rerender(<MineComponents {...props} checkedModules={['chamber', 'spiral']} />);
+    expect(screen.getByRole('checkbox', { name: 'Combine Spiral shaft 3' })).toBeChecked();
+    fireEvent.click(screen.getByRole('button', { name: 'Combine 2 selected' }));
+    expect(onCombineModules).toHaveBeenCalledWith(['chamber', 'spiral']);
+    expect(onCheckModules).toHaveBeenLastCalledWith(null);
+  });
+
+  it('Ctrl-click ticks and unticks rows for Combine, with the selected piece, without selecting them', () => {
+    const onSelectModule = vi.fn(), onCombineModules = vi.fn();
+    render(<MineComponents modules={modules} selectedModule="tunnel" onSelectModule={onSelectModule} onCombineModules={onCombineModules} />);
+    fireEvent.click(screen.getByRole('option', { name: 'Spiral shaft 3' }), { ctrlKey: true });
+    expect(onSelectModule).not.toHaveBeenCalled();
+    expect(screen.getByRole('checkbox', { name: 'Combine Tunnel 1' })).toBeChecked();
+    expect(screen.getByRole('checkbox', { name: 'Combine Spiral shaft 3' })).toBeChecked();
+    expect(screen.getByRole('checkbox', { name: 'Combine Chamber 2' })).not.toBeChecked();
+    fireEvent.click(screen.getByRole('option', { name: 'Chamber 2' }), { metaKey: true });
+    fireEvent.click(screen.getByRole('option', { name: 'Tunnel 1' }), { ctrlKey: true });
+    fireEvent.click(screen.getByRole('button', { name: 'Combine 2 selected' }));
+    expect(onCombineModules).toHaveBeenCalledWith(['spiral', 'chamber']);
+    // A plain click still selects.
+    fireEvent.click(screen.getByRole('option', { name: 'Chamber 2' }));
+    expect(onSelectModule).toHaveBeenCalledWith('chamber');
+  });
+
+  it('Shift-click ticks the rows from the one clicked last, and gives the ticks to the page when it holds them', () => {
+    const onCheckModules = vi.fn(), onSelectModule = vi.fn();
+    render(<MineComponents modules={modules} selectedModule={null} checkedModules={null} onCheckModules={onCheckModules}
+      onSelectModule={onSelectModule} onCombineModules={vi.fn()} />);
+    fireEvent.click(screen.getByRole('option', { name: 'Tunnel 1' }));
+    expect(onSelectModule).toHaveBeenCalledWith('tunnel');
+    fireEvent.click(screen.getByRole('option', { name: 'Spiral shaft 3' }), { shiftKey: true });
+    expect(onCheckModules).toHaveBeenLastCalledWith(['tunnel', 'chamber', 'spiral']);
+  });
+
+  it('modifier clicks only select when nothing can be combined', () => {
+    const onSelectModule = vi.fn();
+    render(<MineComponents modules={modules} onSelectModule={onSelectModule} onCombineModules={vi.fn()} disabled />);
+    fireEvent.click(screen.getByRole('option', { name: 'Chamber 2' }), { ctrlKey: true });
+    expect(onSelectModule).toHaveBeenCalledWith('chamber');
+    expect(screen.queryByRole('region', { name: 'Combine mine components' })).toBeNull();
+  });
 });

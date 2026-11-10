@@ -709,9 +709,15 @@ export function designCells(
     ...(session.dug ?? []).map((p): DesignBlock => [p[0]!, p[1]!, p[2]!, 0, 0]),
   ];
   if (!out.length) return [];
-  const mx = Math.min(...out.map((b) => b[0])),
-    my = Math.min(...out.map((b) => b[1])),
-    mz = Math.min(...out.map((b) => b[2]));
+  // A loop, not Math.min(...cells): engines refuse argument lists of about 100 000 and more, and a big mine has that many.
+  let mx = Infinity,
+    my = Infinity,
+    mz = Infinity;
+  for (const b of out) {
+    if (b[0] < mx) mx = b[0];
+    if (b[1] < my) my = b[1];
+    if (b[2] < mz) mz = b[2];
+  }
   // A mine keeps its absolute y (ore heights matter); a build stands on the clicked level.
   const dy = session.kind === 'mine' || my < 0 ? 0 : my;
   return out.map((b) => [b[0] - mx, b[1] - dy, b[2] - mz, b[3], b[4]]);
@@ -760,36 +766,67 @@ function designTag(prefix: string, name?: string, group?: string): { group: stri
   return { group: (group ?? `${prefix}${Date.now().toString(36)}`).slice(0, 40), ...(name ? { name: name.slice(0, 40) } : {}) };
 }
 
-/** The blocks ride in the last dig item while it has room, the rest in items of their own (4096 cells an item). */
-function packPlaced(items: StoryBuildItem[], put: readonly DesignBlock[], tag: { group: string; name?: string }): void {
-  let last = items[items.length - 1];
-  let k = 0;
-  while (k < put.length) {
-    const room = last ? 4096 - (last.blocks?.length ?? 0) - (last.place?.length ?? 0) : 0;
-    if (room <= 0) {
-      last = { kind: 'mine', blocks: [], ...tag };
-      items.push(last);
-      continue;
+/** A mine item holds at most this many cells (`blocks` plus `place`: the contract's cap). */
+export const MINE_ITEM_CELLS = 4096;
+/**
+ * …and at most this many bytes of cell JSON, so one item sent alone stays under the supervisor's 64 KiB Story body cap
+ * whatever the coordinates (a cell is 8 to 40 bytes: five-digit negative coordinates are what fill an item early).
+ */
+export const MINE_ITEM_BYTES = 56_000;
+/** A mine is queued one item per request; past this many it is refused rather than queued for hours. */
+export const MAX_MINE_PARTS = 64;
+
+const cellBytes = (cell: readonly number[]) => JSON.stringify(cell).length + 1;
+
+/**
+ * The dig cells in items of their own, then the blocks: they ride in the last dig item while it has room, the rest in items
+ * of their own. An item closes at `MINE_ITEM_CELLS` cells or `MINE_ITEM_BYTES` bytes, whichever comes first.
+ */
+function packMine(
+  dig: readonly DesignBlock[],
+  put: readonly DesignBlock[],
+  tag: { group: string; name?: string },
+): StoryBuildItem[] {
+  const items: StoryBuildItem[] = [];
+  let open: StoryBuildItem | null = null;
+  let cells = 0,
+    bytes = 0;
+  const room = (size: number): StoryBuildItem => {
+    if (!open || cells >= MINE_ITEM_CELLS || bytes + size > MINE_ITEM_BYTES) {
+      open = { kind: 'mine', blocks: [], ...tag };
+      items.push(open);
+      cells = 0;
+      bytes = 0;
     }
-    const take = put.slice(k, k + room).map((b): [number, number, number, number, number] => [b[0], b[1], b[2], b[3], b[4]]);
-    last!.place = [...(last!.place ?? []), ...take];
-    k += take.length;
+    cells++;
+    bytes += size;
+    return open;
+  };
+  for (const b of dig) {
+    const cell: [number, number, number] = [b[0], b[1], b[2]];
+    room(cellBytes(cell)).blocks!.push(cell);
   }
+  for (const b of put) {
+    const cell: [number, number, number, number, number] = [b[0], b[1], b[2], b[3], b[4]];
+    (room(cellBytes(cell)).place ??= []).push(cell);
+  }
+  return items;
 }
 
 /**
- * The build request for a placed mine design: `mine` items of one group, its dig cells top-down (the colony digs a cell once
- * it is exposed) then the blocks put in once their cells are dug (`place`: torches, ladders), at most 4096 cells an item.
+ * The build items of a placed mine design: `mine` items of one group, its dig cells top-down (the colony digs a cell once
+ * it is exposed) then the blocks put in once their cells are dug (`place`: torches, ladders). Each item fits one request on
+ * its own (`packMine`); a mine that needs more than `MAX_MINE_PARTS` items is refused, never cut short.
  */
 export function mineItems(placed: readonly DesignBlock[], name?: string, group?: string): StoryBuildItem[] {
   const dig = placed.filter((b) => b[3] === 0).sort((a, b) => b[1] - a[1] || a[0] - b[0] || a[2] - b[2]);
   const put = placed.filter((b) => b[3] !== 0);
-  const tag = designTag('m', name, group);
-  const items: StoryBuildItem[] = [];
-  for (let i = 0; i < dig.length; i += 4096)
-    items.push({ kind: 'mine', blocks: dig.slice(i, i + 4096).map((b): [number, number, number] => [b[0], b[1], b[2]]), ...tag });
-  packPlaced(items, put, tag);
-  return items.slice(0, 64);
+  const items = packMine(dig, put, designTag('m', name, group));
+  if (items.length > MAX_MINE_PARTS)
+    throw new Error(
+      `This mine needs ${items.length} parts to queue (at most ${MAX_MINE_PARTS}). Place a smaller mine, or split it into several designs.`,
+    );
+  return items;
 }
 
 /** A design's cells to dig (id 0) and its blocks by material (`id:meta`), in the design's order. */

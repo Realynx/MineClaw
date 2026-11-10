@@ -3,6 +3,7 @@
  * level (in which bands it lies, how many generated ores the plot's slice holds), the blocks to mine by material, the ores
  * mined and the ores exposed in the tunnels' walls per band, and the X-ray layer's ore cells.
  */
+import { cellKey } from './minePreview';
 import type { MineTerrain } from './mineTerrain';
 import { bandWeight, oreOf, oreTable, type OreBand } from './oreTable';
 
@@ -94,10 +95,10 @@ const N6: ReadonlyArray<[number, number, number]> = [
 
 /** The design's dig estimate over the terrain (dug cells as [x, y, z]). */
 export function mineStats(terrain: MineTerrain, dug: Iterable<readonly [number, number, number]>): MineStats {
-  const set = new Set<string>();
+  const set = new Set<number>();
   const cells: Array<readonly [number, number, number]> = [];
   for (const p of dug) {
-    set.add(`${p[0]},${p[1]},${p[2]}`);
+    set.add(cellKey(p[0], p[1], p[2]));
     cells.push(p);
   }
   const tally = new DigTally(terrain, set);
@@ -111,7 +112,7 @@ const bump = (m: Map<string, number>, k: string) => m.set(k, (m.get(k) ?? 0) + 1
 class DigTally {
   private readonly materials = new Map<string, number>();
   private readonly mined = new Map<string, number>();
-  private readonly exposed = new Set<string>();
+  private readonly exposed = new Set<number>();
   private readonly exposedBy = new Map<string, number>();
   private toMine = 0;
   private lo = Infinity;
@@ -119,7 +120,7 @@ class DigTally {
 
   constructor(
     private readonly terrain: MineTerrain,
-    private readonly dug: ReadonlySet<string>,
+    private readonly dug: ReadonlySet<number>,
   ) {}
 
   add(x: number, y: number, z: number) {
@@ -142,7 +143,7 @@ class DigTally {
 
   /** A wall cell next to a dug one: counted once if it is an ore and not dug itself. */
   private expose(x: number, y: number, z: number) {
-    const k = `${x},${y},${z}`;
+    const k = cellKey(x, y, z);
     if (this.dug.has(k) || this.exposed.has(k)) return;
     const v = this.terrain.state(x, y, z);
     const ore = v ? oreOf(this.terrain.version, v >> 4, v & 15) : null;

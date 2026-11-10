@@ -393,6 +393,26 @@ export function erase(c: Canvas, s: Selection, dig = false): Cell[] {
   return out;
 }
 
+/**
+ * A mine's plan removed inside a selection: its placed blocks and dug cells go back to untouched terrain. Nothing is dug, and
+ * only the plan's own cells are visited, so a select-all over a large mine stays as small as the plan.
+ */
+export function clearPlan(c: Canvas, s: Selection): Cell[] {
+  const out: Cell[] = [];
+  const at = (k: number) => {
+    const [x, y, z] = posOf(k);
+    if (inSel(s, x, y, z)) out.push([x, y, z, EARTH, 0]);
+  };
+  for (const k of c.blocks.keys()) at(k);
+  for (const k of c.dug) at(k);
+  return out;
+}
+
+/** Delete on a selection: in a mine its plan is removed and nothing is dug (`clearPlan`); elsewhere `erase`. */
+export function deleteSelection(c: Canvas, s: Selection, dig = false): Cell[] {
+  return plotMode().kind === 'mine' ? clearPlan(c, s) : erase(c, s, dig);
+}
+
 /** A selection of explicit cells (for tests and select-connected). */
 export function keysOf(cells: Iterable<V3>): Set<number> {
   const s = new Set<number>();

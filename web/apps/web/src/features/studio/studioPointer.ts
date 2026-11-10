@@ -20,7 +20,19 @@ export interface StudioPointerActions {
   move: (delta: V3, group: string) => void;
   setDrag: (update: (drag: Drag | null) => Drag | null) => void;
   error: (error: unknown) => void;
+  /** A gizmo press: true when the selection only previews the move and commits it once on release (a mine component). */
+  dragStart?: () => boolean;
+  /** Shows the selection moved by `delta` from where the drag started; false when it cannot stand there. */
+  dragPreview?: (delta: V3) => boolean;
+  /** The release: one move by the last delta the preview accepted. */
+  dragCommit?: (delta: V3) => void;
+  /** Escape, a lost pointer or a lost window: the selection goes back to where the drag started. */
+  dragCancel?: () => void;
+  /** A pointer gesture on the canvas starts (true) or ends (false); heavy readouts wait for its end. */
+  gesture?: (held: boolean) => void;
 }
+
+const along = (axis: 'x' | 'y' | 'z', n: number): V3 => [axis === 'x' ? n : 0, axis === 'y' ? n : 0, axis === 'z' ? n : 0];
 
 /** One binding survives selection changes, so a drag keeps its origin and undo group across React renders. */
 export function bindStudioPointer(p: {
@@ -34,7 +46,7 @@ export function bindStudioPointer(p: {
   actions: () => StudioPointerActions;
 }) {
   const { surface, camera, studio, overlay, mod, mine } = p;
-  let gizmo: { axis: 'x' | 'y' | 'z'; x: number; y: number; dx: number; dy: number; pixels: number; applied: number; group: string } | null = null;
+  let gizmo: { axis: 'x' | 'y' | 'z'; x: number; y: number; dx: number; dy: number; pixels: number; applied: number; group: string; preview: boolean } | null = null;
   let pressed: { id: number; button: number } | null = null;
   let queue = Promise.resolve();
   let generation = 0;
@@ -46,13 +58,16 @@ export function bindStudioPointer(p: {
   };
   const capture = (event: PointerEvent) => {
     pressed = { id: event.pointerId, button: event.button };
+    p.actions().gesture?.(true);
     if (document.pointerLockElement === surface) return;
     try { surface.setPointerCapture?.(event.pointerId); } catch { /* The pointer may already have ended. */ }
   };
   const release = () => {
     const id = pressed?.id;
     pressed = null;
-    if (id !== undefined && surface.hasPointerCapture?.(id)) surface.releasePointerCapture(id);
+    if (id === undefined) return;
+    p.actions().gesture?.(false);
+    if (surface.hasPointerCapture?.(id)) surface.releasePointerCapture(id);
   };
   const consume = (event: Event) => { event.preventDefault(); event.stopImmediatePropagation(); };
   const onDown = (event: PointerEvent) => {
@@ -72,7 +87,8 @@ export function bindStudioPointer(p: {
         const a = origin.clone().project(camera), b = origin.add(unit).project(camera);
         const dx = (b.x - a.x) * rect.width / 2, dy = -(b.y - a.y) * rect.height / 2;
         const pixels = Math.max(1, Math.hypot(dx, dy));
-        gizmo = { axis, x: event.clientX, y: event.clientY, dx: dx / pixels, dy: dy / pixels, pixels, applied: 0, group: `gizmo-${performance.now()}` };
+        const preview = p.actions().dragStart?.() ?? false;
+        gizmo = { axis, x: event.clientX, y: event.clientY, dx: dx / pixels, dy: dy / pixels, pixels, applied: 0, group: `gizmo-${performance.now()}`, preview };
         return;
       }
     }
@@ -88,6 +104,11 @@ export function bindStudioPointer(p: {
   const onMove = (event: PointerEvent) => {
     if (!gizmo || event.pointerId !== pressed?.id || !p.actions().canEdit) return;
     const steps = Math.round(((event.clientX - gizmo.x) * gizmo.dx + (event.clientY - gizmo.y) * gizmo.dy) / gizmo.pixels);
+    if (gizmo.preview) {
+      // Only the outline follows the pointer; a position it refuses keeps the last one shown.
+      if (steps !== gizmo.applied && p.actions().dragPreview?.(along(gizmo.axis, steps))) gizmo.applied = steps;
+      return;
+    }
     const delta = steps - gizmo.applied;
     if (!delta) return;
     const axis = gizmo.axis === 'x' ? 0 : gizmo.axis === 'y' ? 1 : 2;
@@ -100,12 +121,27 @@ export function bindStudioPointer(p: {
   const onUp = (event: PointerEvent) => {
     if (event.pointerId !== pressed?.id || event.button !== pressed.button) return;
     consume(event); release();
-    if (gizmo) { gizmo = null; return; }
+    if (gizmo) {
+      const done = gizmo;
+      gizmo = null;
+      if (done.preview) p.actions().dragCommit?.(along(done.axis, done.applied));
+      return;
+    }
     const mods = { shift: event.shiftKey, ctrl: event.ctrlKey || event.metaKey };
     const at = mine ? { x: event.clientX, y: event.clientY } : undefined;
     enqueue((signal) => p.actions().up(event.button, mods, at, signal));
   };
-  const cancel = () => { generation++; abort.abort(); abort = new AbortController(); gizmo = null; release(); p.actions().cancel(); };
+  const cancel = () => {
+    generation++; abort.abort(); abort = new AbortController();
+    if (gizmo?.preview) p.actions().dragCancel?.();
+    gizmo = null; release(); p.actions().cancel();
+  };
+  const onKey = (event: KeyboardEvent) => {
+    if (event.key !== 'Escape' || !gizmo?.preview) return;
+    consume(event);
+    gizmo = null; release();
+    p.actions().dragCancel?.();
+  };
   const onCancel = (event: PointerEvent) => { if (event.pointerId === pressed?.id) cancel(); };
   const onAux = (event: MouseEvent) => { if (event.button === 1) event.preventDefault(); };
   const onWheel = (event: WheelEvent) => {
@@ -130,6 +166,7 @@ export function bindStudioPointer(p: {
   window.addEventListener('pointercancel', onCancel, true);
   surface.addEventListener('lostpointercapture', onCancel);
   window.addEventListener('blur', cancel);
+  window.addEventListener('keydown', onKey, true);
   surface.addEventListener('mousedown', onAux);
   surface.addEventListener('wheel', onWheel, { capture: true, passive: false });
   return () => {
@@ -140,6 +177,7 @@ export function bindStudioPointer(p: {
     window.removeEventListener('pointercancel', onCancel, true);
     surface.removeEventListener('lostpointercapture', onCancel);
     window.removeEventListener('blur', cancel);
+    window.removeEventListener('keydown', onKey, true);
     surface.removeEventListener('mousedown', onAux);
     surface.removeEventListener('wheel', onWheel, true);
   };

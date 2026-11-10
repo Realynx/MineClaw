@@ -14,7 +14,7 @@ function make(storage: Pick<Storage, 'getItem' | 'setItem'> | null = null, over:
     revisions: [], kind: 'mine', seed: '12345', ...over }, api, 60000);
   const c = new MineModuleController(s, storage); sessions.push(s); controllers.push(c); return { s, c };
 }
-afterEach(() => { controllers.splice(0).forEach((c) => c.dispose()); sessions.splice(0).forEach((s) => s.dispose()); setPlotMode({ kind: 'build' }); });
+afterEach(() => { controllers.splice(0).forEach((c) => c.dispose()); sessions.splice(0).forEach((s) => s.dispose()); setPlotMode({ kind: 'build' }); localStorage.clear(); });
 const at: V3 = [30, 20, 30];
 const tunnel = () => ({ ...defaultModule('tunnel'), length: 7 });
 
@@ -288,5 +288,339 @@ describe('mine module edits and ownership', () => {
     expect(reopened.c.snapshot()).toHaveLength(1);
     const otherOwner = make(storage, { ...saved, id: 11, owner: 'other-user' });
     expect(otherOwner.c.snapshot()).toHaveLength(0);
+  });
+  it('anchors a new group at the middle of its footprint, at the first piece’s level, so it turns in place', () => {
+    const { s, c } = make();
+    const a = c.add(tunnel(), [20, 20, 30])!, b = c.add(tunnel(), [50, 24, 34])!;
+    const group = c.combine([a.id, b.id])!;
+    // The two cover x 17..53 and z 30..34.
+    expect(group.at).toEqual([35, 20, 32]);
+    expect(group.spec.parts!.map((p) => p.at)).toEqual([[-15, 0, -2], [15, 4, 2]]);
+    expect(c.update(group.id, { ...group.spec, rotation: 1 })).toBe(true);
+    const xs = s.canvas.holes().map((p) => p[0]), zs = s.canvas.holes().map((p) => p[2]);
+    expect([Math.min(...xs), Math.max(...xs), Math.min(...zs), Math.max(...zs)]).toEqual([33, 37, 14, 50]);
+  });
+  it('a group saved with its first piece as the anchor keeps it, and still turns about it', () => {
+    const first = make();
+    first.c.add(tunnel(), [20, 20, 30]); first.c.add(tunnel(), [50, 20, 30]);
+    // As groups were saved before they were centred: anchored on the first piece, the other one 30 blocks east of it.
+    const mineAuthoring = JSON.stringify({ size: 256, baseDefault: -1, base: [], overrides: [], modules: [{ id: 'old-group', at: [20, 20, 30],
+      spec: { ...defaultModule('custom'), label: 'Old floor', parts: [{ spec: tunnel(), at: [0, 0, 0] }, { spec: tunnel(), at: [30, 0, 0] }] } }] });
+    const { s, c } = make(null, { id: 100, mineAuthoring, dug: first.s.canvas.holes() });
+    expect(c.snapshot()).toMatchObject([{ id: 'old-group', at: [20, 20, 30] }]);
+    expect(c.snapshot()[0]!.spec.parts!.map((p) => p.at)).toEqual([[0, 0, 0], [30, 0, 0]]);
+    expect(c.update('old-group', { ...c.snapshot()[0]!.spec, rotation: 1 })).toBe(true);
+    // Turned about the first tunnel's middle: the other one swings from 30 east of it to 30 south.
+    expect(s.canvas.authoredState(keyOf(20, 20, 60))).toBe(0);
+    expect(s.canvas.authoredState(keyOf(50, 20, 30))).toBe(-1);
+  });
+  it('check says why a piece cannot stand somewhere (off the plot, into bedrock) without changing anything', () => {
+    const { s, c } = make();
+    expect(c.check(tunnel(), at)).toBeNull();
+    expect(c.check(tunnel(), [0, 20, 30])).toContain('whole layout must fit');
+    expect(c.check(tunnel(), [30, 0, 30])).toContain('whole layout must fit');
+    let rock: V3 | null = null;
+    for (let x = 10; x < 50 && !rock; x++) for (let z = 10; z < 50 && !rock; z++) if (s.terrain!.state(x, 1, z) >> 4 === 7) rock = [x, 1, z];
+    expect(rock).not.toBeNull();
+    expect(c.check(tunnel(), rock!)).toContain('reaches bedrock');
+    // The same rule `add` applies, and asking places nothing.
+    expect(c.add(tunnel(), rock!)).toBeNull();
+    expect(c.lastError).toBe(c.check(tunnel(), rock!));
+    expect(c.snapshot()).toHaveLength(0);
+    expect(s.snapshot().canUndo).toBe(false);
+  });
+  it('ownsAny tells whether a box or a picked selection takes in a component cell', () => {
+    const { c } = make();
+    const item = c.add(tunnel(), at)!;
+    expect(c.ownsAny({ min: at, max: at })).toBe(true);
+    expect(c.ownsAny({ min: [0, 1, 0], max: [10, 60, 10] })).toBe(false);
+    expect(c.ownsAny({ min: [0, 1, 0], max: [63, 60, 63], mask: new Set([keyOf(5, 5, 5)]) })).toBe(false);
+    expect(c.ownsAny({ min: at, max: at, mask: new Set([keyOf(...at)]) })).toBe(true);
+    c.remove(item.id);
+    expect(c.ownsAny({ min: at, max: at })).toBe(false);
+  });
+  /** Every cell the layout owns, as the later-wins union the canvas holds: "x,y,z" → "id,meta". */
+  const owned = (modules: readonly { spec: Parameters<typeof moduleCells>[0]; at: V3 }[]) =>
+    new Map(modules.flatMap((m) => moduleCells(m.spec, m.at).cells.map((cell) => [cell.slice(0, 3).join(), cell.slice(3).join()] as const)));
+  it.each([0, 1, 2, 3])('ungroups a group turned %i quarter turns in place, without changing a cell, as one undo step', (q) => {
+    const { s, c } = make();
+    const d = c.add({ ...defaultModule('spiral'), torchEvery: 4, clockwise: false }, [96, 26, 96])!;
+    // Overlapping, lit and turned pieces: the torch metas and the later-wins order both have to come out the same.
+    const a = c.add({ ...tunnel(), torchEvery: 3 }, [100, 20, 100])!, b = c.add({ ...defaultModule('chamber'), rotation: 1 }, [103, 20, 101])!;
+    const combined = c.combine([a.id, b.id])!;
+    expect(c.update(combined.id, { ...combined.spec, rotation: q })).toBe(true);
+    const group = c.snapshot()[1]!, before = c.snapshot(), cells = owned(before);
+    expect([...cells.values()].filter((v) => v.startsWith('50,')).length).toBeGreaterThanOrEqual(2);
+    const holes = s.canvas.holes(), blocks = s.canvas.cells(), edits = vi.spyOn(s, 'editWithHistory');
+    const parts = c.ungroup(group.id)!;
+    expect(parts.map((p) => p.spec.rotation)).toEqual([q % 4, (1 + q) % 4]);
+    expect(c.snapshot()).toEqual([d, ...parts]);
+    expect(owned(c.snapshot())).toEqual(cells);
+    expect(edits).toHaveBeenCalledOnce();
+    expect(edits.mock.calls[0]![0]).toEqual([]);
+    expect(s.canvas.holes()).toEqual(holes); expect(s.canvas.cells()).toEqual(blocks);
+    s.undo();
+    expect(c.snapshot()).toEqual(before);
+    expect(s.canvas.holes()).toEqual(holes);
+    s.redo();
+    expect(c.snapshot()).toEqual([d, ...parts]);
+  });
+  it('ungroups a nested group one level at a time, keeping every cell and the hidden flag', () => {
+    const { s, c } = make();
+    const a = c.add({ ...tunnel(), torchEvery: 2 }, [100, 20, 100])!, b = c.add({ ...defaultModule('stairs'), rotation: 3 }, [104, 20, 106])!;
+    const inner = c.combine([a.id, b.id])!;
+    expect(c.update(inner.id, { ...inner.spec, rotation: 1 })).toBe(true);
+    const e = c.add({ ...defaultModule('junction'), rotation: 2 }, [110, 20, 98])!;
+    const outer = c.combine([c.snapshot()[0]!.id, e.id])!;
+    expect(c.update(outer.id, { ...outer.spec, rotation: 3 })).toBe(true);
+    c.setVisible(outer.id, false);
+    const cells = owned(c.snapshot()), holes = s.canvas.holes(), blocks = s.canvas.cells();
+    const [group, last] = c.ungroup(outer.id)!;
+    expect(group!.spec.kind).toBe('custom');
+    expect(group!.spec.rotation).toBe(0);
+    expect([group!.visible, last!.visible]).toEqual([false, false]);
+    expect(owned(c.snapshot())).toEqual(cells);
+    const leaves = c.ungroup(group!.id)!;
+    expect(c.snapshot()).toEqual([...leaves, last]);
+    expect(c.snapshot().every((m) => m.spec.kind !== 'custom')).toBe(true);
+    expect(owned(c.snapshot())).toEqual(cells);
+    expect(s.canvas.holes()).toEqual(holes); expect(s.canvas.cells()).toEqual(blocks);
+    // Only a group can be ungrouped, and the refusal changes nothing.
+    const snapshot = c.snapshot();
+    expect(c.ungroup(leaves[0]!.id)).toBeNull();
+    expect(c.lastError).toBe('Select a combined component to ungroup it.');
+    expect(c.snapshot()).toBe(snapshot);
+  });
+});
+
+describe('reopening a mine layout', () => {
+  const browser = () => {
+    const data = new Map<string, string>();
+    return { data, storage: { getItem: (k: string) => data.get(k) ?? null, setItem: (k: string, v: string) => { data.set(k, v); } } };
+  };
+  /** Saves as the page does: the request, then `rememberDesign`. Returns the layout the bot was sent. */
+  async function saveAs(s: Studio, c: MineModuleController, rev: number): Promise<string> {
+    const save = vi.spyOn(api, 'save').mockResolvedValue({ designId: 111, rev, name: 'saved', blocks: s.canvas.size, created: false, text: 'saved' });
+    try {
+      await s.save('saved');
+      c.rememberDesign(111, rev);
+      return save.mock.calls[0]![1].mineAuthoring!;
+    } finally { save.mockRestore(); }
+  }
+  // The session as the bot returns it: its canvas, at the canvas rev the page last heard of.
+  const design = (rev: number, mineAuthoring: string, s: Studio) =>
+    ({ designId: 111, designRevision: rev, mineAuthoring, rev: s.rev, blocks: s.canvas.cells(), dug: s.canvas.holes() });
+
+  it('a saved session keeps a combine made after the save across a reload', async () => {
+    const { storage } = browser(), { s, c } = make(storage);
+    const a = c.add(tunnel(), at)!, b = c.add(tunnel(), [30, 20, 40])!;
+    const saved = await saveAs(s, c, 4);
+    const group = c.combine([a.id, b.id])!;
+    const reloaded = make(storage, design(4, saved, s));
+    expect(reloaded.c.snapshot()).toEqual([group]);
+    expect(reloaded.s.dirty).toBe(true); expect(reloaded.c.recoveredLocal).toBe(true);
+    expect(reloaded.c.restoreNote).toBe('Recovered unsaved component changes from this browser. Save the design to keep them.');
+    // Saved again, the next reload opens clean and has nothing to say.
+    const again = await saveAs(reloaded.s, reloaded.c, 5);
+    expect(reloaded.s.dirty).toBe(false);
+    const settled = make(storage, design(5, again, s));
+    expect(settled.c.snapshot()).toEqual([group]);
+    expect(settled.s.dirty).toBe(false); expect(settled.c.recoveredLocal).toBe(false); expect(settled.c.restoreNote).toBeNull();
+  });
+  it('an ungrouped group is saved and reopens as its parts, with the same cells', async () => {
+    const { s, c } = make();
+    const a = c.add({ ...tunnel(), torchEvery: 3 }, at)!, b = c.add({ ...tunnel(), rotation: 1 }, [30, 20, 40])!;
+    const group = c.combine([a.id, b.id])!;
+    expect(c.update(group.id, { ...group.spec, rotation: 2 })).toBe(true);
+    const parts = c.ungroup(group.id)!;
+    const saved = await saveAs(s, c, 4);
+    const reopened = make(null, { ...design(4, saved, s), id: 100 });
+    expect(reopened.c.snapshot()).toEqual(parts);
+    expect(reopened.s.canvas.holes()).toEqual(s.canvas.holes()); expect(reopened.s.canvas.cells()).toEqual(s.canvas.cells());
+    expect(reopened.s.dirty).toBe(false); expect(reopened.c.restoreNote).toBeNull();
+  });
+  it('…and a move made after the save, which the saved layout alone can no longer open whole', async () => {
+    const { storage } = browser(), { s, c } = make(storage);
+    const a = c.add(tunnel(), at)!, b = c.add(tunnel(), [30, 20, 40])!;
+    const saved = await saveAs(s, c, 4);
+    expect(c.move(a.id, [30, 20, 35])).toBe(true);
+    const reloaded = make(storage, design(4, saved, s));
+    expect(reloaded.c.snapshot()).toEqual([{ ...a, at: [30, 20, 35] }, b]);
+    expect(reloaded.s.dirty).toBe(true); expect(reloaded.c.recoveredLocal).toBe(true);
+    // A browser without the copy opens what the saved layout still has right: the piece that did not move.
+    const elsewhere = make(null, design(4, saved, s));
+    expect(elsewhere.c.snapshot()).toEqual([b]);
+    expect(elsewhere.s.dirty).toBe(false);
+  });
+  it('a server envelope saved elsewhere wins over a stale working copy', async () => {
+    const { storage } = browser(), here = make(storage);
+    const a = here.c.add(tunnel(), at)!, b = here.c.add(tunnel(), [30, 20, 40])!;
+    const first = await saveAs(here.s, here.c, 4);
+    // Another browser opens the session, combines the two and saves. This browser's copy still continues from the first save.
+    const there = make(null, design(4, first, here.s));
+    const group = there.c.combine([a.id, b.id])!;
+    const second = await saveAs(there.s, there.c, 5);
+    const back = make(storage, design(5, second, here.s));
+    expect(back.c.snapshot()).toEqual([group]);
+    expect(back.s.dirty).toBe(false); expect(back.c.recoveredLocal).toBe(false); expect(back.c.restoreNote).toBeNull();
+  });
+  it('one mismatching component is dropped, the others are restored, the canvas is unchanged, the note says so', async () => {
+    const { s, c } = make();
+    const a = c.add(tunnel(), at)!, b = c.add(tunnel(), [30, 20, 40])!, d = c.add(tunnel(), [30, 20, 50])!;
+    const saved = await saveAs(s, c, 4);
+    // The bot's canvas lost one cell of the second tunnel.
+    const dug = s.canvas.holes().filter((p) => p.join() !== b.at.join());
+    const reopened = make(null, { ...design(4, saved, s), id: 100, dug });
+    expect(reopened.c.snapshot()).toEqual([a, d]);
+    expect(reopened.s.canvas.holes()).toEqual(dug);
+    expect(reopened.c.restoreNote).toBe('1 of 3 saved components no longer matches the excavation and was opened as plain cells. The saved revision still has it.');
+    expect(reopened.s.dirty).toBe(false); expect(reopened.c.recoveredLocal).toBe(false);
+    // What it dug is plain cells now: the others leave without touching them.
+    expect(reopened.c.atCell([31, 20, 40])).toBeNull();
+    reopened.c.remove(a.id); reopened.c.remove(d.id);
+    expect(reopened.s.canvas.holes()).toEqual(dug.filter((p) => p[2] === 40));
+    expect(reopened.s.canvas.dug.size).toBe(13);
+  });
+  it('a component that only matched under another one goes with it, and one that stands apart stays', async () => {
+    const { s, c } = make();
+    // The second tunnel crosses the first where its torch hangs and digs the torch away.
+    const lit = c.add({ ...tunnel(), torchEvery: 4 }, at)!, cross = c.add({ ...tunnel(), rotation: 1 }, at)!, apart = c.add(tunnel(), [30, 20, 50])!;
+    expect(moduleCells(lit.spec, lit.at).cells).toContainEqual([30, 21, 30, 50, 3]);
+    expect(s.canvas.authoredState(keyOf(30, 21, 30))).toBe(0);
+    const saved = await saveAs(s, c, 4);
+    const whole = make(null, { ...design(4, saved, s), id: 100 });
+    expect(whole.c.snapshot()).toEqual([lit, cross, apart]); expect(whole.c.restoreNote).toBeNull();
+    // Without one cell of the crossing tunnel, far from the torch, the first tunnel's torch should hang where the canvas has air.
+    const dug = s.canvas.holes().filter((p) => p.join() !== '30,20,27');
+    const reopened = make(null, { ...design(4, saved, s), id: 101, dug });
+    expect(reopened.c.snapshot()).toEqual([apart]);
+    expect(reopened.s.canvas.holes()).toEqual(dug);
+    expect(reopened.c.restoreNote).toBe('2 of 3 saved components no longer match the excavation and were opened as plain cells. The saved revision still has them.');
+  });
+  it('a component that would stand off the plot is left out, and the rest opens', async () => {
+    const { s, c } = make(), a = c.add(tunnel(), at)!;
+    c.add(tunnel(), [30, 20, 40]);
+    const saved = JSON.parse(await saveAs(s, c, 4)) as { modules: Array<{ at: V3 }> };
+    saved.modules[1]!.at = [254, 20, 40];
+    const reopened = make(null, { ...design(4, JSON.stringify(saved), s), id: 100 });
+    expect(reopened.c.snapshot()).toEqual([a]);
+    expect(reopened.c.restoreNote).toBe('1 of 2 saved components no longer matches the excavation and was opened as plain cells. The saved revision still has it.');
+    expect(reopened.s.canvas.dug.size).toBe(28);
+  });
+  it('a working copy that lost one component to an unsent edit still beats the older saved layout', async () => {
+    const { storage } = browser(), { s, c } = make(storage), a = c.add(tunnel(), at)!;
+    const saved = await saveAs(s, c, 4);
+    const b = c.add(tunnel(), [30, 20, 40])!;
+    c.add(tunnel(), [30, 20, 50]);
+    // The page went away before the third tunnel's cells were sent: the bot's canvas holds the first two.
+    const reloaded = make(storage, { ...design(4, saved, s), dug: s.canvas.holes().filter((p) => p[2] !== 50) });
+    expect(reloaded.c.snapshot()).toEqual([a, b]);
+    expect(reloaded.s.dirty).toBe(true);
+    expect(reloaded.c.restoreNote).toBe('Recovered unsaved component changes from this browser. Save the design to keep them. '
+      + '1 of 3 components no longer matches the excavation and was opened as plain cells.');
+  });
+  it('an empty copy of some other layout does not hide what the saved layout still has right', async () => {
+    const { data, storage } = browser(), { s, c } = make(storage), a = c.add(tunnel(), at)!;
+    const b = c.add(tunnel(), [30, 20, 40])!;
+    const saved = await saveAs(s, c, 4);
+    data.set('mineclaw.mine-modules.v2:test:9', JSON.stringify({ size: 256, modules: [], baseDefault: -1, base: [], overrides: [], descends: 'other' }));
+    const reloaded = make(storage, { ...design(4, saved, s), dug: s.canvas.holes().filter((p) => p.join() !== b.at.join()) });
+    expect(reloaded.c.snapshot()).toEqual([a]);
+    expect(reloaded.s.dirty).toBe(false); expect(reloaded.c.recoveredLocal).toBe(false);
+  });
+  it('a seed or version change keeps the working copy', () => {
+    const { storage } = browser(), { s, c } = make(storage);
+    const group = c.combine([c.add(tunnel(), at)!.id, c.add(tunnel(), [30, 20, 40])!.id])!;
+    const canvas = { blocks: s.canvas.cells(), dug: s.canvas.holes() };
+    for (const changed of [{ seed: '777' }, { version: 'b1.8.1' }]) {
+      const reopened = make(storage, { ...canvas, ...changed });
+      expect(reopened.c.snapshot(), JSON.stringify(changed)).toEqual([group]);
+      expect(reopened.s.dirty).toBe(true);
+    }
+  });
+  it('still opens a working copy written before copies named what they continue from', () => {
+    const { data, storage } = browser(), first = make(storage), a = first.c.add(tunnel(), at)!;
+    const { descends, ...envelope } = JSON.parse([...data.values()][0]!) as { descends: string };
+    expect(descends).toBe('');
+    // The key such a copy had: the session with its version and seed.
+    const old = new Map([['mineclaw.mine-modules.v1:test:9:1.12.2:12345', JSON.stringify(envelope)]]);
+    const { s, c } = make({ getItem: (k) => old.get(k) ?? null, setItem: (k, v) => { old.set(k, v); } }, { dug: first.s.canvas.holes() });
+    expect(c.snapshot()).toEqual([a]);
+    expect(c.recoveredLocal).toBe(true); expect(s.dirty).toBe(true);
+    c.setVisible(a.id, false);
+    expect(JSON.parse(old.get('mineclaw.mine-modules.v2:test:9')!)).toMatchObject({ descends: '', modules: [{ id: a.id, visible: false }] });
+  });
+  it('a stale copy on a cleared canvas opens nothing and says nothing', () => {
+    const { storage } = browser(), first = make(storage);
+    first.c.add(tunnel(), at);
+    const { s, c } = make(storage);
+    expect(c.snapshot()).toHaveLength(0);
+    expect(c.restoreNote).toBeNull(); expect(c.recoveredLocal).toBe(false); expect(s.dirty).toBe(false);
+  });
+  it('keeps the newest 20 session copies per owner, always this session’s and every revision copy', () => {
+    const data = new Map<string, string>();
+    const storage = {
+      getItem: (k: string) => data.get(k) ?? null, setItem: (k: string, v: string) => { data.set(k, v); },
+      removeItem: (k: string) => { data.delete(k); }, key: (i: number) => [...data.keys()][i] ?? null,
+      get length() { return data.size; },
+    };
+    const copy = JSON.stringify({ size: 256, modules: [], baseDefault: -1, base: [], overrides: [] });
+    for (let id = 1; id <= 30; id++) if (id !== 9) data.set(`mineclaw.mine-modules.v2:test:${id}`, copy);
+    for (let id = 1; id <= 25; id++) data.set(`mineclaw.mine-modules.v2:robin:${id}`, copy);
+    // This session's only copy is an old-style one, older than every other: it is what this page opens from.
+    data.set('mineclaw.mine-modules.v1:test:9:1.12.2:12345', copy);
+    for (let rev = 1; rev <= 8; rev++) data.set(`mineclaw.mine-modules.design.v1:test:1.12.2:12345:12:${rev}`, copy);
+    for (let rev = 1; rev <= 3; rev++) data.set(`mineclaw.mine-modules.design.v1:test:1.12.2:12345:13:${rev}`, copy);
+    data.set('something.else', 'kept');
+    const { c } = make(storage);
+    const left = (pattern: RegExp) => [...data.keys()].filter((k) => pattern.test(k)).map((k) => Number(k.split(':').at(-1))).sort((a, b) => a - b);
+    expect(left(/^mineclaw\.mine-modules\.v2:test:/)).toEqual(Array.from({ length: 20 }, (_, i) => i + 11));
+    expect(left(/^mineclaw\.mine-modules\.v2:robin:/)).toEqual(Array.from({ length: 20 }, (_, i) => i + 6));
+    expect(data.has('mineclaw.mine-modules.v1:test:9:1.12.2:12345')).toBe(true);
+    // A design saved before the bot kept layouts has them only here: no revision copy is let go.
+    expect(left(/:12:\d+$/)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+    expect(left(/:13:\d+$/)).toEqual([1, 2, 3]);
+    expect(data.get('something.else')).toBe('kept');
+    c.rememberDesign(12, 9);
+    expect(left(/:12:\d+$/)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    expect(data.has('mineclaw.mine-modules.v2:test:9')).toBe(true);
+  });
+  it('keeps the working copy of a session "Open in studio" offers to resume, however old', () => {
+    const data = new Map<string, string>();
+    const storage = {
+      getItem: (k: string) => data.get(k) ?? null, setItem: (k: string, v: string) => { data.set(k, v); },
+      removeItem: (k: string) => { data.delete(k); }, key: (i: number) => [...data.keys()][i] ?? null,
+      get length() { return data.size; },
+    };
+    const copy = JSON.stringify({ size: 256, modules: [], baseDefault: -1, base: [], overrides: [] });
+    for (let id = 1; id <= 30; id++) if (id !== 9) data.set(`mineclaw.mine-modules.v2:test:${id}`, copy);
+    // Session 3 was left with unsaved work on design 12; robin's session 4 on design 13 does not cover test's session 4.
+    data.set('mineclaw.studio.unsaved:test:12', '3');
+    data.set('mineclaw.studio.unsaved:robin:13', '4');
+    make(storage);
+    const left = [...data.keys()].filter((k) => k.startsWith('mineclaw.mine-modules.v2:test:')).map((k) => Number(k.split(':').at(-1)));
+    expect(left.sort((a, b) => a - b)).toEqual([3, ...Array.from({ length: 20 }, (_, i) => i + 11)]);
+  });
+  it('a controller created without attaching changes nothing until attached', async () => {
+    const { data, storage } = browser(), first = make(storage), a = first.c.add(tunnel(), at)!;
+    // A development build has React build two controllers for one studio and keep the first.
+    const s = new Studio({ ...first.s.session, dug: first.s.canvas.holes() }, api, 60000);
+    const kept = new MineModuleController(s, storage), spare = new MineModuleController(s, storage, { attach: false });
+    sessions.push(s); controllers.push(kept, spare);
+    const b = kept.add(tunnel(), [30, 20, 40])!;
+    s.edit([[31, 20, 30, 50, 5]], 'place', 'manual torch');
+    const copy = () => JSON.parse([...data.values()][0]!) as { modules: Array<{ id: string }>; overrides: number[][] };
+    expect(spare.snapshot()).toEqual([a]);
+    expect(copy().modules.map((m) => m.id)).toEqual([a.id, b.id]);
+    expect(copy().overrides).toEqual([[keyOf(31, 20, 30), 50 * 16 + 5]]);
+    expect((JSON.parse(await saveAs(s, kept, 4)) as { modules: unknown[] }).modules).toHaveLength(2);
+    // Attached, it follows the canvas like any other and writes what it holds; detached, it is silent again.
+    const detach = spare.attach();
+    s.edit([[32, 20, 30, 50, 5]], 'place', 'another torch');
+    expect(copy().modules.map((m) => m.id)).toEqual([a.id]);
+    detach();
+    s.edit([[33, 20, 30, 50, 5]], 'place', 'a third torch');
+    expect(copy().modules.map((m) => m.id)).toEqual([a.id, b.id]);
+    expect(copy().overrides).toHaveLength(3);
   });
 });

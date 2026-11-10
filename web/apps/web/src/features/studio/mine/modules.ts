@@ -91,6 +91,15 @@ const rotate = ([x, y, z]: V3, q: number): V3 => {
 };
 const plus = (a: V3, b: V3): V3 => [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
 
+/**
+ * A group's parts as components standing where the group puts them, in its order. A group's cell is
+ * rotate(rotate(c, r) + part.at, q) + at, which is the part turned by r + q and placed at rotate(part.at, q) + at: the same cells.
+ */
+export function ungroupParts(group: MineModuleSpec, at: V3): Array<{ spec: MineModuleSpec; at: V3 }> {
+  const q = group.rotation;
+  return (group.parts ?? []).map((part) => ({ spec: { ...part.spec, rotation: (part.spec.rotation + q) % 4 }, at: plus(rotate(part.at, q), at) }));
+}
+
 /** Local geometry uses +X for the main passage. Existing generators remain golden-compatible. */
 function local(spec: MineModuleSpec): MineCells {
   if (spec.kind === 'custom') {
@@ -207,6 +216,25 @@ function buildModulePorts(input: MineModuleSpec, at: V3): MineModulePort[] {
     }
   }
   return ports;
+}
+
+/** The cell just outside each entrance of `instances` (except `excludeId`): where another piece's entrance can join it. */
+export function openPortCells(instances: readonly MineModuleInstance[], excludeId?: string): V3[] {
+  return instances.filter((m) => m.id !== excludeId).flatMap((m) => modulePorts(m.spec, m.at).map((p) => plus(p.at, p.out)));
+}
+
+/** Of those cells, the ones `spec` at `at` joins: one of its entrances stands there, facing back (as snapModuleAt joins them). */
+export function joinedPortCells(spec: MineModuleSpec, at: V3, instances: readonly MineModuleInstance[], excludeId?: string): V3[] {
+  const ours = modulePorts(spec, at);
+  const joined: V3[] = [];
+  for (const instance of instances) {
+    if (instance.id === excludeId) continue;
+    for (const theirs of modulePorts(instance.spec, instance.at)) {
+      const target = plus(theirs.at, theirs.out);
+      if (ours.some((own) => own.at.every((n, i) => n === target[i]) && own.out.every((n, i) => n === -theirs.out[i]!))) joined.push(target);
+    }
+  }
+  return joined;
 }
 
 /** Connect opposing entrances on the same feet level, leaving adjacent (not overlapping) entrance cells. */
