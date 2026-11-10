@@ -115,17 +115,14 @@ export function useRedstoneComponents(p: {
   notice?: (text: string | null, o?: NoticeOptions) => void;
 }): RedstoneComponents {
   const { enabled, studio, viewer, stage, live, overlay, mod, ready = false } = p;
-  // Made in an effect, not while rendering: opening it can write the design's metadata, which the page listens to.
-  const [controller, setController] = useState<RedstoneComponentController | null>(null);
-  useEffect(() => {
-    if (!enabled) return;
-    const c = new RedstoneComponentController(studio);
-    setController(c);
-    return () => {
-      c.dispose();
-      setController(null);
-    };
-  }, [enabled, studio]);
+  // Opened while rendering, which only reads; what it writes (the design's metadata, which the page listens to, and this
+  // browser's copy) waits for the effect. One open per studio: a development build runs the effect twice, and a second
+  // open would find the first one's writes already without the saved components it left out (and so no restore note).
+  const controller = useMemo(
+    () => (enabled ? new RedstoneComponentController(studio, undefined, undefined, { attach: false }) : null),
+    [enabled, studio],
+  );
+  useEffect(() => controller?.attach(), [controller]);
   const subscribe = useCallback((fn: () => void) => controller?.subscribe(fn) ?? noStore(), [controller]);
   const read = useCallback(() => controller?.snapshot() ?? EMPTY, [controller]);
   const snap = useSyncExternalStore(subscribe, controller ? read : emptySnap, controller ? read : emptySnap);

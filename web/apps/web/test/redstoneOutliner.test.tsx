@@ -8,7 +8,7 @@ import { MOCK_DESIGNER_PALETTE, type DesignerSession } from '@mineclaw/contracts
 import { LIBRARY, type Pos } from '@mineclaw/redstone';
 import type { WorldViewerHandle } from '@mineclaw/world-viewer';
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
-import type { RefObject } from 'react';
+import { StrictMode, type RefObject } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { plotMode, setPlotMode, type Cell, type V3 } from '@/features/studio/canvas';
 import { Overlay3D, portArrowMarks, portArrowsAt } from '@/features/studio/overlay3d';
@@ -71,7 +71,9 @@ interface Mounted {
 }
 
 /** The hook on a studio, with the outliner it feeds; `overlay` is the view's (a real one where the test reads it). */
-function mount(o: { over?: Partial<DesignerSession>; overlay?: Overlay3D; canEdit?: boolean } = {}): Mounted {
+function mount(
+  o: { over?: Partial<DesignerSession>; overlay?: Overlay3D; canEdit?: boolean; strict?: boolean } = {},
+): Mounted {
   const studio = new Studio(session(o.over), api, 60_000);
   studios.push(studio);
   const engine = { focus: vi.fn(), camera: { aspect: 1.5, fov: 70 }, surface: { focus: vi.fn() } };
@@ -93,7 +95,8 @@ function mount(o: { over?: Partial<DesignerSession>; overlay?: Overlay3D; canEdi
     hook.current = components;
     return <RedstoneOutliner components={components} defs={components.controller?.defs() ?? []} />;
   }
-  const view = render(<Harness canEdit={o.canEdit ?? true} />);
+  // StrictMode as the dev server runs it: the controller is made, disposed and made again.
+  const view = render(<Harness canEdit={o.canEdit ?? true} />, o.strict ? { wrapper: StrictMode } : {});
   return { studio, hook, notice, engine, rerender: (canEdit) => view.rerender(<Harness canEdit={canEdit} />) };
 }
 
@@ -372,6 +375,18 @@ describe('the restore note', () => {
     const m = mount({ over: { blocks, designId: 5, rev: 1, redstoneAuthoring: saved } });
     expect(rows()).toEqual(['NOT 1']);
     expect(m.notice).toHaveBeenCalledExactlyOnceWith(
+      '1 of 2 saved components no longer matches the circuit and was opened as plain blocks. The saved revision still has it.',
+      { tone: 'warn', sticky: true },
+    );
+  });
+
+  it('stays on the page under StrictMode, where the controller is made twice', () => {
+    // The first controller's open writes this browser's copy (the components that still match): the second must not take
+    // that copy for recovered work and forget that a saved component was opened as plain blocks.
+    const blocks = [...notBlocks([10, 0, 10]), ...notBlocks([20, 0, 10]).filter((b) => b[3] !== TORCH)];
+    const m = mount({ over: { blocks, designId: 5, rev: 1, redstoneAuthoring: saved }, strict: true });
+    expect(rows()).toEqual(['NOT 1']);
+    expect(m.notice).toHaveBeenCalledWith(
       '1 of 2 saved components no longer matches the circuit and was opened as plain blocks. The saved revision still has it.',
       { tone: 'warn', sticky: true },
     );

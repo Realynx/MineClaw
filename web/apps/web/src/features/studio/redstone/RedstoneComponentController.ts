@@ -210,8 +210,8 @@ export class RedstoneComponentController {
   /** What the reader should know about how the components opened (saved ones left out), or null. */
   restoreNote: string | null = null;
   private readonly listeners = new Set<() => void>();
-  private readonly unsubscribe: () => void;
-  private readonly unsubscribeStudio: () => void;
+  /** Stops following the canvas and the studio (null while not attached). */
+  private unfollow: (() => void) | null = null;
   /** This session's copy is in the browser (it holds unsaved work). */
   private stored = false;
   private readonly store: RedstoneAuthoringStore;
@@ -228,10 +228,17 @@ export class RedstoneComponentController {
   /** The outliner's rows as last worked out, and for which snapshot and canvas. */
   private rowCache: { snap: ComponentSnapshot; epoch: number; rows: Map<string, ComponentRow> } | null = null;
 
+  /**
+   * Opens the design's components (reading only). `attach: false` leaves writing what opened (the design's metadata and
+   * this browser's copy) and following the canvas to `attach`: a development build (StrictMode) runs React's effects twice, and
+   * a second open after the first one's writes finds the metadata and the copy already without the saved components the
+   * first left out, so it could not say that any were.
+   */
   constructor(
     private readonly studio: ComponentStudio,
     private readonly storage: StorageLike | null = browserStorage(),
     private readonly now: () => number = Date.now,
+    options: { attach?: boolean } = {},
   ) {
     const s = studio.session;
     // The page's own rule for a session's version.
@@ -241,11 +248,32 @@ export class RedstoneComponentController {
     this.state = this.restore();
     this.index();
     this.snap = this.build();
-    this.save();
-    this.unsubscribe = studio.onCells(this.canvasChanged);
-    this.unsubscribeStudio = studio.subscribe(this.studioChanged);
-    this.prune(`${COPY_PREFIX}${s.owner}:`);
-    this.studioChanged();
+    if (options.attach !== false) this.attach();
+  }
+
+  /**
+   * Writes what opened and follows the canvas and the studio from now on; the function returned stops that. Attaching
+   * again while attached does nothing more; after a stop it attaches again (a development build's effects stop and start
+   * at once, so no canvas change falls between).
+   */
+  attach(): () => void {
+    if (!this.unfollow) {
+      this.save();
+      const offCells = this.studio.onCells(this.canvasChanged);
+      const offStudio = this.studio.subscribe(this.studioChanged);
+      this.unfollow = () => {
+        offCells();
+        offStudio();
+      };
+      this.prune(`${COPY_PREFIX}${this.studio.session.owner}:`);
+      this.studioChanged();
+    }
+    const off = this.unfollow;
+    return () => {
+      if (this.unfollow !== off) return;
+      off();
+      this.unfollow = null;
+    };
   }
 
   subscribe = (fn: () => void): (() => void) => {
@@ -256,8 +284,8 @@ export class RedstoneComponentController {
   snapshot = (): ComponentSnapshot => this.snap;
 
   dispose(): void {
-    this.unsubscribe();
-    this.unsubscribeStudio();
+    this.unfollow?.();
+    this.unfollow = null;
     this.listeners.clear();
   }
 
