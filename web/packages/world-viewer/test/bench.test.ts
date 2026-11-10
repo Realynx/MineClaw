@@ -3,9 +3,9 @@ import { InlineMeshHost } from '../src/mesh/host';
 import { createFixtureSource } from '../src/fixtures/world';
 import { meshSection } from '../src/mesh/mesher';
 import { meshAssets } from '../src/atlas/assets';
-import { pack1122, packBeta } from './pack';
+import { noPacks, pack1122, packBeta } from './pack';
 
-it.skipIf(!process.env.BENCH)('mesher throughput (BENCH=1)', async () => {
+it.skipIf(!process.env.BENCH || noPacks)('mesher throughput (BENCH=1)', async () => {
   for (const [version, textured] of [['b1.8.1', false], ['b1.8.1', true], ['1.12.2', true]] as const) {
     const src = createFixtureSource({ radius: 2, now: () => 0, version });
     const host = new InlineMeshHost();

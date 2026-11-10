@@ -130,6 +130,12 @@ cp /opt/mineclaw/current/mineclaw.service /etc/systemd/system/ && systemctl daem
   4. `MINECLAW_` env vars
   5. CLI `--data-dir`, `--log-dir`, `--log-format` and `--shutdown-timeout`
 - **Knowledge dir.** The unit sets `MINECLAW_Agent__KnowledgeDirectory=/opt/mineclaw/current/docs/knowledge`.
+- **Player lists (migration).** The code no longer names any player by default: who is guarded, sparred with, trusted for
+  void parkour, called by a nickname or known as someone else's bot comes only from config. A config written before that
+  change must set `Minecraft:GuardPlayers`, `Minecraft:SparPlayers`, `Minecraft:ParkourTrustedPlayers`,
+  `Agent:Chat:PlayerNicknames` and `Agent:Chat:OtherBots` (see `src/MineClaw.App/appsettings.example.json`), or the bots
+  stop guarding and sparring, lose the nicknames, and treat a friend's bot as a human. Startup logs a warning when
+  `Agent:Self:TrustedPlayers` is set but one of the `Minecraft:` lists is empty.
 
 ### Shutdown and exit codes
 

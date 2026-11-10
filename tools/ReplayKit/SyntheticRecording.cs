@@ -118,7 +118,7 @@ public static class SyntheticRecording
 
     // ------------------------------------------------------------------ helpers
 
-    private static byte[] Wire(IPacket p, PacketDirection dir)
+    internal static byte[] Wire(IPacket p, PacketDirection dir)
     {
         var ms = new MemoryStream();
         PacketRegistry.Write(new MinecraftWriter(ms), p, dir);
@@ -126,7 +126,7 @@ public static class SyntheticRecording
     }
 
     /// <summary>7x7 grass island at y 63 (dirt 61-62) around 0,0; cobble patch x=-3; a log at 1,64,1; a chest at 2,64,2.</summary>
-    private static Dictionary<(int, int, int), int> Island()
+    internal static Dictionary<(int, int, int), int> Island()
     {
         var b = new Dictionary<(int, int, int), int>();
         for (int x = -3; x <= 3; x++)
@@ -143,7 +143,7 @@ public static class SyntheticRecording
         return b;
     }
 
-    private static ChunkRegion Chunk(Dictionary<(int, int, int), int> blocks, int cx, int cz)
+    internal static ChunkRegion Chunk(Dictionary<(int, int, int), int> blocks, int cx, int cz)
     {
         var r = new ChunkRegion(cx * 16, 0, cz * 16, 16, 128, 16);
         Array.Fill(r.SkyLight, (byte)15);
@@ -152,19 +152,19 @@ public static class SyntheticRecording
         return r;
     }
 
-    private static NamedEntitySpawnPacket Spawn(int id, string name, double x, double y, double z) => new()
+    internal static NamedEntitySpawnPacket Spawn(int id, string name, double x, double y, double z) => new()
     {
         EntityId = id, PlayerName = name, X = FixedPoint.ToAbsolute(x), Y = FixedPoint.ToAbsolute(y), Z = FixedPoint.ToAbsolute(z),
     };
 
-    private static EntityTeleportPacket Teleport(int id, double x, double y, double z, (float Yaw, float Pitch) look) => new()
+    internal static EntityTeleportPacket Teleport(int id, double x, double y, double z, (float Yaw, float Pitch) look) => new()
     {
         EntityId = id, X = FixedPoint.ToAbsolute(x), Y = FixedPoint.ToAbsolute(y), Z = FixedPoint.ToAbsolute(z),
         Yaw = FixedPoint.ToAngle(look.Yaw), Pitch = FixedPoint.ToAngle(look.Pitch),
     };
 
     /// <summary>Look from a player's eye (feet + 1.62) at a block centre.</summary>
-    private static (float, float) Face((double X, double Y, double Z) feet, (int X, int Y, int Z) block) =>
+    internal static (float, float) Face((double X, double Y, double Z) feet, (int X, int Y, int Z) block) =>
         MineClaw.World.PlayerPhysics.YawPitchTo(new MineClaw.World.Vec3d(feet.X, feet.Y + MineClaw.World.PlayerPhysics.EyeHeight, feet.Z),
             new MineClaw.World.Vec3d(block.X + 0.5, block.Y + 0.5, block.Z + 0.5));
 }

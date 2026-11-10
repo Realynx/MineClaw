@@ -16,7 +16,7 @@ namespace MineClaw.Agent.Tests;
 public class WorldToolsGoldenTests
 {
     private const string ExpectedWhereIs = "3277DF925639C4D1180462710D0E9FEDDC0F1B78D8E93D7C1A82827A1170DBAD";
-    private const string ExpectedParsers = "D907CE7E524054C232BFA38EE21B0C85F4E8D3A67D5938001047CD9DFAD19834";
+    private const string ExpectedParsers = "7EFB671103340BB1F23BE3FC8136D9D9F1FD2558BEE636E5984549E7E8ED904C";
 
     private static string Hash(string dump, string file)
     {
@@ -46,6 +46,7 @@ public class WorldToolsGoldenTests
         world.Upsert(new Observation("portal", "1,65,1", "portal") { Bounds = Box.Point(1, 65, 1), Dimension = -1 });
         world.Portals.Link(new PortalEnd(0, "5,64,5", 5, 64, 5), new PortalEnd(-1, "1,65,1", 1, 65, 1));
         var beliefs = BeliefStore.For(mem);
+        beliefs.Options = TestPlayers.Beliefs();
         beliefs.Ingest("PoofImaFox", "there are diamonds in the chest at 3,64,7");
         time.Advance(TimeSpan.FromSeconds(20));
 

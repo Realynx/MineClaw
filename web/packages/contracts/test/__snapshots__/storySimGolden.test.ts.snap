@@ -325,7 +325,7 @@ exports[`the mock director: a golden run > designations and builds: every op and
   ],
   [
     "after adds",
-    "ac48021b2c714217",
+    "edb16810a06ef79c",
   ],
   [
     "remove ids",
@@ -361,7 +361,7 @@ exports[`the mock director: a golden run > designations and builds: every op and
   ],
   [
     "after removes",
-    "b9b7b394de953643",
+    "4e70993fa36e3395",
   ],
   [
     "add",
@@ -393,7 +393,7 @@ exports[`the mock director: a golden run > designations and builds: every op and
   ],
   [
     "after builds",
-    "64f3aba23265ab37",
+    "70854d6df8f7a981",
   ],
   [
     "pause",
@@ -425,7 +425,7 @@ exports[`the mock director: a golden run > designations and builds: every op and
   ],
   [
     "after work",
-    "c341897b3dc148c8",
+    "a5a7eaf766a88ca2",
   ],
   [
     "retry all",
@@ -433,7 +433,7 @@ exports[`the mock director: a golden run > designations and builds: every op and
   ],
   [
     "end",
-    "a83847cc82a22fe3",
+    "910c1b9e688e868e",
   ],
 ]
 `;
@@ -579,11 +579,11 @@ exports[`the mock director: a golden run > records every request and the colony 
   ],
   [
     "delta founded",
-    "6fd9655b8d054583",
+    "b076f97c22097d16",
   ],
   [
     "state founded",
-    "a9b82fa4ffaf3b2f",
+    "0af2fc9a7d27beac",
   ],
   [
     "priorities",
@@ -663,7 +663,7 @@ exports[`the mock director: a golden run > records every request and the colony 
   ],
   [
     "delta designated",
-    "b155c9feeac3953b",
+    "953e2431f268ddd7",
   ],
   [
     "zone farm",
@@ -747,7 +747,7 @@ exports[`the mock director: a golden run > records every request and the colony 
   ],
   [
     "delta zoned",
-    "cead60a7a3416f2f",
+    "3bf78c942b36a6ce",
   ],
   [
     "builds",
@@ -775,7 +775,7 @@ exports[`the mock director: a golden run > records every request and the colony 
   ],
   [
     "delta built",
-    "0b7344c31d1df4c2",
+    "8cb3e25198fd3d27",
   ],
   [
     "storage area",
@@ -851,7 +851,7 @@ exports[`the mock director: a golden run > records every request and the colony 
   ],
   [
     "delta benches",
-    "1cf43c7d8257831e",
+    "7522aa663f3984b6",
   ],
   [
     "draft",

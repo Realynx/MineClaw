@@ -11,7 +11,7 @@ public class EmoteTests
     {
         var events = new EventQueue(new EventQueueOptions { CoalesceWindowMs = 5, MaxBatchDelayMs = 20 });
         var sent = new List<string>();
-        var chat = new ChatRouter(new ChatOptions { Username = "maid_chan", DisplayName = "claudechan", Aliases = ["claude"], LineDelayMs = 0 },
+        var chat = new ChatRouter(new ChatOptions { Username = "maid_chan", DisplayName = "claudechan", Aliases = ["claude"], LineDelayMs = 0 }.Regulars(),
             events, (l, _) => { lock (sent) sent.Add(l); return Task.CompletedTask; });
         chat.SetOnlinePlayers(["kiwi", "poofimafox"]);
         return (chat, events, sent);

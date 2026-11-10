@@ -13,7 +13,7 @@ import type { StateTable } from '../src/mesh/states';
 import type { GameVersion } from '../src/world/blocks';
 import { CX0, CX1, FieldWorld, GROUND, farmDeltas, inField } from './fieldWorld';
 import { Digest } from './digest';
-import { table1122, tableBeta } from './pack';
+import { noPacks, table1122, tableBeta } from './pack';
 
 const VERSIONS: Array<[GameVersion, () => StateTable]> = [['b1.8.1', tableBeta], ['1.12.2', table1122]];
 
@@ -44,7 +44,7 @@ function vertices(m: SectionMesh, w: FieldWorld, id: number): Array<{ x: number;
   return out;
 }
 
-describe('wheat field light', () => {
+describe.skipIf(noPacks)('wheat field light', () => {
   for (const [version, table] of VERSIONS)
     it(`a field relit after 200 harvest / replant deltas equals the field lit from scratch (${version})`, async () => {
       const w = new FieldWorld();

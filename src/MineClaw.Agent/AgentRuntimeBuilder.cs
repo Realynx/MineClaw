@@ -222,6 +222,7 @@ internal sealed class AgentRuntimeBuilder
     {
         RegisterStop();
         MemoryTools.RegisterAll(_tools, _memory, _position);
+        Rag.Beliefs.BeliefStore.For(_memory).Options.WithChatNicknames(_o.Chat.PlayerNicknames); // claim lines say "fox says"
         CreateRules();
         // Foreign bots' command prefixes ("c trees" is robinchan's) survive restarts; trusted players' rules declare them.
         CommandPrefixStore.Attach(_chat, _db, _rules, _time, _chatLog);

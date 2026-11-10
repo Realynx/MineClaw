@@ -1,8 +1,8 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
-exports[`mock RAPTOR tree and story ground (golden, pinned before they were split) > builds the same tree 1`] = `3018719449`;
+exports[`mock RAPTOR tree and story ground (golden, pinned before they were split) > builds the same tree 1`] = `2756038684`;
 
-exports[`mock RAPTOR tree and story ground (golden, pinned before they were split) > builds the same tree 2`] = `2372052753`;
+exports[`mock RAPTOR tree and story ground (golden, pinned before they were split) > builds the same tree 2`] = `3455609738`;
 
 exports[`mock RAPTOR tree and story ground (golden, pinned before they were split) > finds the same ground 1`] = `
 [

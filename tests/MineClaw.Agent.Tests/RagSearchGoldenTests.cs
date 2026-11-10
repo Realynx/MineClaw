@@ -12,7 +12,7 @@ namespace MineClaw.Agent.Tests;
 /// </summary>
 public class RagSearchGoldenTests
 {
-    private const string Expected = "8BFA76FD4946A60C939B9AF411CB9EEB7B087A4565A7B7B33D9109378C7B097A";
+    private const string Expected = "D2ADF2BB031695D26DBF833DB027895AC1415DC33AEEC50ACEB329085E44B79C";
 
     private static (AgentDb Db, RagIndex Idx, FakeEmbedder Emb) Seed(bool noFts)
     {

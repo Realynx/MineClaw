@@ -23,7 +23,7 @@ public class Release1122NightDefenceTests
             srv.Difficulty = 2; // normal, as live
             srv.ConsumeOnPlace = true; // a vanilla server takes the placed block (else every box block waits out the 300 ms check)
             setup?.Invoke(srv);
-        }, release1122: true);
+        }, o => o with { Combat = o.Combat with { GuardPlayers = CombatRig.Regulars, SparPlayers = CombatRig.Regulars } }, release1122: true);
 
     [Fact]
     public void Bare_hands_lose_to_a_zombie_and_a_stone_sword_wins_on_1_12_2()

@@ -225,6 +225,9 @@ public static class TestBot
         o.ChatDebounce.QuietMs = 10;
         o.ChatDebounce.MaxMs = 50;
         o.ChatDebounce.ReplyQuietMs = 0;
+        // The test server's regulars, set the way a deployment configures them (the code defaults name nobody).
+        o.Chat.PlayerNicknames = new(StringComparer.OrdinalIgnoreCase) { ["poofimafox"] = ["fox", "foxy", "master"], ["kiwi"] = ["robin"] };
+        o.Chat.OtherBots = ["robinchan"];
         return o;
     }
 

@@ -7,7 +7,7 @@ public class ChatTests
 {
     private static (ChatRouter Router, EventQueue Queue, List<string> Sent) Make(Action<ChatOptions>? cfg = null, TimeProvider? time = null)
     {
-        var o = new ChatOptions { Username = "Clawd", DisplayName = "Clawd", Aliases = ["claw"], LineDelayMs = 0 };
+        var o = new ChatOptions { Username = "Clawd", DisplayName = "Clawd", Aliases = ["claw"], LineDelayMs = 0 }.Regulars();
         cfg?.Invoke(o);
         var q = new EventQueue();
         var sent = new List<string>();

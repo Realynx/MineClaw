@@ -53,7 +53,7 @@ public class NightReviewSpeechTests
     [Fact]
     public async Task B18_an_inline_me_is_sent_as_its_own_emote_line()
     {
-        var o = new ChatOptions { Username = "maid_chan", DisplayName = "maid chan", LineDelayMs = 0, MaxLinesPerReply = 5 };
+        var o = new ChatOptions { Username = "maid_chan", DisplayName = "maid chan", LineDelayMs = 0, MaxLinesPerReply = 5 }.Regulars();
         var sent = new List<string>();
         var r = new ChatRouter(o, new EventQueue(), (l, _) => { sent.Add(l); return Task.CompletedTask; });
         // alice 07:47:57: "<maid_chan> Hai, foxy sama~ /me curtsies. Your maid has chopped…"

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { blendFrames, frameAt, SpriteAnimator, type AnimSpec, type CellWriter } from '../src/atlas/anim';
 import { betaEffects } from '../src/atlas/betaFx';
-import { pack1122 } from './pack';
+import { noPacks, pack1122 } from './pack';
 
 describe('mcmeta animation timing', () => {
   const frames = [{ index: 0, time: 2 }, { index: 3, time: 3 }];
@@ -19,7 +19,7 @@ describe('mcmeta animation timing', () => {
     expect(frameAt(frames, 1, false).weight).toBe(1);
   });
 
-  it('the pack carries the vanilla lava/water timings', () => {
+  it.skipIf(noPacks)('the pack carries the vanilla lava/water timings', () => {
     const anims = pack1122().anims;
     const lava = anims.find((a) => a.name === 'blocks/lava_still')!;
     expect(lava.frames.length).toBeGreaterThan(lava.count); // a custom frame list (ping-pong)

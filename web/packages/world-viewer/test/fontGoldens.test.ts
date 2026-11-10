@@ -3,8 +3,7 @@
 // rich-to-legacy, glyph layout and rasteriser with both versions' measured font tables and font sheets. The digests were
 // taken from the code before it was reshaped.
 
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
 import { PNG } from 'pngjs';
 import { describe, expect, it } from 'vitest';
 import type { Pack1122, PackBeta } from '../src/assets/bundle';
@@ -12,11 +11,14 @@ import { charWidth as fallbackWidth, textWidth } from '../src/render/blockEntity
 import { fontTable, layoutLine, rasterLine, richToLegacy, signLineText, stringWidth, trimToWidth, type FontPixels, type FontTable } from '../src/render/font';
 import type { SignRun } from '../src/types';
 import { Digest, rng } from './digest';
+import { generatedFile, noPacks } from './pack';
 
-const gen = join(__dirname, '..', 'generated');
-const FONTS: Array<[string, FontTable, FontPixels]> = (['1.12.2', 'b1.8.1'] as const).map((v) => {
-  const pack = JSON.parse(readFileSync(join(gen, v, 'pack.json'), 'utf8')) as Pack1122 | PackBeta;
-  const png = PNG.sync.read(readFileSync(join(gen, v, 'font.png')));
+// Both versions' local packs with their font sheets, or none (the pack-backed goldens skip).
+const VERSIONS = ['1.12.2', 'b1.8.1'] as const;
+const hasFonts = !noPacks && VERSIONS.every((v) => existsSync(generatedFile(v, 'font.png')));
+const FONTS: Array<[string, FontTable, FontPixels]> = (hasFonts ? VERSIONS : []).map((v) => {
+  const pack = JSON.parse(readFileSync(generatedFile(v, 'pack.json'), 'utf8')) as Pack1122 | PackBeta;
+  const png = PNG.sync.read(readFileSync(generatedFile(v, 'font.png')));
   return [v, fontTable(pack.font, v !== '1.12.2')!, { data: png.data, width: png.width, cell: png.width / 16 }];
 });
 
@@ -49,7 +51,7 @@ describe('font goldens', () => {
     expect(d.hex()).toBe('002d9d89172636e48234d50c4e28b19f');
   });
 
-  it('widths, trims, sign cuts and rich text', () => {
+  it.skipIf(!hasFonts)('widths, trims, sign cuts and rich text', () => {
     const d = new Digest();
     for (const [v, f] of FONTS) {
       const r = rng(v === '1.12.2' ? 11 : 12);
@@ -74,7 +76,7 @@ describe('font goldens', () => {
     expect(d.hex()).toBe('3ada0d3cf48016c10f543013fa1d88fd');
   });
 
-  it('glyph layout and raster', () => {
+  it.skipIf(!hasFonts)('glyph layout and raster', () => {
     const d = new Digest();
     for (const [v, f, px] of FONTS) {
       const r = rng(v === '1.12.2' ? 21 : 22);

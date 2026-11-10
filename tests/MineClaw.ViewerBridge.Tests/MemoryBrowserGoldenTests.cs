@@ -64,5 +64,5 @@ public class MemoryBrowserGoldenTests
 
 internal static class MemoryBrowserGoldenData
 {
-    public const string Expected = "184 7A69648D8490322C1410FDBE8D23B0B37F4FBAC51F4E16FB166224EFA13FD4D8";
+    public const string Expected = "184 77D14ABCD354E183C19D44B86079545D3E0E4327750D506943AB43324CB5A0CD";
 }

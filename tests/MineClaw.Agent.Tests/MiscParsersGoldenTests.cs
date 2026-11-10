@@ -19,7 +19,7 @@ namespace MineClaw.Agent.Tests;
 /// </summary>
 public class MiscParsersGoldenTests
 {
-    private const string Expected = "F633E0BF58009A3141E135B4B2A6D622EFA67D333AF5843F01B49778AC745028";
+    private const string Expected = "AD49846E849F239EF2B31CFC6ABD32F8669F76A7D10B7F5036F3D2CDF42FBEC4";
 
     private static readonly System.Reflection.MethodInfo NormalizeInput =
         typeof(DoTool).GetMethod("NormalizeInput", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;

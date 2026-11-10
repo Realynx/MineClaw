@@ -11,7 +11,7 @@ namespace MineClaw.Agent.Tests;
 /// </summary>
 public class OllamaGoldenTests
 {
-    private const string Expected = "E2C214FE3197F2672E03DBF86FFDF682C7DC471171868E2756C35AE43616E1DB";
+    private const string Expected = "873D5F628956BA23A2B07B0788C12B5382998DF899B34809E000420731958817";
 
     private static JsonElement J(object o) => JsonSerializer.SerializeToElement(o);
 

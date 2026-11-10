@@ -24,7 +24,7 @@ public class SigningTests
         var hash = BridgeSigning.Sha256Hex(System.Text.Encoding.UTF8.GetBytes(PostBody));
         Assert.Equal("1799cd6a496b955c3b09614f6ea849740d8a960cf4953323d89de775321e6da9", hash);
         var s = BridgeSigning.SigningString("post", "/v1/sup/viewer/chat", "1762077600", "ffeeddccbbaa99887766554433221100", hash, "robin", "kiwi", "chat,viewer");
-        Assert.Equal("c13b3496a88ed8926bf6f910f93443800d5d0f0a56c77a545280da5e11b505d0", BridgeSigning.Sign(Key, s));
+        Assert.Equal("430af190755eb08dec07cd74e8a00c00a62afb0c27ca9c2be09c770e5573c611", BridgeSigning.Sign(Key, s));
     }
 
     [Fact]

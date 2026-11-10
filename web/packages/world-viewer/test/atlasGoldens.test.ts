@@ -3,8 +3,7 @@
 // seeded frame times, animation rates, budgets and visibility sets, against a recording renderer: every cell copy (source,
 // region, target, pixels) and the time uniforms are hashed. The digest was taken from the code before it was reshaped.
 
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
 import { PNG } from 'pngjs';
 import * as THREE from 'three';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -12,11 +11,12 @@ import type { AssetBundle, Pack } from '../src/assets/bundle';
 import { BlockAtlas } from '../src/render/blockAtlas';
 import { createChunkUniforms } from '../src/render/chunkMaterial';
 import { Digest, rng } from './digest';
-import { pack1122, packBeta } from './pack';
+import { generatedFile, noPacks, pack1122, packBeta } from './pack';
 
-const anim = PNG.sync.read(readFileSync(join(__dirname, '..', 'generated', '1.12.2', 'anim.png')));
+const animPng = generatedFile('1.12.2', 'anim.png');
+const anim = existsSync(animPng) ? PNG.sync.read(readFileSync(animPng)) : null!;
 
-describe('block atlas goldens', () => {
+describe.skipIf(noPacks || !anim)('block atlas goldens', () => {
   const g = globalThis as unknown as { OffscreenCanvas?: unknown };
   let had: unknown;
   beforeAll(() => {

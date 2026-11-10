@@ -15,8 +15,9 @@ namespace MineClaw.Bot;
 /// </summary>
 public static class IntentionalReset
 {
-    /// <summary>Fox's teaching (live 10-27), kept as a trusted-player claim in shared memory (idempotent).</summary>
-    public const string Claimant = "PoofimaFox";
+    /// <summary>Fox's teaching (live 10-27), kept as a trusted-player claim in shared memory (idempotent): it is held by the first
+    /// of Agent:Self:TrustedPlayers, or by this name when nobody is trusted.</summary>
+    public const string Claimant = "owner";
     public const string ClaimText = "void reset after depositing restores hp/hunger";
 
     /// <summary>The announcement, once per step.</summary>
@@ -53,11 +54,15 @@ public static class IntentionalReset
         {
             var store = BeliefStore.For(rt.Db, rt.Rag);
             if (!store.Options.Enabled) return null;
-            if (Find(store) is null) store.Ingest(Claimant, ClaimText);
+            if (Find(store) is null) store.Ingest(ClaimantOf(rt), ClaimText);
             return store;
         }
         catch (Exception ex) { log?.LogDebug(ex, "void-reset claim seed failed"); return null; }
     }
+
+    /// <summary>Who holds the seeded claim: the first trusted player, else <see cref="Claimant"/>.</summary>
+    public static string ClaimantOf(AgentRuntime rt) =>
+        rt.Options.Self.TrustedPlayers.FirstOrDefault(p => !string.IsNullOrWhiteSpace(p)) ?? Claimant;
 
     /// <summary>The claim about void resets (by its words), or null.</summary>
     public static BeliefClaim? Find(BeliefStore store) =>

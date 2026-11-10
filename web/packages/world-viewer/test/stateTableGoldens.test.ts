@@ -5,9 +5,9 @@ import { describe, expect, it } from 'vitest';
 import { meshAssets } from '../src/atlas/assets';
 import { buildStateTable } from '../src/mesh/states';
 import { Digest } from './digest';
-import { pack1122, packBeta } from './pack';
+import { noPacks, pack1122, packBeta } from './pack';
 
-describe('state table golden', () => {
+describe.skipIf(noPacks)('state table golden', () => {
   it('pins flags, dynamic and shape of every state', () => {
     const d = new Digest();
     const beforeAnimatedEnderChest = new Digest();

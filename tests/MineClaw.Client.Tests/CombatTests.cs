@@ -11,6 +11,9 @@ namespace MineClaw.Client.Tests;
 /// <summary>Engine-level rig: a flat stone platform (|x|,|z| ≤ half at y=63) over the void, the bot at (0.5, 64, 0.5).</summary>
 internal sealed class CombatRig
 {
+    /// <summary>The test server's regulars, guarded and sparred as a deployment configures them (the code defaults name nobody).</summary>
+    public static readonly string[] Regulars = ["poofimafox", "kiwi"];
+
     public readonly WorldState W;
     public readonly CombatEngine E;
     public readonly List<string> Lines = new();
@@ -32,7 +35,7 @@ internal sealed class CombatRig
         W.Player.SetHealth(20, 20, 5);
         W.Time = 6000;
         var tel = new CombatTelemetry(null) { Sink = Lines.Add };
-        E = new CombatEngine(W, o ?? new CombatOptions { TelemetryDirectory = null }, tel) { Username = "maid_chan" };
+        E = new CombatEngine(W, o ?? new CombatOptions { TelemetryDirectory = null, GuardPlayers = CombatRig.Regulars, SparPlayers = CombatRig.Regulars }, tel) { Username = "maid_chan" };
         E.EventRaised += Events.Add;
     }
 
@@ -156,7 +159,7 @@ public class CombatEngineTests
 {
     private static CombatOptions Opts(Func<CombatOptions, CombatOptions>? f = null)
     {
-        var o = new CombatOptions { TelemetryDirectory = null, Crits = false, Block = false };
+        var o = new CombatOptions { TelemetryDirectory = null, Crits = false, Block = false, GuardPlayers = CombatRig.Regulars, SparPlayers = CombatRig.Regulars };
         return f is null ? o : f(o);
     }
 
@@ -395,7 +398,7 @@ public class SparTests
 {
     private static CombatOptions Opts(Func<CombatOptions, CombatOptions>? f = null)
     {
-        var o = new CombatOptions { TelemetryDirectory = null };
+        var o = new CombatOptions { TelemetryDirectory = null, GuardPlayers = CombatRig.Regulars, SparPlayers = CombatRig.Regulars };
         return f is null ? o : f(o);
     }
 
@@ -778,7 +781,7 @@ public class SparTests
 public class CombatClientTests
 {
     private static Task<(MinecraftClient Client, FakeServer Server)> StartAsync(Action<FakeServer>? setup = null) =>
-        Harness.StartAsync(setup, o => o with { Combat = new CombatOptions { TelemetryDirectory = null, Crits = false } });
+        Harness.StartAsync(setup, o => o with { Combat = new CombatOptions { TelemetryDirectory = null, Crits = false, GuardPlayers = CombatRig.Regulars, SparPlayers = CombatRig.Regulars } });
 
     private static void Knock(FakeServer s, double vx, double vy, double vz) =>
         s.Send(new EntityVelocityPacket

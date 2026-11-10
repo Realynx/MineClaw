@@ -47,5 +47,5 @@ public class SeeViewsGoldenTests
     }
 
     /// <summary>Generated from the pre-refactor code (WP03).</summary>
-    private const string Expected = "C0B9563DDC46AC643E19816F";
+    private const string Expected = "C035916BE05651C948F25E6F";
 }

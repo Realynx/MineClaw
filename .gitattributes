@@ -1,0 +1,19 @@
+# Line endings: text files are stored with LF in the repository; the working-tree ending follows core.autocrlf.
+* text=auto
+# Shell scripts run on Linux hosts and must keep LF on every checkout.
+*.sh text eol=lf
+
+# Binary formats: never convert or diff as text.
+*.png binary
+*.mcrec binary
+*.mcshard binary
+*.db binary
+*.jar binary
+*.ogg binary
+
+# GitHub language statistics and diffs: generated test data and vendored files.
+**/__snapshots__/** linguist-generated
+**/*GoldenData.cs linguist-generated
+**/*GoldenData.*.cs linguist-generated
+tests/MineClaw.Hive.Tests/StoryGolden/** linguist-generated
+third_party/** linguist-vendored

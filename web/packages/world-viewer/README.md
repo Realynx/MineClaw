@@ -68,7 +68,7 @@ For an app that draws its own HUD over the view (Story Mode), the engine also of
 - `runtime.host.scan(dim, min, max, ids, maxHits?)`: the blocks of a box whose id is in `ids` (every non-air block when empty),
   as flat `[x, y, z, id, meta, below-id, …]`, answered by the mesh worker.
 - `itemLookById(version, pack, id, meta)` and `itemName(id)` (package exports): the icon cell of an item or block in the
-  bundled sheets (`bundleUrls(version)`), for item icons in panels.
+  imported pack's sheets (`bundleUrls(version)`), for item icons in panels.
 
 ### `<WorldViewerProvider>` and `<WorldThumbnail>`: many views, one world
 
@@ -195,7 +195,7 @@ Changed blocks glow briefly (`layers.changes`).
 - **Block-entity layer** (`render/blockEntityLayer.ts`, main thread, shared by every view, rebuilt only when the
   block-entity revision or the dimension changes):
   - Sign text on the board fronts in the version's own bitmap font (`render/font.ts`: 1.12.2 `textures/font/ascii.png`,
-    b1.8.1 `font/default.png` with `font.txt`'s character table; per-glyph advances measured from the image at pack time
+    b1.8.1 `font/default.png` with `font.txt`'s character table; per-glyph advances measured from the image when the pack is built
     like `FontRenderer.readFontTexture`). § colour codes; on 1.12.2 also bold, italic, underline, strikethrough,
     obfuscated (random same-width glyphs, redrawn every 50 ms, 100 ms in the software profile, while in view) and reset.
     A styled 1.12.2 sign's `rich` runs (the JSON components' colours and styles) are drawn as the § text
@@ -217,8 +217,9 @@ Changed blocks glow briefly (`layers.changes`).
 - **Fluids** (both): vanilla corner heights from the levels, the flowing texture turned to the flow angle on sloped tops,
   the still texture on flat ones, sides to the corner heights, the top drawn from below too; water translucent (biome
   tinted in 1.12.2), lava opaque and full bright.
-- **Textures.** The bundled atlas (`generated/<version>/`, `loadBundle`) replaces the bridge's atlas: 1.12.2 `blocks.png`
-  (with the tile-entity sheets appended; a quad's tile attribute `w` gives the sheet size in cells) or b1.8.1 `terrain.png`.
+- **Textures.** The atlas of the pack imported from the user's own client jar (`loadBundle`; docs/web/local-game-assets.md)
+  replaces the bridge's atlas: 1.12.2 `blocks.png` (with the tile-entity sheets appended; a quad's tile attribute `w` gives
+  the sheet size in cells) or b1.8.1 `terrain.png`. Without an imported pack the viewer draws its own flat-colour placeholders.
   `RuntimeOptions.textures = false` (demo `?atlas=0`) meshes flat colours (each texture's average). `WorldSource.atlas` is
   deprecated and ignored.
 - **Animated textures.** `BlockAtlas` (`src/render/blockAtlas.ts`) rewrites only the animated cells in place
@@ -304,8 +305,8 @@ and measures sustained fps at the follow camera over the dense fixture world (la
 
 ### Entity models
 
-Bots, players, mobs, drops and objects are drawn as vanilla-shaped box models, textured from the bundled entity sheet
-(`generated/<version>/entity.png`, which also holds the painting sheets; `loadBundle`). This covers both versions and every
+Bots, players, mobs, drops and objects are drawn as vanilla-shaped box models, textured from the imported pack's entity sheet
+(`entity.png`, which also holds the painting sheets; `loadBundle`). This covers both versions and every
 entity kind the wire reports.
 
 - **Data.** The models are our own data files in `src/render/entities/models/`; `types.ts` documents the format.
@@ -345,7 +346,7 @@ entity kind the wire reports.
   wire says so (`glint`) or the item always does (enchanted book, nether star, bottle o' enchanting, written book, end
   crystal, the enchanted golden apple). A glinting instance is flagged for its draw's glint twin: the same geometry and
   instances again with the `GLINT` shader, depth `LEQUAL` over itself, adding vanilla's two scrolling passes of
-  `enchanted_item_glint.png` (bundled as `env/glint`, repeating, linear). Armour like `LayerArmorBase.renderEnchantedGlint`
+  `enchanted_item_glint.png` (packed as `env/glint`, repeating, linear). Armour like `LayerArmorBase.renderEnchantedGlint`
   (colour 0.38, 0.19, 0.608; uv / 3, turned 30° and −30°, sliding 0.02 and 0.08 per tick), items like
   `RenderItem.renderEffect` (colour 0x8040CC; turned −50° and 10°, sliding once every 3 and 4.873 s). Each pass adds its
   colour squared (`GL_SRC_COLOR, GL_ONE`). One extra draw per geometry with a glinting instance, nothing otherwise.
@@ -432,28 +433,31 @@ npm run dev            # demo at http://localhost:5178 (fixture world): ?version
 npm run build          # plain ESM + d.ts (tsc, then scripts/fix-esm.mjs makes relative imports fully specified)
 npm test               # vitest
 npm run perf           # Playwright fps benchmark (software + GPU)
-npm run assets:extract # re-extract assets/ from the client jars (PrismLauncher / .minecraft; read as zips, never run)
-npm run assets:pack    # rebuild generated/ (atlases, animation sheet, entity sheet, pack.json) from assets/
+npm run assets:extract # extract assets/ from your own client jars (PrismLauncher / .minecraft; read as zips, never run)
+npm run assets:pack    # build generated/ (atlases, animation sheet, entity sheet, pack.json) from assets/, for the tests
 ```
 
-The package is published as plain ESM, not a bundle. `new Worker(new URL('./worker.js', import.meta.url))` and the
-`new URL('../../generated/…', import.meta.url)` asset references reach the app's bundler verbatim. Next/Turbopack, webpack and
-Vite bundle the mesh worker and emit the atlases themselves, with no copy step.
+The package is published as plain ESM, not a bundle. `new Worker(new URL('./worker.js', import.meta.url))` reaches the app's
+bundler verbatim. Next/Turbopack, webpack and Vite bundle the mesh worker themselves, with no copy step. The package ships
+no game assets.
 
-- **Assets.** The Minecraft assets are committed: the repo is private and unreleased (docs/web/architecture.md, "Render
-  parity").
+- **Assets.** No Minecraft files are in the repository. `assets/` and `generated/` are local copies made from your own
+  client jars by `npm run assets:extract` and `npm run assets:pack`; Git ignores them and they must never be committed
+  (docs/web/local-game-assets.md).
   - `assets/1.12.2` holds the blockstates, the block and item models, and the block, item, entity, environment, misc and
     colormap textures with their `.mcmeta` animation files, and the default font (`textures/font/ascii.png`).
   - `assets/b1.8.1` holds terrain, items, mob, armor, environment, misc, terrain/sun+moon and the font
     (`font/default.png`, `font.txt`).
-  - `generated/<version>` holds what the browser loads (`src/assets/bundle.ts`).
-```
+  - `generated/<version>` holds the reference packs the renderer tests read (`test/pack.ts`). The browser builds the same
+    pack from the jar the user imports in Settings (`src/assets/bundle.ts`).
 
 - **Tests.**
   - MCWC decoding against payloads written by the production C# encoders: `test/fixtures/csharp-payload.json`, regenerated
     with `dotnet run --project web/packages/world-viewer/test/fixtures/gen`. This covers both inflate paths, hashes and
     error cases.
-  - Mesher face counts (both versions, against the committed packs).
+  - Mesher face counts (both versions, against the local packs).
+  - The suites that read the local packs (`test/pack.ts`: mesher, blockstates, entity models and the goldens built on them)
+    skip until `npm run assets:extract && npm run assets:pack` has made them.
   - 1.12.2 blockstates: multipart (fences, redstone), stair shapes, door halves, variant rotations + uvlock, AO flags, tints,
     chest pairs and the tile-entity blocks.
   - b1.8.1 render-type shapes, fluid corner heights and flow, `.mcmeta` timing and interpolation, the atlas animation

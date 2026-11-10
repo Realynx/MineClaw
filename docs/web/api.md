@@ -86,7 +86,7 @@ All three new processes run on CT 114 beside the bot:
   - `Retry-After`
   - `Content-Disposition` (shard export)
 - **Caching.**
-  - JSON is `Cache-Control: no-store`. (The world viewer bundles its own textures; there is no atlas route.)
+  - JSON is `Cache-Control: no-store`. (The world viewer imports textures from the user's own game files in the browser; there is no atlas route.)
 
 ## 2. Auth, sessions, roles (Nest-native)
 
@@ -203,7 +203,7 @@ signed string)`. The bridge compares in constant time.
 | User           | `fox`                                                              | `robin`                                                                            |
 | Player         | `poofimafox`                                                       | `kiwi`                                                                             |
 | Roles          | `admin,chat,commands,viewer`                                       | `chat,viewer`                                                                      |
-| Signature      | `675be9cf1726a3d05bd596235a6f55f84d52c0982a7f2c5450a6a221ebff20b5` | `c13b3496a88ed8926bf6f910f93443800d5d0f0a56c77a545280da5e11b505d0`                 |
+| Signature      | `675be9cf1726a3d05bd596235a6f55f84d52c0982a7f2c5450a6a221ebff20b5` | `430af190755eb08dec07cd74e8a00c00a62afb0c27ca9c2be09c770e5573c611`                 |
 
 `web/packages/contracts/test/bridge.test.ts` checks both vectors. The C# bridge tests must reproduce them.
 

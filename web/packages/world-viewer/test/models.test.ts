@@ -7,7 +7,7 @@ import { TINT_FIXED, TINT_GRASS } from '../src/mesh/quad';
 import { NO_NB } from '../src/mesh/source';
 import { F_OPAQUE } from '../src/world/blocks';
 import { storeWith } from './helpers';
-import { pack1122, table1122 } from './pack';
+import { noPacks, pack1122, table1122 } from './pack';
 
 type W = Array<[number, number, number, number, number?]>;
 
@@ -26,7 +26,7 @@ const state = (blocks: W, x = 0, y = 0, z = 0) => {
 };
 const models = (blocks: W, x = 0, y = 0, z = 0) => src().modelsOf(state(blocks, x, y, z));
 
-describe('1.12.2 blockstates', () => {
+describe.skipIf(noPacks)('1.12.2 blockstates', () => {
   it('classifies full cubes: stone and grass are opaque, glass and leaves are not, stairs never', () => {
     const f = table1122().flags;
     expect(f[1 << 4] & F_OPAQUE).toBeTruthy();

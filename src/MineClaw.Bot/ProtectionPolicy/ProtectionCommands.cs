@@ -46,7 +46,7 @@ public sealed partial class ProtectionCommands
         _time = time ?? TimeProvider.System;
     }
 
-    /// <summary>Trusted players (poofimafox, kiwi): only they unlock protected blocks.</summary>
+    /// <summary>Trusted players (Agent:Self:TrustedPlayers): only they unlock protected blocks.</summary>
     public Func<IEnumerable<string>> Trusted { get; set; } = () => [];
     /// <summary>The block a player punch-pointed at just now and what it was then (a plant broken by the punch is air now), or null.</summary>
     public Func<string, (BlockPos Pos, int Id)?>? PointedBy { get; set; }

@@ -12,6 +12,12 @@ import { PNG } from 'pngjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const localResources = process.argv.includes('--local');
+// --local compares an import of your own extracted resources with your own pack (both local only, never committed).
+const missingLocal = localResources ? ['1.12.2', 'b1.8.1'].filter((v) => !existsSync(resolve(root, 'assets', v)) || !existsSync(resolve(root, 'generated', v, 'pack.json'))) : [];
+if (missingLocal.length) {
+  console.error(`--local needs assets/<version> and generated/<version>/pack.json (missing for ${missingLocal.join(', ')}): run npm run assets:extract && npm run assets:pack first, from your own client jars`);
+  process.exit(2);
+}
 function png(width, height, pixel) {
   const image = new PNG({ width, height });
   for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) image.data.set(pixel(x, y), (y * width + x) * 4);
@@ -85,7 +91,7 @@ soundFiles.push({ path: 'assets/indexes/1.12.json', data: Buffer.from(json({ obj
 
 async function verifyLocalResources(page, version) {
   const directory = resolve(root, 'assets', version), generated = resolve(root, 'generated', version);
-  if (!existsSync(directory) || !existsSync(resolve(generated, 'pack.json'))) throw new Error(`Missing local extracted resources/reference pack for ${version}`);
+  if (!existsSync(directory) || !existsSync(resolve(generated, 'pack.json'))) throw new Error(`Missing assets/${version} or generated/${version}/pack.json: run npm run assets:extract && npm run assets:pack first`);
   const entries = {};
   function walk(dir, prefix) {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {

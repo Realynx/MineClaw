@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-// Packs the committed assets (assets/<version>/) into the bundles the viewer loads (generated/<version>/), at package build time:
+// Packs the assets extracted from your own client jars (assets/<version>/, `npm run assets:extract`) into the reference bundles
+// the tests and assets:test-import read (generated/<version>/). Both folders are Mojang's files: local only, never committed.
 //
 // 1.12.2
 //   blocks.png   every textures/blocks/*.png (frame 0 of animated ones) in a 16 px grid
@@ -29,6 +30,9 @@ const pkg = resolve(here, '..');
 const assets = join(pkg, 'assets');
 const out = join(pkg, 'generated');
 const repoRoot = resolve(pkg, '..', '..', '..');
+
+let missing = 0;
+const noAssets = (v) => { missing++; console.warn(`no assets/${v}: run npm run assets:extract first (it extracts them from your own client jar)`); };
 
 const readPng = (p) => PNG.sync.read(readFileSync(p));
 const writePng = (p, png) => writeFileSync(p, PNG.sync.write(png, { colorType: 6 }));
@@ -216,7 +220,7 @@ function copyEnv(srcDir, dest) {
 
 function pack1122() {
   const src = join(assets, '1.12.2');
-  if (!existsSync(src)) return console.warn('no assets/1.12.2 (run extract-assets.mjs)');
+  if (!existsSync(src)) return noAssets('1.12.2');
   const dest = join(out, '1.12.2');
   rmSync(dest, { recursive: true, force: true });
   mkdirSync(dest, { recursive: true });
@@ -288,7 +292,7 @@ function pack1122() {
 
 function packBeta() {
   const src = join(assets, 'b1.8.1');
-  if (!existsSync(src)) return console.warn('no assets/b1.8.1 (run extract-assets.mjs)');
+  if (!existsSync(src)) return noAssets('b1.8.1');
   const dest = join(out, 'b1.8.1');
   rmSync(dest, { recursive: true, force: true });
   mkdirSync(dest, { recursive: true });
@@ -358,3 +362,4 @@ function report(dir) {
 
 pack1122();
 packBeta();
+if (missing === 2) process.exitCode = 1;

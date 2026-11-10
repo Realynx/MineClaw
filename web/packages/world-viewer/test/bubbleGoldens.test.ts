@@ -53,7 +53,7 @@ describe('bubble goldens', () => {
     b.onDrop = null;
     for (let k = 0; k < 20; k++) b.say(`q${k % 5}`, `line ${k}`, 'chat', now + k);
     d.add(String(b.size));
-    expect(d.hex()).toBe('84329c410aaf37ebd462bcba573d926a');
+    expect(d.hex()).toBe('1c48782bcdf463aea566898add0981ed');
   });
 
   it('findSpeaker', () => {
@@ -68,7 +68,7 @@ describe('bubble goldens', () => {
         ents.push({ key: `0:${j}`, kind: r() < 0.7 ? 'player' : 'mob', name: r() < 0.8 ? NAMES[Math.floor(r() * NAMES.length)] : null, dim: 0, x: j * 2, y: 70, z: j });
       d.add(JSON.stringify(findSpeaker(NAMES[Math.floor(r() * NAMES.length)], bots, ents)));
     }
-    expect(d.hex()).toBe('7138444cb97905b796619167625519d8');
+    expect(d.hex()).toBe('f3704dd1ee678ccb45f9770514dd09d7');
   });
 
   describe('BubbleLayer.showFor', () => {
@@ -156,7 +156,7 @@ describe('bubble goldens', () => {
       }
       d.add(calls.join(';'));
       l.dispose();
-      expect(d.hex()).toBe('6959bc2257997d3483fb3d8c3bba9f60');
+      expect(d.hex()).toBe('f2fbf24a61ee1bae5d14c4c0cdfc6ed3');
     });
   });
 });

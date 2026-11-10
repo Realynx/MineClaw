@@ -171,8 +171,8 @@ Tests for these go in `tests/MineClaw.App.Tests` (or the closest existing test p
   - `/v1/admin/schema`
 - **Renders.**
   - `/v1/render/tile/{bot}.png`: the per-bot tile.
-  - The world viewer's textures ship with `@mineclaw/world-viewer` (committed assets, atlas built client-side), so the
-    bridge serves no atlas.
+  - The world viewer's textures come from the user's own game files, imported in the browser (atlas built client-side;
+    [local-game-assets.md](local-game-assets.md)), so the bridge serves no atlas.
 - **Live.** Browsers use `/api/live/socket` (`mineclaw.live.v1`), and Nest shares one signed `/v1/live/socket` connection to
   the bridge. JSON envelopes contain `event`, `id` and `data`; topic/bot/brain/dimension filters, bounded queues, replay and
   explicit resync are shared with the compatible SSE endpoint. Reconnects pass only the event cursor in the URL. Upgrades
@@ -530,7 +530,7 @@ it touches the world, and a save is an ordinary design, so the bot can build it 
   sixteenths, 1.12.2 logs and pillars lie along the clicked face; rotate and mirror turn all of them. Chests placed side by
   side pair. Story Mode builds a design converted to the server's version and refuses one whose blocks don't exist there.
 - **Creative controls.** Fly camera, the vanilla crosshair with the mouse locked: left breaks, right places (facing from the
-  look, R turns it), middle picks; hotbar 1–9 with icons drawn from the bundled textures (`blockIconUrl`), B opens the
+  look, R turns it), middle picks; hotbar 1–9 with icons drawn from the imported textures (`blockIconUrl`), B opens the
   searchable palette, Ctrl+Z / Ctrl+Y undo and redo AI and user ops alike, a grid and a coordinate HUD. T / Enter opens the
   chat (the mouse is freed; Enter on an empty line or Esc goes back to the world, like the world view's chat bar).
 - **Manual toolkit.** Box (fill / hollow / walls / outline) and line tools by drag; box select (Shift extends, scroll or
@@ -581,8 +581,8 @@ Story Mode and the Design Studio, logging, and a read-only System group.
 ## World rendering is browser-only (decided 2026-11-02)
 
 All world viewing renders in the browser with `@mineclaw/world-viewer` (three.js/WebGL), from the raw MCWC chunk,
-entity, block-entity and overlay data and the package's bundled textures. No world images or video are rendered on the
-server.
+entity, block-entity and overlay data and the textures the user imported from their own game files. No world images or
+video are rendered on the server.
 - The bot view's world pane is a follow camera. The hive grid's per-bot cards use the package's shared-renderer
   multi-view mode: one WebGL context for every card, so the browser's context limit is never hit.
 - `/v1/render/tile/{bot}.png` is deprecated and unused by the UI.
@@ -606,10 +606,11 @@ server.
      column's hash and its encoded payload with the column's write version, `ChunkColumn.Version`, so an index over quiet
      columns costs lookups, not 64 KB walks: 18 ms → 0.25 ms for 235 live columns, 2026-11-04). On a rev gap,
      `full:true` (the ring overflowed) or a reconnect, the client refetches only the columns whose hash changed.
-- **Render parity (decided 2026-11-02).** The repo is private and unreleased, so the Minecraft assets are committed:
-  1.12.2 blockstates, models, textures and .mcmeta animations, the b1.8.1 terrain, items and mob textures, and both
-  versions' default font (sign text is drawn with it). They live
-  under `web/packages/world-viewer/assets/`, and the atlas is built client-side.
+- **Render parity (decided 2026-11-02).** No Minecraft assets are in the repository. The browser imports them from the
+  user's own client jar ([local-game-assets.md](local-game-assets.md)): 1.12.2 blockstates, models, textures and .mcmeta
+  animations, the b1.8.1 terrain, items and mob textures, and both versions' default font (sign text is drawn with it).
+  They are kept in the browser's IndexedDB, and the atlas is built client-side. Without them the viewer draws flat-colour
+  geometry.
   - The browser must match the old freecam and every C# renderer: animated water and lava, real fluids, real player and
     mob models with animation, and every block shape.
   - Decompiled Java is never committed. Entity geometry is our own data files.

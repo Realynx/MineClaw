@@ -1,10 +1,8 @@
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import type { Pack1122 } from '../src/assets/bundle';
 import { itemLookById, itemLookByName, itemName, POTION_TINT } from '../src/render/entities/items';
+import { noPacks, pack1122 } from './pack';
 
-const PACK = JSON.parse(readFileSync(join(__dirname, '..', 'generated', '1.12.2', 'pack.json'), 'utf8')) as Pack1122;
+const PACK = noPacks ? null! : pack1122();
 const cell = (name: string) => {
   const t = PACK.items.tiles[name];
   return t[1] * PACK.items.columns + t[0];
@@ -12,7 +10,7 @@ const cell = (name: string) => {
 
 // Items whose 1.12.2 model is not a plain item/<name> sprite: they must still resolve to a real icon (the inventory panel
 // otherwise shows a placeholder square).
-describe('1.12.2 item icons without a plain model', () => {
+describe.skipIf(noPacks)('1.12.2 item icons without a plain model', () => {
   it('potions: the bottle model, the bottle over its tinted liquid', () => {
     for (const [id, name, bottle] of [
       [373, 'potion', 'items/potion_bottle_drinkable'],

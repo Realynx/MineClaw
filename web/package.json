@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "description": "MineClaw Web Explorer monorepo (npm workspaces + Turborepo). See docs/web/architecture.md and docs/web/api.md.",
+  "license": "MIT",
   "workspaces": [
     "apps/*",
     "packages/*"

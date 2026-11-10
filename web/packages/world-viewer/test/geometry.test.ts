@@ -3,7 +3,7 @@ import { BetaSource } from '../src/mesh/source';
 import { cornerHeight, flowAngle, flowVector, fluidCorners, percentAir } from '../src/mesh/fluids';
 import type { Nb } from '../src/mesh/models/states';
 import type { Quad } from '../src/mesh/quad';
-import { tableBeta } from './pack';
+import { noPacks, tableBeta } from './pack';
 
 type W = Array<[number, number, number, number, number?]>;
 function nbAt(blocks: W, x = 0, y = 0, z = 0): Nb {
@@ -37,7 +37,7 @@ describe('fluids', () => {
     expect(flowAngle(nbAt(still), 9)).toBe(-1000);
   });
 
-  it('textures: the still tile on flat tops, the flowing tile (rotated) on slopes and sides', () => {
+  it.skipIf(noPacks)('textures: the still tile on flat tops, the flowing tile (rotated) on slopes and sides', () => {
     const src = tableBeta().source as BetaSource;
     const out: Quad[] = [];
     const sea: W = [];
@@ -58,7 +58,7 @@ describe('fluids', () => {
   });
 });
 
-describe('b1.8.1 shapes', () => {
+describe.skipIf(noPacks)('b1.8.1 shapes', () => {
   const src = () => tableBeta().source as BetaSource;
   const count = (id: number, meta = 0, w: W = [[0, 0, 0, id, meta]]) => {
     const out: Quad[] = [];

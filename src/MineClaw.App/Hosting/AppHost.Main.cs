@@ -87,7 +87,7 @@ public static partial class AppHost
     private static MinecraftClient CreateMainClient(AppCli cli, MinecraftSettings mc, MineClaw.Client.Versioning.GameVersionProfile profile, ILoggerFactory loggers)
     {
         var clientLog = loggers.CreateLogger("MineClaw.Client");
-        return new MinecraftClient(new ClientOptions
+        return new MinecraftClient(mc.WithPlayers(new ClientOptions
         {
             Host = mc.Host, Port = mc.Port, Username = mc.Username, Profile = profile,
             AutoReconnect = true, AutoRespawn = true, RecordDirectory = cli.Record,
@@ -95,7 +95,7 @@ public static partial class AppHost
             // Main is op (the empty state: main whitelisted + opped): on 1.12.2 its commands skip the spam spacing.
             CommandInterval = profile.Version == MineClaw.Protocol.Versioning.GameVersion.Release1122 ? TimeSpan.FromMilliseconds(150) : null,
             Log = m => clientLog.LogDebug("{Msg}", m),
-        });
+        }));
     }
 
     /// <summary>

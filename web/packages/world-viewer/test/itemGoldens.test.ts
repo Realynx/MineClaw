@@ -5,11 +5,11 @@
 import { describe, expect, it } from 'vitest';
 import { isHandheld, itemLookById, itemLookByName, itemName, look1122, parseHeld } from '../src/render/entities/items';
 import { Digest } from './digest';
-import { pack1122, packBeta } from './pack';
+import { noPacks, pack1122, packBeta } from './pack';
 
 const DAMAGES = [...Array.from({ length: 16 }, (_, i) => i), 16, 17, 31, 255, -1];
 
-describe('item looks golden (behaviour pin)', () => {
+describe.skipIf(noPacks)('item looks golden (behaviour pin)', () => {
   it('itemLookById over every id × damage, both versions', () => {
     const d = new Digest();
     for (const [version, pack] of [['1.12.2', pack1122()], ['b1.8.1', packBeta()], ['1.12.2', null], ['b1.8.1', pack1122()]] as const)

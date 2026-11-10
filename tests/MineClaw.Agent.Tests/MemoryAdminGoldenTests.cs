@@ -11,7 +11,7 @@ namespace MineClaw.Agent.Tests;
 /// </summary>
 public sealed class MemoryAdminGoldenTests : IDisposable
 {
-    private const string Expected = "475F0004740E602776156622E7AF1D62334A06FE7A9BA64CCF5A7C720A51314C";
+    private const string Expected = "F6FD0EC6B0D274AC779B1BE5A2D5D609D6B132AC352E9B2EA637FF4B27FB8288";
 
     private readonly string _dir = Path.Combine(Path.GetTempPath(), "mineclaw-admin-golden-" + Guid.NewGuid().ToString("N"));
 

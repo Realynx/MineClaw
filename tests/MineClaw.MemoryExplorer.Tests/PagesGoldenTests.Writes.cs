@@ -462,7 +462,7 @@ public sealed partial class PagesGoldenTests
     }
 
     private const string WritesGolden = """
-        edit 176AC4A3FF32837580BB
+        edit DD3F54ED930D45725259
         shards 7F7538A09EDAF509545D
         """;
 }

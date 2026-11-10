@@ -12,7 +12,7 @@ namespace MineClaw.Agent.Tests;
 /// </summary>
 public class SelfRenderGoldenTests
 {
-    private const string Expected = "B79150D356265E0AD42BB5B2E94F304501DB7AE0E646B507CDC81CF5E4AF0EE3";
+    private const string Expected = "CE71DD14F063D29B1D213E438E63EA1F17263609536062A6AED23C26745923BA";
 
     private static void Feed(SelfGrowth g, ManualTime t, params GameEvent[] events)
     {

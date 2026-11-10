@@ -845,8 +845,8 @@ said "low health 8/20 …: work goes on".
 
 **Other fixes:**
 - **Chat translations:**
-  - The release ships `assets/1.12.2/…/en_us.lang`, extracted at build and publish from the installed jar (the App's
-    `CopyLang1122`).
+  - A local build or publish copies `assets/1.12.2/…/en_us.lang` into its output, extracted from the installed jar (the
+    App's `CopyLang1122`). The file is never committed.
   - `LangTable.LoadDefault` also reads the renderer's cached `assets/1.12.2-client.jar` and keeps looking until it finds a table.
   - The op, permission and whitelist answers are built in, and an unknown key reads as words (`CleanKey`).
 - **Whitelist reconcile:** a removal counts only once the server confirms it. A permission error fails every line in flight.

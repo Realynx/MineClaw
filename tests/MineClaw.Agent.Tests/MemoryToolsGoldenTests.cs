@@ -16,7 +16,7 @@ namespace MineClaw.Agent.Tests;
 /// </summary>
 public class MemoryToolsGoldenTests
 {
-    private const string Expected = "EC79CF6FE2FD78833BECCBFA88CB38F17BD12931DDD7AACDD5E10F8BD03D357D";
+    private const string Expected = "FC4C45D70EFEE12A1081DF22398F455825A0BB7F13CECF7208F59AE31E44F2DA";
 
     [Fact]
     public async Task Memory_tools_answer_the_same()
@@ -25,7 +25,7 @@ public class MemoryToolsGoldenTests
         using var db = AgentDb.Open(null);
         using var ix = new RagIndex(db, new RagOptions(), new FakeEmbedder(), time: t, backgroundEmbedding: false);
         using var mem = new MemoryStore(db, ix, t);
-        var store = new BeliefStore(db, ix, t) { Growth = GrowthKit.Growth(db, t), CloneId = "maid_chan" };
+        var store = new BeliefStore(db, ix, t, TestPlayers.Beliefs()) { Growth = GrowthKit.Growth(db, t), CloneId = "maid_chan" };
         store.IsBot = p => p.Equals("maid_chan", StringComparison.OrdinalIgnoreCase);
         BeliefStore.Bind(store);
         var rules = DirectiveStore.For(db, ix);

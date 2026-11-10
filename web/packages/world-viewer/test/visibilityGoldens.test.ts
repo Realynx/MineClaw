@@ -6,11 +6,11 @@ import { describe, expect, it } from 'vitest';
 import { ALL_VISIBLE, sectionVisibility, visibleSections, walkStart } from '../src/mesh/visibility';
 import { storeWith, type B } from './helpers';
 import { Digest, rng } from './digest';
-import { tableBeta } from './pack';
+import { noPacks, tableBeta } from './pack';
 
 const r = rng(909);
 
-describe('visibility golden', () => {
+describe.skipIf(noPacks)('visibility golden', () => {
   it('pins section masks and the walk', async () => {
     const d = new Digest();
     const blocks: B[] = [];

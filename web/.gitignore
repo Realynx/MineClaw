@@ -8,3 +8,8 @@ dist/
 coverage/
 *.tsbuildinfo
 .env*.local
+
+# The world viewer's game assets, extracted from your own client jars (npm run assets:extract / assets:pack): Mojang's
+# files, never committed.
+packages/world-viewer/assets/
+packages/world-viewer/generated/

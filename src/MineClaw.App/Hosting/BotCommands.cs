@@ -13,6 +13,19 @@ public sealed class MinecraftSettings
     public string Username { get; set; } = "";
     /// <summary>Wait this long before reconnecting after "You logged in from another location" (someone else is on the account).</summary>
     public int DuplicateLoginBackoffSeconds { get; set; } = 600;
+    /// <summary>Players whose recent chat may ask for a goto that jumps gaps over the void (<c>ClientOptions.ParkourTrustedPlayers</c>). Empty = nobody.</summary>
+    public string[] ParkourTrustedPlayers { get; set; } = [];
+    /// <summary>Players whose surroundings every body guards from hostile mobs (<c>CombatOptions.GuardPlayers</c>). Empty = nobody.</summary>
+    public string[] GuardPlayers { get; set; } = [];
+    /// <summary>Players a body may spar with when they ask for it (<c>CombatOptions.SparPlayers</c>). Empty = nobody.</summary>
+    public string[] SparPlayers { get; set; } = [];
+
+    /// <summary>A body's client options with the player lists above (main, clones and in-process bodies alike).</summary>
+    public MineClaw.Client.ClientOptions WithPlayers(MineClaw.Client.ClientOptions o) => o with
+    {
+        ParkourTrustedPlayers = ParkourTrustedPlayers,
+        Combat = o.Combat with { GuardPlayers = GuardPlayers, SparPlayers = SparPlayers },
+    };
 }
 
 public static class ConfigCheck
@@ -34,6 +47,19 @@ public static class ConfigCheck
         if (!string.Equals(a.Chat.Username, mc.Username, StringComparison.OrdinalIgnoreCase))
             p.Add($"Agent:Chat:Username ({a.Chat.Username}) should equal Minecraft:Username ({mc.Username})");
         return p;
+    }
+
+    /// <summary>
+    /// Non-fatal startup notes: trusted players are set but a Minecraft player list is empty, so that feature is off for everyone.
+    /// These lists once defaulted to the owner's players; a config written before that change needs them set (deploy/README.md).
+    /// </summary>
+    public static List<string> Notes(MinecraftSettings mc, AgentOptions a)
+    {
+        if (a.Self.TrustedPlayers.Length == 0) return [];
+        var empty = new[] { ("GuardPlayers", "guarding", mc.GuardPlayers), ("SparPlayers", "sparring", mc.SparPlayers),
+                ("ParkourTrustedPlayers", "void parkour", mc.ParkourTrustedPlayers) }
+            .Where(l => l.Item3.Length == 0).Select(l => $"Minecraft:{l.Item1} ({l.Item2})").ToList();
+        return empty.Count == 0 ? [] : [$"Agent:Self:TrustedPlayers is set but these lists are empty, so that is off for everyone: {string.Join(", ", empty)}"];
     }
 
     private static void CheckServer(MinecraftSettings mc, List<string> p)

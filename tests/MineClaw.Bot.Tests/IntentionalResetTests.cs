@@ -14,6 +14,8 @@ public class IntentionalResetTests
     {
         var (h, _) = TestBot.Create();
         using var __ = h;
+        Assert.Equal("owner", IntentionalReset.ClaimantOf(h.Runtime)); // nobody trusted by default
+        h.Runtime.Options.Self.TrustedPlayers = ["PoofimaFox"]; // the claim is the first trusted player's
         var store = IntentionalReset.SeedClaim(h.Runtime, null)!;
         Assert.NotNull(store);
         IntentionalReset.SeedClaim(h.Runtime, null); // idempotent

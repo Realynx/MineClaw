@@ -12,7 +12,7 @@ namespace MineClaw.Agent.Tests;
 /// </summary>
 public class ChatSayGoldenTests
 {
-    private const string ExpectedHash = "0120CA0A3ADF782D490D06259EC97D1D86F7A491A3C11549B064CA2425391FD0";
+    private const string ExpectedHash = "2BAF5FB8B821DB3417672049F36E3542F8EB16B697D07D98C9B2AF0550AF3F2E";
 
     private static readonly string[] Texts =
     [
@@ -44,7 +44,7 @@ public class ChatSayGoldenTests
             {
                 sb.Append("#### ").Append(cname).Append(' ').Append(tname).Append('\n');
                 var time = new ManualTime { Now = new DateTimeOffset(2026, 10, 27, 23, 35, 0, TimeSpan.Zero) };
-                var o = new ChatOptions { Username = "maid_chan", DisplayName = "maid-chan", Aliases = ["maid", "maidchan"], LineDelayMs = 0 };
+                var o = new ChatOptions { Username = "maid_chan", DisplayName = "maid-chan", Aliases = ["maid", "maidchan"], LineDelayMs = 0 }.Regulars();
                 o.Classifier.Enabled = false;
                 configure(o);
                 var queue = new EventQueue(new EventQueueOptions(), time);

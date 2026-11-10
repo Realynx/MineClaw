@@ -708,7 +708,7 @@ public class RenderGoldenTests(ITestOutputHelper output)
         BlockGeometry.Build C41DFF08D9F87CD18228
         BlockGeometry.ChestTile F26F2A3DF1A8DF39F17C
         EntityGeometry.kinds 4C9FCA290EFA05FD5AC4
-        EntityGeometry.Build BB65C7D7AA80B028AF64
+        EntityGeometry.Build 3225F0EB185A9CF46D11
         EntityTextures F553361FA6CABC545F56
         ItemIcons D162B57F75A83DEC9487
         BlockRoles ACDB55C8CB9CC615F8C3
@@ -731,28 +731,28 @@ public class RenderGoldenTests(ITestOutputHelper output)
         eye-flat-bunker-cut A1D7DA3942B87AC5D5C5
         eye-flat-bunker-xray 8544AD1496478EDF438A
         eye-flat-tunnel-xray 5071F382A6A2B3C4DF17
-        eye-flat-zoo 37D600A2711A643B7B59
+        eye-flat-zoo DBDE27A0ED202D4B922D
         eye-flat-zoo-close 1B2ED12411378B8D3202
-        eye-flat-marks 670D8B862978FB44FA31
-        sheet-flat-default DD2DF88404E0BF604FAF
-        sheet-flat-flat 4E57621E5BA90F4A342E
-        sheet-flat-orbits 9EE341DDBD4E1C37DA48
-        sheet-flat-night-rain 4F1C08D5CBFC5FED166C
+        eye-flat-marks D76BDFCD4518A9FF4467
+        sheet-flat-default 1D06AF6E54F868BC6FEC
+        sheet-flat-flat 45A3FE9071D0245BB7AD
+        sheet-flat-orbits 96AF41C62F5A89D29AA4
+        sheet-flat-night-rain EFB62495F3504B01AC80
         sheet-flat-night-storm-top 1450683F2BD132DBE6E5
         sheet-flat-noaids-nocut 0EF73A4313BB8EE8D25A
         sheet-flat-bunker-xray 8C350F11512F75B001C8
         sheet-flat-tunnel-auto 1F33F63BD93239ABBC86
-        sheet-flat-params 24E16C1E9CB03A82F145
+        sheet-flat-params 117A48C2958B47A6B936
         sheet-flat-composite 1B7D857EA651057B1BA7
-        map-flat-Top-r12 4C38CF447A242498760F
-        map-flat-Top-r5 099CBC6B6AA2B6E31B9C
-        map-flat-Side-r12 B2A76516F15E57C8D469
-        map-flat-Side-r5 6476333D78E6F3331E29
-        map-flat-Iso-r12 87EDA7BA652CBD081658
-        map-flat-Iso-r5 629A716F0575103D295D
-        map-flat-Layers-r12 86C9F3992D880038F6BE
-        map-flat-Layers-r5 ACAB65CAFC58DE6B1765
-        text-ascii 1A929880E73FD4258FE6
+        map-flat-Top-r12 96102917C54D380DF123
+        map-flat-Top-r5 431B64D87BCABA1E772F
+        map-flat-Side-r12 AEC091A1FA77F1BE8D75
+        map-flat-Side-r5 09AC0DEE7A17CB776DF2
+        map-flat-Iso-r12 8E3FDA052933D2FA92B5
+        map-flat-Iso-r5 4B5C93233134EA4C0C93
+        map-flat-Layers-r12 AC1DF4570FF2A812A40C
+        map-flat-Layers-r5 8CCD5963BFD25160BF31
+        text-ascii 26E70FC5713E591FC852
         text-viewport 5B90860BEA419C524A59
         text-iso-tui 800EEE14AF769E54BDD8
         text-iso-pixels 0E8D40C63B45B1D69D20
@@ -760,8 +760,8 @@ public class RenderGoldenTests(ITestOutputHelper output)
         eye-nether-museum-low 98CE2708C76073A4EA8A
         eye-nether-night-smooth 3591A47B38C282C1FA2B
         eye-nether-dusk 01D53C0839949E4E5E45
-        sheet-nether-default 9910DAA2C18CD9731D91
-        sheet-nether-flat 36209D3654E934BDB595
+        sheet-nether-default 0A87DB58F9C9D95C7AD7
+        sheet-nether-flat 60143D5A1348A958FA22
         text-nether-iso-tui C7B8E2178A72B7F53FC5
         text-nether-iso-pixels 7913D4E2ABEE43DB585D
         eval-floor_vs_gen 3E162CB3F6AE0FAE7558
@@ -783,31 +783,31 @@ public class RenderGoldenTests(ITestOutputHelper output)
         eye-tex-bunker-cut 795F82E5A3E985CF9736
         eye-tex-bunker-xray 19915CEB8B2FE08F7B7E
         eye-tex-tunnel-xray 0D97A6F7BA4766653F1E
-        eye-tex-zoo 48E3F3DE530F976693A3
+        eye-tex-zoo C71B8738583E51FAEA46
         eye-tex-zoo-close C2BBE700B47E29A0DAB0
-        eye-tex-marks 98C5E73AC02B0953578B
-        sheet-tex-default 2DAD3DC06C0DB5B7408B
-        sheet-tex-flat 795FBADB93BC65B5101A
-        sheet-tex-orbits 78A2E18424B1923D6D20
-        sheet-tex-night-rain 4F1C08D5CBFC5FED166C
+        eye-tex-marks 1CE1436622CA47004B0C
+        sheet-tex-default BDAB6188D41E829A64EA
+        sheet-tex-flat 2E8CFCE6423CF1827D54
+        sheet-tex-orbits E91C6FBECC07E7AB835D
+        sheet-tex-night-rain EFB62495F3504B01AC80
         sheet-tex-night-storm-top BD1AE2A4B4E8536EBE30
         sheet-tex-noaids-nocut 592D7E8A72A774C968F6
         sheet-tex-bunker-xray 07646086054D4927C724
         sheet-tex-tunnel-auto E6A40A797C6890946B2E
-        sheet-tex-params DA85821E68F4538F1BDD
+        sheet-tex-params 43E3924FF7AEEEA4A8E0
         sheet-tex-composite 1302A685993D09436102
-        map-tex-Top-r12 BE56CD2BF22C8FC09F22
-        map-tex-Top-r5 660166549B14F13B8F3F
-        map-tex-Side-r12 0253EBE82808F4BCD139
-        map-tex-Side-r5 FED95356B54A35A5916B
-        map-tex-Iso-r12 064D13A5DA5EE5CCB46D
-        map-tex-Iso-r5 DABD55C86B54DB38DF73
-        map-tex-Layers-r12 635A75980279A8D2DBAF
-        map-tex-Layers-r5 5882D396D82CA7797A1E
+        map-tex-Top-r12 965EBBD35FE754BEC376
+        map-tex-Top-r5 1671B19404F9954904A3
+        map-tex-Side-r12 4B796A8143EE2EF84476
+        map-tex-Side-r5 317FB3DF690FB3A67982
+        map-tex-Iso-r12 26DEB9F7DBB991117BBD
+        map-tex-Iso-r5 D3AE6257CAF131AC8C62
+        map-tex-Layers-r12 FE889B71F875EC04E8A9
+        map-tex-Layers-r5 E7EA35775F187BD66160
         eye-snow-rain-streaks F16D32E5D4C872C3337F
         eye-snow-storm-tint 0AF71B26824DB573BA20
         eye-snow-light-rain-sparse 5043250D0138C08CCF58
-        sheet-snow-night-rain 93DD431321025620EC96
+        sheet-snow-night-rain C2FD344FD05C21DB456A
         """;
 
     private const string BetaGolden = """
@@ -823,13 +823,13 @@ public class RenderGoldenTests(ITestOutputHelper output)
         eye-beta-bunker-cut 92E46DF20842D0E8D9F5
         eye-beta-bunker-xray 326226AA3A4A2E178BAD
         eye-beta-tunnel-xray 12124D4BF37447422E01
-        eye-beta-zoo C1A3035C0C8BEBFD1425
+        eye-beta-zoo 1153B1CC7D2C14A29099
         eye-beta-zoo-close 0E5E0CA6C05A50DE9C1F
-        eye-beta-marks 1F7D411C6AC7FC8F24D9
-        sheet-beta-default 2A29E9D3F4C6F7413AFE
-        sheet-beta-flat 81E7A495C6B83FD407B3
-        sheet-beta-orbits 50125C86531486CBA529
-        sheet-beta-night-rain 4F1C08D5CBFC5FED166C
+        eye-beta-marks 24C3B0D233CA4BD591E3
+        sheet-beta-default 7025D6970363CE793A48
+        sheet-beta-flat A8CDF3066470AFF62910
+        sheet-beta-orbits A50E873217513D12807D
+        sheet-beta-night-rain EFB62495F3504B01AC80
         """;
 
     private const string Release1122Golden = """
@@ -846,8 +846,8 @@ public class RenderGoldenTests(ITestOutputHelper output)
         eye-1122-bunker-cut 7A9467307675A5AA4F0D
         eye-1122-bunker-xray F96B6CD62A0B13CE1570
         eye-1122-tunnel-xray 9C360795A418E2DEDD59
-        eye-1122-zoo 2BAA97638819E9104CA9
+        eye-1122-zoo 2786D4579BCAA3EBF688
         eye-1122-zoo-close B72D36BDD193AB5FC1F0
-        eye-1122-marks D29936AD5F4900A9FBBC
+        eye-1122-marks 34CB0C893F4600DCE8BA
         """;
 }

@@ -17,7 +17,7 @@ namespace MineClaw.Agent.Tests;
 /// </summary>
 public sealed class ShardExportGoldenTests : IDisposable
 {
-    private const string ExpectedExport = "FF83F61BA3579389A1758902245D709EC7573F408CEFC285B464502799A5B3D9";
+    private const string ExpectedExport = "2E355FB943D6ED3ACFC7E6057BC58CAF0A93AD9B1104CAFFA9164937A74BC119";
     private const string ExpectedPacks = "74B7748E2C7356B4673C422763D9C9FC9092D56036F0A279E46B37AEDB8D5A75";
 
     private static readonly DateTimeOffset Fixed = new(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
@@ -65,6 +65,7 @@ public sealed class ShardExportGoldenTests : IDisposable
     {
         var o = new AgentOptions { KnowledgeDirectory = null, DataDirectory = "unused" };
         o.Self.TrustedPlayers = ["PoofImaFox", "kiwi"];
+        o.Chat.Regulars();
         var path = Path.Combine(_dir, "a.db");
         using var ctx = MemoryAdminContext.OpenLocal(path, o, new FakeEmbedder(), RaptorIntegrationTests.SummaryLlm());
         var mem = ctx.Memory;

@@ -66,8 +66,8 @@ public sealed record ClientOptions
     /// goto with <see cref="ParkourMode.Void"/> asked for by a trusted player within <see cref="VoidParkourRequestWindow"/>
     /// may plan them. Either way the bot needs a clutch block in its hotbar and the jump must pass the strict margin.</summary>
     public bool AllowVoidParkour { get; init; }
-    /// <summary>Players whose recent chat authorizes a <see cref="ParkourMode.Void"/> goto.</summary>
-    public IReadOnlyList<string> ParkourTrustedPlayers { get; init; } = ["poofimafox", "kiwi"];
+    /// <summary>Players whose recent chat authorizes a <see cref="ParkourMode.Void"/> goto (config: Minecraft:ParkourTrustedPlayers). Empty = nobody.</summary>
+    public IReadOnlyList<string> ParkourTrustedPlayers { get; init; } = [];
     /// <summary>How recent a trusted player's chat must be for a void-parkour goto.</summary>
     public TimeSpan VoidParkourRequestWindow { get; init; } = TimeSpan.FromMinutes(5);
 

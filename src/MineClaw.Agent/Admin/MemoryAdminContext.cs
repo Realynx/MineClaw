@@ -80,7 +80,7 @@ public sealed class MemoryAdminContext : IDisposable
             if (!readOnly) KnowledgeCorrections.Apply(rag, options.KnowledgeDirectory, Log("MineClaw.Rag"));
             var memory = new MemoryStore(db, rag);
             owned.Add(memory);
-            var beliefs = new BeliefStore(db, rag);
+            var beliefs = new BeliefStore(db, rag, options: new BeliefOptions().WithChatNicknames(options.Chat.PlayerNicknames));
             var observations = new ObservationStore(rag);
             var self = OpenSelf(db, options, rag, readOnly, Log);
 

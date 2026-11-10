@@ -210,7 +210,8 @@ public sealed class LangTable
     public int Count => _map.Count;
     public bool TryGet(string key, out string value) => _map.TryGetValue(key, out value!);
 
-    /// <summary>The en_us values (verbatim from the 1.12.2 client jar) of the keys chat handling relies on.</summary>
+    /// <summary>Fallback en_us formats (short functional strings) for the keys chat handling relies on, used when no client
+    /// jar is present; the jar's own lang file takes precedence.</summary>
     public static LangTable Builtin { get; } = new(new Dictionary<string, string>(StringComparer.Ordinal)
     {
         ["chat.type.text"] = "<%s> %s",

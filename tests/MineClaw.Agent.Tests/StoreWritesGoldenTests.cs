@@ -13,7 +13,7 @@ namespace MineClaw.Agent.Tests;
 /// </summary>
 public class StoreWritesGoldenTests
 {
-    private const string ExpectedSelf = "B4D8F7E18DB50B5DFDAF31262E83F957C32FEE08B4832406BA2D32CAC0253F62";
+    private const string ExpectedSelf = "A7169FB2D275C7C330E934CB0D68371D3AD0D2440328708BBEA419C6933B8496";
     private const string ExpectedRag = "C96999D038671855C98EA8BBAB6F11E9CAAFB4FB0EF36045D75E0D0937A4C789";
 
     private static string Hash(string dump, string file)

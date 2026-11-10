@@ -10,7 +10,7 @@ import { cellIndex } from '../src/wire/chunk';
 import { encodeColumn, encodeMcwc, lightSections } from '../src/wire/encode';
 import { combineHash } from '../src/wire/hash';
 import { storeWith } from './helpers';
-import { table1122, tableBeta } from './pack';
+import { noPacks, table1122, tableBeta } from './pack';
 
 const cell = (x: number, y: number, z: number, id = 4, state: HoloCell['state'] = 'todo', build: string | number = 1): HoloCell => ({ x, y, z, id, meta: 0, build, state });
 
@@ -226,7 +226,7 @@ describe('every queued block kind bakes a hologram', () => {
     ['b1.8.1', tableBeta],
     ['1.12.2', table1122],
   ] as const)
-    it(`${name}: block entities (chests, beds, signs…) and partial models in their own textured shape`, () => {
+    it.skipIf(noPacks)(`${name}: block entities (chests, beds, signs…) and partial models in their own textured shape`, () => {
       const t = table();
       const kinds = name === '1.12.2' ? { ...KINDS, ...ONLY_1122 } : KINDS;
       for (const [kind, cells] of Object.entries(kinds)) {

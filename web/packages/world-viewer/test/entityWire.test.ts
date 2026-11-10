@@ -1,9 +1,7 @@
 // The newer entity wire: equipment, variants, babies, hanging entities, events and display mobs.
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
 import * as THREE from 'three';
 import { beforeAll, describe, expect, it } from 'vitest';
-import type { AssetBundle, Pack, Pack1122, PackBeta } from '../src/assets/bundle';
+import type { AssetBundle, Pack } from '../src/assets/bundle';
 import { compose, EntityLayer } from '../src/render/entityLayer';
 import { armorDyes, armorFromEquipment, armorMaterial, armorPasses, buildArmor, buildElytra, buildSkull, LEATHER_DEFAULT, skullKind } from '../src/render/entities/armor';
 import { equipRef } from '../src/wire/normalize';
@@ -16,10 +14,10 @@ import { Variant } from '../src/render/entities/variant';
 import type { PoseCtx } from '../src/render/entities/types';
 import type { EntityDto, EntityEvent } from '../src/types';
 import type { BotView, EntityView } from '../src/world/entities';
+import { noPacks, pack1122, packBeta } from './pack';
 
-const gen = join(__dirname, '..', 'generated');
-const PACK_1122 = JSON.parse(readFileSync(join(gen, '1.12.2', 'pack.json'), 'utf8')) as Pack1122;
-const PACK_BETA = JSON.parse(readFileSync(join(gen, 'b1.8.1', 'pack.json'), 'utf8')) as PackBeta;
+const PACK_1122 = noPacks ? null! : pack1122();
+const PACK_BETA = noPacks ? null! : packBeta();
 const CTX: PoseCtx = { swing: 0, amount: 0, age: 0, headYaw: 0, pitch: 0, attack: 0, attackOff: 0, eat: 0, baby: false, v: Variant.NONE, variant: 0, flags: 0, sneaking: false, riding: false, holding: false, aggressive: false, using: false, bow: false, standPose: null, beta: false, seed: 0, speed: 0 };
 
 describe('variant parsing', () => {
@@ -62,7 +60,7 @@ describe('variant parsing', () => {
     expect(objectLook('1.12.2', 'boat', 'spruce', 0)?.texture).toBe('entity/boat/boat_spruce');
   });
 
-  it('per kind (animals): horse coat, markings, armour, saddle; llama carpet; cats; rabbits; parrots', () => {
+  it.skipIf(noPacks)('per kind (animals): horse coat, markings, armour, saddle; llama carpet; cats; rabbits; parrots', () => {
     const horse = mobLook('1.12.2', 100, null, 'creamy,white_dots,saddle,iron', 0);
     expect(horse.texture).toBe('entity/horse/horse_creamy');
     const layers = (horse.layers ?? []).map((l) => l.layer ?? l.texture);
@@ -132,7 +130,7 @@ describe('equipment', () => {
     expect(armorFromEquipment({ main: [276, 0] })).toBeNull();
   });
 
-  it('dyed leather: the wire’s third element is the dye; LayerArmorBase tints the piece and adds the untinted overlay', () => {
+  it.skipIf(noPacks)('dyed leather: the wire’s third element is the dye; LayerArmorBase tints the piece and adds the untinted overlay', () => {
     expect(equipRef([299, 0, 0x3366cc])).toEqual([299, 0, 0x3366cc]);
     expect(equipRef([299, 0])).toEqual([299, 0]);
     expect(equipRef({ id: 301, meta: 0, color: 0x112233 })).toEqual([301, 0, 0x112233]);
@@ -149,7 +147,7 @@ describe('equipment', () => {
     expect(armorPasses('iron', 'chest', false, 0x3366cc)).toEqual([{ texture: 'models/armor/iron_layer_1', tint: null }]);
   });
 
-  it('skulls (ModelSkeletonHead / ModelHumanoidHead / ModelDragonHead) and the elytra build inside their textures', () => {
+  it.skipIf(noPacks)('skulls (ModelSkeletonHead / ModelHumanoidHead / ModelDragonHead) and the elytra build inside their textures', () => {
     expect([0, 1, 2, 3, 4, 5].map(skullKind)).toEqual(['head', 'head', 'humanoid', 'humanoid', 'head', 'dragon']);
     for (const k of ['head', 'humanoid', 'dragon'] as const) {
       const s = buildSkull(k);
@@ -244,7 +242,7 @@ describe('babies', () => {
 });
 
 describe('hanging entities', () => {
-  it('painting motives map to their rect of the painting sheet, facings to yaws', () => {
+  it.skipIf(noPacks)('painting motives map to their rect of the painting sheet, facings to yaws', () => {
     expect(motive('SkullAndRoses')).toMatchObject({ w: 32, h: 32, u: 128, v: 128 });
     expect(motive('burning_skull')).toMatchObject({ w: 64, h: 64, u: 128, v: 192 });
     expect(motive('minecraft:donkey_kong')).toMatchObject({ w: 64, h: 48, u: 192, v: 112 });
@@ -293,7 +291,7 @@ describe('EntityLayer with the newer wire', () => {
     }
   };
 
-  it('equipment draws armour pieces, both hands and a pumpkin; invisibility hides only the body', () => {
+  it.skipIf(noPacks)('equipment draws armour pieces, both hands and a pumpkin; invisibility hides only the body', () => {
     const layer = new EntityLayer();
     layer.setBundle(bundle(PACK_1122));
     const zombie = ent(1, 0, { type: 54, equipment: { main: [267, 0], off: [50, 0], head: [86, 0], chest: [307, 0], legs: [308, 0], feet: [309, 0] } });
@@ -310,7 +308,7 @@ describe('EntityLayer with the newer wire', () => {
     layer.dispose();
   });
 
-  it('paintings, item frames (with their item) and loaded minecarts', () => {
+  it.skipIf(noPacks)('paintings, item frames (with their item) and loaded minecarts', () => {
     const layer = new EntityLayer();
     layer.setBundle(bundle(PACK_1122));
     run(layer, [], [ent(1, 0, { kind: 'painting', motive: 'Kebab', facing: 2 }), ent(2, 2, { kind: 'item_frame', frameItem: [264, 0], rotation: 2, facing: 1 }), ent(3, 4, { kind: 'minecart', minecartType: 'chest' })]);
@@ -322,7 +320,7 @@ describe('EntityLayer with the newer wire', () => {
     layer.dispose();
   });
 
-  it('events: swings, hurts, deaths (the body stays until it shrinks away), sparks, teleports and lightning', () => {
+  it.skipIf(noPacks)('events: swings, hurts, deaths (the body stays until it shrinks away), sparks, teleports and lightning', () => {
     const layer = new EntityLayer();
     layer.setBundle(bundle(PACK_1122));
     const bot: BotView = { name: 'Alice', dim: 0, x: 0, y: 64, z: 2, yaw: 0, dto: { name: 'Alice', short: 'main', main: true, dim: 0, x: 0, y: 64, z: 2, hp: 20, food: 20 } };
@@ -347,7 +345,7 @@ describe('EntityLayer with the newer wire', () => {
     layer.dispose();
   });
 
-  it('display mobs (spawner cages) draw through the shared model draws', () => {
+  it.skipIf(noPacks)('display mobs (spawner cages) draw through the shared model draws', () => {
     const layer = new EntityLayer();
     layer.setBundle(bundle(PACK_1122));
     layer.showDisplayMob('spawner@1,2,3', 0, 0.5, 64, 0.5, 'Zombie', 0.45, 1.2);
@@ -362,7 +360,7 @@ describe('EntityLayer with the newer wire', () => {
     layer.dispose();
   });
 
-  it('spawner display mobs cast no blob shadow and lean back 30°', () => {
+  it.skipIf(noPacks)('spawner display mobs cast no blob shadow and lean back 30°', () => {
     const layer = new EntityLayer();
     layer.setBundle(bundle(PACK_1122));
     layer.showDisplayMob('spawner@1,2,3', 0, 0.5, 64.2, 0.5, 'pig', 0.53125, 0, -30);
@@ -388,7 +386,7 @@ describe('EntityLayer with the newer wire', () => {
     layer.dispose();
   });
 
-  it('head items: skulls by type as the skull model, blocks and flat items as items; only on the renderers with the layer', () => {
+  it.skipIf(noPacks)('head items: skulls by type as the skull model, blocks and flat items as items; only on the renderers with the layer', () => {
     const layer = new EntityLayer();
     layer.setBundle(bundle(PACK_1122));
     run(layer, [], [
@@ -411,7 +409,7 @@ describe('EntityLayer with the newer wire', () => {
     layer.dispose();
   });
 
-  it('implied layers: the snow golem’s pumpkin, an adult mooshroom’s three crossed mushrooms (none on a calf)', () => {
+  it.skipIf(noPacks)('implied layers: the snow golem’s pumpkin, an adult mooshroom’s three crossed mushrooms (none on a calf)', () => {
     const layer = new EntityLayer();
     layer.setBundle(bundle(PACK_1122));
     run(layer, [], [ent(1, 0, { type: 97 }), ent(2, 3, { type: 96 }), ent(3, 6, { type: 96, baby: true }), ent(4, 9, { type: 97, look: 'sheared' })]);
@@ -421,7 +419,7 @@ describe('EntityLayer with the newer wire', () => {
     layer.dispose();
   });
 
-  it('a fusing creeper swells and flashes white at most 0.2 (RenderCreeper), from when the wire says it began', () => {
+  it.skipIf(noPacks)('a fusing creeper swells and flashes white at most 0.2 (RenderCreeper), from when the wire says it began', () => {
     const layer = new EntityLayer();
     layer.setBundle(bundle(PACK_1122));
     const drawn = (layer as unknown as { drawn: Map<string, { flash: number; fuseAt: number }> }).drawn;
@@ -452,7 +450,7 @@ describe('EntityLayer with the newer wire', () => {
     expect(y('head') - y('hat')).toBeCloseTo(0, 4);
   });
 
-  it('babies are drawn at half the hitbox; glowing entities are lit', () => {
+  it.skipIf(noPacks)('babies are drawn at half the hitbox; glowing entities are lit', () => {
     const layer = new EntityLayer();
     layer.setBundle(bundle(PACK_1122));
     run(layer, [], [ent(1, 0, { type: 92, baby: true }), ent(2, 3, { type: 92, flags: 0x40 })]);

@@ -76,7 +76,7 @@ public class ViewportTests
         var w = EmptyWorld();
         w.Entities.SpawnPlayer(1, "maid_chan", new Vec3d(0.5, 64, 0.5), 0, 0);      // self (by name) → excluded
         w.Entities.SpawnPlayer(2, "maid_chan_69", new Vec3d(2.5, 64, 0.5), 0, 0);   // hive → '9'
-        w.Entities.SpawnPlayer(3, "kiwi", new Vec3d(-1.5, 64, 0.5), 0, 0);          // player → 'd'
+        w.Entities.SpawnPlayer(3, "kiwi", new Vec3d(-1.5, 64, 0.5), 0, 0);          // player → 'k'
         w.Entities.SpawnMob(4, MobTypes.Zombie, new Vec3d(0.5, 64, -1.5), 0, 0);    // mob → 'm'
         w.Entities.SpawnMob(5, MobTypes.Cow, new Vec3d(0.5, 64, 2.5), 0, 0);        // passive: not shown
         w.Entities.SpawnItem(6, new ItemStack(4, 1, 0), new Vec3d(1.5, 64, 2.5));   // item → 'i'
@@ -87,7 +87,7 @@ public class ViewportTests
         var roster = new HiveRoster(["maid_chan", "maid_chan_67", "maid_chan_69", "maid_chan_420", "maid_chan_1337"]);
         var rows = ViewportRenderer.RenderPlain(g, ViewMode.Top, 7, 7, roster.Glyph);
         Assert.Equal("   m   ", rows[1]);
-        Assert.Equal(" d @ 9 ", rows[3]);
+        Assert.Equal(" k @ 9 ", rows[3]);
         Assert.Equal("    i  ", rows[5]);
         var cells = ViewportRenderer.Render(g, ViewMode.Top, 7, 7, roster.Glyph);
         Assert.Equal(CellKind.Hive, cells[3][5].Kind);

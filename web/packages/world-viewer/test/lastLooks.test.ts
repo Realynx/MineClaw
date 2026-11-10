@@ -1,10 +1,8 @@
 // The last wire looks: the enchantment glint, an enderman's carried block, an iron golem's flower, shoulder parrots, arrows
 // stuck in players, and styled 1.12.2 sign text.
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
 import * as THREE from 'three';
 import { beforeAll, describe, expect, it } from 'vitest';
-import type { AssetBundle, Pack, Pack1122, PackBeta } from '../src/assets/bundle';
+import type { AssetBundle, Pack } from '../src/assets/bundle';
 import { EntityLayer, glintsById } from '../src/render/entityLayer';
 import { JavaRandom, MAX_STUCK_ARROWS, stuckArrows } from '../src/render/entities/arrows';
 import { buildModel } from '../src/render/entities/builder';
@@ -17,11 +15,11 @@ import { fontTable, FORMAT_RGB, layoutLine, richToLegacy } from '../src/render/f
 import type { EntityDto } from '../src/types';
 import { equipGlint, normalizeBlockEntities, normalizeEntities } from '../src/wire/normalize';
 import type { BotView, EntityView } from '../src/world/entities';
+import { noPacks, pack1122, packBeta } from './pack';
 
-const gen = join(__dirname, '..', 'generated');
-const PACK_1122 = JSON.parse(readFileSync(join(gen, '1.12.2', 'pack.json'), 'utf8')) as Pack1122;
-const PACK_BETA = JSON.parse(readFileSync(join(gen, 'b1.8.1', 'pack.json'), 'utf8')) as PackBeta;
-const FONT = fontTable(PACK_1122.font, false)!;
+const PACK_1122 = noPacks ? null! : pack1122();
+const PACK_BETA = noPacks ? null! : packBeta();
+const FONT = noPacks ? null! : fontTable(PACK_1122.font, false)!;
 const CTX: PoseCtx = { swing: 0, amount: 0, age: 0, headYaw: 0, pitch: 0, attack: 0, attackOff: 0, eat: 0, baby: false, v: Variant.NONE, variant: 0, flags: 0, sneaking: false, riding: false, holding: false, aggressive: false, using: false, bow: false, standPose: null, beta: false, seed: 0, speed: 0 };
 
 describe('wire: the last looks', () => {
@@ -66,7 +64,7 @@ describe('wire: the last looks', () => {
   });
 });
 
-describe('sign rich text', () => {
+describe.skipIf(noPacks)('sign rich text', () => {
   it('runs become the § text the font renderer reads: colours, styles, the default (§r) between', () => {
     const s = richToLegacy([{ text: 'Fox', color: 'red', bold: true }, { text: 'ie' }, { text: '!', color: 'dark_blue', italic: true, underlined: true, strikethrough: true, obfuscated: true }]);
     expect(s).toBe('§c§lFox§rie§1§o§n§m§k!');
@@ -148,7 +146,7 @@ describe('EntityLayer: glint, carried blocks, the golem flower, shoulder parrots
   const drawn = (layer: EntityLayer) => (layer as unknown as { drawn: Map<string, DrawnPeek> }).drawn;
   const bones = (layer: EntityLayer) => (layer as unknown as { bones: Float32Array }).bones;
 
-  it('glinting items and armour get their draw’s glint twin; plain ones and b1.8.1 none', () => {
+  it.skipIf(noPacks)('glinting items and armour get their draw’s glint twin; plain ones and b1.8.1 none', () => {
     const layer = new EntityLayer();
     layer.setBundle(bundle(PACK_1122));
     run(layer, [], [ent(1, 0, { type: 54, equipment: { main: [276, 0], chest: [311, 0], glint: { main: true, chest: true } } })]);
@@ -173,7 +171,7 @@ describe('EntityLayer: glint, carried blocks, the golem flower, shoulder parrots
     expect(glintsById('b1.8.1', 399, 0)).toBe(false);
   });
 
-  it('bots wear their own equipment (and glint) when the wire sends it', () => {
+  it.skipIf(noPacks)('bots wear their own equipment (and glint) when the wire sends it', () => {
     const layer = new EntityLayer();
     layer.setBundle(bundle(PACK_1122));
     const bot: BotView = {
@@ -204,7 +202,7 @@ describe('EntityLayer: glint, carried blocks, the golem flower, shoulder parrots
     mats.dispose();
   });
 
-  it('an enderman carries its block (a cube, or crossed planes for a plant) with its arms forward', () => {
+  it.skipIf(noPacks)('an enderman carries its block (a cube, or crossed planes for a plant) with its arms forward', () => {
     const layer = new EntityLayer();
     layer.setBundle(bundle(PACK_1122));
     run(layer, [], [ent(1, 0, { type: 58, carried: [12, 0] }), ent(2, 3, { type: 58, carried: [38, 0] }), ent(3, 6, { type: 58 })]);
@@ -227,7 +225,7 @@ describe('EntityLayer: glint, carried blocks, the golem flower, shoulder parrots
     expect(sk.byName.leftArm.rz).toBeCloseTo(-0.05);
   });
 
-  it('an iron golem holding out its flower raises its right arm and draws the poppy until the 400 ticks run out', () => {
+  it.skipIf(noPacks)('an iron golem holding out its flower raises its right arm and draws the poppy until the 400 ticks run out', () => {
     const layer = new EntityLayer();
     layer.setBundle(bundle(PACK_1122));
     const g = ent(1, 0, { type: 99, look: 'holding_rose' });
@@ -245,7 +243,7 @@ describe('EntityLayer: glint, carried blocks, the golem flower, shoulder parrots
     expect(sk.byName.leftArm.rx).toBe(0);
   });
 
-  it('shoulder parrots ride a player as their own rows, at the shoulders; stuck arrows likewise (players only)', () => {
+  it.skipIf(noPacks)('shoulder parrots ride a player as their own rows, at the shoulders; stuck arrows likewise (players only)', () => {
     const layer = new EntityLayer();
     layer.setBundle(bundle(PACK_1122));
     const fox = ent(77, 0, { kind: 'player', name: 'fox', shoulders: { left: 'green', right: 'grey' }, arrows: 3 });

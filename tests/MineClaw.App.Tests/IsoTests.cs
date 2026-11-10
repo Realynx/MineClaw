@@ -281,7 +281,7 @@ public class IsoTests
         Assert.Equal('c', G("creeper", "mob"));
         Assert.Equal('s', G("skeleton", "mob"));
         Assert.Equal('S', G("spider", "mob"));
-        Assert.Equal('d', G("kiwi", "player"));
+        Assert.Equal('k', G("kiwi", "player"));
         Assert.Equal('9', G("maid_chan_69", "player"));
         Assert.Equal('i', G(null, "item"));
         Assert.Equal('@', G(null, "self"));

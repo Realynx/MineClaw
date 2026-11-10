@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "description": "NestJS gateway of the MineClaw Web Explorer: auth, sessions, CSRF, RBAC, audit, the signed bridge client, SSE fan-out and the prod reverse proxy to Next. See docs/web/architecture.md and docs/web/api.md.",
+  "license": "MIT",
   "type": "module",
   "main": "./dist/main.js",
   "engines": {

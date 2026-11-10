@@ -10,7 +10,7 @@ namespace MineClaw.Agent.Tests;
 /// </summary>
 public class MetaSpeechGoldenTests
 {
-    private const string Expected = "FFB122FF92B3F66E4EC1B4DEC1BA8AFD7F4CAE44EFDD633833BDA69AD7EC1230";
+    private const string Expected = "00B4EA08C0817F05DB93F1D0A394A155E3CB8EAA03910442C615CF50D175BC14";
 
     private static readonly string[] Corpus =
     [

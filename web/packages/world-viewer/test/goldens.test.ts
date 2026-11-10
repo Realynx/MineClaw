@@ -12,7 +12,7 @@ import { tileFor } from '../src/mesh/beta/textures';
 import { meshAssets } from '../src/atlas/assets';
 import { storeWith, type B } from './helpers';
 import { Digest, rng } from './digest';
-import { pack1122, packBeta, table1122, tableBeta } from './pack';
+import { noPacks, pack1122, packBeta, table1122, tableBeta } from './pack';
 
 // Ids that the neighbour-dependent properties look for, drawn more often than chance.
 const INTERESTING = [0, 0, 0, 1, 2, 3, 17, 18, 20, 26, 51, 53, 54, 55, 64, 67, 69, 75, 76, 77, 78, 80, 85, 86, 93, 94, 101, 102, 103, 104, 105, 106, 107, 108, 113, 130, 131, 134, 139, 143, 146, 147, 149, 151, 152, 160, 161, 175, 178, 183, 188, 193, 203, 218, 219];
@@ -141,17 +141,17 @@ describe('refactor goldens (behaviour pins)', () => {
     expect(tileDigest()).toBe('60f5c13c7ded370b37c750e5e9b5ef80');
   });
 
-  it('b1.8.1 section meshes (flat, textured fancy and fast leaves)', async () => {
+  it.skipIf(noPacks)('b1.8.1 section meshes (flat, textured fancy and fast leaves)', async () => {
     const tables = [buildStateTable('b1.8.1', null), tableBeta(), buildStateTable('b1.8.1', meshAssets(packBeta()), true, true)];
     expect(await worldDigest(tables, 128)).toBe('c3cdf476b9d809420673773e3c2d4f02');
   });
 
-  it('b1.8.1 piston heads facing 6/7 still throw (a latent quirk kept as is)', async () => {
+  it.skipIf(noPacks)('b1.8.1 piston heads facing 6/7 still throw (a latent quirk kept as is)', async () => {
     const store = await storeWith([[4, 20, 4, 34, 6]]);
     expect(() => meshSection(store, 0, 0, 1, 0, tableBeta())).toThrow();
   });
 
-  it('1.12.2 section meshes (models, fancy and fast leaves)', async () => {
+  it.skipIf(noPacks)('1.12.2 section meshes (models, fancy and fast leaves)', async () => {
     const tables = [table1122(), buildStateTable('1.12.2', meshAssets(pack1122()), true, true)];
     expect(await worldDigest(tables, 256)).toBe('e1628e7eb3d5eb338a1e18bbe1941c74');
   });

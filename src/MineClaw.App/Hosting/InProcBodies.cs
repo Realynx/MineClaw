@@ -251,13 +251,13 @@ public sealed class InProcBodies : IBodyHost, MineClaw.Hive.Hierarchy.ISubhiveHo
     {
         var bot = _bot ?? throw new InvalidOperationException("not attached");
         var clientLog = _loggers.CreateLogger("MineClaw.Client." + Body.ShortName(name, false));
-        var options = new ClientOptions
+        var options = _mc.WithPlayers(new ClientOptions
         {
             Host = _mc.Host, Port = _mc.Port, Username = name, Profile = Profile,
             AutoReconnect = false, // the body's runner owns reconnects (backoff, launch gap, someone else's login)
             AutoRespawn = !_hive.OnCloneDeath.Equals("logout", StringComparison.OrdinalIgnoreCase),
             Log = m => clientLog.LogDebug("{Msg}", m),
-        };
+        });
         if (ClientSetup is { } setup) options = setup(options);
         var client = new MinecraftClient(options);
         MineClaw.App.Supervisor.BlockDeltaLog.Attach(client.World); // the browser viewer's live block feed (deduped across shared columns)

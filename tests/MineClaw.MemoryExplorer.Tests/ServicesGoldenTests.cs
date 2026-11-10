@@ -151,7 +151,7 @@ public sealed class ServicesGoldenTests(ITestOutputHelper output) : IAsyncLifeti
     }
 
     private const string Golden = """
-        prefill 3715D73B04015ACE502C
+        prefill 28D0C044E8A0469490BC
         script-diff D032C91D0F2672829B3E
         shard-kind F60959F5D117D51850AF
         browser-rows 1539BBBE3CE537C7B7C5

@@ -7,7 +7,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { AssetBundle, Pack } from '../src/assets/bundle';
 import { drawBlockIcon } from '../src/render/icons';
 import { Digest } from './digest';
-import { pack1122, packBeta } from './pack';
+import { noPacks, pack1122, packBeta } from './pack';
 
 let log: string[] = [];
 const fmt = (x: unknown): string => {
@@ -29,7 +29,7 @@ function recorder(tag: string): CanvasRenderingContext2D {
 
 const bundleOf = (pack: Pack): AssetBundle => ({ version: pack.version, pack, blocks: { tag: 'blocks' }, items: { tag: 'items' } }) as unknown as AssetBundle;
 
-describe('icon goldens', () => {
+describe.skipIf(noPacks)('icon goldens', () => {
   const g = globalThis as unknown as { document?: unknown };
   let had: unknown;
   beforeAll(() => {

@@ -12,7 +12,7 @@ namespace MineClaw.Agent.Tests;
 /// </summary>
 public class CommandGateGoldenTests
 {
-    private const string ExpectedHash = "FB19950C826B82C0411CC6B6A3BB1AC43149FA22F89D13D192E9634109BE685A";
+    private const string ExpectedHash = "77C479F83FD641421EEECE44A58BEEFEF448B2D26E26B29B08D17071A38C355B";
 
     private static readonly string[] Lines =
     [

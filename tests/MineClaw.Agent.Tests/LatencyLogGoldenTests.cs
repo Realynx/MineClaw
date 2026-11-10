@@ -11,7 +11,7 @@ namespace MineClaw.Agent.Tests;
 /// </summary>
 public class LatencyLogGoldenTests
 {
-    private const string Expected = "5B1F1DDCF43FD807299BF816315D80C35F33CA0F8BFF3F81D16A7FDB53D47E2A";
+    private const string Expected = "0996485AB766C0DCCE4BACB8C46BA5F813F0D4EBDDC7EAF646C74EC3BF365B4F";
 
     private static readonly string[] Log =
     [

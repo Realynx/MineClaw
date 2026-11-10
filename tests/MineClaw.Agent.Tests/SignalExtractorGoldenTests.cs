@@ -15,7 +15,7 @@ namespace MineClaw.Agent.Tests;
 /// </summary>
 public class SignalExtractorGoldenTests
 {
-    private const string Expected = "9A9D953A6AFC59DD442B1432929074A26CBA8012C28793D1103354DAEDF40B52";
+    private const string Expected = "74EC803FB05775767416E1EBEC7AF60E66ACD702CAC8241C486A59B31379EE80";
 
     private static readonly DateTimeOffset T0 = new(2026, 10, 26, 12, 0, 0, TimeSpan.Zero);
     private static readonly string[] Names = ["maid_chan", "maid-chan", "Claudechan"];

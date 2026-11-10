@@ -89,7 +89,7 @@ public class LiveSession3Tests
     private static (ChatRouter Router, EventQueue Queue, ManualTime Time) Live()
     {
         var time = new ManualTime();
-        var o = new ChatOptions { Username = "maid_chan", DisplayName = "maid chan", Aliases = ["maidchan", "maid"], LineDelayMs = 0 };
+        var o = new ChatOptions { Username = "maid_chan", DisplayName = "maid chan", Aliases = ["maidchan", "maid"], LineDelayMs = 0 }.Regulars();
         var q = new EventQueue();
         var r = new ChatRouter(o, q, (_, _) => Task.CompletedTask, time);
         r.SetOnlinePlayers(["PoofimaFox", "kiwi"]);
@@ -407,7 +407,7 @@ public class LiveSession3Tests
     {
         var (r, _, time) = Live();
         var sent = new List<string>();
-        var router = new ChatRouter(new ChatOptions { Username = "maid_chan", DisplayName = "maid chan", LineDelayMs = 0 }, new EventQueue(),
+        var router = new ChatRouter(new ChatOptions { Username = "maid_chan", DisplayName = "maid chan", LineDelayMs = 0 }.Regulars(), new EventQueue(),
             (l, _) => { sent.Add(l); return Task.CompletedTask; }, time);
         router.SetOnlinePlayers(["PoofimaFox", "kiwi"]);
         await router.SayAsync("On my way master fox uwu, also i'm starving lol, got any food?", audience: ["PoofimaFox"]);

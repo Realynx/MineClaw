@@ -138,9 +138,14 @@ public sealed class BeliefOptions
     public int MaxTextChars { get; set; } = 90;
     public int MaxReasonChars { get; set; } = 48;
     public int MaxLineChars { get; set; } = 170;
-    /// <summary>Short display names for claim lines ("fox says: ...").</summary>
-    public Dictionary<string, string> Nicknames { get; set; } = new(StringComparer.OrdinalIgnoreCase)
+    /// <summary>Short display names for claim lines ("fox says: ..."); none by default (see <see cref="WithChatNicknames"/>).</summary>
+    public Dictionary<string, string> Nicknames { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Each player's first chat nickname (Agent:Chat:PlayerNicknames) as their claim name, unless one is set.</summary>
+    public BeliefOptions WithChatNicknames(IReadOnlyDictionary<string, string[]> chat)
     {
-        ["poofimafox"] = "fox", ["kiwi"] = "robin",
-    };
+        foreach (var (player, nicks) in chat)
+            if (nicks.Length > 0) Nicknames.TryAdd(player, nicks[0]);
+        return this;
+    }
 }

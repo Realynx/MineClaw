@@ -362,7 +362,7 @@ public sealed partial class PagesGoldenTests(ITestOutputHelper output) : IAsyncL
         open 99E0B97CC3FB30C75B8C
         tree FDF0DDF86DE1C9017BE2
         search 7073F4791947843E7180
-        browser AA782B8A6DA7874ABC8C
-        personality 28DCBB8FC1E2B99598D8
+        browser CBEEEE46A8745F585231
+        personality 1EA6435ECFD506429276
         """;
 }

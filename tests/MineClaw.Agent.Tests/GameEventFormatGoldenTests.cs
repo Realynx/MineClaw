@@ -10,7 +10,7 @@ namespace MineClaw.Agent.Tests;
 /// </summary>
 public class GameEventFormatGoldenTests
 {
-    private const string Expected = "012FFFA423F43775A005C1487871180627A615E0EB8CD32B6393ADECB5BDB6E3";
+    private const string Expected = "9D6A9D68C22957BB75F8E0A2AE0411EA676925F3455AF3DAC4A7DFC849DDF3E4";
 
     [Fact]
     public void Every_event_shape_formats_the_same()

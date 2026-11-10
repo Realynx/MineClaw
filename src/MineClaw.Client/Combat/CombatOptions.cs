@@ -28,8 +28,8 @@ public sealed record CombatOptions
     public bool DefendSelf { get; init; } = true;
     /// <summary>Hostiles within this distance of the bot (and closing in, or provoked) start a fight.</summary>
     public double DefendRadius { get; init; } = 5;
-    /// <summary>Players whose surroundings the bot guards (engages mobs near them).</summary>
-    public IReadOnlyList<string> GuardPlayers { get; init; } = ["poofimafox", "kiwi"];
+    /// <summary>Players whose surroundings the bot guards (engages mobs near them; config: Minecraft:GuardPlayers). Empty = nobody.</summary>
+    public IReadOnlyList<string> GuardPlayers { get; init; } = [];
     public bool GuardEnabled { get; init; } = true;
     /// <summary>A hostile within this distance of a guarded player is engaged.</summary>
     public double GuardRadius { get; init; } = 6;
@@ -84,8 +84,8 @@ public sealed record CombatOptions
     public IReadOnlySet<int> NeverWield { get; init; } = new HashSet<int>();
 
     // ---- sparring
-    /// <summary>Players who may be sparred (both regulars by default).</summary>
-    public IReadOnlyList<string> SparPlayers { get; init; } = ["poofimafox", "kiwi"];
+    /// <summary>Players who may be sparred (config: Minecraft:SparPlayers). Empty = nobody.</summary>
+    public IReadOnlyList<string> SparPlayers { get; init; } = [];
     /// <summary>The opponent must have asked ("spar", "duel", "fight me", "pvp", "1v1") in chat within this window.</summary>
     public TimeSpan SparConsentWindow { get; init; } = TimeSpan.FromMinutes(2);
     /// <summary>Arena (adaptive, from the island as it is — see <see cref="SparZone"/>): every zone cell is at least this

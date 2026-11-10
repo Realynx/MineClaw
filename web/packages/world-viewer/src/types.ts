@@ -317,7 +317,7 @@ export interface BlockDeltas {
   columns?: Array<{ rev?: number; at?: number; dim: Dim; cx: number; cz: number; kind: 'loaded' | 'unloaded' | 'block_entity' }>;
 }
 
-/** Deprecated: the bridge's runtime atlas. The viewer ships its own textures (generated/<version>/) and ignores it. */
+/** Deprecated: the bridge's runtime atlas. The viewer uses the pack imported from the user's own jar (loadBundle) and ignores it. */
 export interface AtlasResource {
   image: ImageBitmap | HTMLImageElement | HTMLCanvasElement;
   map: unknown;

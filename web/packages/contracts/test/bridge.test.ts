@@ -48,7 +48,7 @@ describe('bridge signing', () => {
       roles: canonicalRoles(['chat', 'viewer']),
     });
     expect(sha256(body)).toBe('1799cd6a496b955c3b09614f6ea849740d8a960cf4953323d89de775321e6da9');
-    expect(hmac(VECTOR_KEY, s)).toBe('c13b3496a88ed8926bf6f910f93443800d5d0f0a56c77a545280da5e11b505d0');
+    expect(hmac(VECTOR_KEY, s)).toBe('430af190755eb08dec07cd74e8a00c00a62afb0c27ca9c2be09c770e5573c611');
   });
 
   it('rejects newlines in identity headers', () => {

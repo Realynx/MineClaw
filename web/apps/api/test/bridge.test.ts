@@ -37,7 +37,7 @@ describe('HMAC signing (docs/web/api.md §3 test vectors)', () => {
       player: 'kiwi',
       roles: 'chat,viewer',
     });
-    expect(sig).toBe('c13b3496a88ed8926bf6f910f93443800d5d0f0a56c77a545280da5e11b505d0');
+    expect(sig).toBe('430af190755eb08dec07cd74e8a00c00a62afb0c27ca9c2be09c770e5573c611');
   });
 
   it('signedHeaders reproduces the vector headers', () => {

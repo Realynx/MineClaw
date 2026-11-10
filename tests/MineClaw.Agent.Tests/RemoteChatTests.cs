@@ -14,7 +14,7 @@ public class RemoteChatTests
 
     private static (ChatRouter Router, EventQueue Queue, CommandGate Gate) Make(Action<ChatOptions>? cfg = null, string? audit = null)
     {
-        var o = new ChatOptions { Username = "maid_chan", DisplayName = "maid chan", LineDelayMs = 0 };
+        var o = new ChatOptions { Username = "maid_chan", DisplayName = "maid chan", LineDelayMs = 0 }.Regulars();
         cfg?.Invoke(o);
         var q = new EventQueue();
         var r = new ChatRouter(o, q, (_, _) => Task.CompletedTask);

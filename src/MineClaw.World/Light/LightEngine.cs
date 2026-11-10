@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using MineClaw.Data;
 
 namespace MineClaw.World;
 
@@ -10,131 +11,179 @@ public readonly record struct LightLevel(int Sky, int Block)
 }
 
 /// <summary>
-/// The b1.8.1 light engine of a <see cref="WorldState"/>, a line-by-line port of mc-dev (Bukkit mc-dev 218a2a71):
+/// Keeps the sky and block light of a <see cref="WorldState"/>'s loaded columns the way the b1.8.1 game does, so the values
+/// match what the server computes (with the version's light tables, so 1.12.2 worlds use their own opacities and emissions):
 /// <list type="bullet">
-/// <item>Columns arrive with the server's light (0x33 carries the block and sky light nibbles): used as they are; only the
-/// height map (Chunk.heightMap) is derived. A region without light arrays (fixtures, tests) is lit like
-/// <c>Chunk.initLighting</c> (sky straight down, minus each block's opacity) plus each emitter's spread.</item>
-/// <item>Every block change runs what the vanilla client and the server run for it: <c>Chunk.a(x,y,z,id,meta)</c>'s height
-/// map update (<c>Chunk.g</c>: the column's sky light rewritten, World.g, Chunk.d on the 4 neighbour columns and itself) and
-/// then <c>World.p</c> = <c>World.b(SKY)</c> + <c>World.b(BLOCK)</c> at the cell: the 32768-entry queue BFS (darken what the
-/// old value lit within Manhattan 17, then re-brighten), each step losing <c>max(1, opacity)</c>.</item>
+/// <item>Columns that arrive with the server's light (0x33 carries the block and sky light nibbles) keep it as it is; only
+/// each column's surface height is worked out. A region without light arrays (fixtures, tests) is lit from its blocks: sky
+/// light straight down from the top, losing each block's opacity, then every light-emitting block's spread.</item>
+/// <item>A block change first moves the column's surface if it has to (rewriting that column's sky light and re-lighting the
+/// changed span in the column and its 4 neighbours), then re-lights the changed cell for sky and for block light.</item>
+/// <item>Re-lighting a cell is a breadth-first flood over a fixed queue of packed cells. If the cell is now darker, a
+/// darkening pass first clears everything its old value lit (cells exactly one level dimmer at each step); then a
+/// brightening pass gives every queued cell the light it should have (15 sky at or above the surface; else its emission or
+/// the brightest neighbour minus the cell's opacity, at least 1 per step), and each cell that got brighter queues its darker
+/// neighbours. Both passes stop spreading 17 blocks (Manhattan) from the changed cell.</item>
 /// </list>
-/// mc-dev's guards are kept over our loaded columns: World.b runs only when every column within 17 blocks is loaded
-/// (<c>areChunksLoaded(x, y, z, 17)</c>; the server's own view edge behaves the same), Chunk.d within 16; reads of unloaded
-/// columns return 0 like World.a(EnumSkyBlock) does. Without them a lone test column under a full floor cascades for minutes.
+/// The game's guards are kept over our loaded columns: a cell is re-lit only when every column within 17 blocks is loaded (the
+/// server's own view edge behaves the same), a column's sky span only within 16; reads of unloaded columns return 0. Without
+/// them a lone test column under a full floor cascades for minutes.
 /// Incremental only: a torch is ≈ 3k cell visits (≪ 1 ms), never a per-tick recompute. Thread-safe: updates serialize on one
 /// lock (network thread + local prediction); reads are lock-free byte reads.
 /// </summary>
 public sealed class LightEngine
 {
-    private readonly WorldState _w;
-    private readonly int[] _h = new int[32768]; // mc-dev World.H
+    private const int MaxLight = 15;
+    /// <summary>How far (Manhattan) a re-light spreads from its cell, and how far around it columns must be loaded.</summary>
+    private const int UpdateReach = 17;
+    /// <summary>How far around a column the columns must be loaded before its sky span is re-lit.</summary>
+    private const int ColumnRelightReach = 16;
+    /// <summary>The y the column guard checks the loaded columns at (only x/z matter to it).</summary>
+    private const int ColumnGuardY = 64;
+
+    // A queue entry packs a cell's offset from the update's origin cell (6 bits per axis, biased by 32 so it is never
+    // negative) and, in the darkening pass, the light level it was queued at.
+    private const int QueueCapacity = 32768;
+    /// <summary>Room the brightening pass keeps free before it queues one cell's 6 neighbours.</summary>
+    private const int NeighbourRoom = 6;
+    private const int OffsetBias = 32, OffsetMask = 63, YShift = 6, ZShift = 12, LevelShift = 18, LevelMask = 15;
+    private const int OriginEntry = OffsetBias + (OffsetBias << YShift) + (OffsetBias << ZShift);
+
+    private readonly WorldState _world;
     /// <summary>Update lock: this world's own, or the <see cref="Chunks.SharedChunkStore"/>'s when its columns are shared (every
     /// world on one store updates the same light arrays).</summary>
     private readonly object _sync;
-    private long _updates, _visits, _ticks;
+    private readonly int _worldHeight;
+    private readonly byte[] _opacityById = new byte[256], _emissionById = new byte[256];
+    private long _updateCount, _visitCount, _elapsedTicks;
 
-    private readonly int _height;
-    private readonly byte[] _opacity = new byte[256], _emission = new byte[256];
+    // The flood's state, used only while _sync is held: the reusable queue, its end, and the cell the update started from.
+    private readonly int[] _queue = new int[QueueCapacity];
+    private int _queueEnd, _originX, _originY, _originZ;
 
     internal LightEngine(WorldState world)
     {
-        _w = world;
+        _world = world;
         _sync = world.ChunkStore?.LightSync ?? new object();
-        _height = world.WorldHeight;
-        // The version's light tables (b1.8.1 mc-dev; 1.12.2 Light1122), captured once.
-        for (int id = 0; id < 256; id++) { _opacity[id] = (byte)world.Physics.LightOpacity(id); _emission[id] = (byte)world.Physics.LightEmission(id); }
+        _worldHeight = world.WorldHeight;
+        // The version's light tables (b1.8.1 or 1.12.2), captured once.
+        for (int id = 0; id < 256; id++)
+        {
+            _opacityById[id] = (byte)world.Physics.LightOpacity(id);
+            _emissionById[id] = (byte)world.Physics.LightEmission(id);
+        }
     }
 
-    private int Opacity(int id) => (uint)id < 256 ? _opacity[id] : 255;
-    private int Emission(int id) => (uint)id < 256 ? _emission[id] : 0;
+    private int Opacity(int id) => (uint)id < 256 ? _opacityById[id] : 255;
+    private int Emission(int id) => (uint)id < 256 ? _emissionById[id] : 0;
 
-    // A tiny direct-mapped column cache for the BFS (used only while _sync is held; reset at every entry point, so a column
-    // replaced by a reload is never read through a stale reference across updates).
-    private readonly ChunkColumn?[] _cache = new ChunkColumn?[16];
-    private readonly long[] _cacheKey = new long[16];
+    /// <summary>The light a cell loses per step through a block: its opacity, but at least 1.</summary>
+    private int StepCost(int id) => Math.Max(1, Opacity(id));
 
-    private void ResetCache() => Array.Clear(_cache);
+    private static int HeightIndex(int localX, int localZ) => localZ << 4 | localX;
 
-    private ChunkColumn? Col(int x, int z)
+    // ------------------------------------------------------------------ column cache
+
+    // A tiny direct-mapped column cache for the flood (used only while _sync is held; cleared at every entry point, so a
+    // column replaced by a reload is never read through a stale reference across updates).
+    private readonly ChunkColumn?[] _cachedColumns = new ChunkColumn?[16];
+    private readonly long[] _cachedKeys = new long[16];
+
+    private void ClearColumnCache() => Array.Clear(_cachedColumns);
+
+    /// <summary>The loaded column holding world x/z, or null when it has no data.</summary>
+    private ChunkColumn? CachedColumn(int x, int z)
     {
-        int cx = x >> 4, cz = z >> 4;
-        long key = ((long)cx << 32) | (uint)cz;
-        int slot = (cx & 3) << 2 | (cz & 3);
-        var c = _cache[slot];
-        if (c != null && _cacheKey[slot] == key) return c;
-        c = _w.ColumnAtRaw(x, z);
-        if (c is not { HasData: true }) return null;
-        _cache[slot] = c;
-        _cacheKey[slot] = key;
-        return c;
+        int chunkX = x >> 4, chunkZ = z >> 4;
+        long key = ((long)chunkX << 32) | (uint)chunkZ;
+        int slot = (chunkX & 3) << 2 | (chunkZ & 3);
+        var column = _cachedColumns[slot];
+        if (column != null && _cachedKeys[slot] == key) return column;
+        column = _world.ColumnAtRaw(x, z);
+        if (column is not { HasData: true }) return null;
+        _cachedColumns[slot] = column;
+        _cachedKeys[slot] = key;
+        return column;
     }
 
-    /// <summary><see cref="Get"/> through the cache (callers hold <see cref="_sync"/>).</summary>
-    private int GetC(bool sky, int x, int y, int z)
+    /// <summary><see cref="Get"/> through the cache (callers hold <see cref="_sync"/>): y clamped into the world, 0 when
+    /// unloaded.</summary>
+    private int ReadLight(bool sky, int x, int y, int z)
     {
-        if (y < 0) y = 0;
-        if (y >= _height) y = _height - 1;
-        var c = Col(x, z);
-        if (c is null) return 0;
-        return sky ? c.GetSkyLight(x & 15, y, z & 15) : c.GetBlockLight(x & 15, y, z & 15);
+        y = Math.Clamp(y, 0, _worldHeight - 1);
+        var column = CachedColumn(x, z);
+        if (column is null) return 0;
+        return sky ? column.GetSkyLight(x & 15, y, z & 15) : column.GetBlockLight(x & 15, y, z & 15);
     }
 
-    /// <summary>World.a(x0, y0, z0, x1, y1, z1) = areChunksLoaded: every column of the box has data and the box touches 0..height-1.</summary>
-    private bool Loaded(int x0, int y0, int z0, int x1, int y1, int z1)
+    /// <summary>Writes one cell's light; out-of-range y and unloaded columns are ignored.</summary>
+    private void WriteLight(bool sky, int x, int y, int z, int level)
     {
-        if (y1 < 0 || y0 >= _height) return false;
-        for (int cx = x0 >> 4; cx <= x1 >> 4; cx++)
-        for (int cz = z0 >> 4; cz <= z1 >> 4; cz++)
-            if (Col(cx << 4, cz << 4) is null) return false;
+        if ((uint)y >= _worldHeight) return;
+        var column = CachedColumn(x, z);
+        if (column is null) return;
+        if (sky) column.SetSkyLight(x & 15, y, z & 15, level);
+        else column.SetBlockLight(x & 15, y, z & 15, level);
+    }
+
+    private int BlockIdAt(int x, int y, int z) =>
+        (uint)y < _worldHeight && CachedColumn(x, z) is { } column ? column.GetBlock(x & 15, y, z & 15) : 0;
+
+    private int SurfaceAt(int x, int z) => CachedColumn(x, z) is { } column ? column.HeightMap[HeightIndex(x & 15, z & 15)] : 0;
+
+    /// <summary>Every column the box touches has data, and the box overlaps the world's y range.</summary>
+    private bool ColumnsLoaded(int minX, int minY, int minZ, int maxX, int maxY, int maxZ)
+    {
+        if (maxY < 0 || minY >= _worldHeight) return false;
+        for (int chunkX = minX >> 4; chunkX <= maxX >> 4; chunkX++)
+        for (int chunkZ = minZ >> 4; chunkZ <= maxZ >> 4; chunkZ++)
+            if (CachedColumn(chunkX << 4, chunkZ << 4) is null) return false;
         return true;
     }
 
-    private bool Loaded(int x, int y, int z, int r) => Loaded(x - r, y - r, z - r, x + r, y + r, z + r);
-
-    private int HeightC(int x, int z) => Col(x, z) is { } c ? c.HeightMap[(z & 15) << 4 | (x & 15)] : 0;
+    private bool ColumnsLoadedAround(int x, int y, int z, int reach) =>
+        ColumnsLoaded(x - reach, y - reach, z - reach, x + reach, y + reach, z + reach);
 
     /// <summary>Off = block changes leave the light arrays alone (the old behaviour). On by default.</summary>
     public bool Enabled { get; set; } = true;
 
-    /// <summary>World.b calls run so far (cost telemetry: tests pin it).</summary>
-    public long Updates => Interlocked.Read(ref _updates);
+    /// <summary>Cell re-lights run so far (cost telemetry: tests pin it).</summary>
+    public long Updates => Interlocked.Read(ref _updateCount);
     /// <summary>Queue entries processed so far (cells looked at).</summary>
-    public long Visits => Interlocked.Read(ref _visits);
+    public long Visits => Interlocked.Read(ref _visitCount);
     /// <summary>Total time spent in light updates.</summary>
-    public TimeSpan Time => TimeSpan.FromTicks((long)(Interlocked.Read(ref _ticks) * (TimeSpan.TicksPerSecond / (double)Stopwatch.Frequency)));
+    public TimeSpan Time => TimeSpan.FromTicks((long)(Interlocked.Read(ref _elapsedTicks) * (TimeSpan.TicksPerSecond / (double)Stopwatch.Frequency)));
 
     // ------------------------------------------------------------------ reads
 
-    /// <summary>World.a(EnumSkyBlock, x, y, z): y clamped to 0..height-1, 0 for an unloaded column.</summary>
+    /// <summary>A cell's sky or block light: y clamped into the world, 0 for an unloaded column.</summary>
     public int Get(bool sky, int x, int y, int z)
     {
-        if (y < 0) y = 0;
-        if (y >= _height) y = _height - 1;
-        var c = _w.ColumnAtRaw(x, z);
-        if (c is null || !c.HasData) return 0;
-        return sky ? c.GetSkyLight(x & 15, y, z & 15) : c.GetBlockLight(x & 15, y, z & 15);
+        y = Math.Clamp(y, 0, _worldHeight - 1);
+        var column = _world.ColumnAtRaw(x, z);
+        if (column is null || !column.HasData) return 0;
+        return sky ? column.GetSkyLight(x & 15, y, z & 15) : column.GetBlockLight(x & 15, y, z & 15);
     }
 
-    /// <summary>Chunk.c(x, y, z): y ≥ the column's height map (an unloaded column: false, like EmptyChunk).</summary>
+    /// <summary>The cell is at or above its column's surface (an unloaded column: false).</summary>
     public bool CanSeeSky(int x, int y, int z)
     {
-        var c = _w.ColumnAtRaw(x, z);
-        return c is { HasData: true } && y >= c.HeightMap[(z & 15) << 4 | (x & 15)];
+        var column = _world.ColumnAtRaw(x, z);
+        return column is { HasData: true } && y >= column.HeightMap[HeightIndex(x & 15, z & 15)];
     }
 
-    /// <summary>The column's height map value (Chunk.b), or 0 when unloaded.</summary>
+    /// <summary>The column's surface height (the lowest y that sees the sky), or 0 when unloaded.</summary>
     public int Height(int x, int z)
     {
-        var c = _w.ColumnAtRaw(x, z);
-        return c is { HasData: true } ? c.HeightMap[(z & 15) << 4 | (x & 15)] : 0;
+        var column = _world.ColumnAtRaw(x, z);
+        return column is { HasData: true } ? column.HeightMap[HeightIndex(x & 15, z & 15)] : 0;
     }
 
     /// <summary>
-    /// World.a(x, y, z, true) = getLightLevel with <paramref name="skylightSubtracted"/> as World.k: max(sky − k, block),
-    /// except that a slab (44), farmland (60) or wooden/cobble stairs (53/67) cell reads the brightest of the cell above and its
-    /// 4 side neighbours (mc-dev's exact id list: brick and stone-brick stairs are not in it).
+    /// The light level a mob or the player sees at a cell, with <paramref name="skylightSubtracted"/> taken off the sky light
+    /// for the time of day: max(sky − subtracted, block). A slab (44), farmland (60) or wooden/cobble stairs (53/67) cell reads
+    /// the brightest of the cell above and its 4 side neighbours instead (exactly those ids in b1.8.1: brick and stone-brick
+    /// stairs are not among them).
     /// </summary>
     public int LightLevel(int x, int y, int z, int skylightSubtracted, bool neighbours = true)
     {
@@ -142,420 +191,393 @@ public sealed class LightEngine
         return OwnLightLevel(x, y, z, skylightSubtracted);
     }
 
-    /// <summary>A slab, farmland or wooden/cobble stairs cell (mc-dev's exact id list).</summary>
+    /// <summary>A slab, farmland or wooden/cobble stairs cell.</summary>
     private bool ReadsNeighbourLight(int x, int y, int z)
     {
-        int id = (uint)y < _height ? _w.GetBlock(x, y, z) : 0;
-        return id is 44 or 60 or 67 or 53;
+        int id = (uint)y < _worldHeight ? _world.GetBlock(x, y, z) : 0;
+        return id is Blocks.Slab or Blocks.Farmland or Blocks.CobblestoneStairs or Blocks.WoodenStairs;
     }
 
     /// <summary>The brightest of the cell above and the 4 side neighbours.</summary>
     private int BrightestAround(int x, int y, int z, int skylightSubtracted)
     {
-        int best = OwnLightLevel(x, y + 1, z, skylightSubtracted);
-        best = Math.Max(best, OwnLightLevel(x + 1, y, z, skylightSubtracted));
-        best = Math.Max(best, OwnLightLevel(x - 1, y, z, skylightSubtracted));
-        best = Math.Max(best, OwnLightLevel(x, y, z + 1, skylightSubtracted));
-        return Math.Max(best, OwnLightLevel(x, y, z - 1, skylightSubtracted));
+        int brightest = OwnLightLevel(x, y + 1, z, skylightSubtracted);
+        brightest = Math.Max(brightest, OwnLightLevel(x + 1, y, z, skylightSubtracted));
+        brightest = Math.Max(brightest, OwnLightLevel(x - 1, y, z, skylightSubtracted));
+        brightest = Math.Max(brightest, OwnLightLevel(x, y, z + 1, skylightSubtracted));
+        return Math.Max(brightest, OwnLightLevel(x, y, z - 1, skylightSubtracted));
     }
 
-    /// <summary>max(sky − k, block) of the cell itself.</summary>
+    /// <summary>max(sky − subtracted, block) of the cell itself (0 below the world, the top cell above it).</summary>
     private int OwnLightLevel(int x, int y, int z, int skylightSubtracted)
     {
         if (y < 0) return 0;
-        if (y >= _height) y = _height - 1;
-        var c = _w.ColumnAtRaw(x, z);
-        if (c is null || !c.HasData) return 0;
-        int v = c.GetSkyLight(x & 15, y, z & 15) - skylightSubtracted, b = c.GetBlockLight(x & 15, y, z & 15);
-        return b > v ? b : v;
+        if (y >= _worldHeight) y = _worldHeight - 1;
+        var column = _world.ColumnAtRaw(x, z);
+        if (column is null || !column.HasData) return 0;
+        int dimmedSky = column.GetSkyLight(x & 15, y, z & 15) - skylightSubtracted;
+        return Math.Max(dimmedSky, column.GetBlockLight(x & 15, y, z & 15));
     }
 
-    // ------------------------------------------------------------------ sky darkening (World.k)
+    // ------------------------------------------------------------------ sky darkening over the day
 
-    private static readonly float[] Sin = BuildSin();
+    /// <summary>One full sine period sampled at 65536 points: the game's fast cosine reads it.</summary>
+    private static readonly float[] SineTable = BuildSineTable();
 
-    private static float[] BuildSin()
+    private static float[] BuildSineTable()
     {
-        var a = new float[65536];
-        for (int i = 0; i < a.Length; i++) a[i] = (float)Math.Sin(i * 3.141592653589793D * 2.0D / 65536.0D);
-        return a;
+        var table = new float[65536];
+        for (int i = 0; i < table.Length; i++) table[i] = (float)Math.Sin(i * Math.PI * 2.0D / 65536.0D);
+        return table;
     }
 
-    /// <summary>MathHelper.cos (the 65536-entry table).</summary>
-    private static float Cos(float f) => Sin[(int)(f * 10430.378F + 16384.0F) & 0xffff];
+    /// <summary>The table cosine: 10430.378 table steps per radian, a quarter turn (16384 steps) ahead of the sine.</summary>
+    private static float TableCos(float radians) => SineTable[(int)(radians * 10430.378F + 16384.0F) & 0xffff];
 
-    /// <summary>WorldProvider.a(time, f): the celestial angle.</summary>
+    /// <summary>The sun's angle as a fraction of a turn (0 = noon, 0.5 = midnight), eased so days run a little longer than
+    /// nights.</summary>
     public static float CelestialAngle(long time, float partial = 1.0F)
     {
-        int j = (int)(time % 24000L);
-        float f1 = (j + partial) / 24000.0F - 0.25F;
-        if (f1 < 0.0F) ++f1;
-        if (f1 > 1.0F) --f1;
-        float f2 = f1;
-        f1 = 1.0F - (float)((Math.Cos(f1 * 3.141592653589793D) + 1.0D) / 2.0D);
-        return f2 + (f1 - f2) / 3.0F;
+        int tickOfDay = (int)(time % 24000L);
+        float linear = (tickOfDay + partial) / 24000.0F - 0.25F;
+        if (linear < 0.0F) ++linear;
+        if (linear > 1.0F) --linear;
+        float eased = 1.0F - (float)((Math.Cos(linear * Math.PI) + 1.0D) / 2.0D);
+        return linear + (eased - linear) / 3.0F;
     }
 
     /// <summary>
-    /// World.a(1.0F) = World.k (skylightSubtracted) at <paramref name="timeOfDay"/>: 0 by day, 11 at night, less with
-    /// <paramref name="rain"/>/<paramref name="thunder"/> strength 0..1 (each × 5/16 of the remaining brightness). During a
-    /// thunderstorm EntityMonster spawn checks use 10 instead (World.t()).
+    /// How much sky light is taken off at <paramref name="timeOfDay"/>: 0 by day, 11 at night, less with
+    /// <paramref name="rain"/>/<paramref name="thunder"/> strength 0..1 (each takes 5/16 of the remaining brightness).
+    /// During a thunderstorm hostile spawn checks use 10 instead.
     /// </summary>
     public static int SkylightSubtracted(long timeOfDay, float rain = 0f, float thunder = 0f)
     {
-        float f1 = CelestialAngle(((timeOfDay % 24000) + 24000) % 24000);
-        float f2 = 1.0F - (Cos(f1 * 3.1415927F * 2.0F) * 2.0F + 0.5F);
-        if (f2 < 0.0F) f2 = 0.0F;
-        if (f2 > 1.0F) f2 = 1.0F;
-        f2 = 1.0F - f2;
-        f2 = (float)(f2 * (1.0D - rain * 5.0F / 16.0D));
-        f2 = (float)(f2 * (1.0D - thunder * rain * 5.0F / 16.0D));
-        f2 = 1.0F - f2;
-        return (int)(f2 * 11.0F);
+        float angle = CelestialAngle(((timeOfDay % 24000) + 24000) % 24000);
+        float darkness = Math.Clamp(1.0F - (TableCos(angle * 3.1415927F * 2.0F) * 2.0F + 0.5F), 0.0F, 1.0F);
+        float brightness = 1.0F - darkness;
+        brightness = (float)(brightness * (1.0D - rain * 5.0F / 16.0D));
+        brightness = (float)(brightness * (1.0D - thunder * rain * 5.0F / 16.0D));
+        return (int)((1.0F - brightness) * 11.0F);
     }
 
-    /// <summary>The darkest World.k of a day (midnight, clear sky): 11. Spawn checks "after dark" use it.</summary>
+    /// <summary>The most sky light a day takes off (midnight, clear sky): 11. Spawn checks "after dark" use it.</summary>
     public const int NightSubtracted = 11;
 
     // ------------------------------------------------------------------ column data
 
-    /// <summary>A region of live data arrived (0x33): height maps of its columns; with no light arrays, initLighting + emitters.</summary>
+    /// <summary>A region of live data arrived (0x33): its columns' surfaces; with no light arrays, the initial light and the
+    /// emitters' spread.</summary>
     internal void OnRegion(int originX, int originZ, int sizeX, int sizeZ, bool hasSky, bool hasBlock, bool spread = false)
     {
         if (!Enabled) return;
-        long t0 = Stopwatch.GetTimestamp();
+        long started = Stopwatch.GetTimestamp();
         lock (_sync)
         {
-            ResetCache();
+            ClearColumnCache();
             var emitters = new List<BlockPos>();
             for (int x = originX; x < originX + sizeX; x++)
             for (int z = originZ; z < originZ + sizeZ; z++)
             {
-                var c = _w.ColumnAtRaw(x, z);
-                if (c is null) continue;
-                InitColumn(c, x, z, hasSky, hasBlock, emitters);
+                var column = _world.ColumnAtRaw(x, z);
+                if (column is null) continue;
+                LightNewColumn(column, x, z, hasSky, hasBlock, emitters);
             }
-            // Chunk.i(): every column initLighting marked gets its sky spread sideways (overhangs, the underside of an island).
-            if (!hasSky && spread) SpreadSky(originX, originZ, sizeX, sizeZ);
-            foreach (var e in emitters) Update(false, e.X, e.Y, e.Z);
+            if (!hasSky && spread) SpreadSkySideways(originX, originZ, sizeX, sizeZ);
+            foreach (var emitter in emitters) RelightCell(false, emitter.X, emitter.Y, emitter.Z);
         }
-        Interlocked.Add(ref _ticks, Stopwatch.GetTimestamp() - t0);
+        Interlocked.Add(ref _elapsedTicks, Stopwatch.GetTimestamp() - started);
     }
 
-    /// <summary>Chunk.initLighting for one column: its height, the sky pass (no sky array came), and with no block light array the
-    /// block light cleared and its emitters collected.</summary>
-    private void InitColumn(ChunkColumn c, int x, int z, bool hasSky, bool hasBlock, List<BlockPos> emitters)
+    /// <summary>One new column: its surface, its sky light when none came, and with no block light array its block light
+    /// cleared and its emitters collected.</summary>
+    private void LightNewColumn(ChunkColumn column, int x, int z, bool hasSky, bool hasBlock, List<BlockPos> emitters)
     {
-        int lx = x & 15, lz = z & 15;
-        RecomputeHeight(c, lx, lz);
-        if (!hasSky) InitSky(c, lx, lz);
-        if (!hasBlock) ClearBlockLight(c, x, z, emitters);
+        int localX = x & 15, localZ = z & 15;
+        FindSurface(column, localX, localZ);
+        if (!hasSky) LightSkyFromAbove(column, localX, localZ);
+        if (!hasBlock) ClearBlockLight(column, x, z, emitters);
     }
 
-    private void ClearBlockLight(ChunkColumn c, int x, int z, List<BlockPos> emitters)
+    private void ClearBlockLight(ChunkColumn column, int x, int z, List<BlockPos> emitters)
     {
-        int lx = x & 15, lz = z & 15;
-        for (int y = 0; y < _height; y++)
+        int localX = x & 15, localZ = z & 15;
+        for (int y = 0; y < _worldHeight; y++)
         {
-            c.SetBlockLight(lx, y, lz, 0);
-            if (Emission(c.GetBlock(lx, y, lz)) > 0) emitters.Add(new BlockPos(x, y, z));
+            column.SetBlockLight(localX, y, localZ, 0);
+            if (Emission(column.GetBlock(localX, y, localZ)) > 0) emitters.Add(new BlockPos(x, y, z));
         }
     }
 
-    /// <summary>Chunk.i(): each column's sky relit between its height and its lowest neighbour's, and its neighbours' up to its own.</summary>
-    private void SpreadSky(int originX, int originZ, int sizeX, int sizeZ)
+    /// <summary>Sky light leaking sideways: each column's sky is re-lit between its surface and its lowest neighbour's, and
+    /// each neighbour's up to this column's surface (overhangs, the underside of an island).</summary>
+    private void SpreadSkySideways(int originX, int originZ, int sizeX, int sizeZ)
     {
         for (int x = originX; x < originX + sizeX; x++)
         for (int z = originZ; z < originZ + sizeZ; z++)
         {
-            if (Col(x, z) is null || !Loaded((x >> 4) * 16 + 8, 64, (z >> 4) * 16 + 8, 16)) continue; // Chunk.i's guard
-            int l = HeightC(x, z);
-            int k1 = Math.Min(Math.Min(HeightC(x - 1, z), HeightC(x + 1, z)), Math.Min(HeightC(x, z - 1), HeightC(x, z + 1)));
-            ColumnF(x, z, k1);
-            ColumnF(x - 1, z, l);
-            ColumnF(x + 1, z, l);
-            ColumnF(x, z - 1, l);
-            ColumnF(x, z + 1, l);
+            if (CachedColumn(x, z) is null || !ColumnsLoadedAround((x >> 4) * 16 + 8, ColumnGuardY, (z >> 4) * 16 + 8, ColumnRelightReach)) continue;
+            int surface = SurfaceAt(x, z);
+            int lowestNeighbour = Math.Min(Math.Min(SurfaceAt(x - 1, z), SurfaceAt(x + 1, z)), Math.Min(SurfaceAt(x, z - 1), SurfaceAt(x, z + 1)));
+            RelightSkyBetweenSurfaceAnd(x, z, lowestNeighbour);
+            RelightSkyBetweenSurfaceAnd(x - 1, z, surface);
+            RelightSkyBetweenSurfaceAnd(x + 1, z, surface);
+            RelightSkyBetweenSurfaceAnd(x, z - 1, surface);
+            RelightSkyBetweenSurfaceAnd(x, z + 1, surface);
         }
     }
 
-    /// <summary>Chunk.f(x, z, y): relight the sky between a column's height and <paramref name="k"/>.</summary>
-    private void ColumnF(int x, int z, int k)
+    /// <summary>Re-lights the sky of one column from its surface to <paramref name="otherY"/> (both ends included).</summary>
+    private void RelightSkyBetweenSurfaceAnd(int x, int z, int otherY)
     {
-        int l = HeightC(x, z);
-        if (l > k) ChunkD(x, z, k, l + 1);
-        else if (l < k) ChunkD(x, z, l, k + 1);
+        int surface = SurfaceAt(x, z);
+        if (surface > otherY) RelightSkySpan(x, z, otherY, surface + 1);
+        else if (surface < otherY) RelightSkySpan(x, z, surface, otherY + 1);
     }
 
-    /// <summary>The height map loop of Chunk.initLighting for one local column.</summary>
-    private void RecomputeHeight(ChunkColumn c, int lx, int lz)
+    /// <summary>A column's surface from scratch: down from the top cell to just above the highest block that has opacity.</summary>
+    private void FindSurface(ChunkColumn column, int localX, int localZ)
     {
-        int l = c.Height - 1;
-        while (l > 0 && Opacity(c.GetBlock(lx, l - 1, lz)) == 0) l--;
-        c.HeightMap[lz << 4 | lx] = (short)l;
+        int surface = column.Height - 1;
+        while (surface > 0 && Opacity(column.GetBlock(localX, surface - 1, localZ)) == 0) surface--;
+        column.HeightMap[HeightIndex(localX, localZ)] = (short)surface;
     }
 
-    /// <summary>Chunk.initLighting's sky pass for one local column (no light array came with it): the column cleared to 0, then
-    /// from the top down 15 minus the opacities so far while that stays above 0 (y 0 is never lit). Written cell by cell in one
-    /// pass, so the open air above the ground stays at the unallocated default.</summary>
-    private void InitSky(ChunkColumn c, int lx, int lz)
+    /// <summary>A column's first sky light (no light array came with it): from the top down, 15 minus the opacities passed so far
+    /// while that stays above 0, else 0 (y 0 is never lit). Written cell by cell in one pass, so the open air above the ground
+    /// stays at the unallocated default.</summary>
+    private void LightSkyFromAbove(ChunkColumn column, int localX, int localZ)
     {
-        int k1 = 15;
-        for (int y = c.Height - 1; y >= 0; y--)
+        int remaining = MaxLight;
+        for (int y = column.Height - 1; y >= 0; y--)
         {
-            int v = 0;
-            if (y > 0 && k1 > 0)
+            int level = 0;
+            if (y > 0 && remaining > 0)
             {
-                k1 -= Opacity(c.GetBlock(lx, y, lz));
-                if (k1 > 0) v = k1;
+                remaining -= Opacity(column.GetBlock(localX, y, localZ));
+                if (remaining > 0) level = remaining;
             }
-            c.SetSkyLight(lx, y, lz, v);
+            column.SetSkyLight(localX, y, localZ, level);
         }
     }
 
-    /// <summary>Re-lights a loaded column from its blocks alone, the full way (initLighting, then Chunk.i's sideways sky spread:
-    /// overhangs, an island's underside, then every emitter). A region that arrives without light gets only the cheap
-    /// initLighting pass + emitters.</summary>
+    /// <summary>Re-lights a loaded column from its blocks alone, the full way (first light, then the sideways sky spread:
+    /// overhangs, an island's underside, then every emitter). A region that arrives without light gets only the cheap first
+    /// light and its emitters.</summary>
     public void Relight(int chunkX, int chunkZ)
     {
-        if (_w.GetColumn(chunkX, chunkZ) is not { HasData: true }) return;
+        if (_world.GetColumn(chunkX, chunkZ) is not { HasData: true }) return;
         OnRegion(chunkX * 16, chunkZ * 16, 16, 16, hasSky: false, hasBlock: false, spread: true);
     }
 
-    // ------------------------------------------------------------------ block change (Chunk.a + World.p)
+    // ------------------------------------------------------------------ block change
 
-    /// <summary>A block changed from <paramref name="oldId"/> (already written): Chunk.a's height map update, then World.p.</summary>
+    /// <summary>A block changed from <paramref name="oldId"/> (already written): the column's surface first, then the cell
+    /// re-lit for sky and block light.</summary>
     internal void OnBlockChanged(int x, int y, int z, int oldId, int newId)
     {
         if (!Enabled) return;
-        var c = _w.ColumnAtRaw(x, z);
-        if (c is null || !c.HasData || (uint)y >= _height) return;
-        long t0 = Stopwatch.GetTimestamp();
+        var column = _world.ColumnAtRaw(x, z);
+        if (column is null || !column.HasData || (uint)y >= _worldHeight) return;
+        long started = Stopwatch.GetTimestamp();
         lock (_sync)
         {
-            ResetCache();
-            int lx = x & 15, lz = z & 15;
-            if (_w.Dimension != -1) // !worldProvider.e (the nether has no sky)
-            {
-                int k1 = c.HeightMap[lz << 4 | lx];
-                if (Opacity(newId) != 0)
-                {
-                    if (y >= k1) HeightUpdate(c, lx, y + 1, lz);
-                }
-                else if (y == k1 - 1) HeightUpdate(c, lx, y, lz);
-            }
-            Update(true, x, y, z);
-            Update(false, x, y, z);
+            ClearColumnCache();
+            if (_world.Dimension != -1) UpdateSurface(column, x & 15, y, z & 15, newId); // the nether has no sky
+            RelightCell(true, x, y, z);
+            RelightCell(false, x, y, z);
         }
-        Interlocked.Add(ref _ticks, Stopwatch.GetTimestamp() - t0);
+        Interlocked.Add(ref _elapsedTicks, Stopwatch.GetTimestamp() - started);
     }
 
-    /// <summary>Chunk.g(x, y, z) (local x/z).</summary>
-    private void HeightUpdate(ChunkColumn c, int lx, int j, int lz)
+    /// <summary>A block with opacity placed at or above the surface lifts it over the block; a clear block at the cell just under
+    /// the surface lets it sink.</summary>
+    private void UpdateSurface(ChunkColumn column, int localX, int y, int localZ, int newId)
     {
-        int l = c.HeightMap[lz << 4 | lx];
-        int i1 = l;
-        if (j > l) i1 = j;
-        while (i1 > 0 && Opacity(c.GetBlock(lx, i1 - 1, lz)) == 0) --i1;
-        if (i1 == l) return;
-        // mc-dev passes the LOCAL x/z to World.g here (this.world.g(i, k, i1, l)): it relights world column (lx, lz). Kept.
-        WorldG(lx, lz, i1, l);
-        c.HeightMap[lz << 4 | lx] = (short)i1;
-        int wx = c.ChunkX * 16 + lx, wz = c.ChunkZ * 16 + lz;
-        RefillSky(c, lx, lz, i1, l);
-        FadeSky(c, lx, lz, i1);
-        RelightAround(wx, wz, l, c.HeightMap[lz << 4 | lx]);
-    }
-
-    /// <summary>Between the old height <paramref name="l"/> and the new <paramref name="i1"/>: full sky where it rose out, none
-    /// where it is now covered.</summary>
-    private static void RefillSky(ChunkColumn c, int lx, int lz, int i1, int l)
-    {
-        if (i1 < l) for (int y = i1; y < l; y++) c.SetSkyLight(lx, y, lz, 15);
-        else for (int y = l; y < i1; y++) c.SetSkyLight(lx, y, lz, 0);
-    }
-
-    /// <summary>Under the new height: 15 minus the opacities (at least 1 a block) going down, until it reaches 0.</summary>
-    private void FadeSky(ChunkColumn c, int lx, int lz, int i1)
-    {
-        int j2 = 15;
-        while (i1 > 0 && j2 > 0)
+        int surface = column.HeightMap[HeightIndex(localX, localZ)];
+        if (Opacity(newId) != 0)
         {
-            --i1;
-            int k2 = Opacity(c.GetBlock(lx, i1, lz));
-            if (k2 == 0) k2 = 1;
-            j2 -= k2;
-            if (j2 < 0) j2 = 0;
-            c.SetSkyLight(lx, i1, lz, j2);
+            if (y >= surface) MoveSurface(column, localX, y + 1, localZ);
         }
+        else if (y == surface - 1) MoveSurface(column, localX, y, localZ);
     }
 
-    /// <summary>The changed span (old height <paramref name="l"/> to new <paramref name="b0"/>) relit in the 4 neighbour columns
-    /// and the column itself.</summary>
-    private void RelightAround(int wx, int wz, int l, int b0)
+    /// <summary>Settles the column's surface from <paramref name="startY"/> (or the old surface when that is higher) down past
+    /// clear blocks, then rewrites the sky light it moved over and re-lights the span around it.</summary>
+    private void MoveSurface(ChunkColumn column, int localX, int startY, int localZ)
     {
-        int l2 = l, i3 = b0;
-        if (b0 < l) { l2 = b0; i3 = l; }
-        ChunkD(wx - 1, wz, l2, i3);
-        ChunkD(wx + 1, wz, l2, i3);
-        ChunkD(wx, wz - 1, l2, i3);
-        ChunkD(wx, wz + 1, l2, i3);
-        ChunkD(wx, wz, l2, i3);
+        int index = HeightIndex(localX, localZ);
+        int oldSurface = column.HeightMap[index];
+        int newSurface = Math.Max(startY, oldSurface);
+        while (newSurface > 0 && Opacity(column.GetBlock(localX, newSurface - 1, localZ)) == 0) --newSurface;
+        if (newSurface == oldSurface) return;
+        // The game re-lights this span in the world column at the chunk-local x/z, not in the changed column; kept so the light
+        // stays the same as the server's.
+        RelightSkySpanInclusive(localX, localZ, newSurface, oldSurface);
+        column.HeightMap[index] = (short)newSurface;
+        int worldX = column.ChunkX * 16 + localX, worldZ = column.ChunkZ * 16 + localZ;
+        RewriteSkyBetween(column, localX, localZ, newSurface, oldSurface);
+        FadeSkyBelow(column, localX, localZ, newSurface);
+        RelightSpanAround(worldX, worldZ, oldSurface, column.HeightMap[index]);
     }
 
-    /// <summary>World.g(x, z, y0, y1): sky relight of y0..y1 (inclusive) in one world column.</summary>
-    private void WorldG(int x, int z, int k, int l)
+    /// <summary>Between the old and the new surface: full sky where the column opened up, none where it is now covered.</summary>
+    private static void RewriteSkyBetween(ChunkColumn column, int localX, int localZ, int newSurface, int oldSurface)
     {
-        if (k > l) (k, l) = (l, k);
-        for (int y = k; y <= l; y++) Update(true, x, y, z);
+        if (newSurface < oldSurface) for (int y = newSurface; y < oldSurface; y++) column.SetSkyLight(localX, y, localZ, MaxLight);
+        else for (int y = oldSurface; y < newSurface; y++) column.SetSkyLight(localX, y, localZ, 0);
     }
 
-    /// <summary>Chunk.d(x, z, y0, y1): sky relight of y0..y1−1 in one world column.</summary>
-    private void ChunkD(int x, int z, int k, int l)
+    /// <summary>Under the new surface: 15 minus each block's step cost going down, until it reaches 0.</summary>
+    private void FadeSkyBelow(ChunkColumn column, int localX, int localZ, int surface)
     {
-        if (l <= k || !Loaded(x, 64, z, 16)) return; // Chunk.d: areChunksLoaded(x, 64, z, 16)
-        for (int y = k; y < l; y++) Update(true, x, y, z);
-    }
-
-    // ------------------------------------------------------------------ World.b(EnumSkyBlock, x, y, z)
-
-    private void Set(bool sky, int x, int y, int z, int v)
-    {
-        if ((uint)y >= _height) return;
-        var c = Col(x, z);
-        if (c is null) return;
-        if (sky) c.SetSkyLight(x & 15, y, z & 15, v);
-        else c.SetBlockLight(x & 15, y, z & 15, v);
-    }
-
-    private int TypeId(int x, int y, int z) =>
-        (uint)y < _height && Col(x, z) is { } c ? c.GetBlock(x & 15, y, z & 15) : 0;
-
-    /// <summary>World.d: sky light a cell should have (15 under open sky, else the brightest neighbour minus opacity).</summary>
-    private int SkyValue(int x, int y, int z, int opacity)
-    {
-        if (Col(x, z) is { } col && y >= col.HeightMap[(z & 15) << 4 | (x & 15)]) return 15;
-        if (opacity == 0) opacity = 1;
-        int best = 0;
-        for (int n = 0; n < 6; n++)
+        int level = MaxLight;
+        for (int y = surface - 1; y >= 0 && level > 0; y--)
         {
-            int s = n % 2 * 2 - 1;
-            int v = GetC(true, x + n / 2 % 3 / 2 * s, y + (n / 2 + 1) % 3 / 2 * s, z + (n / 2 + 2) % 3 / 2 * s) - opacity;
-            if (v > best) best = v;
+            level = Math.Max(0, level - StepCost(column.GetBlock(localX, y, localZ)));
+            column.SetSkyLight(localX, y, localZ, level);
         }
-        return best;
     }
 
-    /// <summary>World.e: block light a cell should have (its emission, or the brightest neighbour minus opacity).</summary>
-    private int BlockValue(int x, int y, int z, int id, int opacity)
+    /// <summary>The span between the old and the new surface re-lit in the 4 neighbour columns and the column itself.</summary>
+    private void RelightSpanAround(int x, int z, int oldSurface, int newSurface)
     {
-        int best = Emission(id);
-        int v;
-        if ((v = GetC(false, x - 1, y, z) - opacity) > best) best = v;
-        if ((v = GetC(false, x + 1, y, z) - opacity) > best) best = v;
-        if ((v = GetC(false, x, y - 1, z) - opacity) > best) best = v;
-        if ((v = GetC(false, x, y + 1, z) - opacity) > best) best = v;
-        if ((v = GetC(false, x, y, z - 1) - opacity) > best) best = v;
-        if ((v = GetC(false, x, y, z + 1) - opacity) > best) best = v;
-        return best;
+        int bottom = Math.Min(oldSurface, newSurface), top = Math.Max(oldSurface, newSurface);
+        RelightSkySpan(x - 1, z, bottom, top);
+        RelightSkySpan(x + 1, z, bottom, top);
+        RelightSkySpan(x, z - 1, bottom, top);
+        RelightSkySpan(x, z + 1, bottom, top);
+        RelightSkySpan(x, z, bottom, top);
     }
 
-    private int Value(bool sky, int x, int y, int z, int id, int opacity) =>
-        sky ? SkyValue(x, y, z, opacity) : BlockValue(x, y, z, id, opacity);
-
-    private static int Pack(int x, int y, int z, int i, int j, int k) => x - i + 32 + (y - j + 32 << 6) + (z - k + 32 << 12);
-
-    /// <summary>World.b(EnumSkyBlock, x, y, z), the queue BFS. Callers hold <see cref="_sync"/>.</summary>
-    private void Update(bool sky, int i, int j, int k)
+    /// <summary>Re-lights the sky of one world column from <paramref name="fromY"/> to <paramref name="toY"/>, both included, in
+    /// either order.</summary>
+    private void RelightSkySpanInclusive(int x, int z, int fromY, int toY)
     {
-        if (!Loaded(i, j, k, 17)) return; // mc-dev areChunksLoaded(i, j, k, 17)
-        Interlocked.Increment(ref _updates);
-        var h = _h;
-        int i1 = 0;
-        int j1 = GetC(sky, i, j, k);
-        int k1 = TypeId(i, j, k);
-        int l1 = Opacity(k1);
-        if (l1 == 0) l1 = 1;
-        int i2 = Value(sky, i, j, k, k1, l1);
+        if (fromY > toY) (fromY, toY) = (toY, fromY);
+        for (int y = fromY; y <= toY; y++) RelightCell(true, x, y, z);
+    }
+
+    /// <summary>Re-lights the sky of one world column from <paramref name="bottom"/> up to just under <paramref name="top"/>,
+    /// when the columns around it are loaded.</summary>
+    private void RelightSkySpan(int x, int z, int bottom, int top)
+    {
+        if (top <= bottom || !ColumnsLoadedAround(x, ColumnGuardY, z, ColumnRelightReach)) return;
+        for (int y = bottom; y < top; y++) RelightCell(true, x, y, z);
+    }
+
+    // ------------------------------------------------------------------ re-lighting one cell (the flood)
+
+    /// <summary>The light a cell should have from its surroundings alone: 15 sky at or above its column's surface; otherwise the
+    /// brightest neighbour minus the cell's step cost, but never less than its own emission (block light) or 0 (sky light).</summary>
+    private int TargetLight(bool sky, int x, int y, int z)
+    {
+        int id = BlockIdAt(x, y, z);
+        if (sky && CachedColumn(x, z) is { } column && y >= column.HeightMap[HeightIndex(x & 15, z & 15)]) return MaxLight;
+        int floor = sky ? 0 : Emission(id);
+        return Math.Max(floor, BrightestNeighbour(sky, x, y, z) - StepCost(id));
+    }
+
+    private int BrightestNeighbour(bool sky, int x, int y, int z)
+    {
+        int brightest = ReadLight(sky, x - 1, y, z);
+        brightest = Math.Max(brightest, ReadLight(sky, x + 1, y, z));
+        brightest = Math.Max(brightest, ReadLight(sky, x, y - 1, z));
+        brightest = Math.Max(brightest, ReadLight(sky, x, y + 1, z));
+        brightest = Math.Max(brightest, ReadLight(sky, x, y, z - 1));
+        return Math.Max(brightest, ReadLight(sky, x, y, z + 1));
+    }
+
+    /// <summary>Brings one cell's sky or block light (and whatever it lights) up to date after a change there. Callers hold
+    /// <see cref="_sync"/>.</summary>
+    private void RelightCell(bool sky, int x, int y, int z)
+    {
+        if (!ColumnsLoadedAround(x, y, z, UpdateReach)) return;
+        Interlocked.Increment(ref _updateCount);
+        _originX = x;
+        _originY = y;
+        _originZ = z;
+        _queueEnd = 0;
+        int current = ReadLight(sky, x, y, z), target = TargetLight(sky, x, y, z);
         int visits = 0;
-
-        if (i2 > j1)
-            h[i1++] = 133152;
-        else if (i2 < j1)
+        if (target > current) _queue[_queueEnd++] = OriginEntry;
+        else if (target < current)
         {
-            h[i1++] = 133152 + (j1 << 18);
-            Darken(sky, i, j, k, h, ref i1, ref visits);
+            _queue[_queueEnd++] = OriginEntry + (current << LevelShift);
+            visits += DarkenPass(sky);
         }
-        Brighten(sky, i, j, k, h, i1, ref visits);
-        Interlocked.Add(ref _visits, visits);
+        visits += BrightenPass(sky);
+        Interlocked.Add(ref _visitCount, visits);
     }
 
-    /// <summary>The darkening pass: every queued cell still at its queued level goes to 0 and queues its neighbours one level
-    /// lower (within 17 of the origin); those then become the brightening pass's queue.</summary>
-    private void Darken(bool sky, int i, int j, int k, int[] h, ref int i1, ref int visits)
+    /// <summary>The darkening pass: a queued cell still at the level it was queued with goes to 0 and queues its neighbours that
+    /// are exactly one level dimmer (they took their light from it), within reach of the origin. Every entry stays in the
+    /// queue, so the brightening pass then re-lights all of them from the light that is left around. Returns the entries
+    /// visited.</summary>
+    private int DarkenPass(bool sky)
     {
-        int l = 0;
-        while (l < i1)
+        int read = 0;
+        while (read < _queueEnd)
         {
-            int e = h[l++];
-            int x = (e & 63) - 32 + i, y = (e >> 6 & 63) - 32 + j, z = (e >> 12 & 63) - 32 + k;
-            int level = e >> 18 & 15;
-            visits++;
-            if (GetC(sky, x, y, z) != level) continue;
-            Set(sky, x, y, z, 0);
-            --level;
-            if (level <= 0) continue;
-            if (Far(x, y, z, i, j, k)) continue;
-            QueueAtLevel(sky, x, y, z, i, j, k, level, h, ref i1);
+            int entry = _queue[read++];
+            int x = EntryX(entry), y = EntryY(entry), z = EntryZ(entry);
+            int level = entry >> LevelShift & LevelMask;
+            if (ReadLight(sky, x, y, z) != level) continue;
+            WriteLight(sky, x, y, z, 0);
+            int dimmer = level - 1;
+            if (dimmer <= 0 || OutOfReach(x, y, z)) continue;
+            QueueIfAtLevel(sky, x, y, z - 1, dimmer);
+            QueueIfAtLevel(sky, x, y, z + 1, dimmer);
+            QueueIfAtLevel(sky, x, y - 1, z, dimmer);
+            QueueIfAtLevel(sky, x, y + 1, z, dimmer);
+            QueueIfAtLevel(sky, x - 1, y, z, dimmer);
+            QueueIfAtLevel(sky, x + 1, y, z, dimmer);
         }
+        return read;
     }
 
-    /// <summary>The 6 neighbours (World.b's order) whose light is exactly <paramref name="level"/>, while the queue has room.</summary>
-    private void QueueAtLevel(bool sky, int x, int y, int z, int i, int j, int k, int level, int[] h, ref int i1)
+    private void QueueIfAtLevel(bool sky, int x, int y, int z, int level)
     {
-        for (int n = 0; n < 6; n++)
+        if (ReadLight(sky, x, y, z) == level && _queueEnd < QueueCapacity)
+            _queue[_queueEnd++] = PackOffset(x, y, z) + (level << LevelShift);
+    }
+
+    /// <summary>The brightening pass: every queued cell takes the light it should have; one that got brighter queues its darker
+    /// neighbours, within reach of the origin and while the queue has room for all six. Returns the entries visited.</summary>
+    private int BrightenPass(bool sky)
+    {
+        int read = 0;
+        while (read < _queueEnd)
         {
-            int s = n % 2 * 2 - 1;
-            int nx = x + n / 2 % 3 / 2 * s, ny = y + (n / 2 + 1) % 3 / 2 * s, nz = z + (n / 2 + 2) % 3 / 2 * s;
-            if (GetC(sky, nx, ny, nz) == level && i1 < h.Length)
-                h[i1++] = Pack(nx, ny, nz, i, j, k) + (level << 18);
+            int entry = _queue[read++];
+            int x = EntryX(entry), y = EntryY(entry), z = EntryZ(entry);
+            int current = ReadLight(sky, x, y, z), target = TargetLight(sky, x, y, z);
+            if (target == current) continue;
+            WriteLight(sky, x, y, z, target);
+            if (target < current || OutOfReach(x, y, z) || _queueEnd >= QueueCapacity - NeighbourRoom) continue;
+            QueueIfDarker(sky, x - 1, y, z, target);
+            QueueIfDarker(sky, x + 1, y, z, target);
+            QueueIfDarker(sky, x, y - 1, z, target);
+            QueueIfDarker(sky, x, y + 1, z, target);
+            QueueIfDarker(sky, x, y, z - 1, target);
+            QueueIfDarker(sky, x, y, z + 1, target);
         }
+        return read;
     }
 
-    /// <summary>The brightening pass: every queued cell takes the light it should have, and a cell that got brighter queues its
-    /// darker neighbours (within 17 of the origin, while the queue has room).</summary>
-    private void Brighten(bool sky, int i, int j, int k, int[] h, int i1, ref int visits)
+    private void QueueIfDarker(bool sky, int x, int y, int z, int level)
     {
-        int l = 0;
-        while (l < i1)
-        {
-            int e = h[l++];
-            int x = (e & 63) - 32 + i, y = (e >> 6 & 63) - 32 + j, z = (e >> 12 & 63) - 32 + k;
-            visits++;
-            int cur = GetC(sky, x, y, z);
-            int id = TypeId(x, y, z);
-            int op = Opacity(id);
-            if (op == 0) op = 1;
-            int want = Value(sky, x, y, z, id, op);
-            if (want == cur) continue;
-            Set(sky, x, y, z, want);
-            if (want <= cur) continue;
-            if (Far(x, y, z, i, j, k) || i1 >= h.Length - 6) continue;
-            QueueDarker(sky, x, y, z, i, j, k, want, h, ref i1);
-        }
+        if (ReadLight(sky, x, y, z) < level) _queue[_queueEnd++] = PackOffset(x, y, z);
     }
 
-    /// <summary>The 6 neighbours darker than <paramref name="want"/>, in World.b's order (−x, +x, −y, +y, −z, +z).</summary>
-    private void QueueDarker(bool sky, int x, int y, int z, int i, int j, int k, int want, int[] h, ref int i1)
-    {
-        if (GetC(sky, x - 1, y, z) < want) h[i1++] = Pack(x - 1, y, z, i, j, k);
-        if (GetC(sky, x + 1, y, z) < want) h[i1++] = Pack(x + 1, y, z, i, j, k);
-        if (GetC(sky, x, y - 1, z) < want) h[i1++] = Pack(x, y - 1, z, i, j, k);
-        if (GetC(sky, x, y + 1, z) < want) h[i1++] = Pack(x, y + 1, z, i, j, k);
-        if (GetC(sky, x, y, z - 1) < want) h[i1++] = Pack(x, y, z - 1, i, j, k);
-        if (GetC(sky, x, y, z + 1) < want) h[i1++] = Pack(x, y, z + 1, i, j, k);
-    }
+    private int PackOffset(int x, int y, int z) =>
+        x - _originX + OffsetBias + (y - _originY + OffsetBias << YShift) + (z - _originZ + OffsetBias << ZShift);
 
-    /// <summary>17 or more (Manhattan) from the update's origin: World.b stops spreading there.</summary>
-    private static bool Far(int x, int y, int z, int i, int j, int k) => Math.Abs(x - i) + Math.Abs(y - j) + Math.Abs(z - k) >= 17;
+    private int EntryX(int entry) => (entry & OffsetMask) - OffsetBias + _originX;
+    private int EntryY(int entry) => (entry >> YShift & OffsetMask) - OffsetBias + _originY;
+    private int EntryZ(int entry) => (entry >> ZShift & OffsetMask) - OffsetBias + _originZ;
+
+    /// <summary>At or past the flood's reach (Manhattan) from the origin cell: it is updated but spreads no further.</summary>
+    private bool OutOfReach(int x, int y, int z) =>
+        Math.Abs(x - _originX) + Math.Abs(y - _originY) + Math.Abs(z - _originZ) >= UpdateReach;
 }

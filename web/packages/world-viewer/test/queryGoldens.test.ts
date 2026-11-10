@@ -6,12 +6,12 @@ import { describe, expect, it } from 'vitest';
 import { blocked, occluded, pick, type V3 } from '../src/mesh/query';
 import { storeWith, type B } from './helpers';
 import { Digest, rng } from './digest';
-import { tableBeta } from './pack';
+import { noPacks, tableBeta } from './pack';
 
 const r = rng(31337);
 const IDS = [1, 1, 1, 18, 20, 9, 8, 31, 37, 50, 0];
 
-describe('query golden', () => {
+describe.skipIf(noPacks)('query golden', () => {
   it('pins pick, blocked and occluded', async () => {
     const blocks: B[] = [];
     for (let i = 0; i < 6000; i++) blocks.push([Math.floor(r() * 48) - 16, 60 + Math.floor(r() * 20), Math.floor(r() * 48) - 16, IDS[Math.floor(r() * IDS.length)]]);

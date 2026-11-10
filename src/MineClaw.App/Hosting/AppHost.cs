@@ -86,6 +86,7 @@ public static partial class AppHost
         // -------------------------------------------------------- key check (models API: free)
         if (!cli.NoKeyCheck && await CheckKeysAsync(agentOptions.Llm, useTui, log, signals.Token) is { } keyFailed) return keyFailed;
         if (cli.CloneName == null) WarnIfBrainIsNotOpus(agentOptions.Llm, log);
+        if (cli.CloneName == null) foreach (var note in ConfigCheck.Notes(mc, agentOptions)) log.LogWarning("{Note}", note);
         // The game version, once, before any client graph exists (docs/design/multi-version.md): config, else a server ping.
         var version = await VersionSetup.ResolveAsync(s.Config, mc, agentOptions.DataDirectory, log, signals.Token);
         if (version.Profile is not { } profile) return VersionFailed(version.Error, useTui, log, signals.Token);

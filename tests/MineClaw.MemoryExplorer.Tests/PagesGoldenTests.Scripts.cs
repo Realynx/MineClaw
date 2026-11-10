@@ -212,7 +212,7 @@ public sealed partial class PagesGoldenTests
     }
 
     private const string ScriptsGolden = """
-        scripts 443B56703F196B275A9F
-        designs 609EF49345AC4E343DD1
+        scripts 23925D9ADD1291B75324
+        designs 063336E796E9C0A61D72
         """;
 }

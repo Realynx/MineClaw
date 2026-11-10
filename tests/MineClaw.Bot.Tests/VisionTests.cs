@@ -211,8 +211,8 @@ public class VisionTests
         string Row(int z) => rows[2 + z + 7][4..19];
         Assert.Equal("   ....@.C..   ", Row(0).Replace('D', '.')); // void, floor, @ at x=0, chest
         Assert.Equal('D', Row(0)[7 - 2]);
-        Assert.Equal('d', Row(3)[7 + 3]);
-        Assert.Contains("d=kiwi", text);
+        Assert.Equal('k', Row(3)[7 + 3]);
+        Assert.Contains("k=kiwi", text);
         Assert.Equal("               ", Row(-7));
     }
 

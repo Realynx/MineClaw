@@ -49,20 +49,17 @@ public sealed class ChatOptions
 
     /// <summary>
     /// How the bot and players call each human (login → names, case-insensitive). A line that starts by calling ANOTHER player
-    /// ("robin look", "foxy, ...") is player-to-player chat; a bot line naming one ("master, ...") is spoken to them.
+    /// ("robin look", "foxy, ...") is player-to-player chat; a bot line naming one ("master, ...") is spoken to them. None by
+    /// default; set per server (config: Agent:Chat:PlayerNicknames, e.g. <c>{"your_name": ["nick"]}</c>).
     /// </summary>
-    public Dictionary<string, string[]> PlayerNicknames { get; set; } = new(StringComparer.OrdinalIgnoreCase)
-    {
-        ["poofimafox"] = ["fox", "foxy", "master"],
-        ["kiwi"] = ["robin"],
-    };
+    public Dictionary<string, string[]> PlayerNicknames { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
     /// Accounts known to be bots that aren't ours (live 10-27: Robin's own bot). Their lines wake us only when they name us,
     /// never as a reply to us, and at most once per <see cref="BotReplyCooldownMinutes"/>. More are learned at runtime
-    /// ("robinchan is a bot", instant long replies, template chatter).
+    /// ("robinchan is a bot", instant long replies, template chatter). None by default (config: Agent:Chat:OtherBots).
     /// </summary>
-    public string[] OtherBots { get; set; } = ["robinchan"];
+    public string[] OtherBots { get; set; } = [];
 
     /// <summary>Main's templated hi when a human regular joins (no model call; never for bots).</summary>
     public JoinGreetingOptions JoinGreeting { get; set; } = new();

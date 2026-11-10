@@ -61,6 +61,6 @@ public class LookupGoldenTests
         "IsFarmPlant 4A9C29AC841190E739143E0F",
         "IsUseItem 063210FD905CB06BF0116B13",
         "FromAlias 99F69159EEC47D10227DE465",
-        "BindingExample 1B01993246505D77C5498DA2",
+        "BindingExample 7C29160A488BD75E23A5AD8E",
     ];
 }

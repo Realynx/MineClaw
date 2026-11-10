@@ -1,6 +1,7 @@
 #!/usr/bin/env node
-// Re-extracts the Minecraft assets the viewer renders with from a client jar (a zip: read, never run) into assets/<version>/.
-// The repo is private and unreleased, so these files are committed (docs/web/architecture.md, "Render parity").
+// Extracts the Minecraft assets the viewer renders with from a client jar (a zip: read, never run) into assets/<version>/.
+// They are Mojang's files: they stay on your machine (git-ignored) and are never committed. `npm run assets:pack` then
+// builds generated/<version>/ from them for the tests.
 //
 //   node scripts/extract-assets.mjs --jar <path/to/minecraft-1.12.2-client.jar> --version 1.12.2
 //   node scripts/extract-assets.mjs --jar <path/to/minecraft-b1.8.1-client.jar> --version b1.8.1

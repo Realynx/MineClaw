@@ -107,7 +107,14 @@ public sealed class FixtureDb : IDisposable
         TreeLayers = raptor.Index.NumLayers;
     }
 
-    public static ExplorerConfig Config() => ExplorerConfig.FromOptions(new AgentOptions());
+    /// <summary>Default options plus the test server's regulars' names, set the way a deployment configures them (the code defaults name nobody).</summary>
+    public static ExplorerConfig Config()
+    {
+        var o = new AgentOptions();
+        o.Chat.PlayerNicknames = new(StringComparer.OrdinalIgnoreCase) { ["poofimafox"] = ["fox", "foxy", "master"], ["kiwi"] = ["robin"] };
+        o.Chat.OtherBots = ["robinchan"];
+        return ExplorerConfig.FromOptions(o);
+    }
 
     public void Dispose()
     {

@@ -11,8 +11,9 @@ using MineClaw.Replay;
 namespace MineClaw.Hive.Tests;
 
 /// <summary>
-/// The first live hive test (logs/live-hive, 2026-10-26): "cut down a tree" went to main but 67 answered too, "both of you"
-/// was never split, both bots reacted to "kiwi fell out of the world", 67 narrated hive status. These pin the fixes.
+/// The first live hive test (2026-10-26): a request for main was answered by 67 too, "both of you" was never split, both
+/// bots reacted to "kiwi fell out of the world", 67 narrated hive status. These pin the fixes; the replays run a made-up
+/// session of the same shape (<see cref="SyntheticHiveChat"/>, tests/fixtures/hive-chat).
 /// </summary>
 public class LiveHiveChatTests(Xunit.Abstractions.ITestOutputHelper output)
 {
@@ -132,17 +133,24 @@ public class LiveHiveChatTests(Xunit.Abstractions.ITestOutputHelper output)
         Assert.NotNull(ClonePolicy.Intake(GameEvent.VoidFall(10)));
     }
 
-    // ---------------------------------------------------------------- replay of the live recordings
+    // ---------------------------------------------------------------- replay of the hive chat recordings
 
     private static string Fixture(string file)
     {
         var d = new DirectoryInfo(AppContext.BaseDirectory);
         for (; d != null; d = d.Parent)
         {
-            var p = Path.Combine(d.FullName, "tests", "fixtures", "live-hive", file);
+            var p = Path.Combine(d.FullName, "tests", "fixtures", "hive-chat", file);
             if (File.Exists(p)) return p;
         }
-        throw new FileNotFoundException("tests/fixtures/live-hive/" + file);
+        throw new FileNotFoundException("tests/fixtures/hive-chat/" + file + " (regenerate: dotnet run --project tools/Replay -- --synthetic-hive tests/fixtures/hive-chat)");
+    }
+
+    [Fact]
+    public void Committed_hive_chat_recordings_match_their_generator()
+    {
+        Assert.Equal(SyntheticHiveChat.Build(clone: false), File.ReadAllBytes(Fixture(SyntheticHiveChat.MainFile)));
+        Assert.Equal(SyntheticHiveChat.Build(clone: true), File.ReadAllBytes(Fixture(SyntheticHiveChat.CloneFile)));
     }
 
     private static IEnumerable<(DateTimeOffset At, string Who, string Line)> ChatOf(string file, string who)
@@ -158,12 +166,14 @@ public class LiveHiveChatTests(Xunit.Abstractions.ITestOutputHelper output)
     }
 
     [Fact]
-    public void Live_recordings_replayed_give_each_player_line_exactly_one_handler()
+    public void Hive_recordings_replayed_give_each_player_line_exactly_one_handler()
     {
-        // Both processes' real server chat, merged on the wall clock (the clone joined 20 s after main).
-        var timeline = ChatOf("main-maid_chan.mcrec", Main).Concat(ChatOf("clone-maid_chan_67.mcrec", Clone)).OrderBy(x => x.At).ToList();
+        // Both processes' server chat, merged on the wall clock (the clone joins 20 s after main).
+        var timeline = ChatOf(SyntheticHiveChat.MainFile, Main).Concat(ChatOf(SyntheticHiveChat.CloneFile, Clone)).OrderBy(x => x.At).ToList();
         var clock = new Clock(timeline[0].At);
         var (m, c) = Pair(clock);
+        const string speaker = SyntheticHiveChat.Player;
+        foreach (var p in new[] { m, c }) p.Chat.SetOnlinePlayers([speaker, Main, Clone]);
         var handled = new Dictionary<string, List<string>>();
         bool cloneOnline = false;
         foreach (var (at, who, raw) in timeline)
@@ -174,14 +184,15 @@ public class LiveHiveChatTests(Xunit.Abstractions.ITestOutputHelper output)
             var p = who == Main ? m : c;
             if (p == c && !cloneOnline) continue;
             var woke = p.Feed(raw);
-            if (!line.StartsWith("<kiwi>")) { Assert.Empty(woke); continue; } // system lines, bots' own chat: nobody wakes
-            var text = line["<kiwi> ".Length..];
+            if (!line.StartsWith($"<{speaker}>")) { Assert.Empty(woke); continue; } // system lines, bots' own chat: nobody wakes
+            var text = line[$"<{speaker}> ".Length..];
             if (!handled.TryGetValue(text, out var who2)) handled[text] = who2 = [];
             if (woke.Count > 0) who2.Add(who);
         }
         foreach (var (text, who) in handled) output.WriteLine($"{text,-32} -> {string.Join(",", who)}");
 
         Assert.Contains("chop down one tree pls", handled.Keys);
+        Assert.Contains(timeline, x => x.Who == Clone); // the clone's own recording took part
         foreach (var (text, who) in handled) Assert.True(who.Count <= 1, $"'{text}' handled by {string.Join(",", who)}");
         Assert.Equal([Main], handled["chop down one tree pls"]);
         Assert.Equal([Main], handled["both of you"]);
@@ -195,12 +206,13 @@ public class LiveHiveChatTests(Xunit.Abstractions.ITestOutputHelper output)
     }
 
     [Fact]
-    public void Live_clone_recording_world_noticing_never_reaches_the_clone_brain()
+    public void Clone_recording_world_noticing_never_reaches_the_clone_brain()
     {
-        // The clone was woken by [noticed] events (new builds, "kiwi hit the ground too hard", "kiwi is falling into the void").
-        var replay = ReplayHarness.Run(Fixture("clone-maid_chan_67.mcrec"), new ReplayOptions { SelfName = Clone });
+        // Live, the clone was woken by [noticed] events (new builds, "kiwi hit the ground too hard", "kiwi is falling into the void").
+        var replay = ReplayHarness.Run(Fixture(SyntheticHiveChat.CloneFile), new ReplayOptions { SelfName = Clone });
         var wakes = replay.Timeline.Where(e => e.Source == "wake").ToList();
         output.WriteLine($"{wakes.Count} wake events in the clone recording");
+        Assert.NotEmpty(wakes); // alex's void falls
         var q = new EventQueue();
         q.Intake = ClonePolicy.Intake;
         foreach (var w in wakes) q.Post(GameEvent.Activity(w.Text, w.Player, EventPriority.Normal));
@@ -250,7 +262,7 @@ public class LiveHiveChatTests(Xunit.Abstractions.ITestOutputHelper output)
         await Wait.Until(() => TurnCount() >= 2, 20, "clone turn for its name");
         var turns = Turns();
         Assert.Contains("TURN SAY: [chat] kiwi: 67 come w me", turns);
-        foreach (var bad in new[] { "cut down a tree", "both of you", "fell out of the world", "hit the ground" })
+        foreach (var bad in new[] { "chop down one tree", "both of you", "fell out of the world", "hit the ground" })
             Assert.DoesNotContain(bad, turns);
 
         // Main splits the group ask: the clone gets its part as an IPC task and acts without chatting.

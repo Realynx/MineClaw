@@ -75,5 +75,5 @@ public class ActivityRollupGoldenTests
     }
 
     /// <summary>Generated from the pre-refactor code (WP03).</summary>
-    private const string Expected = "02134243ED8122C37422C3DB";
+    private const string Expected = "F35DC3CCCBF0C521BFCD7D10";
 }

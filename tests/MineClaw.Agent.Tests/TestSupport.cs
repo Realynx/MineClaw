@@ -73,6 +73,33 @@ public sealed class TempDir : IDisposable
     public void Dispose() { try { Directory.Delete(Path, true); } catch (IOException) { } }
 }
 
+/// <summary>The test server's regulars and their names, set the way a deployment configures them (the code defaults name nobody).</summary>
+public static class TestPlayers
+{
+    public static Dictionary<string, string[]> Nicknames() => new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["poofimafox"] = ["fox", "foxy", "master"],
+        ["kiwi"] = ["robin"],
+    };
+
+    /// <summary>Robin's own bot (a foreign bot on the test server).</summary>
+    public static string[] OtherBots() => ["robinchan"];
+
+    /// <summary>The regulars' nicknames and the foreign bot on these chat options.</summary>
+    public static Agent.Chat.ChatOptions Regulars(this Agent.Chat.ChatOptions o)
+    {
+        o.PlayerNicknames = Nicknames();
+        o.OtherBots = OtherBots();
+        return o;
+    }
+
+    /// <summary>Claim lines' short names ("fox says: ...").</summary>
+    public static Agent.Rag.Beliefs.BeliefOptions Beliefs() => new()
+    {
+        Nicknames = new(StringComparer.OrdinalIgnoreCase) { ["poofimafox"] = "fox", ["kiwi"] = "robin" },
+    };
+}
+
 public static class TestRuntime
 {
     public static (AgentRuntime Rt, FakeLlm Llm, List<string> Sent) Create(Action<AgentOptions>? configure = null, TimeProvider? time = null,
@@ -88,6 +115,7 @@ public static class TestRuntime
         options.ChatDebounce.QuietMs = 10;
         options.ChatDebounce.MaxMs = 50;
         options.ChatDebounce.ReplyQuietMs = 0;
+        options.Chat.Regulars();
         configure?.Invoke(options);
         var llm = new FakeLlm();
         var sent = new List<string>();

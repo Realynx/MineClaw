@@ -37,7 +37,7 @@ public static class DoTool
     public const string Description =
         "Run a game macro yourself (delegate multi-step jobs). then: next steps, skipped if one fails. goto returns at once " +
         "(walks on in the background; jobs called now run on arrival). queue=true: after the busy script. " +
-        "goto{to,dist?,build?,allow_parkour?(only if poofimafox/kiwi asked),into_void?:reason,keep_items_ok?} follow{player} mine{block,count?} " +
+        "goto{to,dist?,build?,allow_parkour?(only if a trusted player asked),into_void?:reason,keep_items_ok?} follow{player} mine{block,count?} " +
         "harvest_generator{at,count,store?} chop_tree{at?} deposit{at?,items?} withdraw{item,count?,at?} craft{item,count?} " +
         "move_items{moves} act{move:jump|spin|wave|crouch|look|punch,target?} see{view?} eat give_items{player,item,count?} " +
         "drop_items{item,count?} equip_armor light{area|design,report?} dig{op?:seal|room|strip|learn,box|site,to?}";

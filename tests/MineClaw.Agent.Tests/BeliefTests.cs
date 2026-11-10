@@ -42,7 +42,7 @@ public class BeliefTests
         var db = AgentDb.Open(null);
         var ix = new RagIndex(db, new RagOptions(), time: t, backgroundEmbedding: false);
         var mem = new MemoryStore(db, ix, t);
-        var store = new BeliefStore(db, ix, t) { Growth = GrowthKit.Growth(db, t), World = world, CloneId = "maid_chan" };
+        var store = new BeliefStore(db, ix, t, TestPlayers.Beliefs()) { Growth = GrowthKit.Growth(db, t), World = world, CloneId = "maid_chan" };
         store.IsBot = p => p.Equals("maid_chan", StringComparison.OrdinalIgnoreCase);
         BeliefStore.Bind(store);
         var tools = new ToolRegistry();

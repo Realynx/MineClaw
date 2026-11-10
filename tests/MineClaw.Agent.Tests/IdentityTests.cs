@@ -11,7 +11,7 @@ public class IdentityTests
     private static JsonElement J(object o) => JsonSerializer.SerializeToElement(o);
 
     private static ChatRouter Router(ChatOptions? o = null) =>
-        new(o ?? new ChatOptions { LineDelayMs = 0 }, new EventQueue(), (_, _) => Task.CompletedTask);
+        new(o ?? new ChatOptions { LineDelayMs = 0 }.Regulars(), new EventQueue(), (_, _) => Task.CompletedTask);
 
     [Fact]
     public void Defaults_LoginVsChatName()
@@ -29,7 +29,7 @@ public class IdentityTests
 
         // Own lines (vanilla "<maid_chan> message") are ignored.
         var q = new EventQueue();
-        var r2 = new ChatRouter(new ChatOptions(), q, (_, _) => Task.CompletedTask);
+        var r2 = new ChatRouter(new ChatOptions().Regulars(), q, (_, _) => Task.CompletedTask);
         r2.OnServerChat("<maid_chan> hello claudechan");
         Assert.Equal(0, q.Count);
     }

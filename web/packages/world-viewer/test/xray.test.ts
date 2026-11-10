@@ -1,10 +1,8 @@
 // The x-ray: the cut-away cap pass draws closed solids only (no speckles on leaves and plants), the roof cut ignores a
 // canopy, and hidden bodies get a silhouette pass that can only paint what the world covers.
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
 import * as THREE from 'three';
 import { beforeAll, describe, expect, it } from 'vitest';
-import type { AssetBundle, Pack1122 } from '../src/assets/bundle';
+import type { AssetBundle } from '../src/assets/bundle';
 import { meshSection } from '../src/mesh/mesher';
 import { occluded, viewInfo } from '../src/mesh/query';
 import { VertexSink } from '../src/mesh/sink';
@@ -17,7 +15,7 @@ import { capGeometry } from '../src/render/sections';
 import type { BotView, EntityView } from '../src/world/entities';
 import type { EntityDto } from '../src/types';
 import { storeWith } from './helpers';
-import { table1122 } from './pack';
+import { noPacks, pack1122, table1122 } from './pack';
 
 const flat = buildStateTable('b1.8.1', null);
 const Y = 64;
@@ -63,7 +61,7 @@ describe('cut-away cap: closed solids only', () => {
     for (const c of ['8,0,8', '10,0,10', '12,0,2', '2,0,12']) expect(open.has(c), c).toBe(true);
   });
 
-  it('1.12.2 models: cut-out leaves (every face) and cross plants stay out of the cap; a full cube is in it', async () => {
+  it.skipIf(noPacks)('1.12.2 models: cut-out leaves (every face) and cross plants stay out of the cap; a full cube is in it', async () => {
     const store = await storeWith([[4, Y, 4, 1], [8, Y, 8, 18], [10, Y, 10, 31, 1], [2, Y, 12, 59, 7], [12, Y, 12, 2]]);
     const s = meshSection(store, 0, 0, sy, 0, table1122()).solid!;
     const closed = cellsOf(s, 0, s.capIndex);
@@ -182,10 +180,9 @@ describe('occluded-body silhouettes', () => {
     expect(d.ghostMesh(createGhostMaterial({})).created).toBe(false);
   });
 
-  it('the entity layer flags hidden bots and players per view (tinted by role), and offers only them for the test', () => {
-    const pack = JSON.parse(readFileSync(join(__dirname, '..', 'generated', '1.12.2', 'pack.json'), 'utf8')) as Pack1122;
+  it.skipIf(noPacks)('the entity layer flags hidden bots and players per view (tinted by role), and offers only them for the test', () => {
     const layer = new EntityLayer();
-    layer.setBundle({ version: '1.12.2', pack, blocks: {}, items: {}, entity: {}, anim: null, env: {} } as unknown as AssetBundle);
+    layer.setBundle({ version: '1.12.2', pack: pack1122(), blocks: {}, items: {}, entity: {}, anim: null, env: {} } as unknown as AssetBundle);
     const bot = (name: string, x: number): BotView => ({ name, dim: 0, x, y: 64, z: 0, yaw: 0, dto: { name, short: name[0], main: false, dim: 0, x, y: 64, z: 0, hp: 20, food: 20 } });
     const ent = (id: number, kind: string, x: number, type = -1): EntityView => {
       const dto = { kind, dim: 0, x, y: 64, z: 0, id, type, name: kind === 'player' ? 'fox' : undefined } as EntityDto;

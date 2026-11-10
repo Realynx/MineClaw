@@ -15,7 +15,7 @@ public class TuiCellStyleTests
     public void Each_kind_has_its_style(CellKind kind, string? style) => Assert.Equal(style, TuiFrame.CellStyle(new ViewCell('x', kind)));
 
     [Theory]
-    [InlineData("poofimafox", "bold lime")] [InlineData("Kiwi", "bold fuchsia")] [InlineData("kiwi", "bold fuchsia")] [InlineData(null, "bold hotpink")]
+    [InlineData("poofimafox", "bold lime")] [InlineData("Kiwi", "bold orange1")] [InlineData("kiwi", "bold orange1")] [InlineData(null, "bold hotpink")]
     [InlineData("", "bold hotpink")] [InlineData("maid_chan_67", "bold orange1")]
     public void Players_take_a_stable_colour_by_name(string? name, string style) =>
         Assert.Equal(style, TuiFrame.CellStyle(new ViewCell('P', CellKind.Player, name)));

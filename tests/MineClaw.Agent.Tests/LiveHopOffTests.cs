@@ -25,7 +25,7 @@ public class LiveHopOffTests
 
         public Rig(params string[] online)
         {
-            var o = new ChatOptions { Username = "maid_chan", DisplayName = "maid-chan", Aliases = ["maid", "maidchan"], LineDelayMs = 0 };
+            var o = new ChatOptions { Username = "maid_chan", DisplayName = "maid-chan", Aliases = ["maid", "maidchan"], LineDelayMs = 0 }.Regulars();
             o.Classifier.Enabled = false;
             Queue = new EventQueue(new EventQueueOptions(), Time);
             Router = new ChatRouter(o, Queue, (_, _) => Task.CompletedTask, Time)

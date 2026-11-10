@@ -6,13 +6,13 @@ import { describe, expect, it } from 'vitest';
 import { meshHolograms, type HoloMode, type HoloRequest } from '../src/mesh/holo';
 import { storeWith, type B } from './helpers';
 import { Digest, rng } from './digest';
-import { table1122, tableBeta } from './pack';
+import { noPacks, table1122, tableBeta } from './pack';
 
 const r = rng(4711);
 const WORLD_IDS = [0, 0, 1, 2, 8, 9, 31, 37, 78, 106, 64, 4, 10];
 const WANT_IDS = [1, 4, 5, 8, 9, 10, 11, 20, 64, 71, 85, 53, 0, 50, 2];
 
-describe('hologram golden', () => {
+describe.skipIf(noPacks)('hologram golden', () => {
   it('pins meshHolograms over seeded requests', async () => {
     const blocks: B[] = [];
     for (let i = 0; i < 1500; i++) blocks.push([Math.floor(r() * 40) - 8, 62 + Math.floor(r() * 10), Math.floor(r() * 40) - 8, WORLD_IDS[Math.floor(r() * WORLD_IDS.length)]]);

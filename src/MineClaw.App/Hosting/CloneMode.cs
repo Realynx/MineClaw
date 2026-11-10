@@ -210,13 +210,13 @@ public static class CloneMode
     {
         var (mc, hive) = (run.Mc, run.Hive);
         var clientLog = run.Loggers.CreateLogger("MineClaw.Client");
-        var clientOptions = new ClientOptions
+        var clientOptions = mc.WithPlayers(new ClientOptions
         {
             Host = mc.Host, Port = mc.Port, Username = run.Clone, Profile = run.Profile ?? MineClaw.Client.Versioning.GameVersionProfiles.Beta181,
             AutoReconnect = true,
             AutoRespawn = !hive.OnCloneDeath.Equals("logout", StringComparison.OrdinalIgnoreCase),
             Log = m => clientLog.LogDebug("{Msg}", m),
-        };
+        });
         return new MinecraftClient(run.ClientSetup?.Invoke(clientOptions) ?? clientOptions);
     }
 

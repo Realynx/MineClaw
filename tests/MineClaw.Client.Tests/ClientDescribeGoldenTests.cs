@@ -124,6 +124,6 @@ public class ClientDescribeGoldenTests
     public async Task Descriptions_match_the_golden(bool modern)
     {
         var text = await SceneAsync("busy", modern) + await SceneAsync("walled", modern) + await SceneAsync("pillar", modern);
-        SimRulesGoldenTests.Check($"describe-{(modern ? "1122" : "beta")}", modern ? "05DB1850343FB62AAEB970FD35E7ADDFD6414924B398C7B95F0E38C7CE50EBB0" : "A656C4E2D08A1AA3E8FC7762F9155D0D4825C568D3A08AB0BE55E0376C618D86", sb => sb.Append(text));
+        SimRulesGoldenTests.Check($"describe-{(modern ? "1122" : "beta")}", modern ? "9B3EC0DD2911560338F68C7AB70671786196981B124BAFADC0AA756C33139664" : "D0125AC1DA95D0F8694660FCB135E9B16D0011AAFE38B2E4779ADAD412CAFC11", sb => sb.Append(text));
     }
 }

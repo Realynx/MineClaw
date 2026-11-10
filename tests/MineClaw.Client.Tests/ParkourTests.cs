@@ -8,6 +8,9 @@ namespace MineClaw.Client.Tests;
 /// void-parkour authorization) against the fake server's 5×5 platform (x,z 6..10, top 64).</summary>
 public class ParkourTests
 {
+    /// <summary>The regulars whose chat may ask for void parkour, as a deployment configures them (the code default trusts nobody).</summary>
+    private static ClientOptions Trusted(ClientOptions o) => o with { ParkourTrustedPlayers = ["poofimafox", "kiwi"] };
+
     /// <summary>A landing platform x = 11+gap..15+gap, z 6..10 (top 64); optionally a yard 2 below everything.</summary>
     private static Action<FakeServer> Gap(int gap, bool yard, Action<FakeServer>? more = null) => srv =>
     {
@@ -35,7 +38,7 @@ public class ParkourTests
     [Fact]
     public async Task SprintJump_OverAYardGap_ArrivesAndSaysSo()
     {
-        var (c, s) = await Harness.StartAsync(Gap(3, yard: true));
+        var (c, s) = await Harness.StartAsync(Gap(3, yard: true), Trusted);
         await using var _c = c;
         using var _s = s;
         var r = await c.GotoAsync(16, 64, 8);
@@ -54,7 +57,7 @@ public class ParkourTests
     [Fact]
     public async Task TooHungry_NoSprint_LongGapRefused_StaysPut()
     {
-        var (c, s) = await Harness.StartAsync(Gap(3, yard: true));
+        var (c, s) = await Harness.StartAsync(Gap(3, yard: true), Trusted);
         await using var _c = c;
         using var _s = s;
         s.SetVitals(20, 6);
@@ -69,7 +72,7 @@ public class ParkourTests
     [Fact]
     public async Task VoidGap_RefusedByDefault()
     {
-        var (c, s) = await Harness.StartAsync(Gap(2, yard: false, srv => srv.Inventory[36] = Harness.Stack(Blocks.Cobblestone, 16)));
+        var (c, s) = await Harness.StartAsync(Gap(2, yard: false, srv => srv.Inventory[36] = Harness.Stack(Blocks.Cobblestone, 16)), Trusted);
         await using var _c = c;
         using var _s = s;
         var r = await c.GotoAsync(15, 64, 8);
@@ -83,7 +86,7 @@ public class ParkourTests
     [Fact]
     public async Task VoidGap_AfterATrustedRequest_WithAClutchBlock_IsJumped()
     {
-        var (c, s) = await Harness.StartAsync(Gap(2, yard: false, srv => srv.Inventory[36] = Harness.Stack(Blocks.Cobblestone, 16)));
+        var (c, s) = await Harness.StartAsync(Gap(2, yard: false, srv => srv.Inventory[36] = Harness.Stack(Blocks.Cobblestone, 16)), Trusted);
         await using var _c = c;
         using var _s = s;
         s.Send(new ChatPacket("<kiwi> maid-chan jump over to the other island!"));
@@ -103,7 +106,7 @@ public class ParkourTests
     [Fact]
     public async Task VoidGap_TrustedRequestButNoClutchBlock_Refused()
     {
-        var (c, s) = await Harness.StartAsync(Gap(2, yard: false));
+        var (c, s) = await Harness.StartAsync(Gap(2, yard: false), Trusted);
         await using var _c = c;
         using var _s = s;
         s.Send(new ChatPacket("<poofimafox> jump!"));
@@ -116,7 +119,7 @@ public class ParkourTests
     [Fact]
     public async Task ParkourOff_NeverJumps()
     {
-        var (c, s) = await Harness.StartAsync(Gap(3, yard: true));
+        var (c, s) = await Harness.StartAsync(Gap(3, yard: true), Trusted);
         await using var _c = c;
         using var _s = s;
         var r = await c.GotoAsync(16, 64, 8, options: GotoOptions.Default with { Parkour = ParkourMode.Off, AllowPartial = false });
@@ -127,7 +130,7 @@ public class ParkourTests
     [Fact]
     public async Task LandingMinedDuringTheRunUp_AbortsAtTheEdge()
     {
-        var (c, s) = await Harness.StartAsync(Gap(2, yard: false, srv => srv.Inventory[36] = Harness.Stack(Blocks.Cobblestone, 16)));
+        var (c, s) = await Harness.StartAsync(Gap(2, yard: false, srv => srv.Inventory[36] = Harness.Stack(Blocks.Cobblestone, 16)), Trusted);
         await using var _c = c;
         using var _s = s;
         s.Send(new ChatPacket("<poofimafox> parkour time"));
@@ -159,7 +162,7 @@ public class ParkourTests
     public async Task StopMidFlight_StillFinishesTheJump()
     {
         // A 3-gap: letting go of the keys mid-air (momentum only) would fall short into the void.
-        var (c, s) = await Harness.StartAsync(Gap(3, yard: false, srv => srv.Inventory[36] = Harness.Stack(Blocks.Cobblestone, 16)));
+        var (c, s) = await Harness.StartAsync(Gap(3, yard: false, srv => srv.Inventory[36] = Harness.Stack(Blocks.Cobblestone, 16)), Trusted);
         await using var _c = c;
         using var _s = s;
         s.Send(new ChatPacket("<poofimafox> go on, jump"));

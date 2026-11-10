@@ -7,11 +7,8 @@ import type { BlockEntityDto } from '../src/types';
 import { bannerPatternName, compositeBanner, DYE_RGB, signLayout, SIGN_LINE_WIDTH, spawnerMobFeet, spawnerMobScale, textWidth } from '../src/render/blockEntityTex';
 import { charWidth, fontTable, FORMAT_RGB, glyphIndex, layoutLine, rasterLine, signLineText, stringWidth, trimToWidth } from '../src/render/font';
 import { javaRandomFloats, starLayerColours, starPasses } from '../src/render/starfield';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
-import type { Pack1122, PackBeta } from '../src/assets/bundle';
 import { storeWith, type B } from './helpers';
-import { pack1122, table1122 } from './pack';
+import { noPacks, pack1122, packBeta, table1122 } from './pack';
 
 const Y = 70;
 const src = () => table1122().source as Models1122;
@@ -35,7 +32,7 @@ const sheetCell = (name: string) => {
 
 const nbWith = (be: BlockEntityDto | undefined): Nb => ({ id: () => 0, meta: () => 0, wx: 0, wy: 0, wz: 0, be: () => be });
 
-describe('block entities in the section mesher', () => {
+describe.skipIf(noPacks)('block entities in the section mesher', () => {
   it('beds take their colour from the block entity (red without one)', async () => {
     const blue = await meshWith([[4, Y, 4, 26, 0]], [{ x: 4, y: Y, z: 4, kind: 'bed', color: 'blue' }]);
     expect(blue.quads.every((q) => q.cell === sheetCell('entity/bed/blue'))).toBe(true);
@@ -102,7 +99,7 @@ describe('block entities in the section mesher', () => {
   });
 });
 
-describe('fast leaves (opt-in)', () => {
+describe.skipIf(noPacks)('fast leaves (opt-in)', () => {
   it('make leaves opaque cubes that cull each other and ignore texel alpha', async () => {
     const { buildStateTable } = await import('../src/mesh/states');
     const { meshAssets } = await import('../src/atlas/assets');
@@ -118,12 +115,11 @@ describe('fast leaves (opt-in)', () => {
   });
 });
 
-const gen = join(__dirname, '..', 'generated');
-const FONT_1122 = fontTable((JSON.parse(readFileSync(join(gen, '1.12.2', 'pack.json'), 'utf8')) as Pack1122).font, false)!;
-const FONT_BETA = fontTable((JSON.parse(readFileSync(join(gen, 'b1.8.1', 'pack.json'), 'utf8')) as PackBeta).font, true)!;
+const FONT_1122 = noPacks ? null! : fontTable(pack1122().font, false)!;
+const FONT_BETA = noPacks ? null! : fontTable(packBeta().font, true)!;
 
 describe('the bitmap font (FontRenderer)', () => {
-  it('glyph tables and advances measured from each version’s own font image', () => {
+  it.skipIf(noPacks)('glyph tables and advances measured from each version’s own font image', () => {
     expect(FONT_1122.widths.length).toBe(256);
     expect(glyphIndex(FONT_1122, 'A')).toBe(65);
     expect(glyphIndex(FONT_1122, 'é')).toBe(130);
@@ -137,7 +133,7 @@ describe('the bitmap font (FontRenderer)', () => {
     expect(charWidth(FONT_1122, 'あ')).toBe(0); // unicode pages are not bundled
   });
 
-  it('§ codes: zero width, 1.12.2 bold adds 1 per glyph until §r; colours reset the styles when drawing', () => {
+  it.skipIf(noPacks)('§ codes: zero width, 1.12.2 bold adds 1 per glyph until §r; colours reset the styles when drawing', () => {
     expect(stringWidth(FONT_1122, '§4red')).toBe(stringWidth(FONT_1122, 'red'));
     expect(stringWidth(FONT_1122, '§lab')).toBe(stringWidth(FONT_1122, 'ab') + 2);
     expect(stringWidth(FONT_1122, '§la§rb')).toBe(stringWidth(FONT_1122, 'ab') + 1);
@@ -150,7 +146,7 @@ describe('the bitmap font (FontRenderer)', () => {
     expect(layoutLine(FONT_BETA, '§zx§ly', 0).glyphs.map((g) => [g.rgb, g.bold])).toEqual([[0xffffff, false], [0xffffff, false]]);
   });
 
-  it('sign lines: 1.12.2 cuts at the last space that fits 90 px (splitText), b1.8.1 draws the line as is', () => {
+  it.skipIf(noPacks)('sign lines: 1.12.2 cuts at the last space that fits 90 px (splitText), b1.8.1 draws the line as is', () => {
     const long = 'a much longer line that cannot fit';
     const cut = signLineText(FONT_1122, long);
     expect(stringWidth(FONT_1122, cut)).toBeLessThanOrEqual(90);

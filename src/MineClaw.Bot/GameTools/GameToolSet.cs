@@ -182,7 +182,7 @@ public static class GameToolSet
         tools.Register("goto", "Go to coords/place/player.",
             ToolSchema.Create().Str("to", required: false).Num("dist", required: false)
                 .Bool("build", "dig/place", required: false)
-                .Str("allow_parkour", "void: only if poofimafox/kiwi asks", required: false, enumValues: ["off", "ground", "void"])
+                .Str("allow_parkour", "void: only if a trusted player asks", required: false, enumValues: ["off", "ground", "void"])
                 .Str("into_void", "reason", required: false)
                 .Bool("keep_items_ok", required: false)
                 .Bool("scaffold", "place only", required: false)

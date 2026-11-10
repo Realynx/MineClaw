@@ -1,22 +1,19 @@
 // Story Mode's bodies in the world: bots (pawns, hive bodies) keep their full model when a top-down map looks at them from far
 // up, follow the storey cut like the blocks, and can drop the viewer's own name labels (the map draws its own).
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
 import * as THREE from 'three';
 import { describe, expect, it } from 'vitest';
-import type { AssetBundle, Pack1122 } from '../src/assets/bundle';
+import type { AssetBundle } from '../src/assets/bundle';
 import { BOT_DETAIL_MIN, EntityLayer, type EntityShowOptions } from '../src/render/entityLayer';
 import type { BotView, EntityView } from '../src/world/entities';
 import type { EntityDto } from '../src/types';
+import { noPacks, pack1122 } from './pack';
 
 // Labels draw on a canvas: a stub document is enough here (node).
 if (typeof document === 'undefined') (globalThis as Record<string, unknown>).document = { createElement: () => ({ width: 0, height: 0, getContext: () => null }) };
 
-const pack = JSON.parse(readFileSync(join(__dirname, '..', 'generated', '1.12.2', 'pack.json'), 'utf8')) as Pack1122;
-
 function layer(): EntityLayer {
   const l = new EntityLayer();
-  l.setBundle({ version: '1.12.2', pack, blocks: {}, items: {}, entity: {}, anim: null, env: {} } as unknown as AssetBundle);
+  l.setBundle({ version: '1.12.2', pack: pack1122(), blocks: {}, items: {}, entity: {}, anim: null, env: {} } as unknown as AssetBundle);
   l.detailDistance = 24; // the software profile's "Auto"
   return l;
 }
@@ -33,7 +30,7 @@ function show(l: EntityLayer, bots: BotView[], ents: EntityView[], cam: THREE.Ve
   }
 }
 
-describe('bodies on a top-down map', () => {
+describe.skipIf(noPacks)('bodies on a top-down map', () => {
   it('a bot keeps its model out to BOT_DETAIL_MIN apparent blocks; a mob there is a box', () => {
     const l = layer();
     // 60 blocks overhead: past the 24-block model distance, inside the bots' floor.

@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "description": "MineClaw Web Explorer front end (Next.js App Router). See docs/web/architecture.md.",
+  "license": "MIT",
   "type": "module",
   "engines": {
     "node": ">=22"

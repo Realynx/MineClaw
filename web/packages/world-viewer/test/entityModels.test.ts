@@ -1,8 +1,6 @@
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
 import * as THREE from 'three';
 import { beforeAll, describe, expect, it } from 'vitest';
-import type { AssetBundle, Pack, Pack1122, PackBeta } from '../src/assets/bundle';
+import type { AssetBundle, Pack } from '../src/assets/bundle';
 import { copies, EntityLayer, HELD_POSES } from '../src/render/entityLayer';
 import { armorTexture, buildArmor } from '../src/render/entities/armor';
 import { BOX_SLOT, buildModel, MAX_PARTS } from '../src/render/entities/builder';
@@ -15,10 +13,10 @@ import type { PoseCtx } from '../src/render/entities/types';
 import { Variant } from '../src/render/entities/variant';
 import type { BotView, EntityView } from '../src/world/entities';
 import type { EntityDto } from '../src/types';
+import { noPacks, pack1122, packBeta } from './pack';
 
-const gen = join(__dirname, '..', 'generated');
-const PACK_1122 = JSON.parse(readFileSync(join(gen, '1.12.2', 'pack.json'), 'utf8')) as Pack1122;
-const PACK_BETA = JSON.parse(readFileSync(join(gen, 'b1.8.1', 'pack.json'), 'utf8')) as PackBeta;
+const PACK_1122 = noPacks ? null! : pack1122();
+const PACK_BETA = noPacks ? null! : packBeta();
 
 const ctx = (o: Partial<PoseCtx> = {}): PoseCtx => ({
   swing: 0, amount: 0, age: 0, headYaw: 0, pitch: 0, attack: 0, attackOff: 0, eat: 0, baby: false, v: Variant.NONE, using: false, bow: false, standPose: null, variant: 0, flags: 0, sneaking: false, riding: false, holding: false, aggressive: false, beta: false, seed: 0, speed: 0, ...o,
@@ -50,7 +48,7 @@ describe('entity model data', () => {
     }
   });
 
-  it('covers every mob type the wire can report, in both versions, with textures that exist', () => {
+  it.skipIf(noPacks)('covers every mob type the wire can report, in both versions, with textures that exist', () => {
     for (const [type, name] of Object.entries(MOB_NAMES)) {
       const look = mobLook('1.12.2', Number(type), null, 0, 7);
       expect(look.model, name).not.toBe('box');
@@ -175,7 +173,7 @@ describe('held and dropped items', () => {
     expect(isHandheld('torch')).toBe(false);
   });
 
-  it('1.12.2: tools and flat items are sprites, blocks are cubes with their faces', () => {
+  it.skipIf(noPacks)('1.12.2: tools and flat items are sprites, blocks are cubes with their faces', () => {
     const pick = itemLookByName('1.12.2', PACK_1122, 'stone pickaxe');
     expect(pick).toMatchObject({ kind: 'sprite', atlas: 'items' });
     const t = PACK_1122.items.tiles['items/stone_pickaxe'];
@@ -208,7 +206,7 @@ describe('held and dropped items', () => {
     expect(Object.keys(HELD_POSES)).toEqual(['block', 'tool', 'flat']);
   });
 
-  it('armour binds to the wearer\'s bone slots, one layer per piece', () => {
+  it.skipIf(noPacks)('armour binds to the wearer\'s bone slots, one layer per piece', () => {
     const player = buildModel(MODEL_BY_ID.player);
     const armor = buildArmor(player)!;
     expect(armor).not.toBeNull();
@@ -234,7 +232,7 @@ describe('EntityLayer', () => {
   };
   const bot: BotView = { name: 'Alice', dim: 0, x: 2, y: 64, z: 0, yaw: 0, dto: { name: 'Alice', short: 'main', main: true, dim: 0, x: 2, y: 64, z: 0, hp: 20, food: 20, held: 'stone pickaxe' } };
 
-  it('switches to LOD boxes beyond the detail distance, models near the camera, and costs one draw per kind', () => {
+  it.skipIf(noPacks)('switches to LOD boxes beyond the detail distance, models near the camera, and costs one draw per kind', () => {
     const layer = new EntityLayer();
     layer.setBundle(fakeBundle(PACK_1122));
     layer.detailDistance = 20;
@@ -279,7 +277,7 @@ describe('EntityLayer', () => {
     layer.dispose();
   });
 
-  it('hides only the controlled body in first person and restores it for another shared view', () => {
+  it.skipIf(noPacks)('hides only the controlled body in first person and restores it for another shared view', () => {
     const layer = new EntityLayer();
     layer.setBundle(fakeBundle(PACK_1122));
     const other = { ...bot, name: 'Bob', x: 5, dto: { ...bot.dto, name: 'Bob', short: '102' } };
@@ -295,7 +293,7 @@ describe('EntityLayer', () => {
     layer.dispose();
   });
 
-  it('a bot whose hp drops flashes red; hp 0 starts the death fall; botAt finds it', () => {
+  it.skipIf(noPacks)('a bot whose hp drops flashes red; hp 0 starts the death fall; botAt finds it', () => {
     const layer = new EntityLayer();
     layer.setBundle(fakeBundle(PACK_1122));
     const cam = new THREE.Vector3(2, 65, 6);

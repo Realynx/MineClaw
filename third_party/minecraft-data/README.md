@@ -2,9 +2,11 @@
 
 - Source: https://github.com/PrismarineJS/minecraft-data, commit `9c97fe50a82feb2c0f2be1cff35ce19c891bfb35`
   (master on 2026-10-28), files `data/<path>/<name>.json` per `data/dataPaths.json` → `pc."1.12.2"`.
-- License: MIT (as stated in the project's README "License" section; the repo has no separate LICENSE file).
+- License: MIT (as stated in the project's README "License" section). The license text is in `LICENSE` beside this file and
+  in the repository's `THIRD_PARTY_NOTICES.md`.
 - Approved by Fox on 2026-10-28 as the 1.12.2 game-data and protocol source (alongside the decompiled client, kept
-  outside the repo, for mechanics). Downloaded only this version's files; nothing else from the project.
+  outside the repo, for mechanics). Downloaded only this version's files; nothing else from the project. Upstream's
+  `language.json` (Mojang's `en_us` strings) is not vendored: 1.12.2 chat translations come from the user's own client jar.
 - Feeds: the 1.12.2 game-data tables (MineClaw.Data, generated), the 1.12.2 knowledge pack (`tools/ShardPacks`
   minecraft-data adapter) and the protocol 340 packet layouts (cross-checked against wiki.vg and the decompiled source).
 
@@ -22,7 +24,6 @@ Flattened into `pc/1.12.2/`; each file's origin path (dataPaths.json) and SHA-25
 | foods.json | data/pc/1.12/foods.json | `bf23e8201ea81aa8c61b3f336a0fbc9b1fa18e0a8c5ae772b5dd9f6fca3b6bf2` |
 | instruments.json | data/pc/1.12/instruments.json | `9aaf3313ac5298d91d97973ffe9092d2e962b43513504e1cbb1cc122908f45bc` |
 | items.json | data/pc/1.12/items.json | `848f590ba8d981b7e310d6b4aca3dd30787e73bce8ebb8ab57fa14971f559da6` |
-| language.json | data/pc/1.12/language.json | `3264dec8fa88b2ef0be26ad9fb50b4a5ae83213386deb9e1aae2fdac37c7a80b` |
 | mapIcons.json | data/pc/1.11/mapIcons.json | `09171dfb721e96bf4bf17bb2d8bc8d3aa6a5736e817ba2b97754178fa005af81` |
 | materials.json | data/pc/1.12/materials.json | `2db7889998bf3f70f17dd1d2a34b0828cbb7a7f96b8b4c99683367a5d7c1b303` |
 | particles.json | data/pc/1.12/particles.json | `df9d8e9aee699e350bada7ef6aebc3ce8395741da28a290670122a321d0076d8` |

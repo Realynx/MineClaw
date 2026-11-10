@@ -19,10 +19,12 @@ The browser reads only allowlisted textures, models, blockstates and sound resou
 uploads the archive. The prepared atlases and audio remain in IndexedDB for that site address on that browser profile.
 An installed PWA uses the same origin's storage. HTTP and HTTPS addresses have separate storage.
 
-No Minecraft PNG or OGG files are shipped in the web bundle. Without imported resources, the viewer uses its original
-flat-colour geometry. Imported packs replace the placeholders in open viewers. Remove deletes that version's local pack.
-The old extraction and packing scripts are optional local development utilities; their PNG/OGG outputs are ignored by Git.
-Geometry metadata fixtures remain for renderer regression tests. This change does not rewrite repository history.
+No Minecraft files (textures, models, blockstates, fonts, sounds or language files) are in the repository or shipped in
+the web bundle. Without imported resources, the viewer uses its original flat-colour geometry. Imported packs replace the
+placeholders in open viewers. Remove deletes that version's local pack.
+The extraction and packing scripts (`assets:extract`, `assets:pack` in `@mineclaw/world-viewer`) are optional local
+development utilities that read the developer's own jar. Their outputs (`web/packages/world-viewer/assets/` and
+`generated/`) are ignored by Git and must never be committed. Renderer tests that need a pack read that local copy.
 
 For Java 1.12.2, the client JAR is normally `.minecraft/versions/1.12.2/1.12.2.jar`. Sounds are downloaded separately by
 the Minecraft launcher. After launching the version once, import `.minecraft/assets` with the sound folder picker. The

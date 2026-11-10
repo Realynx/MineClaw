@@ -502,9 +502,28 @@ src/MineClaw.App/appsettings.*.json
 .claude/worktrees/
 .turbo/
 
-# Game artwork belongs to the user's local Minecraft installation. Browser imports live in IndexedDB.
-# Offline extraction scripts may leave private working copies here; neither source nor generated images are distributed.
-/web/packages/world-viewer/assets/**/*.png
-/web/packages/world-viewer/generated/**/*.png
-/web/packages/world-viewer/assets/**/*.ogg
-/web/packages/world-viewer/generated/**/*.ogg
+# Game files belong to the user's local Minecraft installation. Browser imports live in IndexedDB.
+# Offline extraction scripts may leave private working copies here (textures, models, blockstates, fonts, packs);
+# none of it is ever committed.
+/web/packages/world-viewer/assets/
+/web/packages/world-viewer/generated/
+*.mcmeta
+*.ogg
+
+# Local launch profiles and secrets: keys, certificates, env files and account stores
+**/Properties/launchSettings.json
+.env
+.env.*
+*.env
+!*.env.example
+!.env.example
+*.key
+*.pem
+!/web/apps/api/test/fixtures/tls/*.pem
+users.json
+bridge.key
+
+# Kept out of the published history: VisionAB render3d writes Mojang-textured renders to docs/vision by default
+# (its .txt reports stay tracked), and real-session recordings are never fixtures.
+/docs/vision/*.png
+/tests/fixtures/live-hive/

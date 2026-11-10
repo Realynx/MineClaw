@@ -4,7 +4,7 @@
   "private": true,
   "description": "Browser voxel world viewer for MineClaw hives (three.js React component): MCWC chunks, entities, overlays.",
   "type": "module",
-  "license": "UNLICENSED",
+  "license": "MIT",
   "sideEffects": false,
   "main": "./dist/index.js",
   "module": "./dist/index.js",

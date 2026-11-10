@@ -2,11 +2,11 @@
 
 exports[`mock data builders (golden, pinned before they were split) > build the same bodies, scripts, controllers, contexts, heat, audit and diffs 1`] = `
 {
-  "audit": 2626436488,
+  "audit": 181033531,
   "context": [
-    1992138014,
-    1859103158,
-    2906104640,
+    2897998879,
+    4035890839,
+    800318919,
   ],
   "controller": [
     1739797285,
@@ -89,11 +89,11 @@ exports[`mock data builders (golden, pinned before they were split) > build the 
   ],
   "scripts": 836101776,
   "turns": [
-    749148860,
+    2130324029,
     214926587,
     2057301736,
     3952604384,
-    3365072436,
+    3541031779,
     258588458,
     2213523865,
     3375663515,

@@ -366,7 +366,7 @@ public sealed partial class DialogGoldenTests(ITestOutputHelper output)
 
     private const string Golden = """
         edit-dialog B840FF8E5EA82758C6B5
-        export-dialog F0D476C3F010915A6D73
+        export-dialog FCFE5DBD3CCDCB1321B9
         import-dialog 6CCC6DDD07B2FFDEDAC2
         """;
 }

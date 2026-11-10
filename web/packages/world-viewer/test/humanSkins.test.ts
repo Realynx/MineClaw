@@ -2,11 +2,10 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { configureHumanSkins, humanSkins, type HumanSkinFeed } from '../src/assets/humanSkins';
 import * as THREE from 'three';
 import { PNG } from 'pngjs';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
 import { EntityLayer } from '../src/render/entityLayer';
-import type { AssetBundle, Pack1122 } from '../src/assets/bundle';
+import type { AssetBundle } from '../src/assets/bundle';
 import type { BotView } from '../src/world/entities';
+import { noPacks, pack1122 } from './pack';
 
 let stop: (() => void) | undefined;
 afterEach(() => { stop?.(); stop = undefined; configureHumanSkins(null); vi.unstubAllGlobals(); vi.useRealTimers(); });
@@ -40,7 +39,7 @@ it('shows only configured human skins; resets across disable/re-enable and servi
   expect(humanSkins.get('player')).toBeUndefined();
 });
 
-it('draws slim and legacy skins using distinct atlas UVs and correct instanced player models', async () => {
+it.skipIf(noPacks)('draws slim and legacy skins using distinct atlas UVs and correct instanced player models', async () => {
   vi.useFakeTimers();
   vi.stubGlobal('document', { hidden: false, createElement: () => {
     const canvas = { width: 0, height: 0, getContext: () => canvas.width === 1024 ? { drawImage: vi.fn(), clearRect: vi.fn() } : null };
@@ -57,8 +56,7 @@ it('draws slim and legacy skins using distinct atlas UVs and correct instanced p
   configureHumanSkins(() => Promise.resolve({ enabled: true, epoch: 'render', revision: 2, skins: [skin('slim', 64, true), skin('legacy', 32, false)] }));
   const layer = new EntityLayer();
   stop = () => layer.dispose();
-  const pack = JSON.parse(readFileSync(join(__dirname, '..', 'generated', '1.12.2', 'pack.json'), 'utf8')) as Pack1122;
-  layer.setBundle({ version: '1.12.2', pack, blocks: {}, items: {}, entity: {}, anim: null, env: {} } as unknown as AssetBundle);
+  layer.setBundle({ version: '1.12.2', pack: pack1122(), blocks: {}, items: {}, entity: {}, anim: null, env: {} } as unknown as AssetBundle);
   await vi.advanceTimersByTimeAsync(0);
   const bot = (name: string, x: number): BotView => ({ name, dim: 0, x, y: 64, z: 0, yaw: 0, dto: { name, short: name, main: false, dim: 0, x, y: 64, z: 0, hp: 20, food: 20 } });
   const show = () => {

@@ -11,7 +11,7 @@ namespace MineClaw.Agent.Tests;
 /// </summary>
 public class SelfModelsGoldenTests
 {
-    private const string ExpectedText = "351ABFBF5C9977F3D93FF623761859C5D3B4F68102AC3B3BE044C251A5AA0EFC";
+    private const string ExpectedText = "17A1BB947683FED1640EB155DEE6F2A78A34F90E425602845E15AF286B241D3E";
 
     private static readonly double[] Grid =
         [-1, -0.6, -0.45, -0.44, -0.4, -0.39, -0.3, -0.2, -0.19, -0.18, -0.17, -0.15, -0.14, 0, 0.17, 0.18, 0.19, 0.2, 0.29, 0.3, 0.39, 0.4, 0.44, 0.45, 0.5, 0.59, 0.6, 1, double.NaN];

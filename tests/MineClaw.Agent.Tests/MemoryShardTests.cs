@@ -32,6 +32,7 @@ public sealed class MemoryShardTests : IDisposable
     {
         var o = new AgentOptions { KnowledgeDirectory = null, DataDirectory = "unused" };
         o.Self.TrustedPlayers = ["PoofImaFox", "kiwi"];
+        o.Chat.Regulars();
         return o;
     }
 

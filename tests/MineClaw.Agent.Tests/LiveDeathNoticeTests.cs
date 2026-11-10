@@ -96,7 +96,7 @@ public class PlayerIdentityTests
     private static readonly string[] Online = ["PoofimaFox", "kiwi", "robinchan"];
 
     private static IEnumerable<string> Nicks(string p) =>
-        new ChatOptions().PlayerNicknames.TryGetValue(p, out var n) ? n : [];
+        TestPlayers.Nicknames().TryGetValue(p, out var n) ? n : [];
 
     [Theory]
     [InlineData("robinchan", "robinchan")]

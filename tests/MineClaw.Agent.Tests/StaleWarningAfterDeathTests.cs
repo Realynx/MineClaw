@@ -20,7 +20,7 @@ public class StaleWarningAfterDeathTests
     {
         var t = new Clock();
         var sent = new List<string>();
-        var o = new ChatOptions { Username = "maid_chan", LineDelayMs = 0 };
+        var o = new ChatOptions { Username = "maid_chan", LineDelayMs = 0 }.Regulars();
         o.Classifier.Enabled = false;
         var r = new ChatRouter(o, new EventQueue(new EventQueueOptions(), t), (l, _) => { lock (sent) sent.Add(l); return Task.CompletedTask; }, t);
         r.SetOnlinePlayers(["PoofimaFox", "kiwi"]);

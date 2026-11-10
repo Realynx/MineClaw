@@ -4,20 +4,18 @@
 // without a bundle. Each view's bone texture, every instanced draw's instance data and the scene graph state are hashed; the
 // digests were taken from the code before it was reshaped.
 
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
 import * as THREE from 'three';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
-import type { AssetBundle, Pack, Pack1122, PackBeta } from '../src/assets/bundle';
+import type { AssetBundle, Pack } from '../src/assets/bundle';
 import { EntityLayer, type EntityShowOptions } from '../src/render/entityLayer';
 import { MOB_NAMES } from '../src/render/entities/registry';
 import { FLAG_GLOWING, FLAG_INVISIBLE, FLAG_ON_FIRE, FLAG_SNEAKING, FLAG_SPRINTING, type EntityDto, type EntityEvent, type Equipment } from '../src/types';
 import type { BotView, EntityView } from '../src/world/entities';
 import { Digest, rng } from './digest';
+import { noPacks, pack1122, packBeta } from './pack';
 
-const gen = join(__dirname, '..', 'generated');
-const PACK_1122 = JSON.parse(readFileSync(join(gen, '1.12.2', 'pack.json'), 'utf8')) as Pack1122;
-const PACK_BETA = JSON.parse(readFileSync(join(gen, 'b1.8.1', 'pack.json'), 'utf8')) as PackBeta;
+const PACK_1122 = noPacks ? null! : pack1122();
+const PACK_BETA = noPacks ? null! : packBeta();
 const fakeBundle = (pack: Pack): AssetBundle =>
   ({ version: pack.version, pack, blocks: {}, items: {}, entity: {}, anim: null, env: { glint: {} } }) as unknown as AssetBundle;
 
@@ -191,11 +189,11 @@ describe('entity layer golden (behaviour pin)', () => {
     if (typeof document === 'undefined') (globalThis as Record<string, unknown>).document = { createElement: () => ({ width: 0, height: 0, getContext: () => null }) };
   });
 
-  it('1.12.2 crowd', () => {
+  it.skipIf(noPacks)('1.12.2 crowd', () => {
     expect(run(fakeBundle(PACK_1122), '1.12.2', 11)).toBe('006f29904788eb8ff213270288462988');
   });
 
-  it('b1.8.1 crowd', () => {
+  it.skipIf(noPacks)('b1.8.1 crowd', () => {
     expect(run(fakeBundle(PACK_BETA), 'b1.8.1', 12)).toBe('b27b46600f98a19af3c0962464e95b5e');
   });
 

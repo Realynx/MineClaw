@@ -48,7 +48,7 @@ public class AskedBeforeTests
     {
         var sent = new List<string>();
         var q = new EventQueue(new EventQueueOptions(), TimeProvider.System);
-        var chat = new ChatRouter(new ChatOptions { Username = "maid_chan_67", LineDelayMs = 0 }, q, (l, _) => { lock (sent) sent.Add(l); return Task.CompletedTask; });
+        var chat = new ChatRouter(new ChatOptions { Username = "maid_chan_67", LineDelayMs = 0 }.Regulars(), q, (l, _) => { lock (sent) sent.Add(l); return Task.CompletedTask; });
         var tools = new ToolRegistry();
         HumanTools.RegisterAskPlayer(tools, chat, new QuestionOptions(), q, askedBefore: (question, player) =>
             question.Contains("oak") ? "maid_chan already asked PoofimaFox \"which tree first?\" 1m ago; answer: \"the big oak\"" : null);

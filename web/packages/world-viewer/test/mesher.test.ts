@@ -3,7 +3,7 @@ import { meshSection } from '../src/mesh/mesher';
 import { buildStateTable } from '../src/mesh/states';
 import { LF_CUT, LF_REMEMBERED, TEX_TEXTURED } from '../src/mesh/sink';
 import { storeWith, type B } from './helpers';
-import { table1122, tableBeta } from './pack';
+import { noPacks, table1122, tableBeta } from './pack';
 
 const flat = buildStateTable('b1.8.1', null);
 const Y = 64;
@@ -78,7 +78,7 @@ describe('section meshing: face culling', () => {
     expect((await quads([[4, Y, 4, 53, 0]])).solid).toBe(12);
   });
 
-  it('b1.8.1 chests are opaque cubes whose pairs show the wide front and back halves (ChestTile)', async () => {
+  it.skipIf(noPacks)('b1.8.1 chests are opaque cubes whose pairs show the wide front and back halves (ChestTile)', async () => {
     expect((await quads([[4, Y, 4, 54]])).solid).toBe(6);
     expect((await quads([[4, Y, 4, 54], [5, Y, 4, 54]])).solid).toBe(10);
     const pair = await quads([[4, Y, 4, 54], [5, Y, 4, 54]], tableBeta());
@@ -95,7 +95,7 @@ describe('section meshing: face culling', () => {
     expect(two).toBeGreaterThan(2 * one);
   });
 
-  it('1.12.2: top slabs and 256-high columns', async () => {
+  it.skipIf(noPacks)('1.12.2: top slabs and 256-high columns', async () => {
     const r = await quads([[4, 200, 4, 44, 8]], table1122(), { height: 256 });
     const m = meshSection(r.store, 0, 0, 200 >> 4, 0, table1122());
     expect(m.solid!.quads).toBe(6);
@@ -131,7 +131,7 @@ describe('section meshing: light, AO and flags', () => {
   });
 });
 
-describe('section meshing: bundled atlas', () => {
+describe.skipIf(noPacks)('section meshing: bundled atlas', () => {
   it('b1.8.1 cube faces carry their terrain cell and the textured flag; untextured tables do not', async () => {
     const { m } = await quads([[4, Y, 4, 1]], tableBeta());
     const t = m.solid!.tile;

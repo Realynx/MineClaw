@@ -18,7 +18,7 @@ namespace MineClaw.Agent.Tests;
 /// </summary>
 public sealed class ShardImportGoldenTests : IDisposable
 {
-    private const string ExpectedHash = "47086A7811CAA84E6EF695E0E3277FE48B22D0606F11447916CEB5FE45AFC734";
+    private const string ExpectedHash = "F4C637FDAD7490278415F14C8B96F0CFD27BFFC2DB3D2B6349CDA5552E8FD8E1";
 
     private readonly string _dir = Path.Combine(Path.GetTempPath(), "mineclaw-shard-golden-" + Guid.NewGuid().ToString("N"));
 
@@ -40,6 +40,7 @@ public sealed class ShardImportGoldenTests : IDisposable
     {
         var o = new AgentOptions { KnowledgeDirectory = null, DataDirectory = "unused" };
         o.Self.TrustedPlayers = ["PoofImaFox", "kiwi"];
+        o.Chat.Regulars();
         var path = Path.Combine(_dir, name + ".db");
         var ctx = MemoryAdminContext.OpenLocal(path, o, emb, raptor ? RaptorIntegrationTests.SummaryLlm() : null);
         return new Db(ctx, new ShardImporter(ctx, new AdminAudit(Path.Combine(_dir, name + ".audit.jsonl")), "local:" + name));

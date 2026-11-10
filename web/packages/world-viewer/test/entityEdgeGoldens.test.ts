@@ -5,19 +5,17 @@
 // hands; experience orbs of every size; ghosts of selected bots by short key; and the labels' canvas calls (text, colours)
 // through a recording stand-in canvas. The digests were taken from the code before it was reshaped.
 
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
 import * as THREE from 'three';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import type { AssetBundle, Pack, Pack1122, PackBeta } from '../src/assets/bundle';
+import type { AssetBundle, Pack } from '../src/assets/bundle';
 import { EntityLayer, type EntityShowOptions } from '../src/render/entityLayer';
 import { FLAG_ON_FIRE, FLAG_SNEAKING, type EntityDto, type EntityEvent, type Equipment } from '../src/types';
 import type { BotView, EntityView } from '../src/world/entities';
 import { Digest, rng } from './digest';
+import { noPacks, pack1122, packBeta } from './pack';
 
-const gen = join(__dirname, '..', 'generated');
-const PACK_1122 = JSON.parse(readFileSync(join(gen, '1.12.2', 'pack.json'), 'utf8')) as Pack1122;
-const PACK_BETA = JSON.parse(readFileSync(join(gen, 'b1.8.1', 'pack.json'), 'utf8')) as PackBeta;
+const PACK_1122 = noPacks ? null! : pack1122();
+const PACK_BETA = noPacks ? null! : packBeta();
 const fakeBundle = (pack: Pack): AssetBundle =>
   ({ version: pack.version, pack, blocks: {}, items: {}, entity: {}, anim: null, env: { glint: {} } }) as unknown as AssetBundle;
 
@@ -162,11 +160,11 @@ describe('entity layer edge goldens (behaviour pin)', () => {
     g.document = had;
   });
 
-  it('1.12.2', () => {
+  it.skipIf(noPacks)('1.12.2', () => {
     expect(run(fakeBundle(PACK_1122), '1.12.2', 21)).toBe('153b3f3c10c04bf1b8f06dddad2179c3');
   });
 
-  it('b1.8.1', () => {
+  it.skipIf(noPacks)('b1.8.1', () => {
     expect(run(fakeBundle(PACK_BETA), 'b1.8.1', 22)).toBe('869503cdb842ffd17fde41dec87032d1');
   });
 

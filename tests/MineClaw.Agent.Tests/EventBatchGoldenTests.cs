@@ -7,7 +7,7 @@ namespace MineClaw.Agent.Tests;
 /// <summary>Pins <see cref="EventBatch.Format"/> (WP06 refactor): chat grouping per speaker, repeats, [bodies] coalescing, fresh tags.</summary>
 public class EventBatchGoldenTests
 {
-    private const string Expected = "61C63276C76186614F8D18D33192DDE87E41D3EC1466960A21D1EA777957395A";
+    private const string Expected = "29B5A0BED0770DA612A8717B9695B4E99228B148369CB2EEB80293D810E757DC";
 
     [Fact]
     public void Batches_format_the_same()

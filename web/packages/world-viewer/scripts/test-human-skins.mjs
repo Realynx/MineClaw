@@ -1,11 +1,17 @@
-// Isolated browser/WebGL regression. Synthetic solid skins only; no game server, user browser or downloaded assets.
+// Isolated browser/WebGL regression. Synthetic solid skins only; no game server, user browser or downloaded assets. The player
+// models come from your local 1.12.2 pack (generated/1.12.2/pack.json: npm run assets:extract && npm run assets:pack).
 /* global document, createImageBitmap */
 import { createServer } from 'vite';
 import { chromium } from 'playwright';
 import { fileURLToPath } from 'node:url';
+import { existsSync } from 'node:fs';
 import assert from 'node:assert/strict';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
+if (!existsSync(fileURLToPath(new URL('../generated/1.12.2/pack.json', import.meta.url)))) {
+  console.error('generated/1.12.2/pack.json is missing: run npm run assets:extract && npm run assets:pack first, from your own 1.12.2 client jar');
+  process.exit(2);
+}
 const server = await createServer({ root, configFile: false, server: { host: '127.0.0.1', port: 0 }, plugins: [{ name: 'skin-test',
 resolveId(id) { if (id === 'virtual:skin-test') return '\0virtual:skin-test'; },
 load(id) { if (id === '\0virtual:skin-test') return "export * as THREE from 'three';"; },

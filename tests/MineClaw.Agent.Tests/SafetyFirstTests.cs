@@ -18,7 +18,7 @@ public class SafetyFirstTests
     private static ChatRouter Router(out ManualTime time)
     {
         time = new ManualTime();
-        var o = new ChatOptions { Username = "maid_chan", DisplayName = "maid chan", Aliases = ["maid"], LineDelayMs = 0 };
+        var o = new ChatOptions { Username = "maid_chan", DisplayName = "maid chan", Aliases = ["maid"], LineDelayMs = 0 }.Regulars();
         var r = new ChatRouter(o, new EventQueue(), (_, _) => Task.CompletedTask, time);
         r.SetOnlinePlayers(["PoofimaFox", "kiwi"]);
         return r;
