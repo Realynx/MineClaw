@@ -42,11 +42,43 @@ right mouse uses/places, E opens inventory and Q drops the held item (Ctrl+Q dro
 clicks, Shift transfers, crafting slots, armour and the off hand. The game server remains authoritative: collision, gravity,
 reach, line of sight, tool speed, inventory availability and block orientation use the normal game client rules.
 
+Digging draws the pawn's crack on the block in this view only (the server reports the dig's progress), with a chip off the
+hit face every four ticks. A broken block keeps its full crack until the world shows it gone (at most 0.6 s), then bursts
+into chips of its colour, so block, crack and chips go together. The pawn's own dig, break, place and step sounds are made
+here, because game servers do not send them to the acting player; they need the imported sound pack (1.12.2 only). The
+yellow changed-block glow is off in this view. A confirmed break, and a block the game server placed from a right click, count
+for the movement prediction at once, for a second, until the world stream confirms them.
+A placement counts (and sounds) only when the pawn's client saw the game server fill the cell within 0.3 s (action code
+`placed`); a refused one (the body or a mob still in the cell on the server's side) changes nothing. Other pawns nearby hear
+the same break or placement and report it into the world stream; the view plays each once, whichever copy comes first.
+
+Middle click picks the aimed block: it selects the hotbar slot that holds the block's item (the same colour or kind
+first) and changes nothing when no slot does. While a block is held, a ghost shows the cell a right click would fill
+(green where it fits, red where something is in the way); it goes when the held item is no block or the crosshair is on
+no block face.
+
+The block outline is the block the pawn's own ray hits: every state frame names it (`aim`, null when nothing is in reach),
+and the view uses it once the frame has applied the newest look and keys (its `ackSeq` reaches the input that changed
+them), drawing its own pick until then. So the outline and the click agree on partial blocks such as slabs and fences and
+from inside a plant or a ladder. A click never names its block; the server clicks what that ray hits. Holding the left
+button digs on, block after block, but hits a mob once per click on both versions: the button's re-sends every 250 ms are
+marked `repeat`, which neither restarts the dig they continue nor hits the mob again (nor digs the block behind it).
+
+The status bar shows hearts and hunger, armour above the hearts while any is worn and air above the hunger while it runs
+down under water (state frames carry `armor` and `air`), the held item's name for two seconds when the hand changes, and a
+red edge on the screen for half a second when the pawn is hurt.
+
 **Release & return** resumes the pawn's director. A takeover never changes saved roles, schedules, priorities or draft state.
 It ends the old work lane and releases its reservations, pauses new AI work/combat/idle gestures, then starts a fresh work
 lane when released. An offline, hidden or disconnected browser cannot keep driving it: input stops after 350 ms and the
 exclusive session expires after 3 seconds without renewed input. Another browser cannot take over the same pawn until it
 is released. Leaving inventory first returns cursor items through the existing inventory handling.
+
+When the server ends a takeover it names the reason on the socket's closing frame, and the ended screen says it beside
+**Take over again**: "Your pawn died" (take over again once it has respawned), an expired session, another window that
+took the pawn, or the pawn going offline. Hotbar counts follow the state frames, which carry the inventory whenever it
+changed; a frame read before a click never puts back what that click's reply showed.
+Every inventory names the version it was read at, and of a reply and a frame the higher version wins.
 
 Initial handover can wait for a colony planning pass; its lease clock starts when handover finishes. Ongoing inputs check
 a separate ownership claim without taking the director's planning lock. Release stops the client's controls immediately;
@@ -59,10 +91,27 @@ selected and forwarded credentials come from the authenticated session. The leas
 never in a URL. Socket closure releases that attachment; an older socket cannot release a newer attachment. HTTP release
 remains the fallback, and the four POST routes remain compatible with other callers. Inputs/actions have separate monotonic
 sequences. Key transitions send immediately; mouse updates are bounded to 40 Hz alongside the 20 Hz input heartbeat.
-The controlled camera predicts movement locally against loaded terrain, with immediate mouse look and smooth correction
-from server samples aligned to its recent movement history. Prediction is bounded, stops trusting stale state after 350 ms,
-and falls back to authoritative positions where terrain is unavailable. Control tokens remain in memory and excluded from
+The controlled camera predicts movement locally against loaded terrain, with immediate mouse look. Each server sample is
+compared with the prediction at the tick it describes (placed by the input it acknowledges); the difference moves the
+prediction at once and eases out of the picture, so a correction never overshoots. A stalled stream eases the prediction
+to a stop, only a teleport, a dimension change or more than 4 blocks snaps, and where terrain is unavailable the camera
+follows the samples smoothly. With the frame rate overlay on, a stats line shows its latency, offset, snaps and holds.
+Control tokens remain in memory and excluded from
 audits and contract-error logs.
+
+State frames follow the pawn's own game ticks: one frame per tick, sent as soon as the tick has run and at least 20 ms
+after the previous frame, so a burst of catch-up ticks arrives as one frame naming the newest `tick`. Each ticked frame
+carries the input it applied (`ackSeq`, `ackWaitMs`), the velocity in blocks per tick and the server's aim. When no tick
+comes for 100 ms the current state goes out anyway, so the browser never mistakes silence for a lost connection: it
+repeats the last tick while no other tick has run, and once the body ticks without the player's keys (riding) it
+is the live position, marked `stopped` and without a `tick`.
+
+The prediction moves by the world's game version (b1.8.1: a 0.5 block step, no lower sneaking height and no wait between
+jumps; 1.12.2: 0.6, 1.65 and 10 ticks), with the pawn's speed, slowness and jump boost and its item use on 1.12.2. Like
+the game client it climbs a ladder only from inside the ladder's cell while pushing into it, stops sprinting against a
+wall, wades rather than swims in water one block deep, and falls from the first tick past an edge.
+`tests/fixtures/control-parity` holds the C# client's ticks for walking, sprint-jumping, both diagonals, a ledge, a
+ladder and shallow water on both versions; the C# physics and the prediction are both tested against them.
 
 Controller freecam and pawn takeover enter JavaScript fullscreen as part of mouse capture. Chrome's Keyboard Lock protects
 WASD shortcuts such as Ctrl+W only in that mode. Escape remains available to release the mouse/fullscreen. If the browser

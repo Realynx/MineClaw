@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { bindPlayerInput, idleInput, movement } from '@/features/control/playerInput';
+import { bindPlayerInput, idleInput, movement, pickSlot } from '@/features/control/playerInput';
 
 afterEach(() => { vi.useRealTimers(); Object.defineProperty(document, 'pointerLockElement', { configurable: true, value: null }); });
 
@@ -65,6 +65,28 @@ describe('pawn player input', () => {
     expect(input.jump).toBe(false);
     cleanup();
   });
+  it('marks the re-sends of a held attack as repeats, and only those', () => {
+    vi.useFakeTimers();
+    const surface = document.createElement('canvas');
+    Object.defineProperty(document, 'pointerLockElement', { configurable: true, value: surface });
+    const action = vi.fn();
+    const cleanup = bindPlayerInput(surface, { input: idleInput(), action, inventory: vi.fn(), lockChanged: vi.fn(), hotbarChanged: vi.fn() });
+    try {
+      surface.dispatchEvent(new PointerEvent('pointerdown', { button: 0 }));
+      vi.advanceTimersByTime(500);
+      window.dispatchEvent(new PointerEvent('pointerup', { button: 0 }));
+      surface.dispatchEvent(new PointerEvent('pointerdown', { button: 0 }));
+      expect(action.mock.calls).toEqual([['attack'], ['attack', undefined, true], ['attack', undefined, true], ['release'], ['attack']]);
+      window.dispatchEvent(new PointerEvent('pointerup', { button: 0 }));
+      action.mockClear();
+      // A held use repeats as before: the server already keeps one running use going.
+      surface.dispatchEvent(new PointerEvent('pointerdown', { button: 2 }));
+      vi.advanceTimersByTime(250);
+      expect(action.mock.calls).toEqual([['use'], ['use']]);
+    } finally {
+      cleanup(); vi.useRealTimers();
+    }
+  });
   it('releases a brief right click without cancelling its discrete use', () => {
     const surface = document.createElement('canvas');
     Object.defineProperty(document, 'pointerLockElement', { configurable: true, value: surface });
@@ -102,5 +124,35 @@ describe('pawn player input', () => {
       if (previousExit) Object.defineProperty(document, 'exitPointerLock', previousExit);
       else Reflect.deleteProperty(document, 'exitPointerLock');
     }
+  });
+});
+
+describe('pick block', () => {
+  it('selects the hotbar slot of the aimed block on a middle click, and nothing when no slot holds it', () => {
+    const surface = document.createElement('canvas'), input = idleInput();
+    Object.defineProperty(document, 'pointerLockElement', { configurable: true, value: surface });
+    const hotbarChanged = vi.fn(), inputChanged = vi.fn(), action = vi.fn();
+    let slot: number | null = 4;
+    const pick = vi.fn(() => slot);
+    const cleanup = bindPlayerInput(surface, { input, action, hotbarChanged, inputChanged, pick, inventory: vi.fn(), lockChanged: vi.fn() });
+    surface.dispatchEvent(new PointerEvent('pointerdown', { button: 1 }));
+    expect(pick).toHaveBeenCalledOnce();
+    expect(input.hotbar).toBe(4);
+    expect(hotbarChanged).toHaveBeenCalledExactlyOnceWith(4);
+    expect(inputChanged).toHaveBeenCalledExactlyOnceWith('hotbar');
+    slot = null;
+    surface.dispatchEvent(new PointerEvent('pointerdown', { button: 1 }));
+    expect(input.hotbar).toBe(4);
+    expect(hotbarChanged).toHaveBeenCalledOnce();
+    expect(action).not.toHaveBeenCalled(); // neither a dig nor a use
+    cleanup();
+  });
+
+  it('finds the item of the block, preferring the same meta', () => {
+    const hotbar = [undefined, { id: 35, meta: 1 }, { id: 35, meta: 14 }, { id: 331, meta: 0 }, { id: 5, meta: 0 }];
+    expect(pickSlot({ id: 35, meta: 14 }, hotbar)).toBe(2);
+    expect(pickSlot({ id: 35, meta: 4 }, hotbar)).toBe(1);
+    expect(pickSlot({ id: 55, meta: 9 }, hotbar)).toBe(3); // redstone wire → redstone dust
+    expect(pickSlot({ id: 1, meta: 0 }, hotbar)).toBeNull();
   });
 });

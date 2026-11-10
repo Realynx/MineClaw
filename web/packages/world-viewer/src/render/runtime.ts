@@ -33,6 +33,7 @@ import { PROFILES, QualityController, probeRendererOnce, type QualityName, type 
 import { FrameTiming } from './frameTiming';
 import { effectiveProfile, entityReach, FrameLimiter, getViewerQuality, reportViewerStatus, viewerQualityRev, type ViewerQuality } from './viewerQuality';
 import { ChangeFlash } from './changeFlash';
+import { BreakOverlay } from './breakOverlay';
 import { BlockDeltaFeed } from '../world/deltas';
 import { BlockEntityStore } from '../world/blockEntities';
 import { HologramLayer } from './holograms';
@@ -246,6 +247,8 @@ export class WorldRuntime {
   readonly overlays = new OverlayLayer();
   readonly weather = new WeatherLayer();
   readonly flashes = new ChangeFlash();
+  /** Cracks on blocks being dug (a controlled pawn's dig, shown in its own view). */
+  readonly breaks = new BreakOverlay();
   readonly sky = new SkyLayer();
   readonly aids = new AidsLayer();
   /** Chat bubbles over the heads of bots and players that speak (`say`, `WorldSource.chat`), in every view. */
@@ -263,6 +266,8 @@ export class WorldRuntime {
   private readonly badgeViews = new Map<number, BotBadgeLayer>();
   /** Block changes as they are applied (dim, the changed cells). */
   readonly blockListeners = new Set<(dim: Dim, blocks: Array<[number, number, number]>) => void>();
+  /** Block changes as they arrive ([x, y, z, id, meta]), before the frame's flush and the worker patch. */
+  readonly blockReceivers = new Set<(dim: Dim, blocks: ReadonlyArray<readonly number[]>) => void>();
   private primary: { view: RuntimeView; container: HTMLElement } | null = null;
   private entityPoller: Poller;
   private overlayPoller: Poller;
@@ -662,6 +667,7 @@ export class WorldRuntime {
     this.overlays.dispose();
     this.weather.dispose();
     this.flashes.dispose();
+    this.breaks.dispose();
     this.blockEntityLayer.dispose(); // [blocks]
     this.sky.dispose();
     this.aids.dispose();
@@ -850,6 +856,9 @@ export class WorldRuntime {
         for (const l of this.blockListeners) l(dim, blocks);
       },
       onBlockEntities: (dim, cx, cz) => this.blockEntities.want(dim, [[cx, cz]]),
+      onReceived: (dim, blocks) => {
+        for (const l of this.blockReceivers) l(dim, blocks);
+      },
       onError: (e) => this.opts.onError?.('blocks', e),
     });
   }
@@ -1442,6 +1451,9 @@ export class WorldRuntime {
     this.overlays.group.visible = s.overlays;
     if (s.overlays) this.showOverlays(s.dim);
     this.flashes.showFor(s.dim, now, s.layers.changes);
+    this.breaks.setAtlas(this.blockAtlas);
+    // The crack pool joins the scene with the first crack.
+    if (this.breaks.showFor(s.dim, s.viewId ?? 0) && !this.breaks.group.parent) this.scene.add(this.breaks.group);
     this.blockEntityLayer.showFor(s.dim); // [blocks]
     for (const [id, h] of this.holoViews) {
       h.group.visible = this.q.holograms && id === s.viewId;

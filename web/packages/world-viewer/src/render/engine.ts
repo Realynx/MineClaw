@@ -15,10 +15,10 @@ import {
   type WorldSource,
   type XRayMode,
 } from '../types';
-import { blockName } from '../world/blocks';
+import { blockName, flatColour } from '../world/blocks';
 import type { BotView } from '../world/entities';
 import type { Interest } from '../world/sync';
-import { aimAt, outlineOf, type AimTarget, type AimRay } from './aim';
+import { aimAt, beyondOwnCell, outlineOf, type AimTarget, type AimRay, type BlockPick } from './aim';
 import type { BubbleKind, ShownBubble } from './bubbles';
 import type { BotBadge } from './botBadges';
 import { CameraRig, lookDir, type RigInput } from './cameraRig';
@@ -26,6 +26,7 @@ import { newViewId, WorldRuntime, type RuntimeOptions, type RuntimeView, type Vi
 import type { HoloCell, HologramStats } from './holograms';
 import type { Centre } from './sections';
 import { PlayerCollisionCache, type PlayerCollisionBox, type PlayerCollisionResult } from './playerCollision';
+import { breakStage } from './breakOverlay';
 
 export interface EngineOptions extends RuntimeOptions {
   source: WorldSource;
@@ -58,6 +59,19 @@ export interface EngineOptions extends RuntimeOptions {
 }
 
 const XRAY_RANGE = 48; // FreecamXRay.Range
+/** Player controls: how far a pawn reaches (blocks) until the app gives the control session's own reach. */
+const PLAYER_REACH = 4.25;
+/** Player controls: the least time between two crosshair picks (ms): about 30 a second; the other views pick 10. */
+const PLAYER_AIM_MS = 30;
+/** Outward normal of each block face (0 down, 1 up, 2 north, 3 south, 4 west, 5 east). */
+const FACE_NORMALS: ReadonlyArray<readonly [number, number, number]> = [
+  [0, -1, 0],
+  [0, 1, 0],
+  [0, 0, -1],
+  [0, 0, 1],
+  [-1, 0, 0],
+  [1, 0, 0],
+];
 
 export class WorldViewerEngine implements RuntimeView {
   readonly id = newViewId();
@@ -101,6 +115,7 @@ export class WorldViewerEngine implements RuntimeView {
   private aimAtMs = 0;
   private aimBusy = false;
   private aimRequest = 0;
+  private playerReach: number | null = null;
   private pointerAt: [number, number] | null = null;
   private marker: [number, number, number] | null = null;
   private highlighted: string[] = [];
@@ -125,7 +140,67 @@ export class WorldViewerEngine implements RuntimeView {
     this.ownsRuntime = !opts.runtime;
     this.runtime = (opts.runtime ?? new WorldRuntime(opts.source, opts)).retain();
     this.playerCollisions = new PlayerCollisionCache(this.runtime.host, () => this.runtime.cache.detectedVersion() ?? '1.12.2');
+    this.runtime.blockReceivers.add(this.blocksReceived);
     this.mountSurface();
+  }
+
+  /** Block changes reach the player prediction as they arrive, before the frame's flush and the worker. */
+  private readonly blocksReceived = (dim: Dim, blocks: ReadonlyArray<readonly number[]>): void =>
+    this.playerCollisions.patch(dim, blocks);
+
+  /** Player controls: the cell reads as (id, meta) to the prediction for `ttlMs` (the pawn's own confirmed dig is air, its
+   * placement solid) until the world's own change for it arrives. */
+  overrideCollision(x: number, y: number, z: number, id: number, meta: number, ttlMs = 1000): void {
+    this.playerCollisions.override(this.dim, x, y, z, id, meta, ttlMs);
+  }
+
+  /** Player controls: a cell of the prediction's terrain (id, meta), or null while it is not held. */
+  blockAt(x: number, y: number, z: number): { id: number; meta: number } | null {
+    return this.playerCollisions.blockAt(this.dim, x, y, z);
+  }
+
+  /** What `setBreak` shows now: dim, x, y, z, stage. */
+  private readonly breakShown = [NaN, NaN, NaN, NaN, NaN];
+
+  /** Player controls: the crack on the block the pawn digs (its dig progress 0..1, from the control state), drawn in this
+   * view only; null clears it. Cheap to call every frame. */
+  setBreak(b: { x: number; y: number; z: number; progress: number } | null): void {
+    const stage = b ? breakStage(b.progress) : -1;
+    const s = this.breakShown;
+    if (stage < 0) {
+      if (Number.isNaN(s[4])) return;
+      s.fill(NaN);
+      this.runtime.breaks.set(`view:${this.id}`, null);
+      return;
+    }
+    const { x, y, z } = b!;
+    if (s[0] === this.dim && s[1] === x && s[2] === y && s[3] === z && s[4] === stage) return;
+    s[0] = this.dim;
+    s[1] = x;
+    s[2] = y;
+    s[3] = z;
+    s[4] = stage;
+    const boxes = this.playerCollisions.boxesAt(this.dim, x, y, z);
+    this.runtime.breaks.set(`view:${this.id}`, { dim: this.dim, x, y, z, stage, boxes, view: this.id });
+  }
+
+  /** Player controls: block chips in the block's colour from cell (x, y, z): a break's burst from its middle, or one chip off
+   * `face` (0..5) while it is dug. Half as many on software rendering. */
+  blockBurst(
+    x: number,
+    y: number,
+    z: number,
+    id: number,
+    meta: number,
+    kind: 'block_break' | 'block_hit' = 'block_break',
+    face = -1,
+  ): void {
+    const rt = this.runtime;
+    const n = face >= 0 && face <= 5 ? FACE_NORMALS[face] : null;
+    const at = (c: number, i: number) => c + 0.5 + (n ? n[i] * 0.52 : 0);
+    const rgb = flatColour(rt.version ?? 'b1.8.1', id, meta, true);
+    const scale = rt.quality.state.profile.name === 'software' ? 0.5 : 1;
+    rt.entities.blockBurst(this.dim, at(x, 0), at(y, 1), at(z, 2), rgb, performance.now(), kind, scale);
   }
 
   /** Synchronous nearby terrain for local player prediction; refreshes from the existing mesh worker in the background. */
@@ -168,6 +243,7 @@ export class WorldViewerEngine implements RuntimeView {
     this.drag = null;
     this.editorDrag = null;
     this.aimRequest++;
+    this.setBreak(null);
     if (document.pointerLockElement === this.surface) document.exitPointerLock();
     this.runtime.suspendView(this);
     if (this.ctx2d) this.surface.remove();
@@ -333,6 +409,11 @@ export class WorldViewerEngine implements RuntimeView {
     return this.aimed;
   }
 
+  /** Player controls: how far the controlled pawn reaches, in blocks (its control session says); none = the default. */
+  setPlayerReach(blocks: number | null | undefined): void {
+    this.playerReach = blocks && blocks > 0 ? blocks : null;
+  }
+
   /** Whether the mouse is locked to this view (free cam look mode). */
   locked(): boolean {
     return document.pointerLockElement === this.surface;
@@ -366,15 +447,19 @@ export class WorldViewerEngine implements RuntimeView {
 
   private async aimAlong(o: THREE.Vector3, d: THREE.Vector3): Promise<AimTarget | null> {
     const request = ++this.aimRequest;
-    const max = this.opts.controls === 'player' ? 5 : this.drawDistance + 32;
+    const player = this.opts.controls === 'player';
+    const max = player ? (this.playerReach ?? PLAYER_REACH) : this.drawDistance + 32;
     const ray: AimRay = { origin: [o.x, o.y, o.z], direction: [d.x, d.y, d.z], max };
     const bots = this.layers.bots ? this.runtime.store.bots().filter((b) => b.dim === this.dim &&
       !(this.opts.controls === 'player' && (b.name === this.followName || b.dto.short === this.followName))) : [];
+    const pick: BlockPick = (oo, dd, max) =>
+      this.runtime.host.pick(this.dim, oo, dd, max, this.levelCut ? this.pickCut() : null);
     const physical = await aimAt(
       [o.x, o.y, o.z],
       [d.x, d.y, d.z],
       bots,
-      (oo, dd, max) => this.runtime.host.pick(this.dim, oo, dd, max, this.levelCut ? this.pickCut() : null),
+      // First person: the cell the eye is in (a plant, a ladder, a door) must not be the target of every look.
+      player ? beyondOwnCell(pick) : pick,
       (id) => blockName(this.runtime.version ?? 'b1.8.1', id),
       max,
     );
@@ -450,6 +535,7 @@ export class WorldViewerEngine implements RuntimeView {
 
   dispose(): void {
     this.playerCollisions.dispose();
+    this.runtime.blockReceivers.delete(this.blocksReceived);
     if (this.disposed) return;
     this.suspend();
     this.disposed = true;
@@ -550,13 +636,14 @@ export class WorldViewerEngine implements RuntimeView {
     rt.overlays.setVisible(this.layers);
   }
 
-  /** The active crosshair/cursor target, ten times a second (also updates when only the camera moves). */
+  /** The active crosshair/cursor target, ten times a second (also updates when only the camera moves); a controlled
+   * pawn's crosshair thirty times, so its outline keeps up with the mouse. */
   private updateAim(now: number): void {
     if (!(this.opts.controls === 'editor' ? this.pointerAt && !this.editorDrag : this.locked() && this.rig.mode === 'fly')) {
       if (this.aimed) this.setAim(null);
       return;
     }
-    if (this.aimBusy || now - this.aimAtMs < 100) return;
+    if (this.aimBusy || now - this.aimAtMs < (this.opts.controls === 'player' ? PLAYER_AIM_MS : 100)) return;
     this.aimAtMs = now;
     this.aimBusy = true;
     void this.aimNow().finally(() => {

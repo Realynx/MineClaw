@@ -2,9 +2,27 @@
 import { PawnControlActionRequest, PawnControlInputRequest, PawnControlReleaseRequest, toCamel, toSnake } from '@mineclaw/contracts';
 import { ws, type WebSocketHandlerConnection } from 'msw';
 import { checkAccess, currentUser, pawnControl } from './api';
+import { rng } from './util';
 
 // The supervisor serializes the entire typed envelope, including its `data` payload, as snake_case.
 const controlCase = { opaque: new Set<string>() };
+
+/**
+ * A slow link, for judging the takeover camera by hand. Set either before taking control:
+ * `sessionStorage['mcx-mock-control-lag'] = '150'` adds that many ms of round trip, half before a frame from the browser
+ * reaches the pawn and half before a frame from the pawn reaches the browser;
+ * `sessionStorage['mcx-mock-control-jitter'] = '30'` makes every frame up to that many ms later still.
+ * As without them, an input also waits up to 50 ms for the pawn's tick and its state up to 50 ms for the next frame.
+ */
+function slowLink(): { lag: number; jitter: number } {
+  const ms = (key: string, most: number) => {
+    try {
+      const value = Number(sessionStorage.getItem(key));
+      return value > 0 ? Math.min(value, most) : 0;
+    } catch { return 0; }
+  };
+  return { lag: ms('mcx-mock-control-lag', 2000), jitter: ms('mcx-mock-control-jitter', 500) };
+}
 
 export function connectMockControl({ client, info }: Pick<WebSocketHandlerConnection, 'client' | 'info'>): void {
   const protocols = Array.isArray(info.protocols) ? info.protocols : [info.protocols ?? ''];
@@ -19,9 +37,26 @@ export function connectMockControl({ client, info }: Pick<WebSocketHandlerConnec
     if (!protocols.includes('mineclaw.control.v1') || client.url.search) throw new Error('Invalid control connection');
   } catch { client.close(1008, 'Control connection refused'); return; }
 
-  let session: string | null = null, inputSeq = -1;
+  let session: string | null = null, inputSeq = -1, ended = false;
   const created = Date.now();
-  const send = (frame: unknown) => client.send(JSON.stringify(toSnake(frame, controlCase)));
+  const link = slowLink(), late = rng(70), inFlight = new Set<ReturnType<typeof setTimeout>>();
+  /** One direction of the link. Frames arrive in the order they were sent, as on a real socket: a timer that fires
+   * hands over the oldest frame still on its way, whichever frame set it. */
+  const lane = () => {
+    const waiting: Array<() => void> = [];
+    return (deliver: () => void) => {
+      const delay = Math.round(link.lag / 2 + late() * link.jitter);
+      if (!delay && !waiting.length) { deliver(); return; }
+      waiting.push(deliver);
+      const arrival = setTimeout(() => { inFlight.delete(arrival); waiting.shift()?.(); }, delay);
+      inFlight.add(arrival);
+    };
+  };
+  const toPawn = lane(), toBrowser = lane();
+  const send = (frame: unknown) => {
+    const text = JSON.stringify(toSnake(frame, controlCase));
+    toBrowser(() => client.send(text));
+  };
   const snapshot = () => {
     authorize();
     if (!session) throw new Error('Attach a control session first');
@@ -36,9 +71,11 @@ export function connectMockControl({ client, info }: Pick<WebSocketHandlerConnec
     send({ type: 'state', sampledAtMs: Date.now(), data: value });
   };
   const fail = (error: unknown) => {
+    if (ended) return;
+    ended = true;
     clearInterval(timer);
     send({ type: 'error', message: error instanceof Error ? error.message : 'Invalid control frame' });
-    client.close(1008, 'Control ended');
+    toBrowser(() => client.close(1008, 'Control ended'));
   };
   const timer = setInterval(() => {
     try {
@@ -46,7 +83,8 @@ export function connectMockControl({ client, info }: Pick<WebSocketHandlerConnec
       else if (Date.now() - created > 3000) throw new Error('Control attach timed out');
     } catch (error) { fail(error); }
   }, 50);
-  client.addEventListener('message', (event) => {
+  client.addEventListener('message', (event) => toPawn(() => {
+    if (ended) return;
     try {
       if (typeof event.data !== 'string' || event.data.length > 8192) throw new Error('Invalid control frame');
       const frame = toCamel<Record<string, unknown>>(JSON.parse(event.data) as unknown);
@@ -69,9 +107,12 @@ export function connectMockControl({ client, info }: Pick<WebSocketHandlerConnec
         } else throw new Error('Unknown control frame');
       }
     } catch (error) { fail(error); }
-  });
+  }));
   client.addEventListener('close', () => {
+    ended = true;
     clearInterval(timer);
+    for (const arrival of inFlight) clearTimeout(arrival);
+    inFlight.clear();
     if (session && pawnControl.current?.session === session) pawnControl.release(session);
   });
 }

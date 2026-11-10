@@ -14,3 +14,4 @@ export { WorldSync } from './world/sync';
 export { EntityStore } from './world/entities';
 export { BlockDeltaFeed } from './world/deltas';
 export { SectionManager } from './render/sections';
+export { scanCollision } from './render/playerCollision';

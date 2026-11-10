@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { PlayerCollisionCache } from '../src/render/playerCollision';
+import { PlayerCollisionCache, scanCollision } from '../src/render/playerCollision';
 import { playerBlockBoxes } from '../src/world/playerCollisionShapes';
 import type { CollisionCell } from '../src/world/playerCollisionTypes';
+import { BlockDeltaFeed } from '../src/world/deltas';
+import type { MeshHost } from '../src/mesh/host';
+import type { WorldCache } from '../src/world/cache';
+import type { WorldSync } from '../src/world/sync';
+import type { WorldSource } from '../src/types';
 
 const cell = (id = 0, meta = 0) => ({ id, meta });
 const box = { minX: .2, minY: .9, minZ: .2, maxX: .8, maxY: 2.8, maxZ: .8 };
@@ -82,23 +87,39 @@ describe('bounded local collision cache', () => {
     cache.query(box, 0, 0); await tick();
     expect(cache.query(box, 0, 20).loaded).toBe(true);
     fail = true;
-    cache.query(box, 0, 200); await tick();
-    expect(cache.query(box, 0, 600).loaded).toBe(false);
+    // The 2 s refresh fails; the region held keeps answering until it is 6 s old, then it is not trusted.
+    cache.query(box, 0, 2000); await tick();
+    expect(cache.query(box, 0, 2200).loaded).toBe(true); await tick();
+    expect(cache.query(box, 0, 6000).loaded).toBe(false);
     cache.dispose();
   });
-  it('never blocks a frame, shares one query, and stops trusting stale terrain', async () => {
+  it('never blocks a frame, shares one query, and trusts the fetched region while the body stays inside it', async () => {
     let calls = 0, finish: ((values: number[]) => void) | undefined, points: number[] = [];
     const cache = new PlayerCollisionCache({ blocksAt: (_dim, pts) => { calls++; points = pts; return new Promise(r => { finish = r; }); } }, () => '1.12.2');
+    const solid = () => points.flatMap((_, i) => i % 3 === 0 ? [1, 0, 15] : []);
     for (let n = 0; n < 100; n++)expect(cache.query(box, 0, 0).loaded).toBe(false);
-    expect(calls).toBe(1); expect(points.length).toBe(441 * 3);
-    finish!(points.flatMap((_, i) => i % 3 === 0 ? [1, 0, 15] : [])); await tick();
+    expect(calls).toBe(1); expect(points.length).toBe(13 * 17 * 13 * 3);
+    finish!(solid()); await tick();
     expect(cache.query(box, 0, 20).loaded).toBe(true);
     expect(cache.query(box, 0, 20).boxes.length).toBeGreaterThan(0);
-    expect(cache.query(box, 0, 600).loaded).toBe(false);
+    // No age limit inside the region: later frames are still predicted and nothing is asked again.
+    expect(cache.query(box, 0, 600).loaded).toBe(true);
+    expect(calls).toBe(1);
+    // Two cells from the edge a region around the body is asked for; the old one answers meanwhile.
+    const near = { ...box, minX: 5.2, maxX: 5.8 };
+    expect(cache.query(near, 0, 700).loaded).toBe(true);
     expect(calls).toBe(2);
+    const beyond = { ...box, minX: 6.2, maxX: 6.8 };
+    expect(cache.query(beyond, 0, 710).loaded).toBe(false);
+    finish!(solid()); await tick();
+    expect(cache.query(beyond, 0, 720).loaded).toBe(true);
+    expect(calls).toBe(2);
+    // Every 2 s the region is read again (changes the feed cannot report: reloaded columns, a reconnect).
+    cache.query(beyond, 0, 2700);
+    expect(calls).toBe(3);
     cache.dispose();
     finish!(Array<number>(points.length).fill(0)); await tick();
-    expect(cache.query(box, 0, 610).loaded).toBe(false);
+    expect(cache.query(beyond, 0, 2800).loaded).toBe(false);
   });
   it('discards a previous-dimension reply and treats unknown columns as unloaded', async () => {
     let finish: ((values: number[]) => void) | undefined, points: number[] = [];
@@ -119,5 +140,155 @@ describe('bounded local collision cache', () => {
     const feet = { ...box, minY: 1 }; cache.query(feet, 0, 0); await tick();
     expect(cache.query(feet, 0, 20)).toMatchObject({ loaded: true, medium: 'water', slipperiness: .98 });
     cache.dispose();
+  });
+});
+
+describe('collision cells that do not wait for the worker', () => {
+  // Feet on the stone at y = 0, with the prediction's 0.6 step margin below them.
+  const feet = { minX: .2, minY: .4, minZ: .2, maxX: .8, maxY: 2.8, maxZ: .8 };
+  /** Stone at y <= 0, air above. */
+  const ground = (pts: number[]) => pts.flatMap((_, i) => i % 3 === 0 ? [pts[i + 1] <= 0 ? 1 : 0, 0, 15] : []);
+  const floorUnder = (r: { boxes: readonly { minY: number; maxY: number }[] }) => r.boxes.some(b => b.minY === 0 && b.maxY === 1);
+  function slowWorld() {
+    const replies: Array<() => void> = [];
+    const host = { calls: 0, blocksAt: (_dim: number, pts: number[]) => { host.calls++; return new Promise<number[]>(r => replies.push(() => r(ground(pts)))); } };
+    return { host, answer: async () => { replies.shift()!(); await tick(); } };
+  }
+
+  it('keeps predicting inside the fetched region while the worker takes 800 ms to answer a refresh', async () => {
+    const { host, answer } = slowWorld();
+    const cache = new PlayerCollisionCache(host, () => '1.12.2');
+    cache.query(feet, 0, 0); await answer();
+    expect(cache.query(feet, 0, 20).loaded).toBe(true);
+    cache.query(feet, 0, 2000);
+    expect(host.calls).toBe(2);
+    for (const t of [2100, 2400, 2799]) expect(cache.query(feet, 0, t)).toMatchObject({ loaded: true });
+    expect(host.calls).toBe(2);
+    await answer();
+    expect(floorUnder(cache.query(feet, 0, 2800))).toBe(true);
+    cache.dispose();
+  });
+
+  it('takes a block change as it arrives from the delta feed, without a worker reply', async () => {
+    const { host, answer } = slowWorld();
+    const cache = new PlayerCollisionCache(host, () => '1.12.2');
+    const received: Array<[number, unknown]> = [];
+    const feed = new BlockDeltaFeed({} as WorldSource, {} as MeshHost, {} as WorldCache, {} as WorldSync, {
+      onDirty: () => undefined,
+      onReceived: (dim, blocks) => { received.push([dim, blocks]); cache.patch(dim, blocks); },
+    });
+    cache.query(feet, 0, 0); await answer();
+    expect(floorUnder(cache.query(feet, 0, 20))).toBe(true);
+    feed.push({ rev: 5, full: false, dim: 0, blocks: [[0, 0, 0, 0, 0]] });
+    expect(received).toEqual([[0, [[0, 0, 0, 0, 0]]]]);
+    expect(feed.queued).toBe(1); // the frame's flush and the worker patch are still to come
+    const r = cache.query(feet, 0, 30);
+    expect(r.loaded).toBe(true);
+    expect(floorUnder(r)).toBe(false);
+    expect(host.calls).toBe(1);
+    // Another dimension's change is not ours.
+    feed.push({ rev: 6, full: false, blocks: { '-1': [[0, 0, 0, 1, 0]] } });
+    expect(received[1]).toEqual([-1, [[0, 0, 0, 1, 0]]]);
+    expect(floorUnder(cache.query(feet, 0, 40))).toBe(false);
+    cache.dispose();
+  });
+
+  it('lays a change that arrived while a fetch was out over its reply', async () => {
+    const { host, answer } = slowWorld();
+    const cache = new PlayerCollisionCache(host, () => '1.12.2');
+    cache.query(feet, 0, 0);
+    cache.patch(0, [[0, 0, 0, 0, 0]]); // the worker's read still has the stone
+    await answer();
+    const r = cache.query(feet, 0, 20);
+    expect(r.loaded).toBe(true);
+    expect(floorUnder(r)).toBe(false);
+    cache.dispose();
+  });
+
+  it('lays a change received before a fetch over its reply while the worker may not have it yet', async () => {
+    const { host, answer } = slowWorld();
+    const cache = new PlayerCollisionCache(host, () => '1.12.2');
+    cache.query(feet, 0, 0); await answer();
+    cache.query(feet, 0, 20);
+    cache.override(0, 0, 0, 0, 0, 0, 1000, 20); // the pawn's own dig
+    cache.patch(0, [[0, 0, 0, 0, 0]]); // the world's change: the override goes, the region takes it
+    expect(floorUnder(cache.query(feet, 0, 30))).toBe(false);
+    // The delta feed has not flushed it to the busy worker yet, so the refresh is answered from the worker's old copy.
+    cache.query(feet, 0, 2000); await answer();
+    expect(host.calls).toBe(2);
+    expect(floorUnder(cache.query(feet, 0, 2010))).toBe(false);
+    // Long after the change, the worker's word stands again.
+    cache.query(feet, 0, 4010); await answer();
+    expect(floorUnder(cache.query(feet, 0, 4020))).toBe(true);
+    cache.dispose();
+  });
+
+  it("holds the takeover's own dig and placement until they expire or the world's change arrives", async () => {
+    const { host, answer } = slowWorld();
+    const cache = new PlayerCollisionCache(host, () => '1.12.2');
+    cache.query(feet, 0, 0); await answer();
+    cache.override(0, 0, 0, 0, 0, 0, 1000, 100);
+    expect(floorUnder(cache.query(feet, 0, 200))).toBe(false);
+    expect(floorUnder(cache.query(feet, 0, 1100))).toBe(true);
+    cache.override(0, 0, 2, 0, 1, 0, 1000, 1200);
+    expect(cache.query(feet, 0, 1300).boxes).toContainEqual({ minX: 0, minY: 2, minZ: 0, maxX: 1, maxY: 3, maxZ: 1 });
+    cache.patch(0, [[0, 2, 0, 0, 0]]);
+    expect(cache.query(feet, 0, 1400).boxes.some(b => b.minY === 2)).toBe(false);
+    expect(cache.boxesAt(0, 0, 0, 0)).toEqual([{ minX: 0, minY: 0, minZ: 0, maxX: 1, maxY: 1, maxZ: 1 }]);
+    expect(cache.boxesAt(0, 40, 0, 0)).toBeNull();
+    expect(cache.boxesAt(-1, 0, 0, 0)).toBeNull();
+    cache.dispose();
+  });
+
+  it('names the block of a held cell, with the overrides laid over it, and nothing outside the region', async () => {
+    const { host, answer } = slowWorld();
+    const cache = new PlayerCollisionCache(host, () => '1.12.2');
+    expect(cache.blockAt(0, 0, 0, 0)).toBeNull(); // nothing fetched yet
+    cache.query(feet, 0, 0); await answer();
+    expect(cache.blockAt(0, 0, 0, 0)).toEqual({ id: 1, meta: 0 });
+    expect(cache.blockAt(0, 0, 1, 0)).toEqual({ id: 0, meta: 0 });
+    cache.override(0, 0, 0, 0, 0, 0, 1000, 100);
+    expect(cache.blockAt(0, 0, 0, 0)).toEqual({ id: 0, meta: 0 });
+    expect(cache.blockAt(0, 40, 0, 0)).toBeNull();
+    expect(cache.blockAt(-1, 0, 0, 0)).toBeNull();
+    cache.dispose();
+  });
+});
+
+describe("the medium and the climb, with the game client's boxes", () => {
+  const body = (x: number, y: number, z: number, height = 1.8) => ({ minX: x - .3, minY: y, minZ: z - .3, maxX: x + .3, maxY: y + height, maxZ: z + .3 });
+  const scan = (cells: Record<string, CollisionCell>, b: ReturnType<typeof body>, version: '1.12.2' | 'b1.8.1' = '1.12.2') =>
+    scanCollision(scene(cells), b, version);
+
+  it('wades rather than swims where water only reaches the outer 0.4 of the body', () => {
+    // Standing in a block of water on the floor: the water reaches into the shrunk body, as in the C# client.
+    expect(scan({ '0,0,0': cell(9) }, body(.5, 0, .5)).medium).toBe('water');
+    // Rising out of it: only the bottom 0.4 is still in the water.
+    expect(scan({ '0,0,0': cell(9) }, body(.5, .65, .5)).medium).toBeNull();
+    // Water above the head's top 0.4 only does not count either.
+    expect(scan({ '0,2,0': cell(8, 3) }, body(.5, .3, .5)).medium).toBeNull();
+    // Lava a body only grazes sideways by less than 0.1.
+    expect(scan({ '1,0,0': cell(11) }, body(.75, 0, .5)).medium).toBeNull();
+    expect(scan({ '1,0,0': cell(11) }, body(.85, 0, .5)).medium).toBe('lava');
+  });
+
+  it('climbs in the ladder cell under the feet only, and by version', () => {
+    expect(scan({ '0,0,0': cell(65, 4) }, body(.5, 0, .5))).toMatchObject({ climbable: true, medium: 'ladder' });
+    // A ladder at head height, or in the next cell the box reaches into, is near but not climbed.
+    expect(scan({ '0,1,0': cell(65, 4) }, body(.5, 0, .5))).toMatchObject({ climbable: false, medium: 'ladder' });
+    expect(scan({ '1,0,0': cell(65, 4) }, body(.9, 0, .5))).toMatchObject({ climbable: false, medium: 'ladder' });
+    expect(scan({ '0,0,0': cell(106, 1) }, body(.5, 0, .5)).climbable).toBe(true);
+    expect(scan({ '0,0,0': cell(106, 1) }, body(.5, 0, .5), 'b1.8.1').climbable).toBe(false);
+    // 1.12.2: an open trapdoor over a ladder facing the same way (west: trapdoor meta 2, ladder meta 4).
+    const trap = (meta: number) => scan({ '0,1,0': cell(96, meta), '0,0,0': cell(65, 4) }, body(.5, 1, .5)).climbable;
+    expect(trap(4 | 2)).toBe(true);
+    expect(trap(2)).toBe(false); // closed
+    expect(trap(4 | 3)).toBe(false); // facing east
+  });
+
+  it("uses Beta's thinner ladder box", () => {
+    const ladder = (version: '1.12.2' | 'b1.8.1') => playerBlockBoxes(scene({ '0,0,0': cell(65, 4) }), 0, 0, 0, version);
+    expect(ladder('b1.8.1')).toEqual([{ minX: .875, minY: 0, minZ: 0, maxX: 1, maxY: 1, maxZ: 1 }]);
+    expect(ladder('1.12.2')).toEqual([{ minX: .8125, minY: 0, minZ: 0, maxX: 1, maxY: 1, maxZ: 1 }]);
   });
 });
