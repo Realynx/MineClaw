@@ -50,6 +50,27 @@ exports[`the Story map overlay painter (mapDraw.ts) > a ghost cube is its top qu
 ]
 `;
 
+exports[`the Story map overlay painter (mapDraw.ts) > a pending Cancel hides its designations; pending marks are the same glyph at 60% opacity, on screen only 1`] = `
+[
+  "globalAlpha=0.6",
+  "save()",
+  "translate(143,93)",
+  "fillStyle="rgba(12,14,18,0.72)"",
+  "beginPath()",
+  "arc(7,7,9,0,6.28)",
+  "fill()",
+  "restore()",
+  "save()",
+  "translate(43,93)",
+  "fillStyle="rgba(12,14,18,0.72)"",
+  "beginPath()",
+  "arc(7,7,9,0,6.28)",
+  "fill()",
+  "restore()",
+  "globalAlpha=1",
+]
+`;
+
 exports[`the Story map overlay painter (mapDraw.ts) > bodies: selection brackets, the token, drafted and job marks, the name tag (danger in red) 1`] = `
 [
   "font="600 11px system-ui, sans-serif"",

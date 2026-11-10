@@ -8,7 +8,7 @@
  * software WebGL: no blur, no DOM per pawn, a few hundred canvas primitives.
  */
 import type { AimTarget, BotBadge, EntityView, PickedBlock, WorldViewerEngine, WorldViewerHandle } from '@mineclaw/world-viewer';
-import { getViewerQuality } from '@mineclaw/world-viewer/settings';
+import { getViewerQuality, type HoloCell } from '@mineclaw/world-viewer/settings';
 import { designationCells, type StoryBuild, type StoryColonyState, type StoryArchitectEntry } from '@mineclaw/contracts';
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useWorldHost } from '@/features/world/integration';
@@ -54,9 +54,11 @@ import {
   drawDesignHover,
   drawToolDrag,
   type ScanResult,
+  type WaterScan,
 } from './mapDragDraw';
 import type { WorldClock } from './clock';
 import { type Selection } from './model';
+import { withPendingHolo, type PendingView } from './pending';
 import {
   buildItems,
   DragGate,
@@ -74,7 +76,10 @@ import {
   type DesignBlock,
   preview as buildPreview,
   previewTargets,
+  PREVIEW_HITS,
+  ReleaseGuard,
   scanIds,
+  scanTruncated,
   toolYRange,
   DESIGNATE_TOOLS,
   type BuildOpts,
@@ -109,6 +114,8 @@ export interface DragResult {
   cells: V3[];
   entities: EntityLite[];
   count: number;
+  /** The preview's scan stopped at its hit cap: `cells` may miss targets. */
+  truncated?: boolean;
   /** The pointer travelled past the drag threshold (else it was a click). */
   moved?: boolean;
   /** A Mine or Deconstruct drag: exactly the cells its height mode designates (sent as `blocks`). */
@@ -185,6 +192,8 @@ export interface StoryMapProps {
   attackMode?: boolean;
   /** A placement waiting for the owner's word (a water placement and where it would run): drawn as the placement hologram. */
   holoPreview?: { key: string; blocks: ReadonlyArray<readonly [number, number, number, number, number]> } | null;
+  /** Commands the colony has not confirmed yet (pending.ts): their marks, the designations a Cancel hides, zones, holograms. */
+  pending?: PendingView;
 }
 
 const TOP_ZOOM = 44;
@@ -239,6 +248,13 @@ interface DragState {
   moved: boolean;
 }
 
+/** A released tool drag still waiting to act: drawn as it was let go (its rectangle and preview). */
+interface HeldDrag {
+  d: DragState;
+  scan: ScanResult;
+  water: WaterScan;
+}
+
 /** The pointer over the map: its point, the level cell under it, the face against the hovered block (angled view). */
 interface Hover {
   at: Pt;
@@ -253,6 +269,9 @@ interface HoloSync {
   builds: unknown;
   preview: string;
   editRevision?: number;
+  /** The pending placements' cells last handed over, and a count that moves with them (the hologram key). */
+  pendingHolo?: readonly HoloCell[];
+  pendingSeq?: number;
 }
 
 /** The frame loop's centre report: when it last ran, the column it reported, the page's callback it reported to. */
@@ -350,7 +369,7 @@ function missingColumns(raw: readonly P2[], cols: ReadonlyMap<string, number | n
 const FLAT_BUILDS: ReadonlySet<string> = new Set(['wall', 'floor', 'roof', 'fence']);
 
 /** A designate scan's result handed to the drag's preview. */
-type ScanFinish = (cells: V3[], count: number, ents: EntityLite[], height?: HeightTargets) => void;
+type ScanFinish = (cells: V3[], count: number, ents: EntityLite[], height?: HeightTargets, truncated?: boolean) => void;
 
 /** Animal mob types (hunt, not fight). */
 const ANIMAL_MOBS = [90, 91, 92, 93, 94, 95, 96, 98, 100, 101, 102, 103];
@@ -468,7 +487,8 @@ export const StoryMap =forwardRef<StoryMapHandle, StoryMapProps>(function StoryM
   const p = useRef(props);
   p.current = props;
   const drag = useRef<DragState | null>(null);
-  const pendingRelease = useRef<object | null>(null);
+  /** Releases waiting for a worker scan or pick (tools.ts `ReleaseGuard`): a new press keeps them. */
+  const releases = useRef(new ReleaseGuard<HeldDrag>());
   /** Esc / the other button cancel a drag; the release after a cancel does nothing (tools.ts `DragGate`). */
   const gate = useRef(new DragGate());
   const hover = useRef<Hover | null>(null);
@@ -483,7 +503,16 @@ export const StoryMap =forwardRef<StoryMapHandle, StoryMapProps>(function StoryM
   const chests = useRef<{ at: number; cells: Array<{ pos: V3; id: number }> }>({ at: 0, cells: [] });
   // What the hive knows is in those chests (their fill, for the badges drawn when zoomed in).
   const chestCells = useMemo(() => () => chests.current.cells, []);
-  const badges = useContainerBadges(chestCells);
+  // Asked for only while the badges are drawn (zoomed in past LABEL_ZOOM, the test `draw` makes).
+  const badgesShown = useMemo(
+    () => () => {
+      const e = engine();
+      const m = mats.current;
+      return !!e && !!m && 1 / unitsPerPx(e.rig.isoZoom, m.h) > LABEL_ZOOM;
+    },
+    [],
+  );
+  const badges = useContainerBadges(chestCells, true, badgesShown);
   const mats = useRef<ViewMats | null>(null);
   const lastClick = useRef<{ t: number; name: string } | null>(null);
   const placed = useRef(false);
@@ -525,8 +554,9 @@ export const StoryMap =forwardRef<StoryMapHandle, StoryMapProps>(function StoryM
 
   // Worker picks/scans may outlive a released drag. Changing tools or leaving the map cancels their eventual command.
   useLayoutEffect(() => {
-    pendingRelease.current = null;
-    return () => { pendingRelease.current = null; };
+    const guard = releases.current;
+    guard.cancel();
+    return () => { guard.cancel(); };
   }, [props.tool, props.view, props.level, props.build]);
 
   useEffect(() => {
@@ -582,7 +612,7 @@ export const StoryMap =forwardRef<StoryMapHandle, StoryMapProps>(function StoryM
       return null;
     },
     cancelDrag: () => {
-      if (!gate.current.escape() && !pendingRelease.current) return false;
+      if (!gate.current.escape() && !releases.current.waiting) return false;
       dropDrag();
       return true;
     },
@@ -754,12 +784,22 @@ export const StoryMap =forwardRef<StoryMapHandle, StoryMapProps>(function StoryM
     const st = p.current.state,
       h = holo.current;
     const edit = editorRef.current;
-    if (h.ghosts !== st?.ghosts || h.builds !== st?.builds || h.editRevision !== edit.queue.revision) {
+    const pendingHolo = p.current.pending?.holo ?? NO_HOLO;
+    if (
+      h.ghosts !== st?.ghosts ||
+      h.builds !== st?.builds ||
+      h.editRevision !== edit.queue.revision ||
+      h.pendingHolo !== pendingHolo
+    ) {
       h.ghosts = st?.ghosts;
       h.builds = st?.builds;
       const { rev } = hologramCells(st);
       h.editRevision = edit.queue.revision;
-      e.setHolograms(edit.overlay, `${rev}|edit:${edit.queue.revision}`);
+      if (h.pendingHolo !== pendingHolo) h.pendingSeq = (h.pendingSeq ?? 0) + 1;
+      h.pendingHolo = pendingHolo;
+      // Placements the colony has not confirmed yet show at once, merged by cell (pending.ts).
+      const pend = pendingHolo.length ? `|pending:${h.pendingSeq}` : '';
+      e.setHolograms(withPendingHolo(edit.overlay, pendingHolo), `${rev}|edit:${edit.queue.revision}${pend}`);
     }
     syncPlacementHologram(e, h);
   };
@@ -925,7 +965,7 @@ export const StoryMap =forwardRef<StoryMapHandle, StoryMapProps>(function StoryM
     drawGround(pt, props);
     const holoOn = getViewerQuality().holograms;
     drawBuildLayer(pt, props.state, holoOn);
-    drawDesignationLayer(pt, props.state);
+    drawDesignationLayer(pt, props.state, props.pending);
     pt.drawChests(chests.current.cells, props.state, props.selection, badges.current, LABEL_ZOOM);
     drawBodyLayer(pt, props, dt);
     drawPointer(pt, props, holoOn);
@@ -936,7 +976,8 @@ export const StoryMap =forwardRef<StoryMapHandle, StoryMapProps>(function StoryM
    * (zones/quarry.tsx); the colony's home; the beds. */
   const drawGround = (pt: MapPainter, props: StoryMapProps) => {
     const st = props.state;
-    const zones = st?.zones ?? [];
+    // A zone paint the colony has not confirmed yet is drawn as the colony will make it.
+    const zones = props.pending?.zones ?? st?.zones ?? [];
     drawZones(pt.ctx, zones, pt.at, pt.cell, (z, houseNo) => zoneLabel(z, houseNo, st?.plants));
     drawQuarries(pt.ctx, zones, pt.at, pt.cell);
     pt.drawHome(props.home);
@@ -963,9 +1004,11 @@ export const StoryMap =forwardRef<StoryMapHandle, StoryMapProps>(function StoryM
   /** Designations: a mark on every target (one per tree for chop), worked out once per state; a frame only projects and stamps
    * them. The failed ones' labels: one per cluster (same reason, adjacent), largest first, never on top of another; hidden
    * when zoomed out (the rings stay). */
-  const drawDesignationLayer = (pt: MapPainter, st: StoryColonyState | undefined) => {
+  const drawDesignationLayer = (pt: MapPainter, st: StoryColonyState | undefined, pending: PendingView | undefined) => {
     const model = designationModel(st?.designations ?? EMPTY_LIST);
-    failedAt.current = pt.drawDesignations(model);
+    // Commands the colony has not confirmed: a pending Cancel hides its marks, a pending designation shows faded marks.
+    failedAt.current = pt.drawDesignations(model, pending?.hidden);
+    if (pending) pt.drawPendingMarks(pending.marks);
     syncLabels(
       pt.cell > LABEL_ZOOM
         ? placeLabels(
@@ -982,6 +1025,8 @@ export const StoryMap =forwardRef<StoryMapHandle, StoryMapProps>(function StoryM
   /** The drag (a selection box, a formation line, or a tool's grid rectangle with its live targets), else the placement under
    * the cursor. */
   const drawPointer = (pt: MapPainter, props: StoryMapProps, holoOn: boolean) => {
+    for (const h of releases.current.shown())
+      if (h.d.moved && h.d.startCell && h.d.endCell) drawToolDrag(pt, props, h.d, h.scan, h.water);
     const d = drag.current;
     if (d && d.moved && d.button === 2) drawFormationDrag(pt, d);
     if (d) {
@@ -1265,7 +1310,7 @@ export const StoryMap =forwardRef<StoryMapHandle, StoryMapProps>(function StoryM
 
   /** Drops the drag in progress (Esc, the other button, leaving full screen): no preview, nothing on release. */
   const dropDrag = () => {
-    pendingRelease.current = null;
+    releases.current.cancel();
     drag.current = null;
     scan.current = { key: '', busy: false, result: null };
     formationShown.current = null;
@@ -1308,7 +1353,7 @@ export const StoryMap =forwardRef<StoryMapHandle, StoryMapProps>(function StoryM
     const key = scanKey(rect, tool.id);
     if (scan.current.key === key || scan.current.busy) return;
     scan.current.key = key;
-    const finish = (cells: V3[], count: number, ents: EntityLite[], height?: HeightTargets) => {
+    const finish = (cells: V3[], count: number, ents: EntityLite[], height?: HeightTargets, truncated?: boolean) => {
       if (drag.current !== d) return; // cancelled meanwhile
       scan.current.result = {
         rect,
@@ -1318,6 +1363,7 @@ export const StoryMap =forwardRef<StoryMapHandle, StoryMapProps>(function StoryM
         entities: ents,
         count,
         ...(height ? { height, cols: columnSpans(height.cells) } : {}),
+        ...(truncated ? { truncated } : {}),
       };
     };
     if (quickPreview(tool.id, rect, finish)) return;
@@ -1364,10 +1410,10 @@ export const StoryMap =forwardRef<StoryMapHandle, StoryMapProps>(function StoryM
     if (hasHeight(id)) return heightScan(e, id, rect).then((ht) => finish(ht.cells, ht.cells.length, [], ht));
     const y = toolYRange(id, p.current.level, p.current.build.height, p.current.cutY);
     return e.runtime.host
-      .scan(0, [rect[0], y[0], rect[1]], [rect[2], y[1], rect[3]], scanIds(id), 6000)
+      .scan(0, [rect[0], y[0], rect[1]], [rect[2], y[1], rect[3]], scanIds(id), PREVIEW_HITS)
       .then((s) => {
         const pv = previewTargets(id, s, p.current.mineFilter);
-        finish(pv.cells, pv.count, []);
+        finish(pv.cells, pv.count, [], undefined, scanTruncated(s));
       });
   };
 
@@ -1385,7 +1431,8 @@ export const StoryMap =forwardRef<StoryMapHandle, StoryMapProps>(function StoryM
   };
 
   const onPointerDown = (ev: React.PointerEvent<HTMLCanvasElement>) => {
-    pendingRelease.current = null;
+    // A waiting release still acts after a new press (quick clicks each send theirs); the other button cancels it.
+    releases.current.press(ev.button);
     const pt = local(ev);
     if (gate.current.button !== null && (ev.buttons & ~buttonBit(ev.button)) !== 0) {
       // A second button while one is held (browsers that send it as a down, not a chorded move).
@@ -1515,9 +1562,11 @@ export const StoryMap =forwardRef<StoryMapHandle, StoryMapProps>(function StoryM
     const d = drag.current;
     drag.current = null;
     const props = p.current;
-    const request = {};
-    pendingRelease.current = request;
-    const current = () => pendingRelease.current === request && p.current.tool === props.tool
+    // A tool's rectangle stays drawn until the release acted or was cancelled.
+    const held =
+      d && d.button === 0 && props.tool.kind !== 'select' ? { d, scan: scan.current.result, water: water.current } : null;
+    const request = releases.current.begin(ev.button, held);
+    const current = () => releases.current.current(request) && p.current.tool === props.tool
       && p.current.view === props.view && p.current.level === props.level && p.current.build === props.build;
     try {
       if (d) {
@@ -1541,7 +1590,7 @@ export const StoryMap =forwardRef<StoryMapHandle, StoryMapProps>(function StoryM
       else if (!d || d.button !== 0) return;
       else if (props.tool.kind === 'select') await selectUp(ev, pt, d, props);
       else await toolUp(ev, d, props, current);
-    } finally { if (pendingRelease.current === request) pendingRelease.current = null; }
+    } finally { releases.current.finish(request); }
   };
 
   /** Right click: drops the active tool (the genre); with something selected, the order menu for the thing under it; a
@@ -1739,10 +1788,18 @@ export const StoryMap =forwardRef<StoryMapHandle, StoryMapProps>(function StoryM
       const pr = p.current;
       const y = toolYRange(id, pr.level, pr.build.height, pr.cutY);
       const s = await e.runtime.host
-        .scan(0, [rect[0], y[0], rect[1]], [rect[2], y[1], rect[3]], scanIds(id), 6000)
+        .scan(0, [rect[0], y[0], rect[1]], [rect[2], y[1], rect[3]], scanIds(id), PREVIEW_HITS)
         .catch(() => []);
       const pv = previewTargets(id, s, pr.mineFilter);
-      return { rect, a, b: end, cells: pv.cells, entities: [], count: pv.count };
+      return {
+        rect,
+        a,
+        b: end,
+        cells: pv.cells,
+        entities: [],
+        count: pv.count,
+        ...(scanTruncated(s) ? { truncated: true } : {}),
+      };
     }
     return { rect, a, b: end, cells: [], entities: [], count: 0 };
   };
@@ -1806,7 +1863,7 @@ export const StoryMap =forwardRef<StoryMapHandle, StoryMapProps>(function StoryM
   // Leaving full screen mid-drag (the browser's Esc where Esc can't be locked) cancels the drag too.
   useEffect(() => {
     const off = () => {
-      if (!document.fullscreenElement && (gate.current.escape() || pendingRelease.current)) dropDrag();
+      if (!document.fullscreenElement && (gate.current.escape() || releases.current.waiting)) dropDrag();
     };
     document.addEventListener('fullscreenchange', off);
     return () => document.removeEventListener('fullscreenchange', off);
@@ -1814,9 +1871,9 @@ export const StoryMap =forwardRef<StoryMapHandle, StoryMapProps>(function StoryM
 
   /** The pointer was taken away (a touch scroll, the window lost it): the drag ends with nothing done. */
   const lost = () => {
-    if (gate.current.button === null && !pendingRelease.current) return;
+    if (gate.current.button === null && !releases.current.waiting) return;
     gate.current = new DragGate();
-    if (drag.current || pendingRelease.current) dropDrag();
+    if (drag.current || releases.current.waiting) dropDrag();
   };
 
   // The wheel must not scroll the page (a passive React listener cannot prevent it).
@@ -1855,6 +1912,18 @@ export const StoryMap =forwardRef<StoryMapHandle, StoryMapProps>(function StoryM
           label: r.height && t ? heightLabel(t.label, p.current.heightMode, r.height, p.current.layers) : null,
           top: r.height?.top ?? null,
           bottom: r.height?.bottom ?? null,
+        };
+      },
+      /** What is drawn for commands the colony has not confirmed yet (pending.ts), as counts, beside the colony's own
+       * designations. */
+      pending: () => {
+        const v = p.current.pending;
+        return {
+          marks: v?.marks.length ?? 0,
+          hidden: v?.hidden.size ?? 0,
+          zones: v?.zones?.length ?? null,
+          holo: v?.holo.length ?? 0,
+          designations: p.current.state?.designations?.length ?? 0,
         };
       },
       /** Block ids at points [[x, y, z], …] (-1 where nothing is held). */
@@ -2037,6 +2106,7 @@ const EMPTY_SEL: Selection = { bodies: [], chests: [], bench: null };
 const EMPTY_BADGES: readonly BotBadge[] = [];
 const EMPTY_LIST: StoryColonyState['designations'] = [];
 const EMPTY_GHOSTS: NonNullable<StoryColonyState['ghosts']>['blocks'] = [];
+const NO_HOLO: readonly HoloCell[] = [];
 
 const BLOCK_LABELS: Record<number, string> = {
   1: 'stone',

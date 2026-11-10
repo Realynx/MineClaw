@@ -64,12 +64,38 @@ public sealed class StoryColonies : IDisposable
                 long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
                 try { c.Tick(); }
                 catch (Exception ex) { _log.LogWarning(ex, "story {Colony}: tick failed", c.Id); } // a timer callback never throws
-                finally { StoryPerf.Note(ref StoryPerf.Ticks, ref StoryPerf.TickTicks, t0); }
+                finally { StoryPerf.Note(ref StoryPerf.Ticks, ref StoryPerf.TickTicks, ref StoryPerf.TickMax, t0); }
                 try { RetrySeats(c); }
                 catch (Exception ex) { _log.LogWarning(ex, "story {Colony}: seat retry failed", c.Id); }
             }
         }
         finally { Volatile.Write(ref _ticking, 0); }
+    }
+
+    /// <summary>How long after a direct order the restart pass runs: time for the cut scripts to stop, well before the next tick.</summary>
+    public static readonly TimeSpan NudgeDelay = TimeSpan.FromMilliseconds(150);
+    private readonly Dictionary<string, ITimer> _nudges = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// A direct order cut pawns' scripts: the colony's restart pass (<see cref="StoryColony.RestartNow"/>) runs once,
+    /// <see cref="NudgeDelay"/> from now, instead of at the next tick. Nudges inside that window share the one pass. Never for
+    /// draft, pause or designations, and it never wakes an idle pawn (only the tick does that, by its own rules).
+    /// </summary>
+    public void Nudge(StoryColony c)
+    {
+        lock (_nudges)
+        {
+            if (_nudges.ContainsKey(c.Id)) return;
+            _nudges[c.Id] = _time.CreateTimer(_ => Restart(c), null, NudgeDelay, Timeout.InfiniteTimeSpan);
+        }
+    }
+
+    private void Restart(StoryColony c)
+    {
+        lock (_nudges)
+            if (_nudges.Remove(c.Id, out var timer)) timer.Dispose();
+        try { c.RestartNow(); }
+        catch (Exception ex) { _log.LogWarning(ex, "story {Colony}: restart pass failed", c.Id); } // a timer callback never throws
     }
 
     /// <summary>Is the account a pawn of an active colony (spawned or still waiting for a seat)? The startup reconcile keeps those.</summary>
@@ -339,6 +365,11 @@ public sealed class StoryColonies : IDisposable
     public void Dispose()
     {
         _timer?.Dispose();
+        lock (_nudges)
+        {
+            foreach (var t in _nudges.Values) t.Dispose();
+            _nudges.Clear();
+        }
         foreach (var c in All) { try { c.Save(force: true); } catch (Exception) { } }
     }
 

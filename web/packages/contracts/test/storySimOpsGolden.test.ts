@@ -6,8 +6,16 @@
 import { createHash } from 'node:crypto';
 import { writeFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { defaultRoles, rolesOp, STORY_TOOL_KINDS, type StoryPawn, type StoryRolesRequest } from '../src/index.js';
+import {
+  defaultRoles,
+  rolesOp,
+  STORY_TOOL_KINDS,
+  type StoryDesignationRequest,
+  type StoryPawn,
+  type StoryRolesRequest,
+} from '../src/index.js';
 import { DEFAULT_POLICIES, SIM_MATERIALS, materialRulesOp, policiesOp, type SimGear } from '../src/storySimGear.js';
+import { StorySim, type StoryWorld } from '../src/testing.js';
 
 function gearState(): SimGear {
   return {
@@ -128,5 +136,67 @@ describe('policy and material-rule ops (golden)', () => {
     if (process.env.STORY_GOLDEN_DUMP) writeFileSync(`${process.env.STORY_GOLDEN_DUMP}.rules`, trace.join('\n'));
     expect(trace.filter((l) => l.includes('→ !')).length).toBe(585);
     expect(createHash('sha256').update(trace.join('\n')).digest('hex')).toMatchSnapshot();
+  });
+});
+
+/** Grass at y 63 over stone: a camp (crafting table, furnace, bed), one two-log tree and a dropped cobblestone. */
+function camp(): StoryWorld {
+  const blocks = new Map<string, [number, number]>([
+    ['-2,64,-2', [58, 0]],
+    ['-3,64,-2', [61, 3]],
+    ['3,64,3', [26, 0]],
+    ['3,64,4', [26, 8]],
+    ['10,64,0', [17, 0]],
+    ['10,65,0', [17, 0]],
+  ]);
+  return {
+    blockAt: (x, y, z) => blocks.get(`${x},${y},${z}`) ?? (y < 63 ? [1, 0] : y === 63 ? [2, 0] : [0, 0]),
+    ground: () => 63,
+    entities: () => [{ id: 7, kind: 'item', item: 4, x: 5.5, y: 64, z: 5.5 }],
+  };
+}
+
+/**
+ * The command wire the page and the bot were frozen on (docs/web/story-mode.md "The command wire"), as the mock director
+ * answers it: a formation's `moves`, an add without its targets, and the revision on bed and workbench answers. Recorded in
+ * full, request by request, so a change of any answer shows here.
+ */
+describe('the command wire (golden)', () => {
+  it('formation moves, adds without targets, stamped bed and workbench answers', () => {
+    const sim = new StorySim({ world: camp(), defaultHome: [0, 63, 0], now: () => 1_762_000_000_000 });
+    const { id } = sim.create({ name: 'Wire', pawns: 3 });
+    const [a, b, c] = sim.state(id).pawns.map((p) => p.name) as [string, string, string];
+    const at = (x: number, z: number) => ({ x, y: 64, z });
+    const to = (pawn: string, x: number, z: number) => ({ pawn, target: at(x, z) });
+    const moves = (list: Array<ReturnType<typeof to>>, queue?: boolean) => sim.orders(id, { moves: list, queue });
+    const add = (body: Omit<StoryDesignationRequest, 'op'>) => sim.designations(id, { op: 'add', ...body });
+    const tree = [10, 64, 0] as [number, number, number];
+    const requests: Array<[string, () => unknown]> = [
+      ['orders moves', () => moves([to(a, 4, 9), to(b, 6, 9)])],
+      ['orders moves queued', () => moves([to(a, 4, 11)], true)],
+      ['orders moves twice', () => moves([to(c, 1, 1), to(c, 2, 2)])],
+      ['orders moves unknown', () => moves([to(b, 0, 0), to('nobody', 1, 0)])],
+      ['orders group', () => sim.orders(id, { pawns: [a, b], order: { kind: 'move', target: at(0, 5) } })],
+      ['designate quiet', () => add({ kind: 'chop', blocks: [tree], includeTargets: false })],
+      ['designate quiet haul', () => add({ kind: 'haul', area: [0, 60, 0, 8, 70, 8], includeTargets: false })],
+      ['designate again', () => add({ kind: 'chop', blocks: [tree] })],
+      ['designate echo', () => add({ kind: 'mine', blocks: [[20, 62, 20]], includeTargets: true })],
+      ['designate cancel', () => sim.designations(id, { op: 'cancel', blocks: [[20, 62, 20]], includeTargets: false })],
+      ['beds assign', () => sim.beds(id, { op: 'assign', bed: { x: 3, y: 64, z: 3 }, pawn: a })],
+      ['beds unassign', () => sim.beds(id, { op: 'unassign', bed: { x: 3, y: 64, z: 3 } })],
+      ['beds none', () => sim.beds(id, { op: 'unassign', bed: { x: 9, y: 9, z: 9 } })],
+      ['bench fuel', () => sim.workbenches(id, { op: 'fuel', pos: [-3, 64, -2], fuel: 'coal' })],
+      ['bench release', () => sim.workbenches(id, { op: 'release', pos: [-2, 64, -2] })],
+      ['bench designate', () => sim.workbenches(id, { op: 'designate', pos: [-2, 64, -2] })],
+      ['bench designate again', () => sim.workbenches(id, { op: 'designate', pos: [-2, 64, -2] })],
+      ['bench none', () => sim.workbenches(id, { op: 'designate', pos: [9, 64, 9] })],
+    ];
+    const trace = requests.map(([label, f]) => `${label} → ${attempt(f)} | rev ${sim.state(id).rev}`);
+    expect(trace).toMatchSnapshot();
+    const refused = trace.filter((l) => l.includes('→ !')).map((l) => l.split(' →')[0]);
+    expect(refused).toEqual(['orders moves unknown', 'beds none', 'bench none']);
+    // All or none: the formation with an unknown pawn stamped nothing, not even for the pawn it named first.
+    const revAfter = (label: string) => Number(/rev (\d+)$/.exec(trace.find((l) => l.startsWith(`${label} →`))!)![1]);
+    expect(revAfter('orders moves unknown')).toBe(revAfter('orders moves twice'));
   });
 });

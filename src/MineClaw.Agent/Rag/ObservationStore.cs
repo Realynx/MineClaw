@@ -325,6 +325,45 @@ public sealed class ObservationStore
             .OrderBy(t => t.Item2).Take(limit).ToList();
     }
 
+    /// <summary>
+    /// Live containers of the given kinds with a known inventory (<c>contents_at</c> set) whose bounds meet <paramref name="region"/>
+    /// in one dimension, each with its items (biggest first, as <see cref="Contents"/>): one statement, served by the
+    /// <c>(dimension, kind, removed)</c> index, where <see cref="Nearest"/> with any kind and a <see cref="Contents"/> per row scanned
+    /// the whole table. At most <paramref name="limit"/> containers, in no particular order.
+    /// </summary>
+    public List<(ObservationRow Row, IReadOnlyList<ItemCount> Items)> ContainersIn(IReadOnlyList<string> kinds, Box region, int dimension, int limit)
+    {
+        if (kinds.Count == 0 || limit <= 0) return [];
+        var args = new List<(string Name, object? Value)>
+        {
+            ("$dim", dimension), ("$n", limit), ("$x0", region.MinX), ("$x1", region.MaxX), ("$y0", region.MinY), ("$y1", region.MaxY),
+            ("$z0", region.MinZ), ("$z1", region.MaxZ),
+        };
+        for (int i = 0; i < kinds.Count; i++) args.Add(($"$k{i}", kinds[i]));
+        var rows = new List<(ObservationRow Row, IReadOnlyList<ItemCount> Items)>();
+        List<ItemCount>? items = null;
+        _db.Query(ContainersInSql(kinds.Count), r =>
+        {
+            long id = r.GetInt64(0);
+            if (rows.Count == 0 || rows[^1].Row.Id != id) rows.Add((Map(r), items = []));
+            if (!r.IsDBNull(NCols)) items!.Add(new ItemCount((int)r.GetInt64(NCols), r.GetString(NCols + 1), (int)r.GetInt64(NCols + 2), (int)r.GetInt64(NCols + 3)));
+            return 0;
+        }, args.ToArray());
+        return rows;
+    }
+
+    /// <summary>The statement of <see cref="ContainersIn"/> for <paramref name="kinds"/> kinds (<c>$k0</c>…): the inner select is what
+    /// the <c>(dimension, kind, removed)</c> index serves; the items join by their primary key.</summary>
+    internal static string ContainersInSql(int kinds) => $"""
+        SELECT {OCols}, ci.item_id, ci.name, ci.count, ci.damage
+        FROM (SELECT * FROM observations WHERE dimension = $dim AND kind IN ({string.Join(", ", Enumerable.Range(0, kinds).Select(i => $"$k{i}"))})
+                AND removed IS NULL AND contents_at IS NOT NULL AND min_x IS NOT NULL
+                AND max_x >= $x0 AND min_x <= $x1 AND max_y >= $y0 AND min_y <= $y1 AND max_z >= $z0 AND min_z <= $z1
+              LIMIT $n) o
+        LEFT JOIN container_items ci ON ci.obs_id = o.id
+        ORDER BY o.id, ci.count DESC
+        """;
+
     /// <summary>All live rows of a kind in a dimension (null = current), newest first (portals, small kinds).</summary>
     public List<ObservationRow> OfKind(string kind, int? dimension = null, int limit = 50) =>
         _db.Query($"SELECT {Cols} FROM observations WHERE removed IS NULL AND kind = $k AND {DimFilter()} ORDER BY last_seen DESC LIMIT $n",

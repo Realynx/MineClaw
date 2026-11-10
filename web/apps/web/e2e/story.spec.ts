@@ -17,6 +17,18 @@ interface StoryDebug {
   beds(): Array<{ pos: [number, number, number]; pawn: string | null }>;
   failed(): Array<{ id: string | number; cell: [number, number, number] | null; x: number | null; y: number | null }>;
   sky(): { time: number | null; skySub: number } | null;
+  pending(): { marks: number; hidden: number; zones: number | null; holo: number; designations: number };
+}
+
+/** The mock colony's write hook (`window.__mockStory`, mocks/storyHold.ts): hold the writes, let them through, refuse one. */
+function mockStory(page: Page, method: 'hold' | 'release'): Promise<void>;
+function mockStory(page: Page, method: 'failNext', status: number, message: string): Promise<void>;
+function mockStory(page: Page, method: string, ...args: unknown[]): Promise<void> {
+  return page.evaluate(
+    ([m, a]) =>
+      void (window as unknown as { __mockStory: Record<string, (...x: unknown[]) => void> }).__mockStory[m]!(...a),
+    [method, args] as const,
+  );
 }
 
 async function signIn(page: Page, empty: boolean) {
@@ -338,7 +350,10 @@ test('designate tools: chop a grove for a pawn and main, haul a drop, cancel; ch
   await dragCells(page, [-10, lv, -14], [8, lv, 8]);
   const cancel = post(page, /\/designations$/);
   await page.mouse.up();
-  expect(body(await cancel)).toMatchObject({ op: 'remove' });
+  // Cancel sends the ids of the marks under the box (any height), not an area.
+  const cancelled = body(await cancel) as { op: string; ids: unknown[] };
+  expect(cancelled.op).toBe('cancel');
+  expect(cancelled.ids.length).toBeGreaterThan(0);
   await expect(page.getByTestId('story-toast')).toContainText(/Cancelled [1-9]/);
 
   // Chat to main (T): ordinary chat as the signed-in player.
@@ -1126,6 +1141,57 @@ test('mine height: Surface designates one layer; Flatten here previews exactly w
   expect(fb.blocks.length).toBe(fp.cells);
   expect(fb.blocks.every((b) => b[1]! > target)).toBe(true);
   if (shots) await page.screenshot({ path: `${shots}/story-flatten.png` });
+});
+
+/** A Mine (Surface) drag over the plants east of the wheat, held at its release: what it previewed. */
+async function mineDragHeld(page: Page) {
+  await signIn(page, true);
+  await openStory(page);
+  await foundColony(page, 3);
+  const x0 = 9,
+    z0 = -12;
+  await story(page, 'focus', x0 + 2, z0 + 2);
+  await story(page, 'setZoom', 40);
+  await page.waitForTimeout(800);
+  const lv = await story(page, 'level');
+  await page.keyboard.press('m');
+  await dragCells(page, [x0, lv, z0], [x0 + 3, lv, z0 + 3]);
+  return (await preview(page))!;
+}
+
+const pendingMarks = async (page: Page) => (await story(page, 'pending')).marks;
+
+test('a Mine drag shows its marks while the colony has not answered; they become the colony marks', async ({
+  page,
+}) => {
+  const pv = await mineDragHeld(page);
+  const before = (await story(page, 'pending')).designations;
+  await mockStory(page, 'hold');
+  const des = post(page, /\/designations$/);
+  await page.mouse.up();
+  const sent = body(await des) as { blocks: number[][] };
+  expect(sent.blocks.length).toBe(pv.cells);
+  // The reply is held: one pending mark per previewed cell, and the toast from the preview's count.
+  await expect.poll(() => pendingMarks(page)).toBe(pv.cells);
+  await expect(page.getByTestId('story-toast')).toContainText(/Mine: \d+ blocks?/);
+  expect((await story(page, 'pending')).designations).toBe(before);
+  await mockStory(page, 'release');
+  // The colony's own marks take over and no pending mark is left.
+  await expect.poll(() => pendingMarks(page)).toBe(0);
+  expect((await story(page, 'pending')).designations).toBeGreaterThan(before);
+});
+
+test('a refused Mine drag takes its pending marks away and says why', async ({ page }) => {
+  const pv = await mineDragHeld(page);
+  const before = (await story(page, 'pending')).designations;
+  await mockStory(page, 'hold');
+  await mockStory(page, 'failNext', 400, 'refused for the test');
+  await page.mouse.up();
+  await expect.poll(() => pendingMarks(page)).toBe(pv.cells);
+  await mockStory(page, 'release');
+  await expect.poll(() => pendingMarks(page)).toBe(0);
+  await expect(page.getByTestId('story-toast')).toContainText('refused for the test');
+  expect((await story(page, 'pending')).designations).toBe(before);
 });
 
 test('a drag is cancelled by Esc or a right-click: nothing is sent, the tool stays', async ({ page }) => {

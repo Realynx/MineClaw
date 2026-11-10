@@ -6,7 +6,16 @@
 import type { StoryColonyState, StoryOnlineBlocked } from '@mineclaw/contracts';
 import { useQueryClient } from '@tanstack/react-query';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  useState,
+  type Dispatch,
+  type SetStateAction,
+} from 'react';
 import { useAuth } from '@/lib/auth';
 import type { AttackWho } from '../assign/gear';
 import { WorldClock } from '../clock';
@@ -25,6 +34,8 @@ import {
   type MaterialToolId,
 } from '../materials';
 import { EMPTY_SELECTION, orderAi, orderPawns, splitBodies, type Selection } from '../model';
+import { useOptimisticColony } from '../optimistic';
+import { PendingCommands, type PendingFailure } from '../pending';
 import type { StorageClip } from '../storage';
 import { barBodies } from '../StoryHud';
 import type { MapTool, StoryMapHandle } from '../StoryMap';
@@ -102,7 +113,8 @@ function useStoryData() {
   const list = colonies.data?.colonies ?? [];
   const id = params.get('colony') ?? list[0]?.id ?? null;
   const colony = useColony(id);
-  const state = colony.data;
+  // What the page shows: the colony's state with the owner's changes that it does not carry yet (optimistic.ts).
+  const { state, track } = useOptimisticColony(id, colony.data);
   const write = useStoryWrite(id);
   const clock = useWorldClock(state);
   const noColony = !state && !colony.isLoading && !colonies.isLoading;
@@ -118,10 +130,39 @@ function useStoryData() {
     list,
     id,
     state,
+    /** The colony state as the bot sent it (pending map marks reconcile against it, not against the shown state). */
+    colonyState: colony.data,
     write,
+    track,
     clock,
     noColony,
   };
+}
+
+/**
+ * Map commands drawn at once (pending.ts): one store per colony, reconciled with every colony state and at its deadlines. A
+ * command that went without the colony showing it says so with a warning; a refusal is said by the command itself.
+ */
+function usePendingCommands(
+  id: string | null,
+  server: StoryColonyState | undefined,
+  zones: StoryColonyState['zones'] | undefined,
+  say: Say,
+) {
+  const [tick, changed] = useReducer((n: number) => n + 1, 0);
+  // One store per colony: another colony starts empty.
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- `id` keys the store
+  const pending = useMemo(() => new PendingCommands(changed), [id, changed]);
+  useEffect(() => () => pending.clear(), [pending]);
+  const warn = useCallback((failed: readonly PendingFailure[]) => failed.forEach((f) => say(f.text, 'warn')), [say]);
+  useEffect(() => warn(pending.reconcile(server, Date.now())), [pending, server, warn]);
+  useEffect(() => {
+    const at = pending.nextDeadline();
+    if (at === null) return;
+    const t = setTimeout(() => warn(pending.reconcile(undefined, Date.now())), Math.max(0, at - Date.now()));
+    return () => clearTimeout(t);
+  }, [pending, tick, warn]);
+  return { pending, pendingView: pending.view(zones) };
 }
 
 /** The toast: `say` shows a line for 3.5 s. */
@@ -369,7 +410,20 @@ export function useStoryModeState() {
   );
   // Full screen: the whole Story Mode (map + HUD, so every panel, menu, dialog and toast stays visible), Shift+F or the button.
   const fullscreen = useFullscreen<HTMLDivElement>();
-  return { ...data, ...toast, ...tools, ...ui, ...level, order, setOrder, ...bodies, ...materials, fullscreen };
+  const pending = usePendingCommands(data.id, data.colonyState, data.state?.zones, toast.say);
+  return {
+    ...data,
+    ...toast,
+    ...tools,
+    ...ui,
+    ...level,
+    order,
+    setOrder,
+    ...bodies,
+    ...materials,
+    fullscreen,
+    ...pending,
+  };
 }
 
 export type StoryModeState = ReturnType<typeof useStoryModeState>;

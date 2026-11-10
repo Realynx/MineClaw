@@ -11,6 +11,7 @@ import type { BodyLook } from './bodyLook';
 import { ChestBadgeCache, drawChestBadge } from './chestBadges';
 import { clusterFailed, type FailedCluster, type FailedMark } from './failedLabels';
 import { project, type Pt, type V3, type ViewMats } from './math';
+import type { PendingMark } from './pending';
 import { failedCells, type FailedCell } from './tools';
 import { COLORS, glyph, pawnColor } from './visuals';
 import { WORK_GLYPHS } from './workAppearance';
@@ -41,6 +42,9 @@ export interface FailedRing {
 }
 
 export const k3 = (p: readonly number[]) => `${p[0]},${p[1]},${p[2]}`;
+
+/** How opaque a mark the colony has not confirmed yet is drawn (owner decision: about 60%). */
+export const PENDING_ALPHA = 0.6;
 
 /** The job glyph drawn beside a pawn doing it. */
 export const GLYPH_OF = WORK_GLYPHS;
@@ -460,11 +464,13 @@ export class MapPainter {
     }
   }
 
-  /** Designations: a mark on every target, rings on failing ones and on leased ones; returns where the failed rings went. */
-  drawDesignations(model: DesModel): FailedRing[] {
+  /** Designations: a mark on every target, rings on failing ones and on leased ones; returns where the failed rings went.
+   * `hidden`: ids a pending Cancel takes away (not drawn). */
+  drawDesignations(model: DesModel, hidden?: ReadonlySet<string>): FailedRing[] {
     const failedOn: FailedRing[] = [];
     const markSize = this.cell > 18 ? 14 : 11;
     for (const mk of model.marks) {
+      if (hidden?.size && hidden.has(String(mk.d.id))) continue;
       const b = mk.cell;
       const at = this.at(b[0] + 0.5, this.capY(b[1] + 1), b[2] + 0.5);
       if (!at || isOffScreen(at, this.vw, this.vh)) continue;
@@ -477,6 +483,21 @@ export class MapPainter {
       if (mk.d.pawn) this.ring(at, 10, pawnColor(mk.d.pawn));
     }
     return failedOn;
+  }
+
+  /** Marks of commands the colony has not confirmed yet (pending.ts): the same glyph at 60% opacity, no rings. */
+  drawPendingMarks(marks: readonly PendingMark[]): void {
+    if (!marks.length) return;
+    const ctx = this.ctx;
+    const markSize = this.cell > 18 ? 14 : 11;
+    ctx.globalAlpha = PENDING_ALPHA;
+    for (const mk of marks) {
+      const b = mk.cell;
+      const at = this.at(b[0] + 0.5, this.capY(b[1] + 1), b[2] + 0.5);
+      if (!at || isOffScreen(at, this.vw, this.vh)) continue;
+      this.mark(mk.kind, at, COLORS.designation[mk.kind] ?? '#ffffff', markSize);
+    }
+    ctx.globalAlpha = 1;
   }
 
   /** Chests and workbenches: registered storage gets its mark and a priority pip; unregistered chests show faintly. */

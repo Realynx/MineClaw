@@ -26,3 +26,26 @@ exports[`policy and material-rule ops (golden) > policiesOp answers and changes 
 `;
 
 exports[`policy and material-rule ops (golden) > rolesOp answers and changes exactly as before 1`] = `"c97a77ae0764480a1e0080b3059ce2d5ca1621556b40febc378831b2f00220ea"`;
+
+exports[`the command wire (golden) > formation moves, adds without targets, stamped bed and workbench answers 1`] = `
+[
+  "orders moves → {"ok":true,"ids":["o2","o3"],"rev":7} | rev 7",
+  "orders moves queued → {"ok":true,"ids":["o4"],"rev":8} | rev 8",
+  "orders moves twice → {"ok":true,"ids":["o5","o6"],"rev":10} | rev 10",
+  "orders moves unknown → ! 400 no pawn 'nobody' | rev 10",
+  "orders group → {"ok":true,"rev":12} | rev 12",
+  "designate quiet → {"ok":true,"count":1,"rev":13} | rev 13",
+  "designate quiet haul → {"ok":true,"count":1,"rev":14} | rev 14",
+  "designate again → {"ok":true,"count":0,"targets":[],"rev":14} | rev 14",
+  "designate echo → {"ok":true,"count":1,"targets":[[20,62,20]],"rev":15} | rev 15",
+  "designate cancel → {"ok":true,"count":1,"rev":16} | rev 16",
+  "beds assign → {"beds":[{"pos":[3,64,3],"dim":0,"pawn":"maid_s1_dara","zone":null}],"rev":17} | rev 17",
+  "beds unassign → {"beds":[{"pos":[3,64,3],"dim":0,"pawn":null,"zone":null}],"rev":18} | rev 18",
+  "beds none → ! 400 no bed there | rev 18",
+  "bench fuel → {"pos":[-3,64,-2],"kind":"furnace","designated":true,"fuel":"coal","rev":19} | rev 19",
+  "bench release → {"pos":[-2,64,-2],"kind":"crafting_table","designated":false,"rev":20} | rev 20",
+  "bench designate → {"pos":[-2,64,-2],"kind":"crafting_table","designated":true,"rev":21} | rev 21",
+  "bench designate again → {"pos":[-2,64,-2],"kind":"crafting_table","designated":true,"rev":21} | rev 21",
+  "bench none → ! 400 no workbench there | rev 21",
+]
+`;

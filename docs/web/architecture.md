@@ -197,6 +197,60 @@ Tests for these go in `tests/MineClaw.App.Tests` (or the closest existing test p
   16-CPU host found roughly 1.2-second publication gaps with only 115 ms of GC pause and queues exceeding 300 items.
   Colony reconciliation and each script's watchdog signal polls also coalesce so a held colony lock cannot accumulate
   duplicate timer waiters. Script wall-time checks remain active even while an earlier signal poll is blocked.
+- **Colony lock waits (2026-11-09).** Every colony command and state read waits on the colony's one lock; a job pick, the
+  tick, a save or a state build may hold it. Over HTTP that wait has a limit of 6 s (`SupervisorStoryRoutes.LockBudget`,
+  under the 14 s the bridge gives a story command, 8 s for a read). It applies to the colony state, the colony list and the commands
+  `designations`, `zones`, `builds`, `orders`, `draft`, `storage`, `bills`, `workbenches` and `beds`. Past it the answer is
+  `503` with `Retry-After: 1`; for a command the text is `busy: the colony did not take the change`, and it means not
+  applied, now or later. Before, a handler stayed on the lock after its caller had given up: a change could be applied
+  after the browser was told it had failed, and abandoned state reads could fill the supervisor's eight request slots.
+  A `200` from one of those nine commands carries `rev`, the colony's revision read in the same lock section. The route
+  adds the wait and the `rev`, not the colony ops: the `colony_control` tool calls the ops and answers as before.
+  `release`, `resume`, `pawns`, `online`, `home` and `options` have no limit, because they call the host outside the
+  lock. A story command body may be 256 KB, the bridge's own limit (it was 64 KB).
+  - The perf line's `story` part adds the longest single pick and tick, `lock-wait` (how often and how long those routes
+    waited for the lock, the longest wait, and how many commands and reads were answered busy), and three holders of the
+    lock: `state-build`, `save` and `seen-chest` (the bot's chest memory read for a storage record), each with its count,
+    total and longest.
+  - The line always prints the `/api/story…` routes and `/api/world/containers`. Before, only the twelve routes with the
+    most total time were printed, and a colony command, rare and cheap in total, was never among them.
+- **Bridge lanes (2026-11-09).** The bridge reaches the supervisor over `Bridge:SupervisorConnections` pooled connections
+  (default 6, at most 7; the supervisor serves 8 at once and its two WebSockets take none). They are split into lanes so that
+  what a click waits on never queues behind chunk downloads or the bridge's own pollers:
+  - live (2): `api/world/entities`, `api/world/blocks`, `api/status` and pawn control input, as before;
+  - interactive (2): `POST api/story/colonies/{id}/{action}`, one chest (`GET api/world/containers` with `x=`), a body's
+    inventory and `GET api/story/recipes`. The box read with `x0=` is the badge poll and stays ordinary;
+  - story reads (1, only at 7): `GET api/story` and `GET api/story/colonies/{id}[/…]`, which wait on the colony lock. At 6
+    they ride the ordinary lane;
+  - ordinary: the rest (chunk batches, the index, block entities, the pollers).
+  Five or fewer connections keep the old split (two live from four, one from two, a single connection shared): a pinned
+  `MINECLAW_Bridge__SupervisorConnections=4` turns the interactive lane off. When a colony does not answer the bridge's 2 Hz
+  colony poll (busy, or held past its 3 s), the poll backs off (1, 1.5, then 2 s between asks) instead of asking again at once
+  and adding another waiter on the lock; the other colonies are still asked in that round.
+  A colony held past the 3 s is asked again 0.5, 1, then 1.5 s after the bridge gave up on it.
+  - A story command waits for its turn at most 4 s (`SupervisorClient.CommandQueueBudget`; at most as many on the wire as the
+    interactive lane has connections); past it the bridge answers `503 busy` without sending it, so nothing was applied. Its
+    timeout is 14 s (`SupervisorProxy.StoryCommandTimeout`, under Nest's 15 s): the queue, the supervisor's 2 s slot wait and
+    the 6 s lock budget fit inside it, so one of the nine bounded commands on a busy colony is answered busy, never as an
+    unknown outcome applied later.
+    The bot reads a story body up to 264 KB, above the bridge's 256 KB, because the bridge adds `who` after measuring.
+- **Settings saves (2026-11-09).** Pause, Move home, every `options` change and bed assignment no longer write the whole
+  colony inside the request: the colony is marked to be written at its next tick (about a second). A crash in that second
+  loses the change; shutdown still saves. Founding, the roster, release, resume and storage management still save at once.
+  A designation `cancel` or `retry` by ids or blocks matches through sets, not lists, and an `add` with
+  `include_targets: false` leaves the echo of its target cells out of the answer (the web reads only `count` and
+  `warnings`); without it the answer is as before, which the `colony_control` tool reads.
+- **Container reads off the colony lock (2026-11-10).** The chest panel (`GET api/world/containers`) reads Story's storage
+  ledger from a copy each colony publishes at the end of its tick's lock section and of every `storage` command, never
+  under the colony's lock: a storage change shows at once, a deposit within a tick. The bot's world memory is read by one
+  indexed statement that brings the items along (`ObservationStore.ContainersIn`; before, every chest click and badge box
+  scanned all observations, then read the items chest by chest). A chest's first read stays synchronous, and an unknown
+  answer is cached like any other (refreshed in the background at most every 3 s). The badge box is cached 10 s (was 1 s).
+- **One request per formation; a nudge after orders (2026-11-10).** `orders` also takes
+  `{moves:[{pawn, target:{x,y,z}}], queue?}` (1 to 512): each pawn a move to its own cell, all or none, answered
+  `{ids, rev}` (`StoryColony.GiveMoves`). When an `orders` request cut pawns' scripts, the restart pass runs about 150 ms
+  later (`StoryColonies.Nudge`) instead of at the next tick. It only starts stopped scripts: it never wakes an idle pawn,
+  and a draft, a pause or a designation does not nudge.
 
 Nest's public `/api` mirrors these one-to-one under friendlier paths, typed by `packages/contracts`. Examples:
 `/api/memory/:kind`, `/api/live/stream`, `/api/bots/:bot/chat`, `/api/world/chunks`. Nest adds auth, RBAC, CSRF, audit

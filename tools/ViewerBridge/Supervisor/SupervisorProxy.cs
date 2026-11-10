@@ -93,8 +93,24 @@ public static class SupervisorProxy
         _ when path.EndsWith("/vision/render", StringComparison.Ordinal) => TimeSpan.FromSeconds(12),
         _ when path.EndsWith(".png", StringComparison.Ordinal) => TimeSpan.FromSeconds(6),
         _ when path.StartsWith("bodies/", StringComparison.Ordinal) || path.StartsWith("viewer/bodies/", StringComparison.Ordinal) => TimeSpan.FromSeconds(4),
+        _ when StoryCommandPath(path) => StoryCommandTimeout,
         _ => TimeSpan.FromSeconds(8),
     };
+
+    /// <summary>
+    /// A story command (<c>POST story/colonies/{id}/{action}</c>): its wait for the interactive lane
+    /// (<see cref="SupervisorClient.CommandQueueBudget"/>, 4 s), the supervisor's request slot (2 s) and the colony lock (6 s,
+    /// <c>SupervisorStoryRoutes.LockBudget</c>) all fit inside it with room for the handler, so the bot's definite 503 busy reaches
+    /// the page before the bridge gives up and reports an unknown outcome. Under Nest's 15 s.
+    /// </summary>
+    public static readonly TimeSpan StoryCommandTimeout = TimeSpan.FromSeconds(14);
+
+    /// <summary><c>story/colonies/{id}/{action}</c> (the Architect, a GET with the same shape, is not a command).</summary>
+    internal static bool StoryCommandPath(string path)
+    {
+        var p = path.Split('/');
+        return p.Length == 4 && p[0] == "story" && p[1] == "colonies" && p[2].Length > 0 && p[3].Length > 0 && p[3] != "architect";
+    }
 
     /// <summary>Headers a binary/JSON reply carries through (api.md §1).</summary>
     public static readonly string[] PassHeaders = ["ETag", "X-Sha256", "X-Tokens", "X-Width", "X-Height", "X-Seen", "Retry-After", "Content-Disposition"];
@@ -159,6 +175,8 @@ public static class SupervisorProxy
         if (observe != null && transform == null) transform = body => { observe(body); return null; };
         HttpResponseMessage res;
         try { res = await sup.SendAsync(method, relative, content, TimeoutFor(path), stream: transform == null, ctx.RequestAborted, headers); }
+        // Never sent: a definite refusal, like the bot's own busy answer.
+        catch (SupervisorBusyException ex) { await ApiErrors.Write(ctx, 503, "busy", ex.Message, 1000); return; }
         catch (SupervisorUnavailableException ex) { await ApiErrors.Write(ctx, 503, "upstream_unavailable", ex.Message); return; }
         using (res)
         {

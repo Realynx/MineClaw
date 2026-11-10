@@ -528,10 +528,10 @@ public sealed partial class StoryColony
         return (kinds, null);
     }
 
-    /// <summary>The options as they stand (saved first).</summary>
+    /// <summary>The options as they stand (written at the next tick).</summary>
     public JsonObject OptionsNow()
     {
-        Save(force: true);
+        SaveSoon();
         lock (_lock) return OptionsJson();
     }
 

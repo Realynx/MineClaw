@@ -1,8 +1,9 @@
 /**
  * The Story map's chest badges (drawn when zoomed in): a storage chest's designated category (its label, else the filter's
  * summary: "Wood", "Food, Tools") and how full it is. The fill comes from the hive's container knowledge
- * (`GET /api/world/containers` over the chests the map knows, polled every 10 s) when that is at least as fresh as the colony's
- * own ledger, else from the ledger (`free_slots`). An unregistered chest a bot has looked into shows its fill alone.
+ * (`GET /api/world/containers` over the chests the map knows, polled every 30 s while zoomed in) when that is at least as
+ * fresh as the colony's own ledger, else from the ledger (`free_slots`). An unregistered chest a bot has looked into shows
+ * its fill alone.
  */
 import type { ContainerSummary, StoryCategory, StoryStorage } from '@mineclaw/contracts';
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -142,17 +143,24 @@ function paintChestBadge(ctx: CanvasRenderingContext2D, at: { x: number; y: numb
   ctx.restore();
 }
 
+/** How often the badge box is asked for: a chest's fill moves slowly, and each ask is a database read on the bot. */
+export const BADGE_POLL_MS = 30_000;
+
 /**
- * The hive's container summaries over the chests the map currently knows (`cells()`, read every 5 s), polled every 10 s while
- * `enabled`; the returned ref maps every block of a known container to its summary (for the draw loop).
+ * The hive's container summaries over the chests the map currently knows (`cells()`, read every 5 s), polled every 30 s while
+ * `enabled` and, when `zoomedIn` is given, only while it says the badges are drawn (it is read in the same 5 s timer: the map
+ * keeps its zoom in refs, so a prop would never change); the returned ref maps every block of a known container to its
+ * summary (for the draw loop).
  */
-export function useContainerBadges(cells: () => ReadonlyArray<{ pos: V3 }>, enabled = true) {
+export function useContainerBadges(cells: () => ReadonlyArray<{ pos: V3 }>, enabled = true, zoomedIn?: () => boolean) {
   const [box, setBox] = useState<{ x0: number; y0: number; z0: number; x1: number; y1: number; z1: number } | null>(
     null,
   );
+  const [near, setNear] = useState(!zoomedIn);
   useEffect(() => {
     if (!enabled) return;
     const pick = () => {
+      if (zoomedIn) setNear(zoomedIn());
       const list = cells();
       if (!list.length) return;
       let x0 = Infinity,
@@ -184,11 +192,16 @@ export function useContainerBadges(cells: () => ReadonlyArray<{ pos: V3 }>, enab
     pick();
     const id = setInterval(pick, 5000);
     return () => clearInterval(id);
-  }, [cells, enabled]);
+  }, [cells, enabled, zoomedIn]);
   const q = useApi(
     'world.containers',
     { query: box ? { dim: 0, ...box, limit: 300 } : undefined },
-    { enabled: enabled && !!box, refetchInterval: 10_000, refetchIntervalInBackground: false, staleTime: 5_000 },
+    {
+      enabled: enabled && near && !!box,
+      refetchInterval: BADGE_POLL_MS,
+      refetchIntervalInBackground: false,
+      staleTime: 5_000,
+    },
   );
   const byCell = useMemo(() => {
     const m = new Map<string, ContainerSummary>();

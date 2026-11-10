@@ -5,6 +5,7 @@ import { checkAccess, MockError, resolvers } from './api';
 import { liveStatus, setEmitter, statusResponse, hiveTree, tick } from './data/live';
 import { startStory } from './data/story';
 import { controlSocket } from './controlSocket';
+import { colonyWriteGate } from './storyHold';
 
 function errorResponse(e: unknown): Response {
   if (e instanceof MockError) {
@@ -59,7 +60,10 @@ function routeHandler(id: RouteId): HttpHandler | null {
     await delay(id.startsWith('bodies.control') ? 8 : route.method === 'GET' ? 60 + Math.random() * 140 : 250);
     try {
       checkAccess(id, request.headers.get('X-CSRF-Token'), request.method);
-      const out = resolve(await parseRequest(route, request, params));
+      const ctx = await parseRequest(route, request, params);
+      // A test may hold or refuse a colony write here (window.__mockStory): before it is applied, as the bot would.
+      await colonyWriteGate(id);
+      const out = resolve(ctx);
       if (out instanceof Response) return out;
       return HttpResponse.json(out as never, { status: route.status ?? 200 });
     } catch (e) {

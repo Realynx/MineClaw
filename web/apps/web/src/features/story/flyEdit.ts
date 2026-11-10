@@ -27,6 +27,8 @@ export interface PendingCell {
   failed: boolean;
 }
 const key = (cell: readonly unknown[]) => cell.slice(0, 3).join(',');
+/** The most cells one `edit` request takes (contracts StoryBuildRequest). */
+const MAX_EDIT_CELLS = 4096;
 const UNSUPPORTED_EXACT = new Set([
   8, 9, 10, 11, 27, 28, 43, 51, 62, 63, 66, 68, 74, 94, 106, 125, 127, 144, 150, 157, 175, 176, 177, 181, 204,
 ]);
@@ -111,22 +113,26 @@ export class FlyEditQueue {
     this.sending = true;
     try {
       for (;;) {
-        const op = this.operations.find((o) => o.state === 'queued');
-        if (!op) break;
-        op.state = 'sending';
+        const batch = this.nextBatch();
+        if (!batch) break;
+        const op = batch.ops[0]!;
+        for (const o of batch.ops) o.state = 'sending';
         this.notify();
         try {
           const before = op.owner.id ? this.resolve(op.owner.id) : undefined;
-          const reply = await this.send(op.cells, before);
+          const reply = await this.send(batch.cells, before);
           const id = reply.buildId ?? reply.ids?.[0];
           if (id !== undefined && id !== null) {
             if (before && before !== String(id)) this.aliases.set(before, String(id));
             op.owner.id = String(id);
           }
-          op.state = 'saved';
-          op.rev = reply.rev ?? undefined;
+          for (const o of batch.ops) {
+            o.state = 'saved';
+            o.rev = reply.rev ?? undefined;
+          }
         } catch (e) {
-          op.state = 'failed';
+          // Every merged edit stays, failed, so Retry sends them all again.
+          for (const o of batch.ops) o.state = 'failed';
           this.error = e instanceof Error ? e.message : 'Could not save the plan edit';
           break;
         } finally {
@@ -136,6 +142,34 @@ export class FlyEditQueue {
     } finally {
       this.sending = false;
     }
+  }
+  /**
+   * The first queued edit and the queued edits of the same owner right after it, as one request (clicks made while a
+   * request is out). Only an owner whose plan id is known merges: without one, the colony would file cells on fresh ground
+   * and cells on an old plan under different plans, where one-by-one edits all join the first edit's plan. A later edit of a
+   * cell wins, as it would one by one, and the request stays within the 4096 cells an edit takes.
+   */
+  private nextBatch(): { ops: EditOperation[]; cells: EditCell[] } | null {
+    const start = this.operations.findIndex((o) => o.state === 'queued');
+    if (start < 0) return null;
+    const first = this.operations[start]!;
+    const ops = [first];
+    if (!first.owner.id) return { ops, cells: first.cells };
+    const cells = new Map<string, EditCell>();
+    for (const c of first.cells) cells.set(key(c), c);
+    for (let i = start + 1; i < this.operations.length; i++) {
+      const op = this.operations[i]!;
+      if (op.state !== 'queued' || op.owner !== first.owner) break;
+      let added = 0;
+      for (const c of op.cells) if (!cells.has(key(c))) added++;
+      if (cells.size + added > MAX_EDIT_CELLS) break;
+      for (const c of op.cells) {
+        cells.delete(key(c));
+        cells.set(key(c), c);
+      }
+      ops.push(op);
+    }
+    return { ops, cells: ops.length === 1 ? first.cells : [...cells.values()] };
   }
 }
 

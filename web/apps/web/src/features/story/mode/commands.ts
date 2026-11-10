@@ -8,7 +8,9 @@ import { useCallback } from 'react';
 import { api, ApiError, errorText } from '@/lib/api/client';
 import { newRequestId } from '@/lib/utils';
 import { dispatch, type DirectorCall } from '../model';
+import { storyWriteError } from '../optimistic';
 import { catchUp } from '../useStory';
+import { runText } from './release';
 import { useStoryModeState, type StoryModeState, type V3 } from './state';
 
 /** What a speed change says. */
@@ -26,33 +28,55 @@ function timeError(e: unknown): string {
   return errorText(e);
 }
 
-/** Runs one action: the director call for the colony and/or a directive for the AI bodies. */
+/** How the colony's part of an action ended: its answer, or the error it threw (`error` null: nothing was sent). A colony
+ * write that was not needed (only AI bodies were told) counts as ok with no answer. */
+export type RunResult = { ok: true; out: unknown } | { ok: false; error: unknown };
+
+/** What running an action needs from the screen state. */
+export type RunDeps = Pick<StoryModeState, 'canWrite' | 'split' | 'write' | 'say'>;
+
+/** Runs one action: the director call for the colony and/or a directive for the AI bodies. Returns the colony's outcome
+ * (map marks drawn at once settle by it, mode/release.ts); a failed directive is said but does not change it. */
+export async function runAction(
+  { canWrite, split, write, say }: RunDeps,
+  director: DirectorCall | null,
+  directive: StoryDirectiveSpec | null,
+  verb: string,
+  after?: (out: unknown) => string | null,
+): Promise<RunResult> {
+  if (!canWrite) {
+    say('Your account can watch Story Mode but not give orders (needs the story role)', 'warn');
+    return { ok: false, error: null };
+  }
+  const plan = dispatch(split, director, directive, newRequestId(), verb);
+  let aiError: unknown = null;
+  const [res] = await Promise.all([
+    plan.director
+      ? write(plan.director.route, plan.director.body as never).then(
+          (out): RunResult => ({ ok: true, out }),
+          (error: unknown): RunResult => ({ ok: false, error }),
+        )
+      : Promise.resolve<RunResult>({ ok: true, out: null }),
+    plan.directive ? api('story.directives', { body: plan.directive }).catch((e: unknown) => (aiError = e)) : null,
+  ]);
+  try {
+    if (!res.ok) say(storyWriteError(res.error).text, 'warn');
+    else if (aiError) say(storyWriteError(aiError).text, 'warn');
+    else say(...runText(plan, res.out, after));
+  } catch (e) {
+    say(storyWriteError(e).text, 'warn');
+  }
+  return res;
+}
+
 function useRun({ canWrite, split, write, say }: StoryModeState) {
   return useCallback(
-    async (
+    (
       director: DirectorCall | null,
       directive: StoryDirectiveSpec | null,
       verb: string,
       after?: (out: unknown) => string | null,
-    ) => {
-      if (!canWrite) {
-        say('Your account can watch Story Mode but not give orders (needs the story role)', 'warn');
-        return;
-      }
-      const plan = dispatch(split, director, directive, newRequestId(), verb);
-      try {
-        const [out] = await Promise.all([
-          plan.director ? write(plan.director.route, plan.director.body as never) : Promise.resolve(null),
-          plan.directive ? api('story.directives', { body: plan.directive }) : Promise.resolve(null),
-        ]);
-        const head = after?.(out);
-        // A designation's or a build's answer may warn (e.g. targets in a preserved zone): said with it.
-        const warnings = (out as { warnings?: string[] | null } | null)?.warnings ?? [];
-        say([head, plan.summary, ...warnings].filter(Boolean).join(' · '), warnings.length ? 'warn' : undefined);
-      } catch (e) {
-        say(errorText(e), 'warn');
-      }
-    },
+    ) => runAction({ canWrite, split, write, say }, director, directive, verb, after),
     [canWrite, split, write, say],
   );
 }
@@ -75,7 +99,7 @@ function useDraft({ canWrite, write, say }: StoryModeState) {
       if (!canWrite) return say('Needs the story role', 'warn');
       await write('story.draft', { pawns: names, drafted }).then(
         () => say(`${drafted ? 'Drafted' : 'Undrafted'} ${names.length} pawn${names.length === 1 ? '' : 's'}`),
-        (e) => say(errorText(e), 'warn'),
+        (e) => say(storyWriteError(e).text, 'warn'),
       );
     },
     [canWrite, write, say],

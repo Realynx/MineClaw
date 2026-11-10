@@ -23,6 +23,7 @@ public sealed partial class StoryColony
     {
         lock (_lock)
         {
+            long t0 = System.Diagnostics.Stopwatch.GetTimestamp(); // the build alone: the wait for the lock is not its time
             EnsureMaterials(); // builds' materials and auto bills current (it may stamp a new revision: before "rev")
             long s = since ?? -1;
             bool full = since == null;
@@ -88,6 +89,7 @@ public sealed partial class StoryColony
                     removed[g.Key == "workbench" ? "workbenches" : g.Key + "s"] =new JsonArray(g.Select(r => (JsonNode)r.Id!).ToArray());
                 o["removed"] = removed;
             }
+            StoryPerf.StateBuilds.Note(t0);
             return o;
         }
     }

@@ -90,6 +90,8 @@ public sealed partial class StoryColony : IStoryPort
     public List<WorkbenchState> Benches { get; } = new();
     public List<AlertState> Alerts { get; } = new();
     public long Rev { get { lock (_lock) return _rev; } }
+    /// <summary>The revision without waiting for the lock: a route stamps its reply with it (exact inside the route's own lock section).</summary>
+    public long RevHint => Interlocked.Read(ref _rev);
     public string Id => Meta.Id;
 
     private IStoryWorld? World => Host.World;
@@ -119,6 +121,34 @@ public sealed partial class StoryColony : IStoryPort
     }
 
     private void Removed(string kind, string id) => _removed.Add((Touch(), kind, id));
+
+    // ================================================================ bounded lock waits (the HTTP routes)
+
+    /// <summary>
+    /// Runs a command under the colony lock when the lock comes free within <paramref name="budget"/> (zero or less: one try, no
+    /// wait). False = it stayed busy and nothing ran: the route answers "busy, not applied" while its caller still listens, instead
+    /// of applying the change after the caller was told it failed. The monitor is re-entrant, so an op inside keeps its own
+    /// <c>lock</c>. Only for ops that never call the host outside the colony lock: holding it across such a call would add a lock order.
+    /// </summary>
+    public bool TryCommand(TimeSpan budget, Action run) => TryLocked(budget, run, ref StoryPerf.BusyCommands);
+
+    /// <summary>The same bounded wait for a read (a state build, a list row). False = not read.</summary>
+    public bool TryRead(TimeSpan budget, Action run) => TryLocked(budget, run, ref StoryPerf.BusyReads);
+
+    private bool TryLocked(TimeSpan budget, Action run, ref long busy)
+    {
+        long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
+        bool taken = false;
+        try
+        {
+            Monitor.TryEnter(_lock, budget > TimeSpan.Zero ? budget : TimeSpan.Zero, ref taken);
+            StoryPerf.LockWait.Note(t0);
+            if (!taken) { Interlocked.Increment(ref busy); return false; }
+            run();
+            return true;
+        }
+        finally { if (taken) Monitor.Exit(_lock); }
+    }
 
     // ================================================================ pawns
 
@@ -224,7 +254,7 @@ public sealed partial class StoryColony : IStoryPort
     {
         long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
         try { return NextCore(body); }
-        finally { StoryPerf.Note(ref StoryPerf.Picks, ref StoryPerf.PickTicks, t0); }
+        finally { StoryPerf.Note(ref StoryPerf.Picks, ref StoryPerf.PickTicks, ref StoryPerf.PickMax, t0); }
     }
 
     private JsonObject? NextCore(string body)
@@ -353,6 +383,7 @@ public sealed partial class StoryColony : IStoryPort
         if (_current.Remove(p.Name, out var cur))
         {
             Release(cur);
+            _cuts++;
             _started.Remove(p.Name); // the watchdog starts it again at once (no 5 s gap)
             try { Host.Interrupt(p.Name, why); } catch (Exception ex) { _log.LogDebug(ex, "story: interrupt {Pawn}", p.Name); }
         }
@@ -437,6 +468,7 @@ public sealed partial class StoryColony : IStoryPort
             AuditIdle(); // why a pawn is idle in its work hours with work about (StoryColony.IdleAudit.cs)
             _pickEnts = null;
             NoteJoined(joined);
+            PublishLedger(); // the chest panel's copy: deposits and looks since the last tick (StoryColony.Containers.cs)
         }
         SpeedTick(); // Fast / Faster on the pawn bodies, the Speed effects (StoryColony.Speed.cs)
         foreach (var name in departing) Depart(name); // removed pawns: logged out and their accounts released
@@ -505,6 +537,25 @@ public sealed partial class StoryColony : IStoryPort
         }
     }
 
+    private long _cuts;
+
+    /// <summary>How many times a pawn's job was cut (<see cref="Supersede"/>) since the colony was made. Exact under the lock: a route
+    /// that reads it before and after an order in one lock section knows whether that order cut a pawn's script.</summary>
+    public long Cuts => Interlocked.Read(ref _cuts);
+
+    /// <summary>
+    /// The watchdog's restart pass alone (<see cref="CollectRestarts"/> and <see cref="StartPawns"/>): what <see cref="StoryColonies.Nudge"/>
+    /// runs shortly after a direct order cut pawns, so they start their new order without waiting for the tick. No leases, no wakes:
+    /// an idle pawn is never cut from here.
+    /// </summary>
+    public void RestartNow()
+    {
+        var restart = new List<string>();
+        lock (_lock)
+            if (Meta.Active) CollectRestarts(restart);
+        StartPawns(restart);
+    }
+
     /// <summary>A pawn that (re)joined: brought home when it came online far away (founding, resume, a reconnect).</summary>
     private void NoteJoined(List<string> joined)
     {
@@ -537,8 +588,23 @@ public sealed partial class StoryColony : IStoryPort
             if (!force && (!_dirty || Now - _lastSave < TimeSpan.FromSeconds(5))) return; // at most every 5 s
             _dirty = false;
             _lastSave = Now;
+            long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
             try { Store.Save(this); }
             catch (Exception ex) { _dirty = true; _log.LogWarning(ex, "story {Colony}: save failed", Id); }
+            finally { StoryPerf.Saves.Note(t0); } // the whole colony rewritten under the lock: its time is on the perf line
+        }
+    }
+
+    /// <summary>
+    /// The colony is written at the next tick (about a second), not inside the request: a save rewrites the whole colony under the
+    /// lock, which a click on Pause, Move home, an option or a bed should not wait for. Shutdown still saves.
+    /// </summary>
+    private void SaveSoon()
+    {
+        lock (_lock)
+        {
+            _dirty = true;
+            _lastSave = DateTimeOffset.MinValue;
         }
     }
 
@@ -551,7 +617,7 @@ public sealed partial class StoryColony : IStoryPort
             Touch();
             if (paused) foreach (var p in Pawns.Values) Supersede(p, "colony paused");
         }
-        Save(force: true);
+        SaveSoon();
     }
 
     /// <summary>Spawned pawns: their accounts become pawns and their scripts talk to this director.</summary>
@@ -591,7 +657,7 @@ public sealed partial class StoryColony : IStoryPort
             _broughtHome.Clear(); // a new home: every far pawn goes, whatever it did a minute ago
         }
         Alert("info", $"home moved to {home}");
-        Save(force: true);
+        SaveSoon();
         BringHome("home moved");
     }
 

@@ -83,9 +83,10 @@ public sealed partial class SupervisorPerf
         if (MineClaw.Client.RouteStats.Take() is { } shapes) sb.Append(shapes).Append("; ");
         var st = MineClaw.Hive.Story.StoryPerf.Take();
         sb.Append(CultureInfo.InvariantCulture, $"story {st.Picks} picks {st.PickTime.TotalMilliseconds:0} ms, {st.Ticks} ticks {st.TickTime.TotalMilliseconds:0} ms");
+        AppendStoryLock(sb); // the colony lock: its longest holds, the routes' wait for it, state builds, saves (SupervisorPerf.Story.cs)
         if (MineClaw.Hive.Story.StoryPerf.TakeIdle() is { } idle) sb.Append(", ").Append(idle); // pawns idle in work hours with work about, by why
         AppendPublications(sb, publications);
-        foreach (var (route, list) in routes.OrderByDescending(r => r.Value.Sum()).Take(12))
+        foreach (var (route, list) in PrintedRoutes(routes))
         {
             list.Sort();
             double P(double q) => list[Math.Min(list.Count - 1, (int)(q * list.Count))];

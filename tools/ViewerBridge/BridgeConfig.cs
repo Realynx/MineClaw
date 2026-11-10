@@ -32,9 +32,11 @@ public sealed class BridgeOptions
     public string? ServerVersion { get; set; }
     /// <summary>Supervisor base URL; default <c>http://127.0.0.1:{Supervisor:Port}</c>.</summary>
     public string? SupervisorUrl { get; set; }
-    /// <summary>Total connections to the supervisor (its MaxConnections is 8). Two of four or more are reserved for live motion
-    /// and status; smaller pools reserve one, except a single connection remains shared.</summary>
-    public int SupervisorConnections { get; set; } = 4;
+    /// <summary>Total connections to the supervisor (its MaxConnections is 8; 1..7 taken). Two of four or more are reserved for live motion
+    /// and status; smaller pools reserve one, except a single connection remains shared. 6 adds an interactive lane of two (story
+    /// commands, one chest, a body's inventory, recipes) and leaves two ordinary; 7 also gives the story reads that wait on the colony
+    /// lock one of their own. A total of 5 or less has no interactive lane.</summary>
+    public int SupervisorConnections { get; set; } = 6;
     /// <summary>Memory heat decay half-life (seconds).</summary>
     public double HeatHalfLifeS { get; set; } = 120;
     /// <summary>How often the db-side caches (vectors, RAPTOR tree) look for changes the bot made.</summary>

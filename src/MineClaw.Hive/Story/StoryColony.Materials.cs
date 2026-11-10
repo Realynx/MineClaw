@@ -846,7 +846,7 @@ public sealed partial class StoryColony
             MaterialsChanged();
             if (detectBenches == true) ScanBenches();
         }
-        Save(force: true);
+        SaveSoon();
         lock (_lock) return OptionsJson();
     }
 

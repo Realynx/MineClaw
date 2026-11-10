@@ -5,6 +5,7 @@
 import { errorText } from '@/lib/api/client';
 import { EquipmentView, GearActions } from '../assign/GearActions';
 import { EMPTY_SELECTION } from '../model';
+import { storyWriteError } from '../optimistic';
 import {
   AiInspector,
   BedInspector,
@@ -21,6 +22,12 @@ import type { Story } from './commands';
 const k3 = (p: readonly number[]) => `${p[0]},${p[1]},${p[2]}`;
 
 type Designation = NonNullable<Story['selection']['designation']>;
+
+/** What the storage, bills, bench and bed inspectors get: their changes shown at once, and a toast when one fails. */
+const tracked = (c: Story) => ({
+  track: c.track,
+  onError: (e: unknown) => c.say(storyWriteError(e).text, 'warn'),
+});
 
 /** A designation and the live members of its cluster: retry or cancel them. */
 function designationInspector(c: Story, sel: Designation, close: () => void) {
@@ -58,21 +65,25 @@ function benchInspector(c: Story, pos: [number, number, number], close: () => vo
   const bench = (c.state?.workbenches ?? []).find((w) => k3(w.pos) === k3(pos));
   return bench ? (
     <BillsInspector
+      key={k3(pos)}
       bench={bench}
       state={c.state}
       canWrite={c.canWrite}
       write={c.write}
+      {...tracked(c)}
       onPickChest={c.pickChest}
       onClose={close}
     />
   ) : (
-    <UndesignatedBench pos={pos} canWrite={c.canWrite} write={c.write} onClose={close} />
+    <UndesignatedBench key={k3(pos)} pos={pos} canWrite={c.canWrite} write={c.write} onClose={close} />
   );
 }
 
 function bedInspector(c: Story, pos: [number, number, number], close: () => void) {
   const bed = (c.state?.beds ?? []).find((b) => k3(b.pos) === k3(pos));
-  return bed ? <BedInspector bed={bed} state={c.state} canWrite={c.canWrite} write={c.write} onClose={close} /> : null;
+  return bed ? (
+    <BedInspector bed={bed} state={c.state} canWrite={c.canWrite} write={c.write} {...tracked(c)} onClose={close} />
+  ) : null;
 }
 
 /** One colony pawn: needs, bed, gear, draft, its queue, bringing it online. */
@@ -149,6 +160,7 @@ export function selectionInspector(c: Story) {
         state={c.state}
         canWrite={c.canWrite}
         write={c.write}
+        {...tracked(c)}
         clip={c.clip}
         onClip={(clip) => (c.setClip(clip), c.say('Storage settings copied'))}
         onClose={close}

@@ -1,7 +1,11 @@
-import type { ContainerSummary, ContainerView, StoryStorage } from '@mineclaw/contracts';
+import type { ContainerSummary, ContainerView, StoryColonyState, StoryStorage } from '@mineclaw/contracts';
 import { mockContainer } from '@mineclaw/contracts/testing';
-import { cleanup, render, screen } from '@testing-library/react';
-import { afterEach, describe, expect, it } from 'vitest';
+import { QueryClientProvider, type QueryClient } from '@tanstack/react-query';
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import type { ReactNode } from 'react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { setFetch } from '@/lib/api/client';
+import { makeQueryClient, qk } from '@/lib/api/query';
 import { ContainerGrid } from '@/features/live/inventory/ContainerGrid';
 import {
   agoShort,
@@ -11,6 +15,9 @@ import {
   containerTotals,
 } from '@/features/live/inventory/containerLayout';
 import { chestBadge } from '@/features/story/chestBadges';
+import { ledgerKnown, ledgerRows, ledgerSlots, LedgerSummary } from '@/features/story/inspector/LedgerSummary';
+import { StorageInspector } from '@/features/story/StoryInspector';
+import { CONTAINER_KEEP_MS, ContainerContents } from '@/features/world/ContainerPanel';
 
 afterEach(cleanup);
 
@@ -152,5 +159,252 @@ describe('Story chest badges', () => {
     expect(chestBadge(undefined, summary(), null)).toEqual({ text: null, fill: 45 / 54 });
     expect(chestBadge(undefined, summary({ source: 'unknown' }), null)).toBeNull();
     expect(chestBadge(undefined, undefined, null)).toBeNull();
+  });
+});
+
+// ------------------------------------------------------------------ contents at once
+
+interface Call {
+  url: string;
+  reply(body: unknown, status?: number): void;
+}
+
+/** The page's fetch, answered by hand: a request waits until the test replies to it. */
+function network(): Call[] {
+  const calls: Call[] = [];
+  setFetch(
+    (input) =>
+      new Promise<Response>((resolve) => {
+        const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+        calls.push({ url, reply: (body, status = 200) => resolve(new Response(JSON.stringify(body), { status })) });
+      }),
+  );
+  return calls;
+}
+
+const clients: QueryClient[] = [];
+function client(): QueryClient {
+  const qc = makeQueryClient();
+  clients.push(qc);
+  return qc;
+}
+const ui = (qc: QueryClient, node: ReactNode) => <QueryClientProvider client={qc}>{node}</QueryClientProvider>;
+
+afterEach(() => {
+  cleanup();
+  vi.useRealTimers();
+  for (const qc of clients.splice(0)) qc.clear();
+  setFetch((...args) => globalThis.fetch(...args));
+});
+
+const DOUBLE = { dim: 0, x: 2, y: 74, z: -4 };
+const DOUBLE_URL = '/api/world/container?dim=0&x=2&y=74&z=-4';
+const SKELETON = '.skeleton';
+/** How long a wait for what a reply sets off may poll (it does not measure time). */
+const WAIT = { timeout: 4000 };
+
+/** The colony's own ledger of the island's double chest: stacks of logs in two entries, cobblestone, an emptied entry. */
+const ledger = (over: Partial<StoryStorage> = {}): StoryStorage => ({
+  chest: [2, 74, -4],
+  doubleWith: [3, 74, -4],
+  label: null,
+  priority: 'normal',
+  filter: { allow: [], deny: [] },
+  contents: [
+    [4, 0, 64],
+    [17, 0, 100],
+    [17, 0, 28],
+    [280, 0, 0],
+  ],
+  freeSlots: 51,
+  knownAt: new Date(NOW - 40_000).toISOString(),
+  ...over,
+});
+
+/** The summary's rows as "id:meta label count" (the icon's own letters left out). */
+const ledgerLines = (root: HTMLElement = document.body) =>
+  within(within(root).getByRole('list', { name: 'Ledger contents' }))
+    .getAllByRole('listitem')
+    .map((row) => `${row.dataset.item} ${row.children[1]!.textContent} ${row.dataset.count}`);
+
+describe("the colony's ledger of a storage chest", () => {
+  it('has something to show once the chest was counted, or holds stacks', () => {
+    expect(ledgerKnown(ledger())).toBe(true);
+    expect(ledgerKnown(ledger({ contents: [] }))).toBe(true);
+    expect(ledgerKnown(ledger({ knownAt: null }))).toBe(true);
+    expect(ledgerKnown(ledger({ contents: [], knownAt: null }))).toBe(false);
+    expect(ledgerKnown(undefined)).toBe(false);
+  });
+
+  it('is one row per item, most first, without emptied entries', () => {
+    expect(ledgerRows(ledger())).toEqual([
+      { id: 17, meta: 0, label: 'Log', count: 128 },
+      { id: 4, meta: 0, label: 'Cobblestone', count: 64 },
+    ]);
+  });
+
+  it('knows the slots in use of 27 or 54 only once the chest was counted', () => {
+    expect(ledgerSlots(ledger())).toEqual({ used: 3, slots: 54 });
+    expect(ledgerSlots(ledger({ doubleWith: null, freeSlots: 20 }))).toEqual({ used: 7, slots: 27 });
+    expect(ledgerSlots(ledger({ freeSlots: 99 }))).toEqual({ used: 0, slots: 54 });
+    // Before a count `freeSlots` is the bot's default for a single chest, not knowledge.
+    expect(ledgerSlots(ledger({ knownAt: null, freeSlots: 27 }))).toBeNull();
+    expect(ledgerSlots(ledger({ freeSlots: null }))).toBeNull();
+  });
+
+  it('reads like the ledger answer it stands in for: its age, counts only, the slots in use, the totals', () => {
+    render(<LedgerSummary storage={ledger()} now={NOW} />);
+    expect(screen.getByTestId('ledger-freshness')).toHaveTextContent('Story storage ledger · 40 s ago · counts only');
+    expect(screen.getByTestId('ledger-slots')).toHaveTextContent('3 / 54 slots');
+    expect(ledgerLines()).toEqual(['17:0 Log 128', '4:0 Cobblestone 64']);
+  });
+
+  it('says so when the chest was empty at the last count, and leaves the slots out before any count', () => {
+    const empty = render(<LedgerSummary storage={ledger({ contents: [], freeSlots: 54 })} now={NOW} />);
+    expect(screen.getByTestId('ledger-summary')).toHaveTextContent('Empty when last counted.');
+    expect(screen.getByTestId('ledger-slots')).toHaveTextContent('0 / 54 slots');
+    expect(screen.queryByRole('list')).toBeNull();
+    empty.unmount();
+
+    render(<LedgerSummary storage={ledger({ knownAt: null })} now={NOW} />);
+    expect(screen.getByTestId('ledger-freshness')).toHaveTextContent(
+      'Story storage ledger · not counted yet · counts only',
+    );
+    expect(screen.queryByTestId('ledger-slots')).toBeNull();
+    expect(ledgerLines()).toHaveLength(2);
+  });
+});
+
+describe('chest contents at once', () => {
+  it('shows the placeholder instead of the skeleton until the first answer, then the grid replaces it', async () => {
+    const qc = client();
+    const calls = network();
+    const { container } = render(
+      ui(
+        qc,
+        <ContainerContents target={DOUBLE} heading placeholder={<LedgerSummary storage={ledger()} now={NOW} />} />,
+      ),
+    );
+    expect(calls.map((c) => c.url)).toEqual([DOUBLE_URL]);
+    expect(screen.getByTestId('ledger-summary')).toHaveTextContent('Story storage ledger · 40 s ago · counts only');
+    expect(container.querySelector(SKELETON)).toBeNull();
+    expect(screen.queryByTestId('container-grid')).toBeNull();
+
+    calls[0]!.reply(view());
+    await waitFor(() => expect(screen.getByTestId('container-grid')).toBeInTheDocument(), WAIT);
+    expect(screen.queryByTestId('ledger-summary')).toBeNull();
+    expect(screen.getByTestId('container-freshness')).toHaveTextContent('by maid_chan_102');
+    expect(screen.getByTestId('container-contents')).toHaveTextContent('12 / 54 slots');
+  });
+
+  it('without a placeholder the skeleton is unchanged', () => {
+    const qc = client();
+    network();
+    const { container } = render(ui(qc, <ContainerContents target={DOUBLE} />));
+    const skeleton = container.querySelector(SKELETON)!;
+    expect(skeleton.className).toBe('skeleton rounded-md h-[7.5rem] w-[20rem] max-w-full rounded-lg');
+    expect(screen.queryByTestId('ledger-summary')).toBeNull();
+    expect(screen.queryByTestId('container-grid')).toBeNull();
+  });
+
+  it('a container that is gone says so, placeholder or not', async () => {
+    const qc = client();
+    const calls = network();
+    render(ui(qc, <ContainerContents target={DOUBLE} placeholder={<LedgerSummary storage={ledger()} now={NOW} />} />));
+    calls[0]!.reply({ error: 'no container there', code: 'not_found' }, 404);
+    await waitFor(() => expect(screen.getByTestId('container-missing')).toBeInTheDocument(), WAIT);
+    expect(screen.queryByTestId('ledger-summary')).toBeNull();
+  });
+
+  it('keeps a closed container for half an hour: opened again its grid shows at once, and it is read again', async () => {
+    vi.useFakeTimers();
+    const qc = client();
+    const calls = network();
+    const first = render(ui(qc, <ContainerContents target={DOUBLE} />));
+    expect(calls).toHaveLength(1);
+    await act(async () => {
+      calls[0]!.reply(view());
+      await vi.advanceTimersByTimeAsync(20);
+    });
+    expect(screen.getByTestId('container-grid')).toBeInTheDocument();
+    first.unmount();
+
+    // Twice as long as an answer nobody shows is otherwise kept (5 minutes).
+    act(() => void vi.advanceTimersByTime(10 * 60_000));
+    const { container } = render(ui(qc, <ContainerContents target={DOUBLE} />));
+    expect(screen.getByTestId('container-grid')).toBeInTheDocument();
+    expect(container.querySelector(SKELETON)).toBeNull();
+    expect(calls).toHaveLength(2);
+    expect(CONTAINER_KEEP_MS).toBe(30 * 60_000);
+  });
+
+  it('a kept answer that said "open right now" reads as the look it was until the new answer arrives', async () => {
+    const qc = client();
+    const calls = network();
+    const target = { dim: 0, x: 17, y: 70, z: -32 };
+    const then = Date.now() - 20 * 60_000;
+    qc.setQueryData(qk('world.container', {}, target), mockContainer(0, 17, 70, -32, 0, then), { updatedAt: then });
+
+    render(ui(qc, <ContainerContents target={target} />));
+    expect(screen.getByTestId('container-grid')).toBeInTheDocument();
+    const line = screen.getByTestId('container-freshness');
+    expect(line).toHaveTextContent('Seen 20 min ago by maid_chan_70');
+    expect(line.className).not.toContain('text-ok');
+    expect(calls).toHaveLength(1);
+
+    calls[0]!.reply(mockContainer(0, 17, 70, -32, 1, Date.now()));
+    await waitFor(() => expect(line).toHaveTextContent('Open right now by maid_chan_70'), WAIT);
+    expect(line.className).toContain('text-ok');
+  });
+});
+
+describe("Story's chest inspector", () => {
+  const stateOf = (storages: StoryStorage[]) => ({ storages, reservations: [] }) as unknown as StoryColonyState;
+  const inspect = (qc: QueryClient, storages: StoryStorage[]) =>
+    render(
+      ui(
+        qc,
+        <StorageInspector
+          chests={[[2, 74, -4]]}
+          state={stateOf(storages)}
+          canWrite
+          write={vi.fn()}
+          clip={null}
+          onClip={vi.fn()}
+          onClose={vi.fn()}
+        />,
+      ),
+    );
+
+  it("shows the colony's ledger of a clicked storage chest at once; the exact grid replaces it", async () => {
+    const qc = client();
+    const calls = network();
+    inspect(qc, [ledger({ knownAt: new Date(Date.now() - 60_000).toISOString() })]);
+    const contents = screen.getByTestId('container-contents');
+    const summary = within(contents).getByTestId('ledger-summary');
+    expect(summary).toHaveTextContent('Story storage ledger');
+    expect(summary).toHaveTextContent('counts only');
+    expect(summary).toHaveTextContent('3 / 54 slots');
+    expect(ledgerLines(summary)).toEqual(['17:0 Log 128', '4:0 Cobblestone 64']);
+    expect(contents.querySelector(SKELETON)).toBeNull();
+    expect(calls.map((c) => c.url)).toEqual([DOUBLE_URL]);
+
+    calls[0]!.reply(view());
+    await waitFor(() => expect(within(contents).getByTestId('container-grid')).toBeInTheDocument(), WAIT);
+    expect(within(contents).queryByTestId('ledger-summary')).toBeNull();
+    expect(within(contents).getByTestId('ctr-slot-26').dataset.item).toBe('cobblestone');
+  });
+
+  it('keeps the skeleton for a chest that is not storage, or that the colony has not counted yet', () => {
+    const qc = client();
+    network();
+    const plain = inspect(qc, []);
+    expect(screen.getByTestId('container-contents').querySelector(SKELETON)).not.toBeNull();
+    expect(screen.queryByTestId('ledger-summary')).toBeNull();
+    plain.unmount();
+
+    inspect(qc, [ledger({ contents: [], knownAt: null, freeSlots: 27 })]);
+    expect(screen.getByTestId('container-contents').querySelector(SKELETON)).not.toBeNull();
+    expect(screen.queryByTestId('ledger-summary')).toBeNull();
   });
 });

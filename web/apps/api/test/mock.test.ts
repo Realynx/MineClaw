@@ -2,7 +2,8 @@
 import { CloudDistanceResponse, MemoryCloudResponse, SSE_EVENTS, type SseEventName } from '@mineclaw/contracts';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { z } from 'zod';
-import { fetchLogin, ORIGIN, readSse, startApp, type TestApp } from './helpers.js';
+import { CAMP, topAt } from '../src/mock/terrain.js';
+import { fetchLogin, login, ORIGIN, readSse, startApp, type TestApp } from './helpers.js';
 
 let t: TestApp;
 beforeAll(async () => {
@@ -72,6 +73,70 @@ describe('mock bridge', () => {
       const r = (SSE_EVENTS[f.event as SseEventName] as z.ZodType).safeParse(f.data);
       expect(r.success, `${f.event}: ${JSON.stringify(f.data).slice(0, 200)}`).toBe(true);
     }
+  });
+
+  it('story commands: a formation in one request (all or none), an add without targets, rev on bed and bench answers', async () => {
+    const s = await login(t.url, 'sky');
+    const post = (action: string, body: unknown) =>
+      s.agent
+        .post(`/api/story/colonies/story-1/${action}`)
+        .set('Origin', ORIGIN)
+        .set('X-CSRF-Token', s.csrf)
+        .send(body as object);
+    // The mock colony keeps working while the test runs, so the test reads the orders the colony recorded (they stay,
+    // done or not), never a pawn's queue.
+    const colony = async () =>
+      (await s.agent.get('/api/story/colonies/story-1').expect(200)).body as {
+        rev: number;
+        pawns: Array<{ name: string }>;
+        orders: Array<{ id: string; pawn: string; kind: string; target: unknown }>;
+      };
+    const [a, b] = (await colony()).pawns.map((p) => p.name) as [string, string];
+    const at = (x: number) => ({ x, y: 64, z: 12 });
+    const to = (pawn: string, x: number) => ({ pawn, target: at(x) });
+
+    const moved = await post('orders', { moves: [to(a, 20), to(b, 22)] });
+    expect(moved.status).toBe(200);
+    expect(moved.body).toEqual({ ok: true, ids: [expect.any(String), expect.any(String)], rev: expect.any(Number) });
+    const ids = (moved.body as { ids: string[] }).ids;
+    const given = (await colony()).orders.filter((o) => ids.includes(o.id));
+    expect(given.map((o) => [o.pawn, o.kind, o.target])).toEqual([
+      [a, 'move', at(20)],
+      [b, 'move', at(22)],
+    ]);
+
+    // A pawn the colony does not have: the bot's own words, and no order for the pawn named before it.
+    const orderCount = async () => (await colony()).orders.length;
+    const before = await orderCount();
+    const refused = await post('orders', { moves: [to(b, 30), to('nobody', 31)] });
+    expect(refused.status).toBe(400);
+    expect(refused.body).toEqual({ error: "no pawn 'nobody'", code: 'bad_request' });
+    // A formation mixed with a group order is refused by the contract, before the bridge.
+    const mixed = await post('orders', { moves: [to(a, 20)], pawns: [a], order: { kind: 'hold' } });
+    expect(mixed.status).toBe(400);
+    expect((mixed.body as { error: string }).error).toBe('invalid request');
+    expect(await orderCount()).toBe(before);
+
+    const mine = (x: number) => ({ op: 'add', kind: 'mine', blocks: [[x, 60, 300]] });
+    const quiet = await post('designations', { ...mine(300), includeTargets: false });
+    expect(quiet.status).toBe(200);
+    expect(quiet.body).toEqual({ ok: true, count: 1, rev: expect.any(Number) });
+    const echoed = await post('designations', mine(301));
+    expect((echoed.body as { targets?: unknown }).targets).toEqual([[301, 60, 300]]);
+
+    const bench = await post('workbenches', { op: 'designate', pos: [17, 63, 7] });
+    expect(bench.status).toBe(200);
+    const bed = await post('beds', {
+      op: 'unassign',
+      bed: { x: CAMP[0] - 3, y: topAt(CAMP[0] - 3, CAMP[2] + 3) + 1, z: CAMP[2] + 3 },
+    });
+    expect(bed.status).toBe(200);
+    // Each answer names the revision the colony was at when it took the change: they never go back, and the state follows.
+    const revs = [quiet, bench, bed].map((r) => (r.body as { rev?: number }).rev);
+    expect(revs.every((r) => Number.isInteger(r))).toBe(true);
+    expect(revs).toEqual([...revs].sort((x, y) => x! - y!));
+    expect(revs[2]).toBeGreaterThan(revs[0]!);
+    expect((await colony()).rev).toBeGreaterThanOrEqual(revs[2]!);
   });
 
   it('chat: {accepted, id} where id is the viewer line seq; the bot reply is a later `said` line', async () => {

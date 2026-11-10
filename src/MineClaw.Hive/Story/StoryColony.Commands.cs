@@ -98,6 +98,39 @@ public sealed partial class StoryColony
         lock (_lock) return QueueOrders(pawns, kind, aim, design, queue);
     }
 
+    /// <summary>The most moves one formation request may carry.</summary>
+    public const int MaxMoves = 512;
+
+    /// <summary>
+    /// A formation in one request: each pawn a move to its own cell, queued as <see cref="GiveOrder"/> queues a move. All or none:
+    /// every pawn is found and every queue checked before any order is given, in one lock section, so a pawn the colony doesn't have
+    /// (or a full queue) refuses the whole request and no pawn moves. → <c>{ids}</c>, one order id per move, in order.
+    /// </summary>
+    public (JsonNode? Result, string? Error) GiveMoves(IReadOnlyList<(string Pawn, P3 Target)> moves, bool queue)
+    {
+        if (moves.Count == 0) return (null, "moves required");
+        if (moves.Count > MaxMoves) return (null, $"at most {MaxMoves} moves");
+        lock (_lock)
+        {
+            var pawns = new List<PawnState>(moves.Count);
+            var added = new Dictionary<PawnState, int>();
+            foreach (var (name, _) in moves)
+            {
+                if (Pawn(name) is not { } p) return (null, $"no pawn '{name}'");
+                pawns.Add(p);
+                int n = added[p] = added.GetValueOrDefault(p) + 1;
+                if (queue && p.Queue.Count + n > 32) return (null, "queue full (32 orders)"); // not queued: each move replaces the queue
+            }
+            var ids = new JsonArray();
+            for (int i = 0; i < moves.Count; i++)
+            {
+                var (given, _) = QueueOrders([pawns[i]], "move", new OrderAim(moves[i].Target, null, null), null, queue);
+                ids.Add(given!["ids"]![0]!.GetValue<string>());
+            }
+            return (new JsonObject { ["ids"] = ids }, null);
+        }
+    }
+
     /// <summary>The order's target (none when the order has none), or why it can't be read.</summary>
     private (OrderAim Aim, string? Error) OrderAimOf(JsonNode? t)
     {
@@ -271,15 +304,19 @@ public sealed partial class StoryColony
     {
         lock (_lock)
         {
-            var gone = Designations.Where(d => RemovalHits(d, kind, area, blocks, ids)).ToList();
+            // Sets, built once: a cancel by thousands of ids over thousands of marks was quadratic under the lock.
+            var idSet = ids?.ToHashSet(StringComparer.Ordinal);
+            var blockSet = blocks?.ToHashSet();
+            var gone = Designations.Where(d => RemovalHits(d, kind, area, blockSet, idSet)).ToList();
             CancelOreMarks(gone, kind, area, blocks);
             foreach (var d in gone)
             {
                 CancelStorageSignMark(d);
                 CancelTempCleanup(d);
-                Designations.Remove(d);
                 Removed("designation", d.Id);
             }
+            var goneSet = gone.ToHashSet();
+            Designations.RemoveAll(goneSet.Contains);
             var cancelled = gone.Select(d => d.Id).ToHashSet();
             foreach (var p in Pawns.Values)
                 if (_current.TryGetValue(p.Name, out var job) && (job.Source == "designation" && job.SourceId is { } id && cancelled.Contains(id)
@@ -296,7 +333,7 @@ public sealed partial class StoryColony
     }
 
     /// <summary>A remove|cancel hits a designation named by id, or one of the kind (any kind when null) in the area or on the blocks.</summary>
-    private static bool RemovalHits(DesignationState d, string? kind, Area? area, IReadOnlyList<P3>? blocks, IReadOnlyList<string>? ids)
+    private static bool RemovalHits(DesignationState d, string? kind, Area? area, HashSet<P3>? blocks, HashSet<string>? ids)
     {
         if (ids != null && ids.Contains(d.Id)) return true;
         if (kind != null && d.Kind != kind) return false;
@@ -313,7 +350,8 @@ public sealed partial class StoryColony
         if (ids == null || ids.Count == 0) return (null, "ids required");
         lock (_lock)
         {
-            var hit = Designations.Where(d => ids.Contains(d.Id)).ToList();
+            var idSet = ids.ToHashSet(StringComparer.Ordinal);
+            var hit = Designations.Where(d => idSet.Contains(d.Id)).ToList();
             foreach (var d in hit) Reopen(d);
             return (new JsonObject { ["count"] = hit.Count, ["retried"] = new JsonArray(hit.Select(d => (JsonNode)d.Id!).ToArray()) }, null);
         }

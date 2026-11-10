@@ -98,7 +98,7 @@ public sealed partial class StoryColony
             }
             if (StorageArgsError(filter, priority) is { } err) return (null, err);
             ReconcileStorageSigns(force: true);
-            return op switch
+            (JsonNode? Result, string? Error) done = op switch
             {
                 "set" => SetChests(chests, filter, priority, label),
                 "add" or "remove_entries" => PatchChestFilters(op, chests, filter, priority, label),
@@ -107,6 +107,8 @@ public sealed partial class StoryColony
                 "assign_area" => AssignChestArea(area, filter, priority, label),
                 _ => (null, "op must be set|add|remove_entries|remove|copy|assign_area"),
             };
+            PublishLedger(); // the chest panel shows the change at once, not at the next tick (StoryColony.Containers.cs)
+            return done;
         }
     }
 

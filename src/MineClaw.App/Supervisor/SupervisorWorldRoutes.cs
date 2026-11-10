@@ -184,8 +184,9 @@ public sealed partial class SupervisorWorldRoutes
     public TimeSpan IndexCache { get; init; } = TimeSpan.FromMilliseconds(400);
     public TimeSpan EntitiesCache { get; init; } = TimeSpan.FromMilliseconds(100);
     public TimeSpan OverlaysCache { get; init; } = TimeSpan.FromSeconds(3);
-    /// <summary>Box (map badge) replies are shared for this long; one container's reply is never cached (the open panel polls it).</summary>
-    public TimeSpan ContainersCache { get; init; } = TimeSpan.FromSeconds(1);
+    /// <summary>Box (map badge) replies are shared for this long; one container's reply is never cached (the open panel polls it).
+    /// The badges are polled every 10 s, so a box asked again within that time (another viewer, a pan back) reads no memory.</summary>
+    public TimeSpan ContainersCache { get; init; } = TimeSpan.FromSeconds(10);
 
     /// <summary>Handles a <c>/api/world/*</c> path (already authorized, GET/HEAD); null = not one of these routes.</summary>
     public async Task<SupervisorReply?> TryHandleAsync(SupervisorRequest r, string path, CancellationToken ct = default)
