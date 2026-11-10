@@ -18,7 +18,7 @@ function rig() {
   const param = () => ({ value: 0, setTargetAtTime(value: number) { this.value = value; } });
   const node = () => ({ connect() {}, disconnect() {} });
   const start = vi.fn(), stop = vi.fn(), decode = vi.fn((bytes: ArrayBuffer) => Promise.resolve(bytes));
-  const contexts: Context[] = [];
+  const contexts: Context[] = [], gains: Array<{ gain: ReturnType<typeof param> }> = [];
   class Context {
     state: AudioContextState = 'suspended'; currentTime = 0; destination = {};
     onstatechange: (() => void) | null = null;
@@ -27,7 +27,7 @@ function rig() {
     resume = vi.fn(() => { this.state = 'running'; this.onstatechange?.(); return Promise.resolve(); });
     close = vi.fn(() => { this.state = 'closed'; return Promise.resolve(); });
     decodeAudioData = decode;
-    createGain = () => ({ ...node(), gain: param() });
+    createGain = () => { const gain = { ...node(), gain: param() }; gains.push(gain); return gain; };
     createPanner = () => ({ ...node(), positionX: param(), positionY: param(), positionZ: param() });
     createBufferSource = () => ({ ...node(), playbackRate: param(), start, stop });
   }
@@ -37,9 +37,9 @@ function rig() {
   const listener: SoundListener = { dim: 0, version: '1.12.2', position: [0, 64, 0], forward: [0, 0, -1], up: [0, 1, 0], topDown: true };
   const ready = vi.fn();
   const audio = new ControllerAudio(() => present ? listener : null, ready);
-  const event = () => ({ kind: 'sound' as const, sound: 'walk', dim: 0, x: ++sequence / 10, y: 64, z: 0, at: Date.now() });
-  const play = async () => { audio.receive([event()]); await tick(); };
-  return { audio, win, doc, ready, event, play, start, stop, decode, context: () => contexts.at(-1)!, visible: (value: boolean) => { present = value; } };
+  const event = (y = 64) => ({ kind: 'sound' as const, sound: 'walk', dim: 0, x: ++sequence / 10, y, z: 0, at: Date.now() });
+  const play = async (y?: number) => { audio.receive([event(y)]); await tick(); };
+  return { audio, win, doc, ready, event, play, start, stop, decode, listener, gains, context: () => contexts.at(-1)!, visible: (value: boolean) => { present = value; } };
 }
 
 it('never caches or plays sound decoded from a replaced pack whose database read finishes late', async () => {
@@ -82,6 +82,53 @@ it('never caches or plays sound decoded from a replaced pack whose database read
     listener.topDown = false; listener.position[1] = 10; vi.advanceTimersByTime(50);
     expect(ears.positionY.value).toBe(10); expect(panner.positionY.value).toBe(20);
   } finally { audio.dispose(); }
+});
+
+it('top-down plays nothing deeper than the listener floor, keeps the boundary block and leaves free cam alone', async () => {
+  const r = rig();
+  try {
+    await r.audio.enable(); r.listener.floorY = 61;
+    const deep = r.event(60.99); r.audio.receive([deep]); await r.play(12);
+    expect(read).not.toHaveBeenCalled(); expect(r.start).not.toHaveBeenCalled();
+    await r.play(61); expect(r.start).toHaveBeenCalledOnce();
+    await r.play(200); expect(r.start).toHaveBeenCalledTimes(2);
+    // A sound refused for depth is spent: it must not start late when the floor drops under it.
+    r.listener.floorY = 50; r.audio.receive([deep]); await tick(); expect(r.start).toHaveBeenCalledTimes(2);
+    r.listener.floorY = 61; r.listener.topDown = false;
+    await r.play(55); expect(r.start).toHaveBeenCalledTimes(3);
+  } finally { r.audio.dispose(); }
+});
+
+it('drops a sound whose source went below the floor while it was decoding', async () => {
+  const r = rig();
+  try {
+    await r.audio.enable(); r.listener.floorY = 61;
+    let resolve!: (buffer: ArrayBuffer) => void;
+    r.decode.mockImplementationOnce(() => new Promise((res) => { resolve = res; }));
+    await r.play(62);
+    r.listener.floorY = 70; resolve(new ArrayBuffer(1)); await tick();
+    expect(r.start).not.toHaveBeenCalled();
+    await r.play(70); expect(r.start).toHaveBeenCalledOnce();
+  } finally { r.audio.dispose(); }
+});
+
+it('fades a playing voice that falls below the floor and restores it', async () => {
+  const r = rig();
+  try {
+    await r.audio.enable(); r.listener.floorY = 61;
+    r.audio.receive([{ ...r.event(62), volume: 0.5 }]); await tick();
+    expect(r.start).toHaveBeenCalledOnce(); expect(r.gains).toHaveLength(2);
+    const voice = r.gains[1].gain, fade = vi.spyOn(voice, 'setTargetAtTime');
+    expect(voice.value).toBe(0.5);
+    r.listener.floorY = 70; vi.advanceTimersByTime(50);
+    expect(voice.value).toBe(0); expect(fade).toHaveBeenLastCalledWith(0, 0, 0.08);
+    vi.advanceTimersByTime(50); expect(fade).toHaveBeenCalledOnce();
+    r.listener.floorY = 61; vi.advanceTimersByTime(50);
+    expect(voice.value).toBe(0.5); expect(fade).toHaveBeenLastCalledWith(0.5, 0, 0.08);
+    r.listener.floorY = 70; vi.advanceTimersByTime(50); expect(voice.value).toBe(0);
+    r.listener.topDown = false; vi.advanceTimersByTime(50); expect(voice.value).toBe(0.5);
+    expect(r.stop).not.toHaveBeenCalled();
+  } finally { r.audio.dispose(); }
 });
 
 it('resumes unlocked audio after focus and visibility return without replaying sounds from while away', async () => {

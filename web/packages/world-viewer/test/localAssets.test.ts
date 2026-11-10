@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { deflateRawSync } from 'node:zlib';
 import { readArchive, resourcePath } from '../src/assets/archive';
-import { resolveSound, soundDistance, type SoundListener } from '../src/audio/controllerAudio';
+import { resolveSound, soundAudible, soundDistance, type SoundListener } from '../src/audio/controllerAudio';
 
 function zip(name: string, payload: Uint8Array, compressed = false): Blob {
   const filename = new TextEncoder().encode(name),
@@ -68,6 +68,18 @@ describe('controller sound', () => {
   it('uses horizontal distance in top view and full distance in freecam', () => {
     expect(soundDistance([3, 0, 4], listener)).toBe(5);
     expect(soundDistance([3, 0, 4], { ...listener, topDown: false })).toBeCloseTo(Math.sqrt(10025));
+  });
+  it('stops hearing below the top-down floor at the boundary block', () => {
+    const floored: SoundListener = { ...listener, floorY: 61 };
+    expect(soundAudible([0, 61, 0], floored)).toBe(true);
+    expect(soundAudible([0, 61.5, 0], floored)).toBe(true);
+    expect(soundAudible([0, 60.99, 0], floored)).toBe(false);
+    expect(soundAudible([0, 12, 0], floored)).toBe(false);
+    expect(soundAudible([0, 250, 0], floored)).toBe(true);
+    expect(soundAudible([0, 12, 0], { ...floored, topDown: false })).toBe(true);
+    expect(soundAudible([0, 12, 0], listener)).toBe(true);
+    for (const floorY of [undefined, null, Number.NaN])
+      expect(soundAudible([0, 12, 0], { ...listener, floorY })).toBe(true);
   });
   it('resolves weighted variants and nested event volume', () => {
     const events = {

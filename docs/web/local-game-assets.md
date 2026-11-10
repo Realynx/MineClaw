@@ -38,8 +38,11 @@ The Controller's small speaker button opens the Sound slider, plus/minus buttons
 remembers the prior volume. A click or key gesture enables Web Audio playback; Enable sound appears in the menu if the
 browser needs that interaction after a refresh. Returning to the window resumes previously unlocked audio when allowed.
 Live server sound packets and block-break effects travel through the existing entity event feed, deduplicated across
-pawns. Freecam uses spatial distance and camera direction. Top-down uses map X/Z distance, so camera altitude and
-terrain height do not suppress sound. Audio stops on leaving Controller, muting, or hiding the browser tab; there is no
+pawns. Freecam uses spatial distance and camera direction. Top-down uses map X/Z distance, so camera altitude does not
+suppress sound. In the top view nothing deeper than 3 blocks below the visible surface at the map centre is played (the
+highest drawn block of the centre column: below the X-ray cut when it is on; trees, plants and snow are looked through;
+the working level stands in until that column has loaded); there is no limit upward, and the angled view has no depth
+limit. Audio stops on leaving Controller, muting, or hiding the browser tab; there is no
 offline sound replay or background music download. Pawn takeover uses the same sound player at the pawn's eye position.
 
 Replacing a texture pack invalidates held-item atlas indices as well as entity meshes, even when the pawn keeps holding

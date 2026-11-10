@@ -5,12 +5,26 @@ import { useQueryClient } from '@tanstack/react-query';
 import { Volume2, VolumeX } from 'lucide-react';
 import { Popover } from 'radix-ui';
 import type { WorldEntities } from '@mineclaw/contracts';
-import type { ControllerAudio, EntityEvent, WorldViewerHandle } from '@mineclaw/world-viewer';
+import type { ControllerAudio, EntityEvent, WorldViewerEngine, WorldViewerHandle } from '@mineclaw/world-viewer';
 import { loadWorldViewer } from '@/features/world/integration';
 import { subscribeEntityFrames } from '@/features/world/entityFrames';
 import { liveKeys } from '@/lib/live/dispatch';
+import { CentreSurface, HEARING_DEPTH } from './audioSurface';
 
 const KEY = 'mineclaw.controller.volume';
+
+/** Top view: nothing more than HEARING_DEPTH blocks under the visible surface at the map centre is heard. Until that column
+ * has loaded, the working level stands in for the surface (StoryMap pins the look-at point one block above it). The one
+ * place that decides the floor. */
+function hearingFloor(surface: CentreSurface, engine: WorldViewerEngine, dim: number): number {
+  const t = engine.rig.target, cut = engine.pickCut();
+  // A cut hides blocks only inside its radius, measured to the block centre as the viewer does.
+  const dx = Math.floor(t.x) + 0.5 - (cut?.x ?? 0), dz = Math.floor(t.z) + 0.5 - (cut?.z ?? 0);
+  const cutY = cut && dx * dx + dz * dz <= cut.r * cut.r ? cut.y : null;
+  const top = surface.read(engine.runtime.host, dim, t.x, t.z, cutY);
+  return (top ?? Math.floor(t.y) - 1) - HEARING_DEPTH;
+}
+
 export function StoryAudio({
   viewer,
   view,
@@ -43,6 +57,7 @@ export function StoryAudio({
     } catch { /* storage unavailable */ }
     void loadWorldViewer().then((module) => {
       if (!alive || !module) return;
+      const surface = new CentreSurface();
       const player = new module.ControllerAudio(() => {
         const engine = viewer.current?.engine();
         if (!engine?.surface.isConnected) return null;
@@ -57,6 +72,8 @@ export function StoryAudio({
           position: [p.x, p.y, p.z],
           forward: [-m[8], -m[9], -m[10]],
           up: [m[4], m[5], m[6]],
+          // Only the top view has a hearing floor; the other views and a muted Controller ask the worker nothing.
+          floorY: current.current.view === 'top' && volumeRef.current > 0 ? hearingFloor(surface, engine, current.current.dim) : null,
         };
       }, (enabled) => {
         if (!alive) return;

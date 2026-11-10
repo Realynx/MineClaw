@@ -2561,6 +2561,8 @@ The design grew while it was built. The wire forms are in `docs/web/api.md` §6 
   hovered face. **Free cam** (Shift+V) enters first-person flight near the map focus: WASD moves, Space rises, Ctrl descends
   (PgUp/PgDn also move vertically), and Shift moves faster. Esc releases the mouse. V or **Map** returns to the same top-down
   framing and working level without reloading the viewer. See the Controller controls below for tools and browser capture.
+  Sound in the top view goes no deeper than 3 blocks below the visible surface at the map centre, which is read under this
+  cut while x-ray is on (`docs/web/local-game-assets.md`).
 - **Designate tools** work by area the genre's way: pick a tool, drag a grid rectangle, every matching target lights up with a
   live count, release designates (Shift keeps the tool). Kinds gain `cut`, `hunt`, `forbid`, `allow` and a mine `filter`; the
   director expands an area to its targets and answers the count. Mine and Deconstruct send the exact cells instead (`blocks`):

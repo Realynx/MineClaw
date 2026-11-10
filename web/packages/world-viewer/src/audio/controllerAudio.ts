@@ -3,7 +3,11 @@ import type { GameVersion } from '../world/blocks';
 import { ASSETS_CHANGED, readLocalPack, type LocalPack } from '../assets/localStore';
 
 type V3 = [number, number, number];
-export interface SoundListener { dim: number; version: GameVersion; position: V3; forward: V3; up: V3; topDown: boolean }
+export interface SoundListener {
+  dim: number; version: GameVersion; position: V3; forward: V3; up: V3; topDown: boolean;
+  /** Top-down only: the lowest source Y still heard. Absent or null = no depth limit. Never a ceiling. */
+  floorY?: number | null;
+}
 interface Variant { name: string; type?: string; volume?: number; pitch?: number; weight?: number }
 export interface SoundChoice { name: string; volume: number; pitch: number }
 const RETRY_MS = 5000;
@@ -31,6 +35,11 @@ export function soundDistance(position: V3, listener: SoundListener): number {
   const p = soundPosition(position, listener), centre = soundPosition(listener.position, listener);
   return Math.hypot(...p.map((n, i) => n - centre[i]));
 }
+/** A top-down listener with a floor does not hear sources below it; heights above it and other camera modes are unlimited. */
+export function soundAudible(position: V3, listener: SoundListener): boolean {
+  const floor = listener.topDown ? listener.floorY : null;
+  return typeof floor !== 'number' || !Number.isFinite(floor) || position[1] >= floor;
+}
 
 export class ControllerAudio {
   private context: AudioContext | null = null;
@@ -40,7 +49,7 @@ export class ControllerAudio {
   private packRetryAt = new Map<GameVersion, number>();
   private bufferRetryAt = new Map<string, number>();
   private seen = new Map<string, number>();
-  private voices = new Map<AudioBufferSourceNode, { pan: PannerNode; position: V3 }>();
+  private voices = new Map<AudioBufferSourceNode, { pan: PannerNode; gain: GainNode; level: number; position: V3; audible: boolean }>();
   private disposed = false;
   private generation = 0;
   private pending = 0;
@@ -160,7 +169,7 @@ export class ControllerAudio {
       if (!listener || !context || event.dim !== listener.dim || [event.x, event.y, event.z].some((n) => typeof n !== 'number' || !Number.isFinite(n))) return;
       const position: V3 = [event.x!, event.y!, event.z!];
       const volume = Math.max(0, Math.min(4, event.volume ?? 1)), range = Math.max(16, 16 * volume);
-      if (soundDistance(position, listener) >= range) return;
+      if (soundDistance(position, listener) >= range || !soundAudible(position, listener)) return;
       const assets = await this.pack(listener.version);
       if (!assets || this.disposed || generation !== this.generation) return;
       const sound = resolveSound(assets.soundEvents, event.sound!);
@@ -169,14 +178,14 @@ export class ControllerAudio {
       const key = listener.version + ':' + sound.name;
       const decoded = await this.buffer(key, file, context);
       if (!decoded || this.disposed || this.generation !== generation || context.state !== 'running' || !this.volume || !this.active || Date.now() - event.at > 1500) return;
-      const current = this.listener(); if (!current || current.dim !== listener.dim || current.version !== listener.version) return;
+      const current = this.listener(); if (!current || current.dim !== listener.dim || current.version !== listener.version || !soundAudible(position, current)) return;
       this.updateListener();
       const source = context.createBufferSource(), gain = context.createGain(), pan = context.createPanner();
       source.buffer = decoded; source.playbackRate.value = Math.max(0.25, Math.min(4, (event.pitch ?? 1) * sound.pitch));
-      gain.gain.value = Math.min(1, volume * sound.volume);
+      const level = Math.min(1, volume * sound.volume); gain.gain.value = level;
       pan.panningModel = 'HRTF'; pan.distanceModel = 'linear'; pan.refDistance = 1; pan.maxDistance = range; pan.rolloffFactor = 1;
       const p = soundPosition(position, current); pan.positionX.value = p[0]; pan.positionY.value = p[1]; pan.positionZ.value = p[2];
-      source.connect(gain); gain.connect(pan); pan.connect(this.master!); this.voices.set(source, { pan, position });
+      source.connect(gain); gain.connect(pan); pan.connect(this.master!); this.voices.set(source, { pan, gain, level, position, audible: true });
       source.onended = () => { this.voices.delete(source); source.disconnect(); gain.disconnect(); pan.disconnect(); };
       source.start();
     } catch { /* An unsupported codec or missing custom resource must not interrupt the live controller. */ }
@@ -199,9 +208,12 @@ export class ControllerAudio {
     [l.positionX, l.positionY, l.positionZ].forEach((p, i) => p.setTargetAtTime(centre[i], time, 0.04));
     [l.forwardX, l.forwardY, l.forwardZ].forEach((p, i) => p.setTargetAtTime(forward[i], time, 0.04));
     [l.upX, l.upY, l.upZ].forEach((p, i) => p.setTargetAtTime(up[i], time, 0.04));
-    for (const { pan, position } of this.voices.values()) {
-      const p = soundPosition(position, listener);
+    for (const voice of this.voices.values()) {
+      const { pan, position } = voice, p = soundPosition(position, listener);
       [pan.positionX, pan.positionY, pan.positionZ].forEach((param, i) => param.setTargetAtTime(p[i], time, 0.04));
+      // The floor follows the camera, so a voice below it fades and can come back; stopping it would click.
+      const audible = soundAudible(position, listener);
+      if (audible !== voice.audible) { voice.audible = audible; voice.gain.gain.setTargetAtTime(audible ? voice.level : 0, time, 0.08); }
     }
   }
   private stop(): void { for (const voice of this.voices.keys()) { try { voice.stop(); } catch { /* already ended */ } } this.voices.clear(); }
