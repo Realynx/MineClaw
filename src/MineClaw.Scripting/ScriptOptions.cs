@@ -16,7 +16,8 @@ public sealed class ScriptOptions
     public int MaxInstructionsWithoutAction { get; set; } = 200_000;
     /// <summary>Max Lua call depth.</summary>
     public int MaxCallDepth { get; set; } = 100;
-    /// <summary>Max bytes the script may allocate between two host calls (memory bombs; long runs are fine).</summary>
+    /// <summary>Max bytes script code may allocate between two actions (memory bombs; long runs are fine). What an SDK call allocates
+    /// on the host's side is not counted (ScriptSession.HostExit).</summary>
     public long MaxSegmentAllocBytes { get; set; } = 48L * 1024 * 1024;
     public int MaxStringLength { get; set; } = 100_000;
     public int MaxCodeChars { get; set; } = 4_000;

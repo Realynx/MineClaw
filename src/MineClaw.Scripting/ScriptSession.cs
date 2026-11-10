@@ -517,7 +517,39 @@ public sealed partial class ScriptSession
     internal void TouchSegment()
     {
         _sinceAction = 0;
+        _segment++;
         _allocBase = GC.GetAllocatedBytesForCurrentThread();
+    }
+
+    // ------------------------------------------------------------------ host calls and the memory guard
+
+    private long _segment, _hostCredited;
+
+    /// <summary>
+    /// Script-code progress, bumped by the runtime's statement hook (JS: every statement; Lua: every budget hook). Script thread only.
+    /// A host call that saw it move ran script code inside (a callback), so its allocations are not all host work.
+    /// </summary>
+    internal long ScriptTicks;
+
+    /// <summary>Where a host call started: the thread's allocation count, the segment, script progress and host credit so far.</summary>
+    internal readonly record struct HostMark(long Alloc, long Segment, long Ticks, long Credited);
+
+    /// <summary>Taken by the runtime's single host-call wrapper before the call (see <see cref="HostExit"/>).</summary>
+    internal HostMark HostEnter() => new(GC.GetAllocatedBytesForCurrentThread(), _segment, ScriptTicks, _hostCredited);
+
+    /// <summary>
+    /// After a host call (returned or threw): what the host allocated (SDK work such as story.next's colony scan and the JSON → JS of its
+    /// result) does not count toward <see cref="ScriptOptions.MaxSegmentAllocBytes"/>, which guards the script's own allocations.
+    /// Nothing is credited when the call started a new segment (an action already reset the base) or ran script code inside (a
+    /// callback's allocations are the script's); nested host calls credit only their own share (exclusive of inner credits).
+    /// </summary>
+    internal void HostExit(in HostMark m)
+    {
+        if (m.Segment != _segment || m.Ticks != ScriptTicks) return;
+        long own = GC.GetAllocatedBytesForCurrentThread() - m.Alloc - (_hostCredited - m.Credited);
+        if (own <= 0) return;
+        _allocBase += own;
+        _hostCredited += own;
     }
 
     /// <summary>The boundary between host calls: stop, lost body, signals, handlers, pauses — in that order.</summary>

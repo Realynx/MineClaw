@@ -116,7 +116,7 @@ internal sealed class LuaRuntime(ScriptSession s) : IScriptRuntime
             str["dump"] = LuaValue.Nil;
             var rep = str["rep"];
             int max = Math.Max(1000, s.Options.MaxStringLength);
-            str["rep"] = F("rep", c =>
+            str["rep"] = Lib("rep", c =>
             {
                 double n = Num(c, 1, 0);
                 int len = c.GetArgument(0).TryRead<string>(out var x) ? x.Length : 0;
@@ -126,7 +126,7 @@ internal sealed class LuaRuntime(ScriptSession s) : IScriptRuntime
                 return c.Return(r.Length > 0 ? r[0] : LuaValue.Nil);
             });
             var format = str["format"];
-            str["format"] = F("format", c =>
+            str["format"] = Lib("format", c =>
             {
                 if (c.GetArgument(0).TryRead<string>(out var f) && Regex.IsMatch(f, @"%[-+ #0]*\d{3,}")) throw ScriptSession.Bug("format width too big");
                 var r = _lua!.CallAsync(format, c.Arguments, _ct).AsTask().GetAwaiter().GetResult();
@@ -135,8 +135,8 @@ internal sealed class LuaRuntime(ScriptSession s) : IScriptRuntime
         }
         var os = new LuaTable
         {
-            ["time"] = F("time", c => c.Return((double)s.Time.GetUtcNow().ToUnixTimeSeconds())),
-            ["clock"] = F("clock", c => c.Return(s.Elapsed.TotalSeconds)),
+            ["time"] = Lib("time", c => c.Return((double)s.Time.GetUtcNow().ToUnixTimeSeconds())),
+            ["clock"] = Lib("clock", c => c.Return(s.Elapsed.TotalSeconds)),
         };
         env["os"] = Locked(os);
         st.SetHook(new LuaFunction("hook", (_, _) => { Hook(); return new ValueTask<int>(0); }), "", HookEvery);
@@ -150,11 +150,28 @@ internal sealed class LuaRuntime(ScriptSession s) : IScriptRuntime
 
     private void Hook()
     {
+        s.ScriptTicks++;
         s.Budget(HookEvery);
         if (_lua!.CallStackFrameCount > s.Options.MaxCallDepth) s.DepthLimit();
     }
 
-    private static LuaFunction F(string name, Func<LuaFunctionExecutionContext, int> body) =>
+    /// <summary>
+    /// Every SDK host function: its allocations are credited back to the memory guard like JS's (<see cref="ScriptSession.HostExit"/>).
+    /// Not for the sandbox's overrides of Lua's own library (<see cref="Lib"/>).
+    /// </summary>
+    private LuaFunction F(string name, Func<LuaFunctionExecutionContext, int> body) =>
+        new(name, (c, _) =>
+        {
+            var mark = s.HostEnter();
+            try { return new ValueTask<int>(body(c)); }
+            finally { s.HostExit(mark); }
+        });
+
+    /// <summary>
+    /// A sandbox override of a Lua library function (string.rep/format, os.time/clock). What it makes is the script's own memory, so
+    /// nothing is credited: it runs no VM instructions, so a string-building loop would otherwise hide all of it from the memory guard.
+    /// </summary>
+    private static LuaFunction Lib(string name, Func<LuaFunctionExecutionContext, int> body) =>
         new(name, (c, _) => new ValueTask<int>(body(c)));
 
     /// <summary>A read-only view: writes fail, rawset is gone and setmetatable refuses the protected metatable.</summary>

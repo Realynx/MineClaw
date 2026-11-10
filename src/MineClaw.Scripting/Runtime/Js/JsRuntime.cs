@@ -236,7 +236,7 @@ internal sealed partial class JsRuntime(ScriptSession s) : IScriptRuntime, IPatc
         foreach (var c in s.Callables(Free))
         {
             var callable = c;
-            var f = new ClrFunction(_e, c.Global, (_, a) => R(s.Invoke(callable, MapArgs(callable.Params, a))));
+            var f = Host(c.Global, a => R(s.Invoke(callable, MapArgs(callable.Params, a))));
             Define(c.Global, f);
             var camel = Camel(c.Global);
             if (camel != c.Global && Free(camel)) Define(camel, f);
@@ -254,7 +254,23 @@ internal sealed partial class JsRuntime(ScriptSession s) : IScriptRuntime, IPatc
     internal static string Camel(string snake) => Regex.Replace(snake, "_([a-z0-9])", m => m.Groups[1].Value.ToUpperInvariant());
 
     private void H(ObjectInstance h, string name, Func<JsValue[], JsValue> f) =>
+        h.FastSetProperty(name, new PropertyDescriptor(Host(name, f), false, false, false));
+
+    /// <summary>A host function whose result is the script's own data (a copy of what it passed in): its allocations still count.</summary>
+    private void Own(ObjectInstance h, string name, Func<JsValue[], JsValue> f) =>
         h.FastSetProperty(name, new PropertyDescriptor(new ClrFunction(_e, name, (_, a) => f(a)), false, false, false));
+
+    /// <summary>
+    /// Every host function the script can call: its allocations (the SDK's C# work, JSON → JS) are credited back to the memory
+    /// guard, which counts only what script code allocates between actions (<see cref="ScriptSession.HostExit"/>).
+    /// </summary>
+    private ClrFunction Host(string name, Func<JsValue[], JsValue> f) =>
+        new(_e, name, (_, a) =>
+        {
+            var mark = s.HostEnter();
+            try { return f(a); }
+            finally { s.HostExit(mark); }
+        });
 
     private JsValue R(ActResult r)
     {
@@ -330,7 +346,7 @@ internal sealed partial class JsRuntime(ScriptSession s) : IScriptRuntime, IPatc
             var name = Str(a, 0) ?? throw ScriptSession.Bug("skill(name, ...args) needs a name");
             return R(s.SkillCall(name, ps => MapArgs(ps, a, skip: 1)));
         });
-        H(h, "params", a => Params(JsConvert.Arg(a, 0)));
+        Own(h, "params", a => Params(JsConvert.Arg(a, 0)));
         _carry = JsConvert.FromJson(_e, s.Request.CarryJson) as ObjectInstance ?? new JsObject(_e);
         h.FastSetProperty("carry", new PropertyDescriptor(_carry, false, false, false));
         h.FastSetProperty("args", new PropertyDescriptor(Freeze(RunArgs()), false, false, false));

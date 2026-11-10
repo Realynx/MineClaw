@@ -123,6 +123,7 @@ internal sealed class JsBudget(ScriptSession s) : Constraint
 
     public override void Check()
     {
+        s.ScriptTicks++; // script code ran (a host call around it then leaves its allocations counted)
         if (++_n < 16) return;
         _n = 0;
         s.Budget(16);
