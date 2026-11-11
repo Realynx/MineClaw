@@ -51,13 +51,24 @@ public sealed partial class StoryColony
             if (RepairFailedTwice(at)) StairHeldAlert(z, $"stair broken at y {at.Y}: {StepWait(z, q)}");
             if (!Open("b:" + at, p.Name, at)) return null;
             bool lava = World is { } world && IsSourceAt(world, at, lava: true);
-            P3? scaffold = !lava && !clear && !HasSupport(at) ? QuarryScaffoldSpot(z, at) : null;
-            if (!lava && !clear && !HasSupport(at) && scaffold == null)
+            P3? scaffold = null;
+            bool overStep = false;
+            if (!lava && !clear && !HasSupport(at))
             {
-                Blocked($"quarry {ZoneName(z)}: stair step {at} needs a supported scaffold");
-                return null;
+                var built = BuildCellSet();
+                scaffold = QuarryScaffoldSpot(z, at, built);
+                if (scaffold == null && StepHeadScaffold(at, built) is { } head) (scaffold, overStep) = (head, true);
+                if (scaffold == null)
+                {
+                    StepHeld(z, at, $"stair step {at} needs a supported scaffold: no free cell beside or over it");
+                    return null;
+                }
             }
-            job = StepBlockJob(p, live, z, at, clear, live.Block);
+            _quarryStepHeld.Remove(z.Id);
+            // A scaffold over the step is clicked against the preceding step's side and the step against its underside: faces the
+            // pawn on that step can't see, but reaches (b1.8.1's server never raytraces a click), so not the stationary reach.
+            job = overStep ? QuarryBlockJob(p, live, z, at, false, live.Block, PillarAny, $"building the quarry stair (y {at.Y})", reach: false)
+                : StepBlockJob(p, live, z, at, clear, live.Block);
             if (job != null && scaffold is { } spot)
             {
                 if (!QuarryScaffoldSupplies(job, live))
@@ -75,10 +86,9 @@ public sealed partial class StoryColony
 
     /// <summary>An open side support remains exposed after the permanent step is placed. Prefer the outside wall, independent
     /// of stair direction, and avoid supports hidden under either the preceding step or the new step.</summary>
-    private P3? QuarryScaffoldSpot(ZoneState z, P3 at)
+    private P3? QuarryScaffoldSpot(ZoneState z, P3 at, HashSet<P3> built)
     {
         if (World is not { } w) return null;
-        var built = BuildCellSet();
         var sides = new[] { at.Add(1, 0, 0), at.Add(-1, 0, 0), at.Add(0, 0, 1), at.Add(0, 0, -1) };
         foreach (var n in sides.OrderBy(n => z.Contains(n.X, n.Z)))
         {
@@ -89,6 +99,42 @@ public sealed partial class StoryColony
         }
         return null;
     }
+
+    /// <summary>
+    /// A missing step with nothing to click beside or under it and no open side to put a scaffold in (live 11-11: the wall outside
+    /// it gone, the cells beside it open over the pit, the one under it dug; every idle pawn said "stair step … needs a supported
+    /// scaffold" for good, and the quarry never went on). Its own head room, the cell over it, is beside the preceding step, the one
+    /// the repair is done from: the scaffold goes there (against that step's side) and the step under it (against its underside),
+    /// both within reach of a pawn on that step, and the scaffold is dug back from there (its top is in view). Unlike a column stood
+    /// up from the pit floor under it, which no pawn on the stair reaches (the floor's top 5 and more below its eyes, and the pit a
+    /// drop too deep to walk into while the stair is broken). A scaffold left behind is the head room's to clear: the stair's own look
+    /// digs it. Null: that cell is not free (a body in it, a build's, lava) or has nothing to click (no step before it).
+    /// </summary>
+    private P3? StepHeadScaffold(P3 at, HashSet<P3> built)
+    {
+        if (World is not { } w || !w.Loaded(at.X, at.Z)) return null;
+        var head = at.Add(0, 1, 0);
+        int id = w.Block(head.X, head.Y, head.Z).Id;
+        if (!PlaceInto(id) || StoryQuarry.Lava(id) || built.Contains(head) || Occupied(head)) return null;
+        return HasSupport(head) ? head : null;
+    }
+
+    /// <summary>Per quarry: its top-most missing step that no scaffold can be put in for, and why, for its status
+    /// (<see cref="StepWait"/>). Forgotten when that step gets a job.</summary>
+    private readonly Dictionary<string, (P3 Step, string Why)> _quarryStepHeld = new(StringComparer.Ordinal);
+
+    /// <summary>A missing step nothing can be done for now: said to the pawn that asked, on the quarry's status, and (unless only a body
+    /// stands in the way) as the stair held up.</summary>
+    private void StepHeld(ZoneState z, P3 at, string why)
+    {
+        Blocked($"quarry {ZoneName(z)}: {why}");
+        _quarryStepHeld[z.Id] = (at, why);
+        if (!Occupied(at.Add(0, 1, 0))) StairHeldAlert(z, why);
+    }
+
+    /// <summary>What <see cref="StepHeld"/> said for this step, or null.</summary>
+    private string? StepHeldWhy(ZoneState z, P3 step) =>
+        _quarryStepHeld.TryGetValue(z.Id, out var held) && held.Step == step ? held.Why : null;
 
     // ------------------------------------------------------------------ the stair's head room is never left blocked
 

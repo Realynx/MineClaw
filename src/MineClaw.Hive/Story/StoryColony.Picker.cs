@@ -446,9 +446,28 @@ public sealed partial class StoryColony
         bool digs = kind is "mine" or "deconstruct";
         // The dig takes its material's tool (StoryColony.Gear.cs): never a lost drop.
         var s = new MarkSearch(kind, digs, digs || kind is "cut" or "chop", World, live.Online ? Support(live.X, live.Y, live.Z).ToHashSet() : []);
+        _markToolWaits = 0;
+        _markToolWhy = null;
         var best = NearestMark(p, live, from, list, s);
-        if (best.D == null) return null;
+        if (best.D == null) { MarksToolHeld(kind); return null; }
         return MarkJob(p, live, type, scriptKind, label, list, best, s);
+    }
+
+    /// <summary>The marks the last designation search passed over for want of a tool, and the first one's want.</summary>
+    private int _markToolWaits;
+    private string? _markToolWhy;
+
+    /// <summary>
+    /// No mark was open to the pawn and some waited for a tool: said as its held-back work, ahead of what the work types after this
+    /// one note. Live 11-11: 1,002 owner's mine marks on a dirt hill (and 45 dirt pillars to take down) all waited for a shovel (the
+    /// owner's rule for soil, the shovels' auto bills cancelled, none carried or stored), while every idle miner said only "waiting:
+    /// quarry …: stair step … needs a supported scaffold": a tool-waiting mark is neither a passed-over mark nor a held note, so the
+    /// quarry's hold, searched later, was the first and only reason given, and the owner read it as the quarry keeping them off the marks.
+    /// </summary>
+    private void MarksToolHeld(string kind)
+    {
+        if (_markToolWaits == 0) return;
+        Blocked($"{kind} marks: {_markToolWaits} waiting for a tool ({WaitText(_markToolWhy)})");
     }
 
     /// <summary>One designation search: its kind, whether it digs (and takes a tool), the world, the cells the pawn stands on.</summary>
@@ -484,7 +503,13 @@ public sealed partial class StoryColony
         if (MarkPassedOver(p.Name, d, at, s, ref stoodOn) is { } pass) { PassedMark(pass, s.Kind, at); return false; }
         // No tool for its material (carried or stored): the target waits, said on the map, no failure.
         if (s.Tooled && s.W is { } w && PlanTool(p, live, s.Kind == "chop" ? ChopBlockAt(w, at, d.Blocks) : w.Block(at.X, at.Y, at.Z).Id)
-            is { Wait: { } why }) { NoteWait(d, why); return false; }
+            is { Wait: { } why })
+        {
+            NoteWait(d, why);
+            _markToolWaits++;
+            _markToolWhy ??= why;
+            return false;
+        }
         return true;
     }
 

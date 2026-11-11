@@ -99,6 +99,7 @@ public sealed partial class StoryColony
     private string StepWait(ZoneState z, QuarryScan q)
     {
         var step = q.StepFix.MaxBy(f => f.At.Y).At;
+        if (StepHeldWhy(z, step) is { } held) return held;
         if (World is not { } w || !IsSourceAt(w, step, lava: true)) return "placing a step" + RepairRest(step);
         return LavaHeld(z, step) is { } hold ? $"lava source on the step: {hold}" : "collecting a lava source on the step" + RepairRest(step);
     }

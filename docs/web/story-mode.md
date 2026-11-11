@@ -641,7 +641,8 @@ so the other pawns stood idle in front of a field of work. Fox also saw pawns st
   its row):
   - `stuck`
   - `work not taken yet`: its last search found work that an idle leg still holds
-  - from its designations: `all targets leased`, `tool waiting`, `targets backing off`, `no reachable target`, or `back-off rest`.
+  - from its designations: `all targets leased`, `tool waiting` (its last search names the marks and the tool instead: see `waiting: …`
+    below), `targets backing off`, `no reachable target`, or `back-off rest`.
     `no reachable target` (a mark free and not resting that its search still passed over) says which and why when its last search
     knows: `no reachable target: mine 181,57,366: buried (dug once a cell over or beside it is gone)`. The reasons: buried, under
     someone's feet, by a spot where a pawn got stuck, forbidden, out of sight (a haul or hunt mark whose entity no body sees). The
@@ -654,7 +655,10 @@ so the other pawns stood idle in front of a field of work. Fox also saw pawns st
     `waiting: build b2: the level below is still being built`, `waiting: build b2: its open cells are taken or backing off`,
     `waiting: build b7: its 2 open cells are being dug by other pawns (the rest open as they go)` (a mine design whose face is
     narrow, such as a one-wide stair shaft: its other cells are buried until those are dug),
-    `waiting: the furnace at 6,64,0 is in use`
+    `waiting: the furnace at 6,64,0 is in use`,
+    `waiting: mine marks: 1002 waiting for a tool (needs a wooden shovel — its auto bill was cancelled)` (marks of its kinds that
+    wait for a tool come before what a later work search held back, such as a quarry's stair: live 11-11 the owner's marks on a
+    dirt hill all waited for the shovel his soil rule asks for, and every idle miner named only the quarry)
   - `priority 0`: there is work, but only of kinds it doesn't do
 
   A blocked job does not stop the priority search. Even a miner waiting briefly for another pawn to finish a quarry layer tries
@@ -1353,7 +1357,16 @@ An upper stray block can rewind the working layer after the pit is much deeper. 
 that block down to their first usable floor, stopping at intact ground or liquid. Missing steps and blocked headroom along that
 route are repaired in order before sealing or mining resumes. The repair approaches from the preceding intact step; a floating
 step gets one supported temporary scaffold, with material for both placements reserved before work starts. The scaffold is removed
-after the permanent step is placed.
+after the permanent step is placed. A step with no open side to scaffold from (live 11-11: the wall outside it gone, the cells beside
+it open over the pit; every idle miner said "stair step … needs a supported scaffold" for good) gets its scaffold over it, in its
+own head room: that cell is beside the preceding step, so the pawn on that step clicks the scaffold against the step's side and the
+new step against the scaffold's underside. Neither face is in view but both are in reach (b1.8.1's server never raytraces a click),
+so the job is placed unseen rather than from a stationary reach; the scaffold is dug back from the same step, and one left behind
+is in the stair's head room, which the stair's own look digs. A column stood up from the pit floor under the step was no answer:
+the floor's top is out of reach from the stair and the pit a drop too deep to walk into while the stair is broken. The scaffold is
+part of the step's own job, so a placement that keeps failing rests the step and is said like any step ("stair broken at y 46:
+placing a step: resting after failures (…)", the stair held up after two). With no free cell over it either (a body standing there,
+a build's cell), the status and the pawns say so: "stair step … needs a supported scaffold: no free cell beside or over it".
 
 The stair's head room (the 3 cells over each step) is never left blocked (added 2026-11-09). A block of it that stood as a seal
 ended the stair once the pit was a step deeper: "stair blocked at 15,58,12: clearing its headroom" with nothing cleared and nothing

@@ -204,6 +204,11 @@ public sealed partial class StoryColony
         return (new JsonObject { ["ids"] = new JsonArray(hit.Select(b => (JsonNode)b.Id!).ToArray()) }, null);
     }
 
+    /// <summary>
+    /// A removed build lets go of everything it held: the pawns out on its cells stop (their batch would go on digging or placing a
+    /// build that is gone: live 11-11, a deleted 47,000-cell strip mine), its leases, its cells' rests and failure counts, its mine
+    /// index, its blocked cells' probes.
+    /// </summary>
     private void RemoveBuild(BuildState b)
     {
         Builds.Remove(b);
@@ -211,7 +216,27 @@ public sealed partial class StoryColony
         Removed("build", b.Id);
         _buildAlerted.Remove(b.Id);
         ForgetProbes(b); // its blocked cells' reasons and tries go with it (StoryColony.Reconcile.cs)
-        foreach (var k in _leases.Keys.Where(k => k.StartsWith("g:" + b.Id + "|", StringComparison.Ordinal)).ToList()) _leases.Remove(k);
+        string lease = "g:" + b.Id + "|", cell = b.Id + "|";
+        foreach (var (name, job) in _current.ToList())
+            if (job.Source == "ghost" && job.SourceId?.StartsWith(cell, StringComparison.Ordinal) == true && Pawns.TryGetValue(name, out var p))
+            {
+                Supersede(p, "build removed");
+                p.Rev = Touch();
+            }
+        ForgetKeys(_leases, lease);
+        ForgetKeys(_skip, lease);
+        ForgetKeys(_leaseFails, lease);
+        ForgetKeys(_softFails, lease);
+        ForgetKeys(_ghostFails, cell);
+    }
+
+    /// <summary>The entries of a keyed record whose key starts with <paramref name="prefix"/>, removed.</summary>
+    private static void ForgetKeys<T>(Dictionary<string, T> map, string prefix)
+    {
+        if (map.Count == 0) return;
+        List<string>? gone = null;
+        foreach (var k in map.Keys) if (k.StartsWith(prefix, StringComparison.Ordinal)) (gone ??= new()).Add(k);
+        if (gone != null) foreach (var k in gone) map.Remove(k);
     }
 
     /// <summary>The named ones first, in that order; the rest keep their relative order after them.</summary>
