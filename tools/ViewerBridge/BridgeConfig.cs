@@ -41,6 +41,9 @@ public sealed class BridgeOptions
     public double HeatHalfLifeS { get; set; } = 120;
     /// <summary>How often the db-side caches (vectors, RAPTOR tree) look for changes the bot made.</summary>
     public int ReloadCheckSeconds { get; set; } = 60;
+    /// <summary>The least time between two loads of a changed RAPTOR tree (a replacement bank); vector changes are refreshed in place
+    /// at every check. A whole replacement bank per check (live until 11-10) kept the bridge at its memory cap.</summary>
+    public int TreeReloadSeconds { get; set; } = 300;
     /// <summary>Threads the memory cloud's background UMAP may use (its kNN is the only parallel step).</summary>
     public int CloudThreads { get; set; } = 1;
     /// <summary>Above this many build leaves the cloud's UMAP runs on an even sample and places the rest from their neighbours (100..2000).</summary>

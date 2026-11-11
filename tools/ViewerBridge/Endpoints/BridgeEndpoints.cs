@@ -70,7 +70,8 @@ public static class BridgeEndpoints
         v1.MapGet("/health", async (HttpContext ctx, BankHost banks, SupervisorClient sup) =>
         {
             string db;
-            try { await banks.GetAsync(ctx.RequestAborted); db = "up"; }
+            // Opens the bank on first use but never drives a reload check: Nest polls this all the time.
+            try { await banks.GetAsync(ctx.RequestAborted, check: false); db = "up"; }
             catch (BankUnavailableException) { db = "down"; }
             // "up" | "down" (Nest's status indicator): a supervisor answer in the last 10 s counts, else one quick probe.
             bool up = sup.LastOk is { } ok && (sup.LastFailure is not { } f || ok > f) && DateTimeOffset.UtcNow - ok < TimeSpan.FromSeconds(10);

@@ -182,12 +182,13 @@ public sealed class MemoryBankReloadTests
         using var fixture = await FixtureDb.CreateAsync();
         using var embeddings = new PausedEmbeddings();
         var log = new ReloadLog();
-        var config = BridgeConfig.ForTests(new BridgeOptions { DbPath = fixture.Path, ReloadCheckSeconds = 1 });
+        var config = BridgeConfig.ForTests(new BridgeOptions { DbPath = fixture.Path, ReloadCheckSeconds = 1, TreeReloadSeconds = 0 });
         using var host = new BankHost(config, log) { Embeddings = embeddings };
         using var original = await host.GetAsync(CancellationToken.None);
         var originalNodes = original.Raptor!.Index.NodeCount;
+        // Only a changed RAPTOR tree replaces the bank (a doc or vector change is refreshed in place): the bot persisted its tree.
         using (var writer = AgentDb.Open(fixture.Path))
-            writer.Exec("UPDATE docs SET updated = (SELECT max(updated) + 10000 FROM docs) WHERE id = (SELECT min(id) FROM docs)");
+            writer.Exec("UPDATE meta SET value = value || ' ' WHERE key = 'raptor_meta'");
         await Task.Delay(1100);
         embeddings.Pause();
         try

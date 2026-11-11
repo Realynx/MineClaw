@@ -33,6 +33,44 @@ public sealed class MemoryCloudService(BridgeConfig config, ILogger<MemoryCloudS
         /// <summary>Leaf positions of <see cref="Ready"/> (the tree arrangement starts from the MDS ones).</summary>
         public Dictionary<int, (float X, float Y)>? Positions;
         public string? Failed;
+        /// <summary>Set when <see cref="Failed"/> was a refusal for want of memory: asked again after this, the layout is retried.</summary>
+        public DateTimeOffset? RetryAfter;
+        public string? FailedNote;
+    }
+
+    /// <summary>A layout refused before it started because the process could not afford it.</summary>
+    internal sealed class ShortOfMemoryException(string message) : Exception(message);
+
+    /// <summary>How long a layout refused for want of memory waits before a request may try it again.</summary>
+    internal static readonly TimeSpan ShortOfMemoryRetry = TimeSpan.FromSeconds(60);
+
+    /// <summary>What must stay free beside a layout's own estimate (the live stream, requests, SQLite).</summary>
+    internal const long SafetyBytes = 96L * 1024 * 1024;
+
+    /// <summary>Bytes the process may still allocate before its managed heap limit (tests replace it).</summary>
+    internal Func<long> Headroom { get; set; } = DefaultHeadroom;
+
+    private static long DefaultHeadroom() => GC.GetGCMemoryInfo().TotalAvailableMemoryBytes - GC.GetTotalMemory(false);
+
+    /// <summary>
+    /// The transient bytes one layout of <paramref name="leaves"/> leaves of <paramref name="dims"/> dimensions needs at its peak: the
+    /// fit's own matrices (MDS: the anchors' all-pairs distances; UMAP: its kNN; PCA: the covariance), the anchors' unit vectors, and
+    /// per leaf the tree read, the positions and the wire arrays. The leaf vectors themselves are the tree's (shared, not copied).
+    /// </summary>
+    internal static long EstimateBytes(string arrangement, int leaves, int dims, CloudLayoutOptions o)
+    {
+        long l = Math.Max(0, leaves), d = Math.Max(1, dims);
+        long perLeaf = 160 * l;
+        long Anchors(int max) => Math.Min(l, max);
+        long fit = arrangement switch
+        {
+            CloudArrangements.Umap => Anchors(Math.Clamp(o.MaxUmapPoints, 3, CloudLayoutOptions.UmapSequentialLimit)) is var u ? u * u * 8 + u * d * 4 : 0,
+            CloudArrangements.Pca => Anchors(Math.Max(3, o.MaxPcaPoints)) * d * 4 + d * d * 8,
+            // Linear in the leaves, plus the MDS picture it starts from when that is not cached.
+            CloudArrangements.Tree => 400 * l + EstimateBytes(CloudArrangements.Mds, leaves, dims, o) - perLeaf,
+            _ => Anchors(Math.Clamp(o.MaxMdsPoints, 3, CloudLayoutOptions.MdsAllPairsLimit)) is var m ? m * m * 4 + m * d * 4 : 0,
+        };
+        return fit + perLeaf;
     }
 
     private readonly object _lock = new();
@@ -66,10 +104,11 @@ public sealed class MemoryCloudService(BridgeConfig config, ILogger<MemoryCloudS
         {
             var slot = _slots[arrangement];
             if (slot.Ready is { } r && r.Version == version) return r with { Arrangements = Statuses(key) };
+            if (slot.Failed == version && slot.RetryAfter is { } retry && time.GetUtcNow() >= retry) slot.Failed = null; // short of memory: try again
             if (slot.Failed == version)
                 return (slot.Ready ?? Empty(bank, "error", "", arrangement)) with
                 {
-                    Status = "error", Note = "the memory cloud layout failed (see the bridge log)", Arrangements = Statuses(key),
+                    Status = "error", Note = slot.FailedNote ?? "the memory cloud layout failed (see the bridge log)", Arrangements = Statuses(key),
                 };
             _bank = bank;
             Enqueue(arrangement);
@@ -154,11 +193,29 @@ public sealed class MemoryCloudService(BridgeConfig config, ILogger<MemoryCloudS
             {
                 await _runner.Run(() => Build(bank, arrangement));
             }
+            catch (Exception ex) when (ex is ShortOfMemoryException or OutOfMemoryException or InsufficientMemoryException)
+            {
+                // Refused (or ran out) for want of memory: never retried at once, but a later request may try again.
+                log.LogWarning("memory cloud layout ({Arrangement}) skipped: {Message}", arrangement, ex.Message);
+                MarkFailed(arrangement, key, time.GetUtcNow() + ShortOfMemoryRetry,
+                    "the bridge is short of memory for this layout right now; a later request tries again");
+            }
             catch (Exception ex)
             {
                 log.LogWarning(ex, "memory cloud layout ({Arrangement}) failed", arrangement);
-                lock (_lock) _slots[arrangement].Failed = VersionOf(key, arrangement);
+                MarkFailed(arrangement, key, null, null);
             }
+        }
+    }
+
+    private void MarkFailed(string arrangement, string key, DateTimeOffset? retryAfter, string? note)
+    {
+        lock (_lock)
+        {
+            var slot = _slots[arrangement];
+            slot.Failed = VersionOf(key, arrangement);
+            slot.RetryAfter = retryAfter;
+            slot.FailedNote = note;
         }
     }
 
@@ -167,6 +224,7 @@ public sealed class MemoryCloudService(BridgeConfig config, ILogger<MemoryCloudS
     /// <summary>Runs on the bounded runner: reads the tree once and lays out <paramref name="arrangement"/> (and the MDS it starts from, for the tree).</summary>
     private int Build(MemoryBank bank, string arrangement)
     {
+        EnsureAffordable(bank, arrangement);
         var g = bank.Graph();
         if (g == null) return 0;
         var read = bank.ReadTree(t => new TreeRead(t.BuildId, MemoryBank.StateKeyOf(t),
@@ -176,6 +234,24 @@ public sealed class MemoryCloudService(BridgeConfig config, ILogger<MemoryCloudS
             new TreeRead(0L, "none", [], [], []));
         BuildOne(g, read, arrangement);
         return 0;
+    }
+
+    /// <summary>
+    /// Refuses a layout the process cannot afford now (its estimate plus <see cref="SafetyBytes"/> above the headroom to the heap
+    /// limit, after one compacting collection): at the bridge's 384 MiB heap limit an all-pairs fit beside a bank reload used to
+    /// throw OutOfMemoryException in whatever else allocated at that moment, the live world stream included.
+    /// </summary>
+    private void EnsureAffordable(MemoryBank bank, string arrangement)
+    {
+        var (leaves, dims) = bank.ReadTree(t => (t.Count > 0 ? t.LeafCount : 0, t.Dimensions), (0, 0));
+        long need = EstimateBytes(arrangement, leaves, dims, OptionsFor(arrangement)) + SafetyBytes;
+        if (Headroom() >= need) return;
+        System.Runtime.GCSettings.LargeObjectHeapCompactionMode = System.Runtime.GCLargeObjectHeapCompactionMode.CompactOnce;
+        GC.Collect(2, GCCollectionMode.Forced, blocking: true, compacting: true);
+        long free = Headroom();
+        if (free >= need) return;
+        throw new ShortOfMemoryException(string.Create(System.Globalization.CultureInfo.InvariantCulture,
+            $"{leaves} leaves need about {need / (1024 * 1024)} MiB, {Math.Max(0, free) / (1024 * 1024)} MiB free"));
     }
 
     private Dictionary<int, (float X, float Y)> BuildOne(GraphModel g, TreeRead read, string arrangement)

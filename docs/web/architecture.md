@@ -231,8 +231,12 @@ Tests for these go in `tests/MineClaw.App.Tests` (or the closest existing test p
     counted into the next).
   - The bridge logs `world stream: N frames, longest gap M ms, reconnects R, gc pause P ms` once a minute while a client
     is connected: motion (entity) frames received from the bot's world socket, the longest interval between two of them,
-    reconnects to the bot, and the bridge's GC pause. A world socket that had been up and closes logs one Information
-    line with the reason; failed connect attempts stay at Debug.
+    reconnects to the bot, and the bridge's GC pause; the longest gap includes the interval still open at the report, and
+    `, stalls S` / `, pump restarts K` are appended when there were any. A world socket that had been up and closes logs one
+    Information line with the reason; failed connect attempts stay at Debug. A watchdog (2026-11-10) drops a connection that
+    sent nothing for 5 s while a client is connected (the bot sends every 100 ms; Warning `World socket silent for …`) and
+    restarts the pump if it ever stops; any other failure in the pump (OutOfMemoryException at the heap limit, an unreadable
+    frame) logs a Warning and reconnects with back-off instead of ending the stream until the last client leaves.
   - The browser's half is the frame-rate overlay's motion line (Viewer settings, below).
 - **Worker availability (2026-11-08).** Normal bot startup raises the worker minimum to four per available CPU, capped at 64,
   while preserving a higher existing minimum, the configured maximum and the I/O minimum. Workers are created on demand.

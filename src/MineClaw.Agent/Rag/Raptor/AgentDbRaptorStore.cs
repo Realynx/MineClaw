@@ -30,6 +30,14 @@ public sealed class AgentDbRaptorStore : IRaptorStore
     /// </summary>
     public bool LoadWritesBack { get; set; } = true;
 
+    /// <summary>
+    /// A read-only process that already holds the doc vectors (the viewer bridge's flat index): given a node's doc id and the content
+    /// hash of its stored vector, the array it already has for exactly that vector (the tree's model and dimension), or null. A load
+    /// then reuses that array instead of decoding a second copy of the blob. Only for a tree that never modifies its embeddings
+    /// (<see cref="MineClaw.Raptor.RaptorOptions.ReuseImmutableEmbeddings"/>). Null (the default) decodes every vector.
+    /// </summary>
+    public Func<long, string, float[]?>? ReuseVector { get; set; }
+
     /// <summary>Test hook: throw while applying this record (checks that a change set is all-or-nothing).</summary>
     internal Func<RaptorNodeRecord, bool>? FailOn { get; set; }
 
@@ -92,15 +100,23 @@ public sealed class AgentDbRaptorStore : IRaptorStore
         return string.IsNullOrEmpty(json) ? null : JsonSerializer.Deserialize<RaptorTreeMeta>(json, Json);
     }
 
-    private List<TreeRow> QueryTreeRows(RaptorTreeMeta meta) => _db.Query("""
-        SELECT d.id, d.raptor_idx, d.level, d.ref, d.kind, d.source, d.title, d.body, d.token_count, d.raptor_flags, d.raptor_seq, v.vec
-        FROM docs d LEFT JOIN vectors v ON v.doc_id = d.id AND v.model = $m AND v.dims = $d AND v.hash = d.hash
-        WHERE d.raptor_idx IS NOT NULL
-        """, r => new TreeRow(r.GetInt64(0), (int)r.GetInt64(1), (int)r.GetInt64(2), r.GetString(3), r.GetString(4),
-            AgentDb.StrOrNull(r, 5), r.GetString(6), r.GetString(7), (int)r.GetInt64(8),
-            // Release the transient SQLite blob per row; records and tree nodes reuse the resulting float array.
-            (int)r.GetInt64(9), r.GetInt64(10), r.IsDBNull(11) ? null : VectorMath.FromBlob((byte[])r.GetValue(11))),
-        ("$m", meta.EmbeddingModel), ("$d", meta.Dimensions));
+    private List<TreeRow> QueryTreeRows(RaptorTreeMeta meta)
+    {
+        var reuse = ReuseVector;
+        return _db.Query("""
+            SELECT d.id, d.raptor_idx, d.level, d.ref, d.kind, d.source, d.title, d.body, d.token_count, d.raptor_flags, d.raptor_seq, v.vec, v.hash
+            FROM docs d LEFT JOIN vectors v ON v.doc_id = d.id AND v.model = $m AND v.dims = $d AND v.hash = d.hash
+            WHERE d.raptor_idx IS NOT NULL
+            """, r => new TreeRow(r.GetInt64(0), (int)r.GetInt64(1), (int)r.GetInt64(2), r.GetString(3), r.GetString(4),
+                AgentDb.StrOrNull(r, 5), r.GetString(6), r.GetString(7), (int)r.GetInt64(8),
+                // Release the transient SQLite blob per row; records and tree nodes reuse the resulting float array.
+                (int)r.GetInt64(9), r.GetInt64(10), r.IsDBNull(11) ? null : Shared(reuse, r.GetInt64(0), r.GetString(12), meta.Dimensions)
+                    ?? VectorMath.FromBlob((byte[])r.GetValue(11))),
+            ("$m", meta.EmbeddingModel), ("$d", meta.Dimensions));
+    }
+
+    private static float[]? Shared(Func<long, string, float[]?>? reuse, long docId, string hash, int dims) =>
+        reuse?.Invoke(docId, hash) is { } v && v.Length == dims ? v : null;
 
     private Dictionary<int, SortedSet<int>> QueryTreeChildren()
     {

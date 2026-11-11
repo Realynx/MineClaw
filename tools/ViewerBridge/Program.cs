@@ -9,6 +9,12 @@ using MineClaw.ViewerBridge.Supervisor;
 var env = Environment.GetEnvironmentVariable("DOTNET_ENVIRONMENT") ?? Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT") ?? "Production";
 var config = BridgeConfig.Load(args, env);
 var app = BridgeApp.Build(args, config);
+// A background task that dies unobserved used to vanish without a line (the world stream, 11-10); now it is at least logged.
+TaskScheduler.UnobservedTaskException += (_, e) =>
+{
+    app.Logger.LogError(e.Exception.GetBaseException(), "unobserved background task failure");
+    e.SetObserved();
+};
 app.Logger.LogInformation("MineClaw viewer bridge on http://{Bind}:{Port} ({Describe})", config.Bridge.Bind, config.Bridge.Port, config.Describe());
 if (string.IsNullOrEmpty(config.Bridge.Key) || config.Bridge.Key.Length < 32)
 {

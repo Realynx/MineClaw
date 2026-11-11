@@ -152,8 +152,16 @@ public static class CloudLayout
         var pos = new Dictionary<int, (float X, float Y)>(leaves.Count);
         var toPlace = Unplaced(anchors, usable, o, tree, pos);
         var placed = new (float X, float Y)[toPlace.Count];
-        Parallel.For(0, toPlace.Count, new ParallelOptions { CancellationToken = ct, TaskScheduler = TaskScheduler.Current }, i =>
-            placed[i] = PlaceAny(anchors, toPlace[i].V, toPlace[i].Leaf.Index, o, tree));
+        // Each leaf is normalised into its worker's buffer as it is placed: normalising every leaf up front held a second copy of
+        // every leaf vector (tens of thousands) for the whole placement.
+        Parallel.For(0, toPlace.Count, new ParallelOptions { CancellationToken = ct, TaskScheduler = TaskScheduler.Current }, () => new float[dims],
+            (i, _, unit) =>
+            {
+                toPlace[i].Leaf.Vector.AsSpan().CopyTo(unit);
+                VectorMath.Normalize(unit);
+                placed[i] = PlaceAny(anchors, unit, toPlace[i].Leaf.Index, o, tree);
+                return unit;
+            }, _ => { });
         // Forget placements of leaves that are gone, then record the new ones (the cache only grows with the live tree).
         var live = new HashSet<int>(leaves.Select(l => l.Index));
         foreach (var gone in anchors.Placed.Keys.Where(k => !live.Contains(k)).ToList()) anchors.Placed.Remove(gone);
@@ -171,22 +179,21 @@ public static class CloudLayout
         || previous.Arrangement != o.Arrangement;
 
     /// <summary>Puts every leaf whose position is known (an unchanged anchor or placement) into <paramref name="pos"/>; returns the rest.</summary>
-    private static List<(CloudLeaf Leaf, float[] V, ulong H)> Unplaced(CloudAnchors anchors, List<CloudLeaf> usable, CloudLayoutOptions o, CloudTreeInput? tree,
+    private static List<(CloudLeaf Leaf, ulong H)> Unplaced(CloudAnchors anchors, List<CloudLeaf> usable, CloudLayoutOptions o, CloudTreeInput? tree,
         Dictionary<int, (float X, float Y)> pos)
     {
         var anchorSlot = new Dictionary<int, int>(anchors.Index.Length);
         for (int i = 0; i < anchors.Index.Length; i++) anchorSlot[anchors.Index[i]] = i;
-        var toPlace = new List<(CloudLeaf Leaf, float[] V, ulong H)>();
+        var toPlace = new List<(CloudLeaf Leaf, ulong H)>();
         foreach (var l in usable)
         {
-            var v = VectorMath.Normalized(l.Vector);
-            ulong h = LeafHash(v, l.Index, o, tree);
+            ulong h = LeafHash(l.Vector, l.Index, o, tree);
             if (anchorSlot.TryGetValue(l.Index, out var s) && anchors.Hash[s] == h)
                 pos[l.Index] = (anchors.Xy[2 * s], anchors.Xy[2 * s + 1]);
             else if (anchors.Placed.TryGetValue(l.Index, out var p) && p.Hash == h)
                 pos[l.Index] = (p.X, p.Y);
             else
-                toPlace.Add((l, v, h));
+                toPlace.Add((l, h));
         }
         return toPlace;
     }
@@ -213,10 +220,11 @@ public static class CloudLayout
     private sealed class FitFrame(long buildId, CloudLayoutOptions o, int dims, int[] index, float[][] vecs, ulong[] hashes)
     {
         private readonly System.Diagnostics.Stopwatch _sw = System.Diagnostics.Stopwatch.StartNew();
-        public int N => vecs.Length;
+        public int N => index.Length;
+        /// <summary>The anchors' unit vectors; empty for the tree arrangement, which fits and places from the links alone.</summary>
         public float[][] Vecs => vecs;
         public int[] Index => index;
-        public float[] Xy { get; } = new float[vecs.Length * 2];
+        public float[] Xy { get; } = new float[index.Length * 2];
         public double Ms => _sw.Elapsed.TotalMilliseconds;
 
         /// <summary>The anchors with <paramref name="raw"/> normalised into the unit square.</summary>
@@ -232,9 +240,10 @@ public static class CloudLayout
     private static CloudAnchors Fit(long buildId, List<CloudLeaf> usable, int dims, CloudLayoutOptions o, CloudTreeInput? tree, CancellationToken ct)
     {
         var pool = AnchorPool(usable, MaxAnchors(o));
-        var vecs = pool.Select(l => VectorMath.Normalized(l.Vector)).ToArray();
-        var hashes = new ulong[vecs.Length];
-        for (int i = 0; i < vecs.Length; i++) hashes[i] = LeafHash(vecs[i], pool[i].Index, o, tree);
+        // The tree arrangement takes every leaf as an anchor and never reads a vector: no normalised copies of them.
+        var vecs = o.Arrangement == CloudArrangements.Tree ? Array.Empty<float[]>() : pool.Select(l => VectorMath.Normalized(l.Vector)).ToArray();
+        var hashes = new ulong[pool.Count];
+        for (int i = 0; i < pool.Count; i++) hashes[i] = LeafHash(pool[i].Vector, pool[i].Index, o, tree);
         var f = new FitFrame(buildId, o, dims, pool.Select(l => l.Index).ToArray(), vecs, hashes);
         if (f.N < 3)
         {
@@ -270,7 +279,8 @@ public static class CloudLayout
         var a = f.Make(raw);
         return new CloudAnchors
         {
-            BuildId = a.BuildId, Arrangement = a.Arrangement, Version = a.Version, Dimensions = a.Dimensions, Index = a.Index, Vectors = a.Vectors, Xy = a.Xy,
+            // Placement projects on the axes: the anchors' vectors (up to MaxPcaPoints of them) are not kept.
+            BuildId = a.BuildId, Arrangement = a.Arrangement, Version = a.Version, Dimensions = a.Dimensions, Index = a.Index, Vectors = [], Xy = a.Xy,
             Hash = a.Hash, FitMs = f.Ms, Transform = a.Transform, Mean = fit.Mean, Axes = fit.Axes, VarianceExplained = fit.VarianceExplained,
         };
     }
@@ -397,7 +407,7 @@ public static class CloudLayout
 
     internal static float Round(double v) => (float)(Math.Round(v * 10000) / 10000);
 
-    /// <summary>What a leaf's placement depends on: its vector (and, for the tree arrangement, its parents).</summary>
+    /// <summary>What a leaf's placement depends on: its stored vector as is (and, for the tree arrangement, its parents).</summary>
     private static ulong LeafHash(float[] v, int index, CloudLayoutOptions o, CloudTreeInput? tree)
     {
         ulong h = HashOf(v);

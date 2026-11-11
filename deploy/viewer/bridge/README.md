@@ -57,7 +57,8 @@ short key exits with code 2 (the unit does not restart it).
 | `Bridge:AuditLog` | `/var/log/mineclaw-bridge/audit.jsonl` | one line per write (no bodies) |
 | `Bridge:ServerVersion` | `server-version.txt` beside the db, else `b1.8.1` | block names |
 | `Bridge:HeatHalfLifeS` | `120` | memory heat decay half-life |
-| `Bridge:ReloadCheckSeconds` | `60` | how often the in-memory vectors / RAPTOR tree are checked against the db |
+| `Bridge:ReloadCheckSeconds` | `60` | how often the in-memory vectors / RAPTOR tree are checked against the db (on a read route; never on `/v1/health`). Changed vectors are refreshed in place |
+| `Bridge:TreeReloadSeconds` | `300` | the least time between two loads of a changed RAPTOR tree (a replacement bank that shares the vector arrays) |
 
 Any key can also come as env `MINECLAW_Section__Key` (the bot's `/etc/mineclaw/mineclaw.env` is read by the unit, which is how
 the embeddings key reaches search).

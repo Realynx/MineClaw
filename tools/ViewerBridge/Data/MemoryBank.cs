@@ -52,8 +52,11 @@ public sealed class MemoryBank : IDisposable
 
     public static string StateKeyOf(RaptorTree t) => $"{t.BuildId}-{t.Count}-{t.InsertSeq}-{t.NextIndex}";
 
+    /// <param name="previous">The bank this one replaces: its unchanged vectors are shared, not decoded again.</param>
+    /// <param name="shareTreeVectors">The tree's nodes share the flat index's arrays for the same stored vectors instead of holding a
+    /// second copy of every leaf and summary vector (false only to measure the difference).</param>
     public static async Task<MemoryBank> OpenAsync(string path, AgentOptions options, IEmbeddingProvider provider, CancellationToken ct = default,
-        MemoryBank? previous = null)
+        MemoryBank? previous = null, bool shareTreeVectors = true)
     {
         var db = AgentDb.OpenReadOnly(path);
         RagIndex? rag = null;
@@ -68,7 +71,7 @@ public sealed class MemoryBank : IDisposable
             }
             rag = new RagIndex(db, options.Rag, provider, usage: null, options.Embeddings, backgroundEmbedding: false, reuseStoredVectors: previous?.Rag);
             bank = new MemoryBank(path, db, rag, provider) { MoodHalfLifeHours = options.Self.MoodHalfLifeHours };
-            await Task.Run(() => bank.LoadTreeAsync(options, ct), ct).ConfigureAwait(false);
+            await Task.Run(() => bank.LoadTreeAsync(options, shareTreeVectors, ct), ct).ConfigureAwait(false);
             return bank;
         }
         catch
@@ -79,7 +82,7 @@ public sealed class MemoryBank : IDisposable
         }
     }
 
-    private async Task LoadTreeAsync(AgentOptions options, CancellationToken ct)
+    private async Task LoadTreeAsync(AgentOptions options, bool shareVectors, CancellationToken ct)
     {
         var json = Db.TableExists("meta") ? Db.GetMeta(AgentDbRaptorStore.MetaKey) : null;
         if (string.IsNullOrEmpty(json)) { TreeNote = "no RAPTOR tree stored in this db"; return; }
@@ -92,10 +95,14 @@ public sealed class MemoryBank : IDisposable
         var raptor = new RaptorMemory(Db, Rag, embedder, ReadOnlySummarizer.Instance, options.Rag.Raptor,
             raptorOptions: new RaptorOptions { ReuseImmutableEmbeddings = true });
         raptor.Store.LoadWritesBack = false;
+        // The flat index already holds every vector the tree is made of (same rows of the vectors table): share those arrays.
+        var meta = TreeMeta;
+        if (shareVectors) raptor.Store.ReuseVector = (docId, hash) => Rag.SharedVector(docId, hash, meta.EmbeddingModel, meta.Dimensions);
         bool loaded;
         try { loaded = await raptor.LoadAsync(ct).ConfigureAwait(false); }
         catch (Microsoft.Data.Sqlite.SqliteException) { loaded = false; }
         catch { raptor.Dispose(); throw; }
+        finally { raptor.Store.ReuseVector = null; }
         if (!loaded) { TreeNote = "the stored tree could not be loaded"; raptor.Dispose(); return; }
         Raptor = raptor;
         if (VectorSearch) Rag.Augmenter = raptor;
@@ -183,30 +190,37 @@ public sealed class ReadOnlySummarizer : ISummarizer
         throw new InvalidOperationException("read-only bridge: summaries are only written by the bot");
 }
 
-/// <summary>
-/// The live bank: opened lazily, re-opened in the background when the bot changed what the bank caches in memory (the stored
-/// tree, the docs or the vectors), checked at most every <see cref="BridgeOptions.ReloadCheckSeconds"/>. Requests always get a
-/// complete bank; the replaced one is disposed after a grace period.
+//// <summary>
+/// The live bank: opened lazily and kept up to date with what the bot writes, checked at most every
+/// <see cref="BridgeOptions.ReloadCheckSeconds"/> on a request that reads it (never on <c>/v1/health</c>). Only what changed is
+/// reloaded: new, re-embedded or deleted vectors are refreshed in place in the current bank (ids and hashes, then only the changed
+/// blobs); a changed RAPTOR tree opens a replacement bank (sharing every unchanged vector array), at most every
+/// <see cref="BridgeOptions.TreeReloadSeconds"/>. Requests always get a complete bank; a replaced one is disposed after a grace period.
+/// Before 11-10 every change of any doc (the bot touches <c>updated</c> constantly) rebuilt the whole bank about once a minute.
 /// </summary>
 public sealed class BankHost(BridgeConfig config, ILogger<BankHost> log) : IDisposable
 {
     private readonly SemaphoreSlim _open = new(1, 1);
     private readonly object _reloadLock = new();
     private MemoryBank? _bank;
-    private string? _signature;
-    private DateTimeOffset _checked;
+    private (string Tree, string Docs) _signature;
+    private DateTimeOffset _checked, _treeLoaded;
     private Task? _reload;
     private bool _disposed;
 
     /// <summary>Overrides the provider (tests).</summary>
     public IEmbeddingProvider? Embeddings { get; init; }
 
-    public async Task<MemoryBank> GetAsync(CancellationToken ct)
+    /// <summary>The bank, opened on first use; a due check for the bot's changes starts in the background.</summary>
+    public Task<MemoryBank> GetAsync(CancellationToken ct) => GetAsync(ct, check: true);
+
+    /// <param name="check">False: never starts a reload check (the health probe, polled all the time, must not drive reloads).</param>
+    public async Task<MemoryBank> GetAsync(CancellationToken ct, bool check)
     {
         var b = _bank;
         if (b != null)
         {
-            MaybeCheck(b);
+            if (check) MaybeCheck(b);
             return b;
         }
         await _open.WaitAsync(ct);
@@ -216,8 +230,8 @@ public sealed class BankHost(BridgeConfig config, ILogger<BankHost> log) : IDisp
             var path = config.DbPath;
             if (!File.Exists(path)) throw new BankUnavailableException("the agent db is not there");
             var bank = await MemoryBank.OpenAsync(path, config.Agent, Embeddings ?? config.CreateEmbeddings(), ct);
-            _signature = Signature(bank.Db);
-            _checked = DateTimeOffset.UtcNow;
+            _signature = Signatures(bank.Db);
+            _checked = _treeLoaded = DateTimeOffset.UtcNow;
             log.LogInformation("opened the agent db read-only ({Tree})", bank.HasTree ? "tree loaded" : bank.TreeNote);
             return _bank = bank;
         }
@@ -246,30 +260,62 @@ public sealed class BankHost(BridgeConfig config, ILogger<BankHost> log) : IDisp
     {
         try
         {
-            var sig = Signature(b.Db);
-            if (sig == _signature) return;
-            var fresh = await MemoryBank.OpenAsync(b.Path, config.Agent, Embeddings ?? config.CreateEmbeddings(), previous: b);
-            MemoryBank? old;
-            lock (_reloadLock)
-            {
-                if (_disposed) { fresh.Dispose(); return; }
-                old = Interlocked.Exchange(ref _bank, fresh);
-                _signature = sig; // A change during loading must trigger another refresh, not be mistaken for loaded data.
-            }
-            log.LogInformation("reloaded the agent db caches (the bot changed the tree, docs or vectors)");
-            if (old != null) _ = Task.Delay(TimeSpan.FromSeconds(30)).ContinueWith(_ => old.Dispose(), TaskScheduler.Default);
+            var sig = Signatures(b.Db);
+            (string Tree, string Docs) was;
+            DateTimeOffset treeLoaded;
+            lock (_reloadLock) (was, treeLoaded) = (_signature, _treeLoaded);
+            bool treeDue = sig.Tree != was.Tree && DateTimeOffset.UtcNow - treeLoaded >= TimeSpan.FromSeconds(Math.Max(0, config.Bridge.TreeReloadSeconds));
+            if (treeDue) { await ReplaceAsync(b, sig); return; }
+            if (sig.Docs == was.Docs) return; // nothing, or a tree change that waits for its minimum interval
+            var (changed, removed) = b.Rag.RefreshVectors();
+            lock (_reloadLock) _signature = (was.Tree, sig.Docs); // the tree part stays pending until the tree is reloaded
+            if (changed + removed > 0) log.LogDebug("refreshed the agent db vectors in place ({Changed} new or changed, {Removed} removed)", changed, removed);
         }
         catch (Exception ex) { log.LogWarning(ex, "db reload check failed: {Message}", ex.Message); }
         finally { lock (_reloadLock) _reload = null; }
     }
 
-    /// <summary>What the bank caches: the tree meta, the docs and the vectors (cheap aggregate reads).</summary>
+    /// <summary>The tree changed: a replacement bank (vectors shared with the current one) is swapped in.</summary>
+    private async Task ReplaceAsync(MemoryBank b, (string Tree, string Docs) sig)
+    {
+        var fresh = await MemoryBank.OpenAsync(b.Path, config.Agent, Embeddings ?? config.CreateEmbeddings(), previous: b);
+        MemoryBank? old;
+        lock (_reloadLock)
+        {
+            if (_disposed) { fresh.Dispose(); return; }
+            old = Interlocked.Exchange(ref _bank, fresh);
+            _signature = sig; // A change during loading must trigger another refresh, not be mistaken for loaded data.
+            _treeLoaded = DateTimeOffset.UtcNow;
+        }
+        log.LogInformation("reloaded the agent db caches (the bot changed the RAPTOR tree)");
+        if (old != null) _ = Task.Delay(TimeSpan.FromSeconds(30)).ContinueWith(_ => old.Dispose(), TaskScheduler.Default);
+    }
+
+    /// <summary>What the bank caches, in two parts (cheap aggregate reads over indexes): the RAPTOR tree (its meta row, its node
+    /// docs, the summaries' last rewrite) and the flat vectors (the docs and vectors tables).</summary>
+    public static (string Tree, string Docs) Signatures(AgentDb db)
+    {
+        bool docs = db.TableExists("docs");
+        string meta = db.TableExists("meta") ? db.GetMeta(AgentDbRaptorStore.MetaKey) ?? "" : "";
+        string nodes = docs ? Row(db, "SELECT count(*), max(raptor_idx) FROM docs WHERE raptor_idx IS NOT NULL") : "";
+        string summaries = docs ? Row(db, $"SELECT max(updated) FROM docs WHERE kind = '{RagIndex.SummaryKind}'") : "";
+        string all = docs ? Row(db, "SELECT count(*), max(id), max(updated) FROM docs") : "";
+        string vec = db.TableExists("vectors") ? db.ScalarLong("SELECT count(*) FROM vectors").ToString(System.Globalization.CultureInfo.InvariantCulture) : "";
+        return ($"{meta.GetHashCode(StringComparison.Ordinal)}|{nodes}|{summaries}", $"{all}|{vec}");
+    }
+
+    private static string Row(AgentDb db, string sql) => string.Join(",", db.Query(sql, r =>
+    {
+        var parts = new string[r.FieldCount];
+        for (int i = 0; i < parts.Length; i++) parts[i] = Convert.ToString(r.GetValue(i), System.Globalization.CultureInfo.InvariantCulture) ?? "";
+        return string.Join("/", parts);
+    }));
+
+    /// <summary>Both parts in one string (a change of either changes it).</summary>
     public static string Signature(AgentDb db)
     {
-        string meta = db.TableExists("meta") ? db.GetMeta(AgentDbRaptorStore.MetaKey) ?? "" : "";
-        string docs = db.TableExists("docs") ? string.Join(",", db.Query("SELECT count(*), max(id), max(updated) FROM docs", r => $"{r.GetValue(0)}/{r.GetValue(1)}/{r.GetValue(2)}")) : "";
-        string vec = db.TableExists("vectors") ? db.ScalarLong("SELECT count(*) FROM vectors").ToString(System.Globalization.CultureInfo.InvariantCulture) : "";
-        return $"{meta.GetHashCode(StringComparison.Ordinal)}|{docs}|{vec}";
+        var (tree, docs) = Signatures(db);
+        return tree + "|" + docs;
     }
 
     public void Dispose()

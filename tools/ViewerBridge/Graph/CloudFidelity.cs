@@ -21,13 +21,11 @@ public static class CloudFidelity
         var pts = leaves.Where(l => l.Vector.Length == dims && dims > 0 && positions.ContainsKey(l.Index)).OrderBy(l => l.Index).ToList();
         int n = pts.Count;
         if (n < 3) return new CloudFidelityDto("cosine", 0, 1, 1, 1, 0, varianceExplained);
-        var vecs = new float[n][];
+        // Pairs are normalised as they are measured (two buffers), not every leaf up front: that held a copy of every leaf vector.
+        var ua = new float[dims];
+        var ub = new float[dims];
         var xy = new (double X, double Y)[n];
-        for (int i = 0; i < n; i++)
-        {
-            vecs[i] = VectorMath.Normalized(pts[i].Vector);
-            xy[i] = positions[pts[i].Index];
-        }
+        for (int i = 0; i < n; i++) xy[i] = positions[pts[i].Index];
         var pairs = Pairs(n, maxPairs, seed);
         int m = pairs.Count;
         var delta = new double[m];
@@ -36,7 +34,11 @@ public static class CloudFidelity
         for (int k = 0; k < m; k++)
         {
             var (a, b) = pairs[k];
-            delta[k] = Math.Max(0, 1 - VectorMath.Dot(vecs[a], vecs[b]));
+            pts[a].Vector.AsSpan().CopyTo(ua);
+            VectorMath.Normalize(ua);
+            pts[b].Vector.AsSpan().CopyTo(ub);
+            VectorMath.Normalize(ub);
+            delta[k] = Math.Max(0, 1 - VectorMath.Dot(ua, ub));
             double dx = xy[a].X - xy[b].X, dy = xy[a].Y - xy[b].Y;
             drawn[k] = Math.Sqrt(dx * dx + dy * dy);
             sdd += delta[k] * drawn[k];

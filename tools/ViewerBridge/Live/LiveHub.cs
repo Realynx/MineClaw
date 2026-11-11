@@ -176,8 +176,8 @@ public sealed partial class LiveHub : IDisposable
         _ = Loop("events", TimeSpan.FromMilliseconds(500), PollCursor("api/events", "event", "events"), ct);
         _ = Loop("feed", TimeSpan.FromMilliseconds(500), PollCursor("api/viewer/feed", "feed", "lines"), ct);
         _ = Loop("now", TimeSpan.FromMilliseconds(500), PollNow(), ct);
-        // World motion has a persistent transport independent of the short-lived request pools.
-        _ = StreamWorld(ct);
+        // World motion has a persistent transport independent of the short-lived request pools, watched for silence and restarted.
+        _ = SuperviseWorld(ct);
         _ = Loop("hive", TimeSpan.FromSeconds(3), PollChanged("api/hive/tree", "hive", "hive", TimeSpan.FromSeconds(3)), ct);
         _ = Loop("memoryActivity", TimeSpan.FromSeconds(1), PollMemory(), ct);
         _ = Loop("story", TimeSpan.FromMilliseconds(500), PollStory(), ct, StoryBackoff);

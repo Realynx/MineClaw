@@ -899,6 +899,56 @@ public sealed class RagIndex : IRetrievalIndex, IDisposable
         }
     }
 
+    /// <summary>
+    /// Brings the vector cache up to date with the db without re-reading what it already holds: one pass over the ids and content
+    /// hashes (no blobs), then the blobs of only the new or re-embedded vectors; entries whose doc or vector is gone are dropped.
+    /// For a read-only process that follows another's writes (the viewer bridge), where a full <see cref="ReloadVectors"/> would
+    /// decode every blob again. Returns how many entries were added or replaced, and how many were removed. A doc whose kind or
+    /// tag changed without a new vector keeps its cached kind and tag until the next full load.
+    /// </summary>
+    public (int Changed, int Removed) RefreshVectors()
+    {
+        if (!_embedder.IsAvailable) return (0, 0);
+        int dims = _embedder.Dimensions;
+        var rows = _db.Query("""
+            SELECT v.doc_id, v.hash FROM vectors v JOIN docs d ON d.id = v.doc_id WHERE v.model = $m AND v.dims = $d AND v.hash = d.hash
+            """, r => (Id: r.GetInt64(0), Hash: r.GetString(1)), ("$m", VecModel), ("$d", dims));
+        var live = new HashSet<long>(rows.Count);
+        var fetch = new List<long>();
+        int removed = 0;
+        lock (_vecLock)
+        {
+            foreach (var (id, hash) in rows)
+            {
+                live.Add(id);
+                if (!_vecs.TryGetValue(id, out var e) || e.Hash != hash || e.Vec.Length != dims) fetch.Add(id);
+            }
+            foreach (var id in _vecs.Keys.Where(k => !live.Contains(k)).ToList()) { _vecs.Remove(id); removed++; }
+        }
+        rows = null!;
+        int changed = 0;
+        const int Chunk = 256;
+        for (int start = 0; start < fetch.Count; start += Chunk)
+        {
+            var ids = fetch.GetRange(start, Math.Min(Chunk, fetch.Count - start));
+            var args = new List<(string, object?)> { ("$m", VecModel), ("$d", dims) };
+            for (int i = 0; i < ids.Count; i++) args.Add(("$i" + i, ids[i]));
+            var fresh = _db.Query($"""
+                SELECT v.doc_id, d.kind, d.tag, v.vec, CASE WHEN d.min_x IS NULL THEN NULL ELSE d.dimension END, v.hash
+                FROM vectors v JOIN docs d ON d.id = v.doc_id WHERE v.model = $m AND v.dims = $d AND v.hash = d.hash
+                  AND v.doc_id IN ({string.Join(",", ids.Select((_, i) => "$i" + i))})
+                """, r => (r.GetInt64(0), new VecEntry(r.GetString(1), AgentDb.StrOrNull(r, 2), VectorMath.FromBlob((byte[])r.GetValue(3)),
+                    r.IsDBNull(4) ? (int?)null : (int)r.GetInt64(4), r.GetString(5))), [.. args]);
+            lock (_vecLock)
+                foreach (var (id, entry) in fresh) { _vecs[id] = entry; changed++; }
+        }
+        return (changed, removed);
+    }
+
+    /// <summary>The cached array of doc <paramref name="id"/>'s vector when it is exactly the stored one for <paramref name="hash"/>
+    /// in <paramref name="model"/> / <paramref name="dimensions"/> (else null). Callers must never modify it.</summary>
+    public float[]? SharedVector(long id, string hash, string model, int dimensions) => StoredVector(id, hash, model, dimensions);
+
     // Stored vectors are immutable: updates replace entries, and search normalizes only its own query. A replacement
     // read-only index can share unchanged payloads without retaining the previous index, its database, or its locks.
     private float[]? StoredVector(long id, string hash, string model, int dimensions)

@@ -29,6 +29,21 @@ public sealed class WorldStreamStatsTests
     }
 
     [Fact]
+    public void A_silent_stream_reports_the_gap_still_open_and_the_stalls_the_watchdog_dropped()
+    {
+        // Live 11-10 the line read "0 frames, longest gap 0 ms, reconnects 0" for two hours: the open interval was never counted.
+        var stats = new LiveHub.WorldStreamStats();
+        stats.Start(0);
+        stats.Frame(At(0));
+        stats.Stall();
+        stats.Reconnect();
+        Assert.Equal("1 frames, longest gap 60000 ms, reconnects 1, gc pause 0 ms, stalls 1", stats.Take(0, At(60_000)));
+        Assert.Equal("0 frames, longest gap 120000 ms, reconnects 0, gc pause 0 ms", stats.Take(0, At(120_000)));
+        stats.PumpRestart();
+        Assert.EndsWith(", pump restarts 1", stats.Take(0, At(121_000)));
+    }
+
+    [Fact]
     public void A_new_subscription_does_not_count_the_idle_time_before_it_as_a_gap()
     {
         var stats = new LiveHub.WorldStreamStats();
