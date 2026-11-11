@@ -106,6 +106,34 @@ public sealed class StoryGearTests
     }
 
     [Fact]
+    public void Turning_tool_auto_crafting_on_again_lifts_a_cancelled_tool_bill()
+    {
+        var (c, h, w) = StoryRig.Make(2);
+        Only(c, 0, WorkTypes.Mine);
+        Only(c, 1, WorkTypes.Craft);
+        w.Set(3, 64, 3, 15);
+        w.Set(Table.X, Table.Y, Table.Z, 58);
+        Assert.Null(c.WorkbenchOp("designate", Table).Error);
+        h.Lives[c.P(0)] = FakeStoryHost.Bare(0, 64, 0, new Stack(270, 0, 1));
+        h.Lives[c.P(1)] = FakeStoryHost.Bare(1, 64, 0);
+        Store(c, new Stack(4, 0, 3), new Stack(280, 0, 2)); // cobblestone and sticks
+        c.ToolCraftCancelled(Name(w, 274)); // the owner cancelled the stone pickaxe's auto bill earlier
+        c.Designate("add", "mine", null, [new P3(3, 64, 3)], null);
+        Assert.NotEqual("dig", Kind(c.Next(0)));
+        c.State();
+        Assert.Empty(c.Benches.Single().Tasks); // cancelled: never made by itself
+
+        // Turning auto-crafting off keeps the cancellation; turning it on lifts it, and the tool's auto bill comes back.
+        Assert.Null(c.SetGearOptions(false, null));
+        Assert.Contains(Name(w, 274), c.Meta.Gear.NoCraft);
+        Assert.Null(c.SetGearOptions(true, null));
+        Assert.Empty(c.Meta.Gear.NoCraft);
+        Assert.NotEqual("dig", Kind(c.Next(0)));
+        c.State();
+        Assert.Equal(Name(w, 274), c.Benches.Single().Tasks.Single().ForItem);
+    }
+
+    [Fact]
     public void A_worn_tool_is_swapped_for_a_fresh_stored_one()
     {
         var (c, h, w) = StoryRig.Make(1);

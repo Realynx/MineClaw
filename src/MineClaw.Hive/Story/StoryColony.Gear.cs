@@ -506,6 +506,9 @@ public sealed partial class StoryColony
         lock (_lock)
         {
             if (autoCraftTools is { } a) Meta.Gear.AutoCraftTools = a;
+            // Turning tool auto-crafting on also lifts the owner's earlier cancellations (ToolCraftCancelled): until then a cancelled
+            // tool, such as the shovel a soil rule needs, stayed un-craftable with no way back.
+            if (autoCraftTools == true && Meta.Gear.NoCraft.Count > 0) Meta.Gear.NoCraft.Clear();
             if (count is { } n) Meta.Gear.SpareCount = n;
             if (kinds != null) Meta.Gear.SpareKinds = kinds;
             Touch();
@@ -950,8 +953,8 @@ public sealed partial class StoryColony
         return null;
     }
 
-    /// <summary>The owner cancelled a tool's auto bill: that tool isn't made by itself again (until the owner turns it back on by
-    /// changing the tool options).</summary>
+    /// <summary>The owner cancelled a tool's auto bill: that tool isn't made by itself again (until the owner turns tool auto-crafting
+    /// on again in the options: <see cref="SetGearOptions"/>).</summary>
     internal void ToolCraftCancelled(string item)
     {
         if (!Meta.Gear.NoCraft.Contains(item)) Meta.Gear.NoCraft.Add(item);
