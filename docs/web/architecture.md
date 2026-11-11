@@ -256,8 +256,9 @@ Tests for these go in `tests/MineClaw.App.Tests` (or the closest existing test p
     lock: `state-build`, `save` and `seen-chest` (the bot's chest memory read for a storage record), each with its count,
     total and longest. After the pick stages and tick phases come `haul parts`, the haul search (`work:haul`) split into
     `seen` (the chest-memory sweep), `ents` (the world's entities, when the haul search reads them first in a pick),
-    `drops`, `resort` and `look`; then `chest-looks` (the list of every chest look the bots remember, read under the lock
-    by a chest-memory sweep) and `haul scans N: entities max E, drops max D` (the most entities and drops one haul search
+    `drops`, `resort` and `look`; then `chest-looks` (the list of every chest look the bots remember, read for a
+    chest-memory sweep: in the background, off the colony lock, by the live host; a sweep uses the last read, at most a few
+    seconds old) and `haul scans N: entities max E, drops max D` (the most entities and drops one haul search
     saw).
   - The line always prints the `/api/story…` routes and `/api/world/containers`. Before, only the twelve routes with the
     most total time were printed, and a colony command, rare and cheap in total, was never among them.

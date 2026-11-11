@@ -51,6 +51,41 @@ public sealed class StoryChestLooksTests
         Assert.True(h.LookReads <= 4, $"the memory's look times read {h.LookReads} times for 4 searches");
     }
 
+    /// <summary>
+    /// Live 11-10: "chest-looks 41x 1980 ms max 760 ms" a minute, each a whole read of the chest memory under the colony lock. A host
+    /// that allows it (the live one) has the look times read in the background: a search uses the last read and, when it is 5 s old,
+    /// has the next one read; a slow read holds nobody up. A look after the last read is found once the next read is in.
+    /// </summary>
+    [Fact]
+    public void A_host_that_reads_off_the_lock_has_the_look_times_read_in_the_background()
+    {
+        var (c, h, t) = Rig(feed: true);
+        h.LooksOffLock = true;
+        h.Seen[A] = ([new Stack(5, 0, 12)], t.Now.AddSeconds(1));
+        HaulSearch(c, h, t); // the first read: at once, as before
+        Assert.Equal(1, h.LookReads);
+        Assert.Equal(12, c.StorageAt(A)!.Contents.Single().Count);
+        // A player's deposit into B, looked at by a body; then the chest memory turns slow.
+        h.Seen[B] = ([new Stack(4, 0, 30)], t.Now);
+        using var gate = new ManualResetEventSlim(false);
+        h.LooksGate = gate;
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        HaulSearch(c, h, t); // the last read is old: the next one starts in the background (it waits at the gate)
+        HaulSearch(c, h, t); // one at a time: none more starts, and the searches use the last read
+        Assert.True(clock.Elapsed < TimeSpan.FromSeconds(10), $"the searches waited {clock.Elapsed} for the chest memory");
+        Assert.Empty(c.StorageAt(B)!.Contents); // not in the last read yet
+        gate.Set();
+        Assert.True(SpinWait.SpinUntil(() => h.LookReads == 2 && !Reading(c), TimeSpan.FromSeconds(10)), "the background read never ended");
+        h.LooksGate = null;
+        HaulSearch(c, h, t);
+        Assert.Equal(30, c.StorageAt(B)!.Contents.Single().Count);
+        Assert.True(SpinWait.SpinUntil(() => !Reading(c), TimeSpan.FromSeconds(10)));
+        Assert.InRange(h.LookReads, 2, 3); // the first, the slow one, maybe one more begun by the last search
+    }
+
+    private static bool Reading(StoryColony c) =>
+        (int)typeof(StoryColony).GetField("_looksReading", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!.GetValue(c)! != 0;
+
     [Fact]
     public void A_host_that_cannot_tell_has_every_due_chest_read_as_before()
     {

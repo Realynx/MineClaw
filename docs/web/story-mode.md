@@ -647,10 +647,13 @@ so the other pawns stood idle in front of a field of work. Fox also saw pawns st
     someone's feet, by a spot where a pawn got stuck, forbidden, out of sight (a haul or hunt mark whose entity no body sees). The
     mark named is the first such one in the colony's list, so pawns idle for the same reason group together. What the picker skips
     on purpose is no blocked work and gives no reason: a cave plant the colony marked itself, and trees an under-ground pawn leaves
-    to a pawn up top.
+    to a pawn up top. A buried mark waits for a dig beside it, as a mine's own buried cells do: when the same search also held work
+    back (`waiting: …` below), that is the reason given, not the buried mark.
   - `waiting: …`: what its last search found held back. Examples: `waiting: build b3: need 48 block of iron (short: 432 iron ore)`,
     `waiting: bill Iron Ingot suspended: no iron ore …`, `waiting: Torch for build b5: no coal …`,
     `waiting: build b2: the level below is still being built`, `waiting: build b2: its open cells are taken or backing off`,
+    `waiting: build b7: its 2 open cells are being dug by other pawns (the rest open as they go)` (a mine design whose face is
+    narrow, such as a one-wide stair shaft: its other cells are buried until those are dug),
     `waiting: the furnace at 6,64,0 is in use`
   - `priority 0`: there is work, but only of kinds it doesn't do
 

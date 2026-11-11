@@ -36,15 +36,57 @@ public sealed partial class StoryColony
             if (!asked)
             {
                 asked = true;
-                long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
-                try { looks = Host.ChestLooks(); } catch (Exception) { looks = null; } // once a sweep, and only when a chest is due
-                finally { StoryPerf.ChestLooks.Note(t0); } // every chest look in the bot's db, under the colony lock: on the perf line
+                looks = Looks(); // once a sweep, and only when a chest is due
             }
             if (RefreshOneSeen(st, force, looks)) any = true;
         }
         if (any) _stockChanged = true;
         return any;
     }
+
+    /// <summary>The chest memory's look times as of a moment ago (<see cref="IStoryHost.ChestLooks"/>; null = the host can't tell).</summary>
+    private IReadOnlyDictionary<P3, DateTimeOffset>? Looks()
+    {
+        if (!Host.ChestLooksOffLock) return ReadLooks();
+        var now = Now;
+        if (_looksCopy is not { } copy)
+        {
+            var first = ReadLooks(); // the first read: now, under the lock, as before
+            _looksCopy = new LooksCopy(now, first);
+            return first;
+        }
+        if (now - copy.At >= LooksFresh && Interlocked.CompareExchange(ref _looksReading, 1, 0) == 0)
+            _ = Task.Run(() =>
+            {
+                try { _looksCopy = new LooksCopy(now, ReadLooks()); }
+                finally { Volatile.Write(ref _looksReading, 0); }
+            });
+        return copy.Looks;
+    }
+
+    /// <summary>One read of the chest memory's look times (timed for the perf line's "chest-looks").</summary>
+    private IReadOnlyDictionary<P3, DateTimeOffset>? ReadLooks()
+    {
+        long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
+        try { return Host.ChestLooks(); }
+        catch (Exception) { return null; }
+        finally { StoryPerf.ChestLooks.Note(t0); } // a whole read of the chest memory: on the perf line
+    }
+
+    /// <summary>A read of the chest memory's look times and when it began.</summary>
+    private sealed record LooksCopy(DateTimeOffset At, IReadOnlyDictionary<P3, DateTimeOffset>? Looks);
+
+    /// <summary>
+    /// The last read of the chest memory's look times, for a host that reads it off the lock (<see cref="IStoryHost.ChestLooksOffLock"/>).
+    /// Live 11-10: "chest-looks 41x 1980 ms max 760 ms" a minute, each a whole read of the chest memory under the colony lock (behind
+    /// the store's own gate while the bots wrote their observations). A sweep now uses this copy and, once it is <see cref="LooksFresh"/>
+    /// old, has the next one read in the background (one at a time). It is only ever a filter: a chest whose look is newer than the
+    /// copy is read a few seconds later (each chest is asked at most every 5 s anyway), and a pawn's own look reads its chest at once
+    /// (<see cref="LookDone"/>: forced, no copy).
+    /// </summary>
+    private volatile LooksCopy? _looksCopy;
+    private int _looksReading;
+    private static readonly TimeSpan LooksFresh = TimeSpan.FromSeconds(5);
 
     private bool SeenAskedLately(StorageState st) => _seenAsked.TryGetValue(st.Chest, out var asked) && Now - asked < TimeSpan.FromSeconds(5);
 

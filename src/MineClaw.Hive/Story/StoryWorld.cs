@@ -75,6 +75,10 @@ public interface IStoryHost
     /// one per chest): the colony asks <see cref="SeenChest"/> only for chests looked into after its record. Null = the host can't
     /// tell (every chest is asked).</summary>
     IReadOnlyDictionary<P3, DateTimeOffset>? ChestLooks() => null;
+    /// <summary><see cref="ChestLooks"/> may be read on another thread, outside the colony's lock (it is thread-safe and costs a whole
+    /// read of the chest memory): the colony then keeps a copy a few seconds old and reads the next one in the background. False: read
+    /// when needed, under the lock (a test's fake memory, read the moment it changes).</summary>
+    bool ChestLooksOffLock => false;
     /// <summary>The host remembers what bodies saw in chests (<see cref="SeenChest"/>): a chest nobody looked into is then worth a look
     /// before a bill waits.</summary>
     bool KnowsChests => false;

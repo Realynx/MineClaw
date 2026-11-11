@@ -82,7 +82,7 @@ public sealed partial class StoryColony
         {
             long now = Now.UtcTicks;
             Wake(ix, now);
-            bool todo = MineOpenCells(ix, b, from, cap, now, open, digs, out bool capped) || ParkedTodo(ix, b, digs);
+            bool todo = MineOpenCells(ix, b, from, cap, now, open, digs, out bool capped, out int dugNow) || ParkedTodo(ix, b, digs);
             if (!todo) { FinishIfNoneLeft(ix, b, digs); return null; } // the cells left are the other work's
             if (capped) LeftUpTop(b);
             CollectionsMarshal.AsSpan(open).Sort(MineOrder);
@@ -99,6 +99,7 @@ public sealed partial class StoryColony
             }
             // Its blocks wait in cells not dug out yet: that is mining work, maybe nobody's at hand.
             if (!digs && openCount == 0) { Blocked($"build {b.Id}: its blocks go in once the mine is dug to them (mining work)"); return null; }
+            if (openCount == 0 && !capped && UnderLiquid(b) == null) { MineHeld(b, dugNow); return null; }
             NoteBuildHeld(b, ref scan, openCount);
             return null;
         }
@@ -108,6 +109,18 @@ public sealed partial class StoryColony
             _mineOpen = open;
         }
     }
+
+    /// <summary>
+    /// No dig of the mine is open to this pawn: the exposed ones are out with other pawns (<paramref name="dugNow"/>) and the rest are
+    /// buried until those are dug (a narrow face: a one-wide stair shaft opens two or three cells at a time, whatever the mine's size),
+    /// or every cell left is buried. Said as the pawn's blocked work (live 11-10: pawns of a colony with a 47,000-cell strip mine
+    /// queued stood idle in turn as "no reachable target: mine …: buried", an unrelated surface mark, while the mine said "the level
+    /// below is still being built", which is no mine's reason).
+    /// </summary>
+    private void MineHeld(BuildState b, int dugNow) =>
+        Blocked(dugNow > 0
+            ? $"build {b.Id}: its {dugNow} open cell{(dugNow == 1 ? " is" : "s are")} being dug by other pawns (the rest open as they go)"
+            : $"build {b.Id}: its cells left are buried (none is beside an open one)");
 
     /// <summary>A looked-at cell of the list is to do or out with a pawn. The search starts where the last one found one (finished cells
     /// stay in the list, so a long-dug tunnel would otherwise be walked on every builder's pick).</summary>
@@ -179,11 +192,12 @@ public sealed partial class StoryColony
     /// <summary>
     /// The looked-at cells of one work (<paramref name="digs"/>: the digs, else the blocks put in): the exposed ones still to do into
     /// <paramref name="open"/> (none higher than <paramref name="cap"/>: <paramref name="capped"/> says some were), the buried ones
-    /// parked. True when any of them is to do or out with a pawn.
+    /// parked. True when any of them is to do or out with a pawn (<paramref name="leased"/>: how many are out).
     /// </summary>
-    private bool MineOpenCells(MineCells ix, BuildState b, P3 from, int cap, long now, List<MineOpen> open, bool digs, out bool capped)
+    private bool MineOpenCells(MineCells ix, BuildState b, P3 from, int cap, long now, List<MineOpen> open, bool digs, out bool capped, out int leased)
     {
         capped = false;
+        leased = 0;
         bool todo = false;
         var gs = b.Ghosts;
         var looked = digs ? ix.Looked : ix.LookedPlaces;
@@ -203,7 +217,7 @@ public sealed partial class StoryColony
                 continue;
             }
             if (!g.Job) continue;
-            if (g.State == "leased") { todo = true; continue; }
+            if (g.State == "leased") { todo = true; leased++; continue; }
             if (g.State != "todo") continue;
             todo = true;
             if (!MineExposed(ix, i, g, now, out bool fresh))

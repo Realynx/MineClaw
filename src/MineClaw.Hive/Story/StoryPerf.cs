@@ -116,8 +116,9 @@ public static class StoryPerf
         return Stopwatch.GetTimestamp();
     }
 
-    /// <summary>The host's list of every chest look (<see cref="IStoryHost.ChestLooks"/>: the bot's chest memory, its db), read under the
-    /// colony lock by a chest-memory sweep.</summary>
+    /// <summary>The host's list of every chest look (<see cref="IStoryHost.ChestLooks"/>: the bot's chest memory, its db), read by a
+    /// chest-memory sweep: in the background, off the colony lock, when the host allows it (<see cref="IStoryHost.ChestLooksOffLock"/>;
+    /// the live host does), else under the lock.</summary>
     internal static readonly Meter ChestLooks = new();
 
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, Meter> HaulParts = new(StringComparer.Ordinal);

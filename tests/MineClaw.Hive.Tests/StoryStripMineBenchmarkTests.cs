@@ -447,6 +447,9 @@ public sealed class StoryStripMineBenchmarkTests(ITestOutputHelper output)
     /// <summary>The digest of <see cref="Which_job_each_pawn_gets_is_pinned"/>. A49B4DFA82E54C1E at main 70c76aeb and through the lane's
     /// speed-ups; changed on purpose when a mine design's digs became mining work (11-10): the miners take the design's digs instead of
     /// quarrying, and those jobs' type is <c>mine</c>, not <c>build</c> (B23A5B484BFC7344). Changed again when the fixture moved to
-    /// made-up coordinates (the same shape, 1600 east and 800 south): the jobs' positions, and the ores placed by position, moved.</summary>
-    private const string Golden = "3211521576AB2F41";
+    /// made-up coordinates (the same shape, 1600 east and 800 south): the jobs' positions, and the ores placed by position, moved
+    /// (3211521576AB2F41). Changed again when the re-sort plan's stamp kept every storage (11-10): its factor of 62 per storage had
+    /// shifted all but the last 64 storages out, so a change to an earlier chest left the colony's plan stale; the plan now follows
+    /// every chest's change, and the re-sort trips that read it changed.</summary>
+    private const string Golden = "FE2ABE2EA30F2D85";
 }

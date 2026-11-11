@@ -491,21 +491,70 @@ public sealed partial class StoryColony
 
     private (long Stamp, List<(StorageState Src, Stack St, StorageState? Dst, bool Fallback)> Moves)? _resort;
 
-    /// <summary>What should leave which chest (cached per storage revision): misfiled stacks to a chest that takes them (or the
-    /// fallback), and stacks a better chest pulls. Items without a destination remain stored.</summary>
+    /// <summary>The picking pawn's own re-sort plan (<see cref="Resorts"/>), when it differs from the colony's: reused per call.</summary>
+    private readonly List<(StorageState Src, Stack St, StorageState? Dst, bool Fallback)> _resortMine = new();
+
+    /// <summary>Re-sort plans made from scratch (stacks × chests each): the tests hold it to one per colony change, not one per pawn.</summary>
+    internal long ResortPlanBuilds;
+
+    /// <summary>
+    /// What should leave which chest for the picking pawn: misfiled stacks to a chest that takes them (or the fallback), and stacks a
+    /// better chest pulls. Items without a destination remain stored. The plan is the colony's (<see cref="ResortPlan"/>: every chest
+    /// anybody gets to), made once per colony change; the pawn's own plan differs only where a move goes to a chest it failed to reach
+    /// (its rest from that chest, StoryColony.Ledger.cs): those stacks alone are asked again with its own chests. Live 11-10 (374
+    /// chests, 30 pawns, about 300 "can't reach chest" in 10 minutes): the plan was keyed with the pawn's own chests, so every pawn
+    /// made it anew (stacks × chests each), "resort 240x 32537 ms" a minute under the colony lock. The answers are the same: the best
+    /// chest of a smaller set is the colony's best unless that one is left out, and a stack that moves nowhere for the colony moves
+    /// nowhere with fewer chests.
+    /// </summary>
     private List<(StorageState Src, Stack St, StorageState? Dst, bool Fallback)> Resorts()
     {
-        long stamp = Storages.Count + (Meta.UnfilteredTakesAnything ? 7 : 0) + (Meta.KeepDisallowed ? 13 : 0);
-        // Availability is pawn-specific and expires with route cooldowns. Do not share a negative
-        // fallback decision with another pawn or keep it after the route can be tried again.
-        foreach (var s in Storages) stamp = (stamp * 31 + s.Rev) * 2 + (ChestOpen(s.Chest) ? 1 : 0);
-        if (_resort is { } r && r.Stamp == stamp) return r.Moves;
-        var moves = new List<(StorageState, Stack, StorageState?, bool)>();
-        foreach (var src in Storages)
-            foreach (var st in src.Contents)
-                ResortStack(src, st, moves);
-        _resort = (stamp, moves);
-        return moves;
+        var plan = ResortPlan();
+        if (_pickPawn is not { } pawn || _chestSkip.Count == 0 || !SkipsAny(pawn, plan)) return plan;
+        var mine = _resortMine;
+        mine.Clear();
+        foreach (var m in plan)
+            if (m.Dst is { } d && ChestSkipped(pawn, d.Chest)) ResortStack(m.Src, m.St, mine); // its own chests: maybe another, maybe none
+            else mine.Add(m);
+        return mine;
+    }
+
+    /// <summary>The re-sort plan's stamp factor per storage: odd (a large prime), so every storage's revision stays in the stamp.</summary>
+    private const long StampFactor = 1_000_003;
+
+    /// <summary>A move of the plan goes to a chest this pawn is resting from.</summary>
+    private bool SkipsAny(string pawn, List<(StorageState Src, Stack St, StorageState? Dst, bool Fallback)> plan)
+    {
+        foreach (var m in plan)
+            if (m.Dst is { } d && ChestSkipped(pawn, d.Chest)) return true;
+        return false;
+    }
+
+    /// <summary>The colony's re-sort plan (no pawn's own unreachable chests), made again when a storage, the chests anybody gets to or
+    /// the fallback settings changed (the stamp the plan always had, without the picking pawn's own chests), or when a chest's
+    /// deconstruction or its signs drop it (<see cref="_resort"/> set to null there).</summary>
+    private List<(StorageState Src, Stack St, StorageState? Dst, bool Fallback)> ResortPlan()
+    {
+        var pawn = _pickPawn;
+        _pickPawn = null; // the colony's chests: the picking pawn's own rests are applied after (Resorts)
+        try
+        {
+            long stamp = Storages.Count + (Meta.UnfilteredTakesAnything ? 7 : 0) + (Meta.KeepDisallowed ? 13 : 0);
+            // A chest nobody gets to (or whose lid is shut) is out until its time is up: the stamp holds which ones are.
+            // Every storage counts: the factor is odd, so no storage's change is ever shifted out. (It was "(stamp * 31 + Rev) * 2", a
+            // factor of 62 per storage: past the last 64 storages 2^64 wrapped to 0, so a take, put or look on any earlier chest left the
+            // plan stale, its moves fetching stacks that were gone. Hidden while every pawn's own rests changed the stamp each pick.)
+            foreach (var s in Storages) stamp = stamp * StampFactor + s.Rev * 2 + (ChestOpen(s.Chest) ? 1 : 0);
+            if (_resort is { } r && r.Stamp == stamp) return r.Moves;
+            ResortPlanBuilds++;
+            var moves = new List<(StorageState, Stack, StorageState?, bool)>();
+            foreach (var src in Storages)
+                foreach (var st in src.Contents)
+                    ResortStack(src, st, moves);
+            _resort = (stamp, moves);
+            return moves;
+        }
+        finally { _pickPawn = pawn; }
     }
 
     /// <summary>A stack moves to a chest that takes it when its own doesn't, or to a better chest that pulls it.</summary>

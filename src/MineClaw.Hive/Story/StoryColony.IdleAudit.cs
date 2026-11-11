@@ -184,12 +184,16 @@ public sealed partial class StoryColony
         if (_passed[i]++ == 0) _passedFirst[i] = (kind, at);
     }
 
-    /// <summary>"no reachable target: mine 4,60,2: buried (…)": the search's most common pass (null = it passed over none).</summary>
-    private string? NoReachNote()
+    /// <summary>"no reachable target: mine 4,60,2: buried (…)": the search's most common pass (null = it passed over none). A buried
+    /// mark waits for a dig beside it as a mine's own buried cells do: when the search also held work back (<paramref name="held"/>:
+    /// its blocked notes, such as a mine whose open cells are all being dug), that says why the pawn is idle and the mark doesn't
+    /// hide it (live 11-10: every idle pawn said "no reachable target: mine …: buried", one surface mark by the chests, while a
+    /// 47,000-cell strip mine had its two or three open cells taken).</summary>
+    private string? NoReachNote(bool held = false)
     {
         int best = -1;
         for (int i = 0; i < _passed.Length; i++) if (_passed[i] > 0 && !ByDesign[i] && (best < 0 || _passed[i] > _passed[best])) best = i;
-        if (best < 0) return null;
+        if (best < 0 || held && best == (int)MarkPass.Buried) return null;
         var (kind, at) = _passedFirst[best];
         var key = ((MarkPass)best, kind, at);
         if (_noReachText.TryGetValue(key, out var text)) return text;
@@ -292,12 +296,15 @@ public sealed partial class StoryColony
         return true;
     }
 
-    /// <summary>A work search from the tick (not a pick): the per-search caches set up as a pick does (tool plans are per pawn).</summary>
+    /// <summary>A work search from the tick (not a pick): the per-search caches set up as a pick does (tool plans are per pawn; which
+    /// chests take each item, once per item: StoryColony.ChestChoice.cs). Live 11-10: the tick's wake phase was 28 s a minute, its
+    /// searches asking every chest about every stored stack and drop with no such memory.</summary>
     private ActiveJob? ProbeWork(PawnState p, PawnLive live, long stamp)
     {
         if (_humanControlled.Contains(p.Name)) return null;
         _toolPlans.Clear();
         _pickPawn = p.Name; _pickClaims = null;
+        BeginChestChoice();
         try
         {
             var job = Work(p, live);
@@ -305,6 +312,6 @@ public sealed partial class StoryColony
             else _probed.Remove(p.Name);
             return job;
         }
-        finally { _pickPawn = null; }
+        finally { EndChestChoice(); _pickPawn = null; }
     }
 }

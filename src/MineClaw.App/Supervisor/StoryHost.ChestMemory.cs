@@ -23,6 +23,7 @@ public sealed partial class StoryHost
     /// the chests looked into after its record: <see cref="SeenChest"/> is three queries a chest). Null when there is no memory.</summary>
     public IReadOnlyDictionary<P3, DateTimeOffset>? ChestLooks()
     {
+        // Thread-safe: the store's queries take its own gate, the world's dimension is a plain read (ChestLooksOffLock).
         if (_observations is not { } obs || World is not { } world) return null;
         try
         {
@@ -37,6 +38,10 @@ public sealed partial class StoryHost
             return null;
         }
     }
+
+    /// <summary>The colony reads <see cref="ChestLooks"/> in the background, off its lock (live 11-10: "chest-looks 41x 1980 ms max 760
+    /// ms" a minute under the colony lock, a whole read of the chest memory waiting on the store's gate).</summary>
+    public bool ChestLooksOffLock => true;
 
     /// <summary>An observation key "x,y,z" as a cell, or null.</summary>
     private static P3? Cell(string key)

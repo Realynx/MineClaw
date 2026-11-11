@@ -86,9 +86,15 @@ internal sealed class FakeStoryHost(FakeStoryWorld world) : IStoryHost
     public IReadOnlyDictionary<P3, DateTimeOffset>? ChestLooks()
     {
         if (!FeedsLooks) return null;
-        LookReads++;
+        LooksGate?.Wait(TimeSpan.FromSeconds(30)); // a test holds the read (a slow chest memory) while it checks the colony isn't waiting
+        Interlocked.Increment(ref LookReads);
         return Seen.ToDictionary(kv => kv.Key, kv => kv.Value.At);
     }
+    /// <summary>The colony reads the look times in the background, off its lock (as the live host lets it).</summary>
+    public bool LooksOffLock { get; set; }
+    public bool ChestLooksOffLock => LooksOffLock;
+    /// <summary>Not null: every read of the look times waits for it (set).</summary>
+    public ManualResetEventSlim? LooksGate;
     /// <summary>Remembers chests (the colony looks into unseen ones before a bill waits): off unless a test turns it on.</summary>
     public bool KnowsChests { get; set; }
     /// <summary>Player names that are the hive's own bots.</summary>

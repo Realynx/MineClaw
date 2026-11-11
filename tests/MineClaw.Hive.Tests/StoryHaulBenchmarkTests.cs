@@ -101,7 +101,7 @@ public sealed class StoryHaulBenchmarkTests(ITestOutputHelper output)
                          $"{r.W.Ents.Count} drops, {c.Storages.Sum(s => s.Contents.Count)} stored stacks, " +
                          $"{c.Storages.Count(s => s.FreeSlots == 0)} chests full or missing");
         foreach (var n in r.Names) AsPick(c, n, () => c.Candidate(WorkTypes.Haul, c.Pawns[n], r.H.Live(n))); // warm-up (JIT)
-        Meter haul = new(), dropsM = new(), rebalance = new(), resorts = new(), inspect = new(), refresh = new(), deliver = new(), pick = new();
+        Meter haul = new(), dropsM = new(), rebalance = new(), resorts = new(), kept = new(), inspect = new(), refresh = new(), deliver = new(), pick = new();
         for (int round = 0; round < 3; round++)
         {
             r.Clock.Now += TimeSpan.FromSeconds(2);
@@ -112,6 +112,8 @@ public sealed class StoryHaulBenchmarkTests(ITestOutputHelper output)
                 haul.Run(() => AsPick(c, n, () => c.Candidate(WorkTypes.Haul, p, live)));
                 dropsM.Run(() => AsPick(c, n, () => c.HaulJob(p, live)));
                 rebalance.Run(() => AsPick(c, n, () => c.RebalanceJob(p, live)));
+                // The colony's plan, this pawn's unreachable chests applied, after the drops as the haul search runs it.
+                AsPick(c, n, () => { c.HaulJob(p, live); return kept.Run(() => Call(c, "Resorts")); });
                 SetField(c, "_resort", null);
                 resorts.Run(() => AsPick(c, n, () => Call(c, "Resorts")));
                 inspect.Run(() => AsPick(c, n, () => Call(c, "HaulInspection", p, live)));
@@ -129,6 +131,7 @@ public sealed class StoryHaulBenchmarkTests(ITestOutputHelper output)
         output.WriteLine(dropsM.Line("  drops (HaulJob)"));
         output.WriteLine(rebalance.Line("  re-sort trip (RebalanceJob)"));
         output.WriteLine(resorts.Line("    re-sort plan, made anew (Resorts)"));
+        output.WriteLine(kept.Line("    re-sort plan, the colony's kept"));
         output.WriteLine(inspect.Line("  chest upkeep (HaulInspection)"));
         output.WriteLine(refresh.Line("  chest memory (RefreshSeen)"));
         output.WriteLine(deliver.Line("delivery of its pockets (Deliver)"));
@@ -139,6 +142,7 @@ public sealed class StoryHaulBenchmarkTests(ITestOutputHelper output)
         Assert.InRange(haul.AvgBytes, 0, 512L << 10);
         Assert.InRange(dropsM.AvgBytes, 0, 512L << 10);
         Assert.InRange(resorts.AvgBytes, 0, 512L << 10);
+        Assert.InRange(kept.AvgBytes, 0, KeptPlanBytes);
         Assert.InRange(rebalance.AvgBytes, 0, 512L << 10);
         Assert.InRange(inspect.AvgBytes, 0, 256L << 10);
         Assert.InRange(deliver.AvgBytes, 0, 512L << 10);
@@ -177,6 +181,94 @@ public sealed class StoryHaulBenchmarkTests(ITestOutputHelper output)
             });
         }
         return (reach, guard, dest, reached / (double)r.Names.Count);
+    }
+
+    /// <summary>What a re-sort plan for a pawn may allocate once the colony's plan is made (the pawn's own unreachable chests applied):
+    /// a plan made anew cost 113 KB (600 drops) to 204 KB (2,400) after 11-10's first fix, 18-73 MB before it.</summary>
+    private const long KeptPlanBytes = 48L << 10;
+
+    private static string Moves(object plan) =>
+        string.Join("\n", ((System.Collections.IEnumerable)plan).Cast<(StorageState Src, Stack St, StorageState? Dst, bool Fallback)>()
+            .Select(m => $"{m.Src.Chest} {m.St} -> {m.Dst?.Chest.ToString() ?? "-"}{(m.Fallback ? " fallback" : "")}"));
+
+    /// <summary>
+    /// Live 11-10 after the first haul fix: "haul parts: resort 240x 32537 ms max 3208 ms" a minute, and the tick's wake phase 28 s.
+    /// The re-sort plan was keyed with the picking pawn's own unreachable chests, so with every pawn failing its own chests ("can't
+    /// reach chest" about 300 times in 10 minutes) every pawn made it anew (stored stacks × chests). Now the colony's plan is made once
+    /// per colony change and each pawn's is that plan with the moves to its own unreachable chests asked again: the same moves as a
+    /// plan made for that pawn alone, at no rebuild and a few KB.
+    /// </summary>
+    [Theory]
+    [InlineData(600, 8)]
+    [InlineData(2400, 2)]
+    public void The_resort_plan_is_made_once_per_colony_change_not_per_pawn(int drops, int filled)
+    {
+        var r = StoryHaulFixture.Make(drops: drops, filled: filled);
+        var c = r.C;
+        var colony = Moves(Call(c, "Resorts")!); // no pawn picking: the colony's plan
+        Assert.Equal(1, c.ResortPlanBuilds);
+        int differs = 0;
+        long bytes = 0, calls = 0;
+        for (int round = 0; round < 3; round++)
+        {
+            r.Clock.Now += TimeSpan.FromSeconds(2);
+            foreach (var n in r.Names)
+            {
+                // The pawn's plan as its pick sees it, against a plan made for this pawn alone (as each pawn's pick made it before).
+                var mine = AsPick(c, n, () =>
+                {
+                    c.HaulJob(c.Pawns[n], r.H.Live(n)); // as the haul search runs it: after the drops (their chests' answers kept)
+                    long a0 = Alloc();
+                    var plan = Call(c, "Resorts")!;
+                    bytes += Alloc() - a0;
+                    calls++;
+                    return Moves(plan);
+                });
+                var alone = AsPick(c, n, () =>
+                {
+                    var moves = new List<(StorageState, Stack, StorageState?, bool)>();
+                    foreach (var src in c.Storages)
+                        foreach (var st in src.Contents)
+                            Call(c, "ResortStack", src, st, moves);
+                    return Moves(moves);
+                });
+                Assert.Equal(alone, mine);
+                if (mine != colony) differs++;
+            }
+        }
+        output.WriteLine($"{c.Storages.Sum(s => s.Contents.Count)} stored stacks, {colony.Split('\n').Length} moves; {differs} of {calls} pawn plans " +
+                         $"differ from the colony's; {bytes / Math.Max(1, calls) / 1024.0:0.0} KB a pawn's plan; plans made {c.ResortPlanBuilds}");
+        // The pawns' unreachable chests differ (the live condition), and many of them are where the colony's plan moves things.
+        Assert.True(differs >= calls / 2, $"only {differs} of {calls} pawn plans differ from the colony's");
+        Assert.Equal(1, c.ResortPlanBuilds); // 90 pawn plans, one plan made
+        Assert.InRange(bytes / Math.Max(1, calls), 0, KeptPlanBytes);
+        // A colony change (a take from a chest) has it made again once, for every pawn after it. One of the first chests: every
+        // storage's change counts, not only the last 64's (the stamp's old factor of 62 shifted the earlier ones out).
+        var full = c.Storages.First(s => s.Contents.Count > 0);
+        Assert.True(c.Storages.IndexOf(full) < c.Storages.Count - 64);
+        var stack = full.Contents[0];
+        c.TakeContents(full, stack.Id, stack.Meta, 1);
+        foreach (var n in r.Names) AsPick(c, n, () => Call(c, "Resorts"));
+        Assert.Equal(2, c.ResortPlanBuilds);
+    }
+
+    /// <summary>
+    /// A re-sort trip takes a misfiled stack out of an early chest (one before the last 64 storages): the colony's plan no longer
+    /// lists it, so the next free pawn isn't sent to fetch what is gone. The stamp used to multiply by 62 per storage, so a change
+    /// before the last 64 wrapped out of it (62^64 = 0 mod 2^64) and the cached plan kept the move.
+    /// </summary>
+    [Fact]
+    public void A_take_from_an_early_chest_drops_its_move_from_the_resort_plan()
+    {
+        var r = StoryHaulFixture.Make(drops: 0);
+        var c = r.C;
+        var plan = ((System.Collections.IEnumerable)Call(c, "Resorts")!).Cast<(StorageState Src, Stack St, StorageState? Dst, bool Fallback)>().ToList();
+        var early = plan.FirstOrDefault(m => c.Storages.IndexOf(m.Src) < c.Storages.Count - 64);
+        Assert.NotNull(early.Src); // the fixture has misfiled stacks in its first chests
+        c.TakeContents(early.Src, early.St.Id, early.St.Meta, early.St.Count);
+        var after = Moves(Call(c, "Resorts")!);
+        Assert.DoesNotContain($"{early.Src.Chest} {early.St} ->", after);
+        Assert.Equal(2, c.ResortPlanBuilds);
     }
 
     /// <summary>

@@ -278,7 +278,7 @@ public sealed partial class StoryColony
         try
         {
             var job = WorkSearch(p, live);
-            _looks[p.Name] = new Look(Now, job != null, notes, job == null ? NoReachNote() : null, _passed[(int)MarkPass.LeftToSurface] > 0);
+            _looks[p.Name] = new Look(Now, job != null, notes, job == null ? NoReachNote(held: notes.Count > 0) : null, _passed[(int)MarkPass.LeftToSurface] > 0);
             return job;
         }
         finally { _blockedNotes = outer; }
