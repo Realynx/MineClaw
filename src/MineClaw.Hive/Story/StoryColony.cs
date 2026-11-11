@@ -77,6 +77,7 @@ public sealed partial class StoryColony : IStoryPort
         Store = store;
         _time = time ?? TimeProvider.System;
         _log = log ?? NullLogger.Instance;
+        ReopenParkedTemps(); // a saved cleanup parked for the owner gets another chance (StoryColony.TempBlocks.cs)
     }
 
     public ColonyMeta Meta { get; }

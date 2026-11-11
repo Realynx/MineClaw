@@ -367,10 +367,11 @@ public sealed class StoryTempBlocksTests
     /// Live 11-06, the first sweep: "deconstruct at 243,64,359 failed 3 times: stonebrick … is protected (a placed stonebrick)" (a pawn's
     /// dirt had been replaced by someone's stonebrick), "won't dig the dirt I'm standing on at 243,63,360", and old boxes in a cave
     /// "unreachable even by pillaring/bridging" retried every minute. A cleanup digs from beside its block; one refused as protected is
-    /// never dug (not ours any more) but listed for the owner; one out of reach rests 30 minutes, and a second miss leaves it to the owner.
+    /// never dug (not ours any more) but listed for the owner. Fox 11-11 ("one of them is not even marked for destruction"): one out of
+    /// reach is never left to the owner any more; it rests 30 minutes, then an hour, and so on, keeps its mark with the reason, and is said.
     /// </summary>
     [Fact]
-    public void A_cleanup_digs_from_beside_one_refused_as_protected_is_listed_and_one_out_of_reach_rests_then_is_left_to_the_owner()
+    public void A_cleanup_digs_from_beside_one_refused_as_protected_is_listed_and_one_out_of_reach_rests_longer_each_miss_and_stays_marked()
     {
         var clock = new ManualTime();
         var (c, h, w) = StoryRig.Make(1, time: clock);
@@ -394,12 +395,15 @@ public sealed class StoryTempBlocksTests
         c.Report(pawn, j1["id"]!.GetValue<string>(), "failed", $"dirt at {at1} is protected (a placed dirt (someone's floor, wall or path))", null);
         Assert.Single(Cleanups(c));
         Assert.Contains(c.Alerts, a => a.Text.StartsWith("Left for you to remove") && a.Text.Contains(at1) && a.Text.Contains("not the pawns' block"));
-        // The second: out of reach. It rests, then a second miss leaves it to the owner.
+        // The second: out of reach. It rests, longer after each miss, and stays marked.
         var j2 = c.Next();
         var at2 = j2["at"]!.GetValue<string>();
         Assert.NotEqual(at1, at2);
         c.Report(pawn, j2["id"]!.GetValue<string>(), "failed", $"no path to within 3 of ({at2.Replace(",", ", ")}) (not from under the ground) (timeout); unreachable even by pillaring/bridging", null);
-        Assert.Single(Cleanups(c));
+        var resting = Assert.Single(Cleanups(c));
+        Assert.Equal("waiting", resting.Status);
+        Assert.Contains("out of reach for now (tried 1×, again in 30 min)", resting.Wait);
+        Assert.Contains(c.Alerts, a => a.Text.Contains("couldn't reach yet") && a.Text.Contains(at2));
         var saved = System.Text.Json.JsonSerializer.Serialize(c.Meta);
         var loaded = new StoryColony(System.Text.Json.JsonSerializer.Deserialize<ColonyMeta>(saved)!, h, clock);
         loaded.Joined([pawn]);
@@ -414,16 +418,28 @@ public sealed class StoryTempBlocksTests
         var j3 = c.Next();
         Assert.Equal(at2, j3["at"]!.GetValue<string>());
         c.Report(pawn, j3["id"]!.GetValue<string>(), "failed", $"no path to within 3 of ({at2.Replace(",", ", ")}) (no route); unreachable even by pillaring/bridging", null);
-        Assert.Empty(Cleanups(c));
-        Assert.Contains(c.Alerts, a => a.Text.StartsWith("Left for you to remove") && a.Text.Contains(at2) && a.Text.Contains("out of reach"));
+        var still = Assert.Single(Cleanups(c)); // never parked without a mark
+        Assert.Equal(at2, still.At!.Value.ToString());
+        Assert.Contains("tried 2×, again in 1 h", still.Wait);
+        var temp2 = c.Meta.TempBlocks!.Single(t => t.At.ToString() == at2);
+        Assert.Null(temp2.DeferredReason);
+        Assert.Equal(clock.Now + TimeSpan.FromHours(1), temp2.RetryAfter);
+        Assert.DoesNotContain(c.Alerts, a => a.Text.StartsWith("Left for you to remove") && a.Text.Contains(at2));
         Assert.DoesNotContain(c.Alerts, a => a.Level == "warn" && a.Text.Contains("deconstruct"));
+        // A restart: the one refused as protected stays the owner's (its body judged it somebody else's block: never reopened, never
+        // taught to a cleaner as the hive's own); the resting one keeps its rest and its mark; the stray scan recreates neither.
         foreach (var t in c.Meta.TempBlocks!) h.Placed.Add((t.At, t.Id, pawn));
         saved = System.Text.Json.JsonSerializer.Serialize(c.Meta);
         loaded = new StoryColony(System.Text.Json.JsonSerializer.Deserialize<ColonyMeta>(saved)!, h, clock);
         loaded.Joined([pawn]);
+        Only(loaded, WorkTypes.Build);
+        loaded.Designations.AddRange(c.Designations);
+        h.Owned.Clear();
         loaded.Tick();
-        Assert.Empty(Cleanups(loaded)); // the next startup's stray scan must not recreate the failed cave jobs
-        Assert.All(loaded.Meta.TempBlocks!, t => Assert.NotNull(t.DeferredReason));
+        Assert.Equal(at2, Assert.Single(Cleanups(loaded)).At!.Value.ToString());
+        Assert.Equal("not the pawns' block any more", loaded.Meta.TempBlocks!.Single(t => t.At.ToString() == at1).DeferredReason);
+        Assert.NotEqual(at1, loaded.Next()["at"]?.GetValue<string>());
+        Assert.DoesNotContain(h.Owned, o => o.At.ToString() == at1);
     }
 
     [Fact]

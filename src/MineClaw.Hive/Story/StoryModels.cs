@@ -621,14 +621,20 @@ public sealed class TempBlockState
     public DateTimeOffset Since { get; set; }
     /// <summary>The cleanup designation queued for it (null = its pawn may still take it back).</summary>
     public string? Designation { get; set; }
-    /// <summary>Cleanups that couldn't reach it: the first rests it long, the second leaves it to the owner.</summary>
+    /// <summary>Cleanups that couldn't reach it: each rests it longer (<see cref="StoryColony.TempUnreachBackoff"/>); it stays marked.</summary>
     public int Misses { get; set; }
     /// <summary>The owner cancelled cleanup: keep the block and do not rediscover it on reload.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public bool Cancelled { get; set; }
-    /// <summary>A cleanup left to the owner after failures: retained so the stray scan cannot recreate it on restart.</summary>
+    /// <summary>A cleanup left to the owner (refused as protected): retained so the stray scan cannot recreate it on restart, and never
+    /// reopened. Saves from before 11-11 also hold "out of reach" here; such an entry is reopened on load (a block out of reach is
+    /// retried now).</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? DeferredReason { get; set; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public DateTimeOffset? RetryAfter { get; set; }
+    /// <summary>Its block was taken from the colony's view, not from its pawn's report (the placement wasn't seen yet when it was
+    /// registered): it may be somebody else's, so a cleaner's body is never taught it as the hive's own.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool Adopted { get; set; }
 }

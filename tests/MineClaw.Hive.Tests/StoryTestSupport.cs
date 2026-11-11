@@ -131,6 +131,9 @@ internal sealed class FakeStoryHost(FakeStoryWorld world) : IStoryHost
     {
         if (Temps.TryGetValue(account, out var t)) t.RemoveAll(b => b.At == at);
     }
+    /// <summary>Blocks a pawn's body was taught as the hive's own before a cleanup: (cleaner, cell, block, placed by).</summary>
+    public List<(string Account, P3 At, int Id, string PlacedBy)> Owned { get; } = new();
+    public void OwnTemporaryBlock(string account, P3 at, int id, string placedBy) => Owned.Add((account, at, id, placedBy));
     /// <summary>The hive's placed-block log: every block a bot placed that still stands, and who.</summary>
     public List<(P3 At, int Id, string Bot)> Placed { get; } = new();
     public IReadOnlyList<(P3 At, int Id, string Bot)> PlacedByBots() { PlacedReads++; return Placed.ToList(); }

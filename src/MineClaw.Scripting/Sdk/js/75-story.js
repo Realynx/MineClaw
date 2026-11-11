@@ -584,8 +584,34 @@
     try { poleUp(at, s.steps, placed, act, s.block, j); return fn(); }
     finally { if (!access) unpole(placed, s.stand, visit); }
   };
+  // A pillar of the pawns' temporary blocks taken down from its top (j.unpole {back, cells: top first}; j.stand: the cell over its
+  // top). Standing there, it digs down beneath itself a block at a time (dig_here: one short step down each), then walks back out to
+  // j.unpole.back. No way back (it is down in a pit or a cave now, or stuck up on what it couldn't dig): the colony teleports it home,
+  // the owner's rule (a pawn's own blocks never stay; it teleports rather than leave them). -> the result; null when it couldn't get
+  // onto the top (the usual dig from beside follows).
+  const unpoleFromTop = j => {
+    const g = globalThis, u = j.unpole, stand = String(j.stand);
+    if (feet() !== stand) g.go(stand, 0);
+    if (feet() !== stand) return null;
+    let n = 0, failed = null;
+    for (const c of u.cells || []) {
+      if (H.block(c) === 'air') continue;
+      const r = digHere(c);
+      if (!good(r) && H.block(c) !== 'air') { failed = r; break; }
+      n++;
+    }
+    const took = 'took ' + n + ' block(s) of the pillar down from its top';
+    const out = u.back ? g.go(u.back, 1) : { ok: true };
+    let tail = '';
+    if (!good(out)) {
+      try { tail = '; stranded at ' + feet() + ': ' + H.storyStuck('stranded at ' + feet() + ' after taking down a temporary pillar (' + why(out) + ')'); }
+      catch (e) { tail = '; stranded at ' + feet(); }
+    }
+    return failed ? { ok: false, msg: took + '; ' + why(failed) + tail } : { ok: true, msg: took + tail };
+  };
   // dig(at, job?): the usual dig; a block out of reach is reached from a pillar (reachUp), never just given up on. j.ordered (a
-  // preserved zone's repair): the owner's clear (clear_dig), which the preserved-block filter lets through.
+  // preserved zone's repair): the owner's clear (clear_dig), which the preserved-block filter lets through. j.unpole: a temporary
+  // pillar taken down from its top (unpoleFromTop).
   const dig = (at, j) => {
     if (j && j.storage_sign) return typeof globalThis.remove_storage_sign === 'function'
       ? call('remove_storage_sign', at, j.storage_sign.chest, j.storage_sign.lines)
@@ -593,6 +619,7 @@
     // A chest designation never falls back to a plain/forced dig: the atomic action must freshly prove both halves empty.
     if (j && j.deconstruct) return typeof globalThis.deconstruct_chest === 'function'
       ? call('deconstruct_chest', at) : { ok: false, msg: 'safe chest deconstruction is unavailable' };
+    if (j && j.unpole && j.stand) { const top = unpoleFromTop(j); if (top) return top; }
     const g = globalThis, one = () => (j && (j.ordered || j.replace) ? clearDig(at, j) : g.dig(at)), r = one();
     if (g.ok(r) || !REACH.test(r.msg || '')) return r;
     return reachUp(at, () => j && (j.ordered || j.replace) ? clearDig(at, j) : digHere(at), j);

@@ -448,14 +448,37 @@ public sealed partial class StoryColony
         var s = new MarkSearch(kind, digs, digs || kind is "cut" or "chop", World, live.Online ? Support(live.X, live.Y, live.Z).ToHashSet() : []);
         _markToolWaits = 0;
         _markToolWhy = null;
+        _markTempRests = 0;
+        _markTempNext = null;
         var best = NearestMark(p, live, from, list, s);
-        if (best.D == null) { MarksToolHeld(kind); return null; }
+        if (best.D == null) { MarksToolHeld(kind); TempMarksResting(kind); return null; }
         return MarkJob(p, live, type, scriptKind, label, list, best, s);
     }
 
     /// <summary>The marks the last designation search passed over for want of a tool, and the first one's want.</summary>
     private int _markToolWaits;
     private string? _markToolWhy;
+    /// <summary>Temporary blocks' removal marks the last search passed over because a cleanup couldn't reach them (resting), and the
+    /// soonest retry.</summary>
+    private int _markTempRests;
+    private DateTimeOffset? _markTempNext;
+
+    /// <summary>A mark passed over: counted when it is a temporary block's removal resting after a cleanup couldn't reach it.</summary>
+    private void CountTempRest(DesignationState d)
+    {
+        if (!d.Auto || d.Kind != "deconstruct" || Meta.TempBlocks?.FirstOrDefault(t => t.Designation == d.Id && t.RetryAfter > Now) is not { RetryAfter: { } until })
+            return;
+        _markTempRests++;
+        if (_markTempNext is not { } n || until < n) _markTempNext = until;
+    }
+
+    /// <summary>No mark was open and some were temporary blocks out of reach for now: said as held-back work (Fox 11-11: leftover
+    /// pillars must show what is left and why), e.g. "deconstruct marks: 3 temporary block(s) out of reach for now (next try in 25 min)".</summary>
+    private void TempMarksResting(string kind)
+    {
+        if (_markTempRests == 0 || _markTempNext is not { } next) return;
+        Blocked($"{kind} marks: {_markTempRests} temporary block(s) out of reach for now (next try in {Minutes(next - Now)})");
+    }
 
     /// <summary>
     /// No mark was open to the pawn and some waited for a tool: said as its held-back work, ahead of what the work types after this
@@ -486,7 +509,8 @@ public sealed partial class StoryColony
             var at = x.Target;
             double score = at.Dist(from) - 0.25 * at.Y + (s.Mine.Contains(at) ? 1000 : 0);
             if (score >= bestScore) continue;
-            if (!Open(x.Key, p.Name, null) || !MarkWorkable(p, live, x.D, at, s, ref stoodOn)) continue; // leased or resting, else why not
+            if (!Open(x.Key, p.Name, null)) { CountTempRest(x.D); continue; } // leased or resting
+            if (!MarkWorkable(p, live, x.D, at, s, ref stoodOn)) continue; // else why not
             best = x;
             bestScore = score;
         }
@@ -499,7 +523,11 @@ public sealed partial class StoryColony
     private bool MarkWorkable(PawnState p, PawnLive live, DesignationState d, P3 at, MarkSearch s, ref HashSet<P3>? stoodOn)
     {
         if (d.OreOrigin != null) return false; // vein work retains its parent's work type and access rules
-        if (d.Auto && Meta.TempBlocks?.Any(t => t.Designation == d.Id && (t.RetryAfter > Now || t.DeferredReason != null)) == true) return false;
+        if (d.Auto && Meta.TempBlocks?.Any(t => t.Designation == d.Id && (t.RetryAfter > Now || t.DeferredReason != null)) == true)
+        {
+            CountTempRest(d);
+            return false;
+        }
         if (MarkPassedOver(p.Name, d, at, s, ref stoodOn) is { } pass) { PassedMark(pass, s.Kind, at); return false; }
         // No tool for its material (carried or stored): the target waits, said on the map, no failure.
         if (s.Tooled && s.W is { } w && PlanTool(p, live, s.Kind == "chop" ? ChopBlockAt(w, at, d.Blocks) : w.Block(at.X, at.Y, at.Z).Id)
@@ -543,6 +571,10 @@ public sealed partial class StoryColony
         (DesignationState D, string Key, P3 Target) best, MarkSearch s)
     {
         var (d, key, target) = best;
+        // A pillar of the pawns' temporary blocks: taken down from its top when the top is walkable (StoryColony.TempPillars.cs).
+        var pillar = s.Digs && s.W != null && IsTempMark(d) ? TempPillarFor(p, s.W, d) : null;
+        if (pillar != null) (d, key, target) = (pillar.Mark, DesignationKey(pillar.Mark), pillar.Top);
+        if (s.W != null && IsTempMark(d)) OwnTempBlocks(p.Name, s.W, pillar?.Cells ?? [target]);
         bool chest = s.W is { } world && ManualChestRemoval(d, world, target);
         if (chest)
         {
@@ -553,22 +585,26 @@ public sealed partial class StoryColony
                 return preparation.Job;
             }
         }
-        // A temporary block's cleanup always digs from beside it (live 11-06: "won't dig the dirt I'm standing on … the drop below is too far").
-        P3? stand = s.Digs && s.W != null && (s.Mine.Contains(target) || IsTempMark(d))
-            ? StandBeside(s.W, target, c => c == target || list.Any(o => o.Target == c)) : null;
+        // A temporary block's cleanup otherwise digs from beside it (live 11-06: "won't dig the dirt I'm standing on … the drop below is
+        // too far": a lone block over a drop).
+        P3? stand = pillar?.Stand ?? (s.Digs && s.W != null && (s.Mine.Contains(target) || IsTempMark(d))
+            ? StandBeside(s.W, target, c => c == target || list.Any(o => o.Target == c)) : null);
         NoteWait(d, null);
         var tool = s.Tooled && s.W != null ? PlanTool(p, live,
             s.Kind == "chop" ? ChopBlockAt(s.W, target, d.Blocks) : s.W.Block(target.X, target.Y, target.Z).Id) : null;
         string kind = s.Kind;
-        return WithTool(tool, Job(type, scriptKind, d.Label ?? label, target, key, "designation", d.Id, "working",
+        var job = WithTool(tool, Job(type, scriptKind, d.Label ?? label, target, key, "designation", d.Id, "working",
             j =>
             {
                 if (chest) j["deconstruct"] = true;
                 FillStorageSignJob(d, j);
                 if (d.Replant != null) j["replant"] = d.Replant;
                 if (kind == "chop") ChopFill(j, d.Blocks);
-                if (stand is { } st) j["stand"] = st.ToString(); // it stands on its target: step off to the side first
+                if (stand is { } st) j["stand"] = st.ToString(); // it stands on its target: step off to the side first (a pillar: onto its top)
+                if (pillar != null) j["unpole"] = pillar.Json();
             }, xp: kind == "chop" ? 40 : 20));
+        if (pillar != null) job.MoreLeases.AddRange(pillar.MoreKeys);
+        return job;
     }
 
     /// <summary>A designation's lease (and rest) key: its entity, or its block (a tall plant's lower half).</summary>

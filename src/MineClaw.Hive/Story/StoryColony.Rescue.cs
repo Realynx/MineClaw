@@ -269,7 +269,7 @@ public sealed partial class StoryColony
         if (MissKey(j) is { } key)
         {
             // A build batch ends done also when its first cell was missed: that cell's misses end when it is built (CellDone).
-            if (j.Source != "ghost") { _unreachBy.Remove(key); _pawnFails.Remove(PawnKey(key, p.Name)); }
+            if (j.Source != "ghost") { _unreachBy.Remove(key); _pawnFails.Remove(PawnKey(key, p.Name)); _reachWaits.Remove(key); }
             _quarryMiss.Remove(key);
         }
         if (j.Source == "rescue" && j.SourceId is { } who && _stuck.TryGetValue(who, out var s)) s.Delivered = true;
@@ -283,6 +283,7 @@ public sealed partial class StoryColony
     internal void ForgetPawnFails(string key)
     {
         _unreachBy.Remove(key);
+        _reachWaits.Remove(key);
         // Removing while walking the keys is safe for Dictionary (since .NET Core 3.0), so nothing is copied.
         foreach (var k in _pawnFails.Keys)
             if (k.Length > key.Length && k[key.Length] == '|' && k.StartsWith(key, StringComparison.Ordinal)) { _pawnFails.Remove(k); _skip.Remove(k); }

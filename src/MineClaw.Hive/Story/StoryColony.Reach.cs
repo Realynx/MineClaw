@@ -100,11 +100,26 @@ public sealed partial class StoryColony
     /// <summary>Out of reach even from a pillar ("out of reach even from a pillar: …", "out of reach: 9 block(s) to pillar up…").</summary>
     internal static bool OutOfReach(string why) => why.Contains("out of reach", StringComparison.OrdinalIgnoreCase);
 
-    /// <summary>A designation no pawn could reach even from a pillar waits with the reason (no failure, no alert).</summary>
+    /// <summary>
+    /// A designation no pawn could reach even from a pillar waits with the reason (no failure, no alert), and rests for every pawn,
+    /// longer each round (<see cref="ReachWaitRest"/>). Before, only each pawn's own rest held it (5 minutes at most), so every pawn
+    /// walked at it again and again (live 11-11: about 17,000 "out of reach even from a pillar" a day), and a walk that fails from a
+    /// pit or a cave is what sends a pawn up an escape pillar.
+    /// </summary>
     private bool ReachWait(ActiveJob j, string why)
     {
         if (j.Source != "designation" || Designations.FirstOrDefault(d => d.Id == j.SourceId) is not { } des) return false;
-        NoteWait(des, Short(why));
+        var key = DesignationKey(des);
+        int n = _reachWaits[key] = _reachWaits.GetValueOrDefault(key) + 1;
+        var rest = ReachWaitRest(n);
+        _skip[key] = Now + rest;
+        NoteWait(des, $"{Short(why)} (every pawn tried; again in {rest.TotalMinutes:0} min)");
         return true;
     }
+
+    /// <summary>Rounds of "every pawn tried, out of reach even from a pillar", by designation key (in memory; a reached target ends it).</summary>
+    private readonly Dictionary<string, int> _reachWaits = new(StringComparer.Ordinal);
+
+    /// <summary>The rest for everyone after the n-th such round: 10 min, 20, 40, 80, then 2 h.</summary>
+    internal static TimeSpan ReachWaitRest(int n) => TimeSpan.FromMinutes(Math.Min(120, 10 * Math.Pow(2, Math.Clamp(n - 1, 0, 8))));
 }

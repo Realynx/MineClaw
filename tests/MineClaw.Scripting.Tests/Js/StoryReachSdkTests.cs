@@ -473,4 +473,55 @@ public sealed class StoryReachSdkTests
         Assert.Contains("\"ok\":true", s.Outcome);
         Assert.DoesNotContain(rig.Norm(), c => c.StartsWith("withdraw "));
     }
+
+    /// <summary>
+    /// Fox 11-11: "I see some left over pillars it made … one of them is not even marked for destruction." An escape pillar's lower
+    /// blocks stand where no pawn can walk to (a pit's floor): the cleanup walks onto its top from the rim and digs down beneath itself
+    /// a block at a time; down at the bottom with no way back up, the colony teleports it home (asked without "in a pit", so it is the
+    /// teleport and never a rescuer's blocks, which would only build another pillar).
+    /// </summary>
+    [Fact]
+    public async Task A_temporary_pillar_is_taken_down_from_its_top_and_a_pawn_left_below_is_teleported_home()
+    {
+        using var rig = Make(w =>
+        {
+            for (int y = 65; y <= 68; y++) { w.SetBlock(2, y, 0, Blocks.Dirt, 0); w.SetBlock(3, y, 0, Blocks.Stone, 0); }
+        });
+        var colony = new Colony();
+        rig.Host.Story = colony;
+        rig.World.Player.ServerTeleport(new Vec3d(3.5, 69, 0.5), 70.62, 0, 0, true); // on the rim beside the pillar's top
+        var walk = rig.On["goto"];
+        rig.On["goto"] = (a, ct) =>
+        {
+            var to = Pos(a, "to");
+            if (Math.Abs(to.Y - rig.World.Player.Position.Y) > 1.5)
+                return Task.FromResult(ActResult.Fail($"no path to within 1 of ({to.X}, {to.Y}, {to.Z}) (no route)"));
+            return walk(a, ct);
+        };
+        var s = await rig.Run("return JSON.stringify(story.dig('2,68,0', {stand:'2,69,0', unpole:{back:'3,69,0', cells:['2,68,0','2,67,0','2,66,0','2,65,0']}}))");
+        Assert.True(s.Outcome.Contains("\"ok\":true"), s.Outcome + " | " + string.Join(" | ", rig.Norm()));
+        Assert.Contains("took 4 block(s) of the pillar down from its top", s.Outcome);
+        for (int y = 65; y <= 68; y++) Assert.Equal(0, rig.World.GetBlock(2, y, 0));
+        Assert.Equal(4, Count(rig, Blocks.Dirt)); // every block back in its pocket
+        Assert.Equal(65, (int)Math.Floor(rig.World.Player.Position.Y));
+        var why = Assert.Single(colony.Stuck);
+        Assert.StartsWith("stranded at 2,65,0 after taking down a temporary pillar", why);
+        Assert.DoesNotContain("in a pit", why);
+        Assert.Contains("teleported home", s.Outcome);
+    }
+
+    /// <summary>A pillar whose top it can walk back off from (on open ground): taken down the same way, and no teleport asked.</summary>
+    [Fact]
+    public async Task A_pillar_it_can_walk_back_from_needs_no_teleport()
+    {
+        using var rig = Make(w => { w.SetBlock(2, 65, 0, Blocks.Dirt, 0); w.SetBlock(2, 66, 0, Blocks.Dirt, 0); });
+        var colony = new Colony();
+        rig.Host.Story = colony;
+        rig.World.Player.ServerTeleport(new Vec3d(2.5, 67, 0.5), 68.62, 0, 0, true); // already on its top
+        var s = await rig.Run("return JSON.stringify(story.dig('2,66,0', {stand:'2,67,0', unpole:{back:'3,65,0', cells:['2,66,0','2,65,0']}}))");
+        Assert.True(s.Outcome.Contains("\"ok\":true"), s.Outcome + " | " + string.Join(" | ", rig.Norm()));
+        Assert.Equal(0, rig.World.GetBlock(2, 65, 0));
+        Assert.Equal(0, rig.World.GetBlock(2, 66, 0));
+        Assert.Empty(colony.Stuck);
+    }
 }

@@ -831,10 +831,32 @@ Now:
 - **Cleanups that fail** (live 11-06, the first sweep). A cleanup digs from a stand beside its block (never "won't dig the dirt I'm
   standing on"). One refused as protected is not the pawns' block any more (live: a stonebrick where a pawn's dirt had been): it is
   never dug, only listed ("Left for you to remove … not the pawns' block any more"). One out of reach (old boxes in a cave nobody can
-  path to) rests 30 minutes; a second miss leaves it to the owner, listed the same way (one alert every 5 minutes at most).
-  The rest deadline and deferred record survive reloads, so a restart cannot rediscover the same block as fresh cleanup work. A pawn's
-  own blocks are always minable in the same session too: an in-process body's placements join main's placed-block log (the one the
-  protection reads) at the store's next flush, not only after a restart.
+  path to) rests 30 minutes, then 1 h, 2 h, 4 h, 8 h: it is never given up and keeps its mark, waiting with the reason ("out of reach
+  for now (tried 2×, again in 1 h): …"), said in one alert every 5 minutes at most ("… temporary block(s) the pawns couldn't reach
+  yet: still marked, tried again later"). The rest deadline and deferred record survive reloads, so a restart cannot rediscover the
+  same block as fresh cleanup work. A pawn's own blocks are always minable in the same session too: an in-process body's placements
+  join main's placed-block log (the one the protection reads) at the store's next flush, not only after a restart.
+- **Leftover pillars** (added 2026-11-11). Fox: "I see some left over pillars it made … one of them is not even marked for
+  destruction." Live: 81 registry entries parked "out of reach" with no mark (63 escape pillars out of the quarry and a strip mine), 31
+  pointing at a mark that no longer existed, 6 refused as protected. Now:
+  - A vertical run of marked temporary blocks whose top has room over it and a walkable cell beside that (the rim it was climbed to),
+    or a rim cell 2-3 blocks over the top's stand to drop in from (the stub an older per-cell cleanup left below the rim), is one job
+    (`unpole` {back, cells top first}, `stand` the cell over its top): the pawn walks or drops onto the top, digs down beneath itself
+    a block at a time, walks back out; down in a pit or a cave with no way back it asks for the rescue teleport ("stranded at …
+    after taking down a temporary pillar", never the rescuer's blocks, which would build another pillar). Only with
+    `rescue_teleport` on; otherwise, and for a top nobody can walk or drop onto, the cells are dug from beside as before. A miss
+    rests the whole column with its top. The pawn that built the pillar may take it: standing over its own column for this job is
+    not "temporary access still in use".
+  - Before a cleanup digs, the cleaner's body is taught each block as the hive's own, in memory only (`IStoryHost.OwnTemporaryBlock`,
+    never saved to the shared table): the shared log keeps only the newest 8,192 cells, and without the row the step-down rule
+    refuses the block under its feet. Only blocks the registry has from the placing pawn's own report; one adopted from the view
+    (`Adopted`, a new optional field) may be anybody's and is never taught.
+  - A registry entry whose mark is gone while the block stands is marked again; one gone with its block is forgotten. A block that
+    only changed state (grass back to dirt, another meta) is still the pawn's.
+  - On load, entries parked "out of reach" (older saves) get another cleanup. One refused as protected ("not the pawns' block any
+    more") stays the owner's.
+  - A designation every pawn found "out of reach even from a pillar" rests for everyone, 10 min, then 20, 40, 80, 120 (it waited only
+    for each pawn's own 5-minute rest, about 17,000 such attempts a day, and a walk that fails from a pit sends a pawn up an escape pillar).
 - **Never on a lid.** No temporary block goes on a chest, a furnace, a crafting table or another container or workstation (a chest
   under a full block won't open; live 11-06: oak planks on storage chests 216,64,400 and 223,64,400, 241 failed opens in 7 hours): the
   walk's scaffold veto, the reach pillar's column and the build scaffold's spot all skip them. On load, a block on a storage chest's

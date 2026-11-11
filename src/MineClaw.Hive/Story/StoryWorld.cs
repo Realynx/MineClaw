@@ -113,6 +113,15 @@ public interface IStoryHost
     IReadOnlyList<(P3 At, int Id)> TemporaryBlocks(string account) => [];
     /// <summary>The owner cancelled cleanup of this block: forget it in the body's automatic cleanup ledger.</summary>
     void KeepTemporaryBlock(string account, P3 at) { }
+    /// <summary>
+    /// The pawn is sent to take back a temporary block a pawn of the colony (<paramref name="placedBy"/>, maybe itself) put down: its
+    /// body's placed-block log learns the block (<paramref name="id"/>, as the world shows it now) as the hive's own, so its soft
+    /// protection and its "a block I stand on that I placed" step-down rule let the dig through. Its log may never have had the block
+    /// (another body placed it) or have dropped it (it keeps the newest 8,192 cells). Kept in the body's memory only, never saved to the
+    /// hive's shared table; the colony asks only for blocks its registry has from the placing pawn's own report. Hard protection still
+    /// refuses (StoryColony.TempPillars.cs).
+    /// </summary>
+    void OwnTemporaryBlock(string account, P3 at, int id, string placedBy) { }
     /// <summary>Every block a hive bot placed that still stands (the shared placed-block log, overworld): who placed it. The colony's
     /// one-time look for pawns' stray blocks.</summary>
     IReadOnlyList<(P3 At, int Id, string Bot)> PlacedByBots() => [];

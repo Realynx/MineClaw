@@ -86,7 +86,10 @@ public sealed partial class StoryColony
         var cells = new BuildCells(() => BuildCellSet()); // made only when a temp block is there to check (51,000 cells live 11-10)
         AdoptBodyTemps(cells);
         if (Meta.TempBlocks is { Count: > 0 } temps)
-            foreach (var t in temps.ToList()) TempCheck(w, t, cells);
+        {
+            var marks = Designations.Select(d => d.Id).ToHashSet(StringComparer.Ordinal);
+            foreach (var t in temps.ToList()) TempCheck(w, t, cells, marks);
+        }
         if (!_straysSwept) SweepStrays(w);
         SweepDoneQuarries(w); // StoryColony.QuarrySweep.cs
         AlertQueuedTemps();
@@ -132,19 +135,21 @@ public sealed partial class StoryColony
         public bool Contains(P3 at) => (_set ??= make()).Contains(at);
     }
 
-    /// <summary>One registered cell: gone (forgotten, its cleanup mark too), a build's cell (not ours to take), left behind (queued).</summary>
-    private void TempCheck(IStoryWorld w, TempBlockState t, BuildCells buildCells)
+    /// <summary>One registered cell: gone (forgotten, its cleanup mark too), a build's cell (not ours to take), its mark gone (marked
+    /// again), left behind (queued). <paramref name="marks"/>: the ids of every designation now.</summary>
+    private void TempCheck(IStoryWorld w, TempBlockState t, BuildCells buildCells, HashSet<string> marks)
     {
         if (!w.Loaded(t.At.X, t.At.Z)) return;
         int now = w.Block(t.At.X, t.At.Y, t.At.Z).Id;
         AdoptSeen(t, now);
         if (PreservedTemp(t.At, now)) { RetirePreservedTemp(t); return; }
         if (Gone(t, now) || buildCells.Contains(t.At)) { ForgetTemp(t); return; }
+        MarkGone(t, marks);
         if (t.Cancelled || t.DeferredReason != null) { KeepTemp(t); return; }
         if (!LeftBehind(t))
         {
             // An owner back on its tower needs the whole column, including a bottom once queued while it was away.
-            if (OnOwnPillar(t, Host.Live(t.Pawn)) && Designations.FirstOrDefault(d => d.Id == t.Designation) is { Auto: true } cleanup)
+            if (InUseAsPillar(t, Host.Live(t.Pawn)) && Designations.FirstOrDefault(d => d.Id == t.Designation) is { Auto: true } cleanup)
             {
                 foreach (var (owner, job) in _current.ToList())
                     if (job.Source == "designation" && job.SourceId == cleanup.Id && Pawns.TryGetValue(owner, out var p))
@@ -181,14 +186,34 @@ public sealed partial class StoryColony
     {
         if (t.Id != 0 || now == 0 || StoryBlocks.Liquids.Contains(now)) return;
         t.Id = now;
+        t.Adopted = true; // seen, not reported: never taught to a cleaner as the hive's own (OwnTempBlocks)
         _dirty = true;
     }
 
     /// <summary>The block isn't there any more (dug, replaced), or the view never showed it at all.</summary>
     private bool Gone(TempBlockState t, int now) => t.Id == 0 ? Now - t.Since > NeverSeen : !SameTempBlock(t.Id, now);
 
-    /// <summary>The block placed there still (dirt that grew grass is the same dirt).</summary>
-    private static bool SameTempBlock(int placed, int now) => placed == now || placed == 3 && now == 2;
+    /// <summary>The block placed there still, the way the hive's placed-block log counts it: dirt that grew grass is the same dirt, and
+    /// grass recorded (a stray seen grown over) that went back to dirt under a block is the same grass. Only the block's id counts,
+    /// never its meta (a 1.12.2 stone or planks variant, a turned log), so a block that only changed state is never "somebody else's".
+    /// Before, a grass record that turned to dirt read as dug, and the pillar block was forgotten while it still stood.</summary>
+    internal static bool SameTempBlock(int placed, int now) => MineClaw.World.PlacedBlockLog.SameBlock(placed, now);
+
+    /// <summary>
+    /// Its removal mark went while the block still stands: it was finished on a report the colony's view couldn't check, or dropped
+    /// with a quarry's, an ore's or a replaced design's work. The registry kept pointing at a mark that no longer exists (live 11-11:
+    /// 31 such entries, 26 of them scaffolds): nobody would ever take the block. It is marked again (when left behind) instead; a
+    /// block gone with its mark was already forgotten (<see cref="Gone"/>).
+    /// </summary>
+    private void MarkGone(TempBlockState t, HashSet<string> marks)
+    {
+        if (t.Designation is not { } id || marks.Contains(id)) return;
+        t.Designation = null;
+        _tempQueued.Remove(t);
+        _dirty = true;
+        _log.LogInformation("story {Colony}: the removal mark {Mark} of the temporary {Block} at {At} ({Kind}) is gone while the block stands: marking it again",
+            Id, id, BlockLabel(t.Id), t.At, t.Kind);
+    }
 
     private void ForgetTemp(TempBlockState t)
     {
@@ -214,9 +239,18 @@ public sealed partial class StoryColony
         if (!Pawns.ContainsKey(t.Pawn)) return true;
         var live = Host.Live(t.Pawn);
         if (!live.Online) return true;
-        if (OnOwnPillar(t, live)) return false;
+        if (InUseAsPillar(t, live)) return false;
         return Now - t.Since >= LeftAfter && t.At.Dist(live.X, live.Y, live.Z) > LeftRange;
     }
+
+    /// <summary>Its pawn stands over it on its own pillar, still using it, unless it stands there to take that pillar down
+    /// (<see cref="TakingDownColumn"/>): then the column is the cleanup's, never "temporary access still in use", which cut the dig with
+    /// the pawn partway down the pit and took the rest of the marks away.</summary>
+    private bool InUseAsPillar(TempBlockState t, PawnLive live) => OnOwnPillar(t, live) && !TakingDownColumn(t.Pawn, t.At);
+
+    /// <summary>The pawn's current job takes the pillar in this cell's column down from its top (StoryColony.TempPillars.cs).</summary>
+    private bool TakingDownColumn(string pawn, P3 at) =>
+        _current.TryGetValue(pawn, out var j) && j.Json["unpole"] != null && j.At is { } top && top.X == at.X && top.Z == at.Z;
 
     private static bool OnOwnPillar(TempBlockState t, PawnLive live) => live.Online
         && t.Kind is "reach pillar" or "escape pillar" && live.Y > t.At.Y
@@ -263,11 +297,44 @@ public sealed partial class StoryColony
     // pawn's dirt had been was refused as someone's path ×3; old shelter boxes in a cave at 221,39..41,424..426 "unreachable even by
     // pillaring/bridging", retried every minute)
 
-    /// <summary>A rest after a cleanup couldn't reach its block; a second miss leaves it to the owner.</summary>
+    /// <summary>The rest after a cleanup's first miss of its block; each miss after doubles it, up to <see cref="TempUnreachRestMax"/>.</summary>
     public static readonly TimeSpan TempUnreachRest = TimeSpan.FromMinutes(30);
+    public static readonly TimeSpan TempUnreachRestMax = TimeSpan.FromHours(8);
+
+    /// <summary>The rest after the <paramref name="misses"/>-th miss: 30 min, 1 h, 2 h, 4 h, then 8 h.</summary>
+    internal static TimeSpan TempUnreachBackoff(int misses) =>
+        TimeSpan.FromMinutes(Math.Min(TempUnreachRestMax.TotalMinutes, TempUnreachRest.TotalMinutes * Math.Pow(2, Math.Clamp(misses - 1, 0, 10))));
+
+    /// <summary>Why a cleanup is parked for the owner. "out of reach" is no longer written (a block out of reach is retried, kept
+    /// marked); a save from before has its entries reopened on load.</summary>
+    private const string OutOfReachLeft = "out of reach", NotOursLeft = "not the pawns' block any more";
 
     private readonly List<(P3 At, string Why)> _tempLeft = new();
-    private DateTimeOffset _tempLeftSaid = DateTimeOffset.MinValue;
+    private readonly List<(P3 At, string Why)> _tempUnreached = new();
+    private DateTimeOffset _tempLeftSaid = DateTimeOffset.MinValue, _tempUnreachedSaid = DateTimeOffset.MinValue;
+
+    /// <summary>
+    /// On load (the constructor, before any job): cleanups parked "out of reach" get a fresh chance (live 11-11: 81 entries, 63 of
+    /// them escape pillars, most over a day old, with no mark at all, so nobody ever took them and the owner saw pillars "not even
+    /// marked for destruction"): now a pawn takes a pillar down from its top, and a block still out of reach rests and is tried again.
+    /// One refused as protected ("not the pawns' block any more") stays the owner's: its body's protection judged the block somebody
+    /// else's (the 11-06 stonebrick in a pawn's dirt cell), and reopening it would teach that block to a cleaner as the hive's own.
+    /// </summary>
+    private void ReopenParkedTemps()
+    {
+        int n = 0;
+        foreach (var t in Meta.TempBlocks ?? [])
+        {
+            if (t.Cancelled || t.DeferredReason != OutOfReachLeft) continue;
+            t.DeferredReason = null;
+            t.Misses = 0;
+            t.RetryAfter = null;
+            n++;
+        }
+        if (n == 0) return;
+        _dirty = true;
+        _log.LogInformation("story {Colony}: {N} temporary block(s) once left out of reach get another cleanup", Id, n);
+    }
 
     /// <summary>The temporary block whose cleanup designation this job worked, or null.</summary>
     private TempBlockState? TempOf(ActiveJob j) =>
@@ -276,24 +343,40 @@ public sealed partial class StoryColony
     internal bool IsTempMark(DesignationState d) => d.Auto && d.Kind == "deconstruct" && (Meta.TempBlocks?.Any(t => t.Designation == d.Id) ?? false);
 
     /// <summary>
-    /// A cleanup that failed. Refused as protected: the block isn't the one a pawn put there any more (someone's block replaced it; a
-    /// pawn's own is always minable), so it is never dug: forgotten and listed for the owner. Out of reach: rested
-    /// <see cref="TempUnreachRest"/>, and on a second miss left to the owner (listed). Anything else (a fight, a busy chest) is an
-    /// ordinary failure. True = handled.
+    /// A cleanup that failed. Refused as protected although the cleaner's placed-block log was taught the block first: the owner's
+    /// protection (a never-break mark, a protected area) or somebody's block in its place, so it is never dug: listed for the owner.
+    /// Out of reach: never given up (Fox's rule: a pawn's own block never stays). It rests, longer each miss
+    /// (<see cref="TempUnreachBackoff"/>), keeps its mark with the reason on the map, and is said in the owner's alert of blocks the
+    /// pawns can't take back yet. Anything else (a fight, a busy chest) is an ordinary failure. True = handled.
     /// </summary>
     private bool TempCleanupFailed(PawnState p, ActiveJob j, string why)
     {
         if (TempOf(j) is not { } t) return false;
-        if (why.Contains("protected", StringComparison.OrdinalIgnoreCase)) { LeaveTemp(t, "not the pawns' block any more"); return true; }
+        if (why.Contains("protected", StringComparison.OrdinalIgnoreCase)) { LeaveTemp(t, NotOursLeft); return true; }
         if (!Unreachable(why) && !OutOfReach(why) && !ReachOnly(why)) return false;
-        if (++t.Misses >= 2) { LeaveTemp(t, "out of reach"); return true; }
-        t.RetryAfter = Now + TempUnreachRest;
+        var rest = TempUnreachBackoff(++t.Misses);
         _dirty = true;
-        if (Designations.FirstOrDefault(d => d.Id == t.Designation) is { } des) _skip[DesignationKey(des)] = Now + TempUnreachRest;
-        _log.LogInformation("story {Colony}: temporary {Block} at {At} out of reach for {Pawn} ({Why}): resting {Min} min", Id, BlockLabel(t.Id), t.At,
-            p.Name, Short(why), TempUnreachRest.TotalMinutes);
+        // A pillar's job: its other cells rest with its top (else each was picked alone and dug from beside, missing one by one).
+        var mates = j.MoreLeases.Count == 0 ? new List<TempBlockState>() : Designations.Where(d => j.MoreLeases.Contains(DesignationKey(d)))
+            .SelectMany(d => Temps.Where(o => o.Designation == d.Id && o != t)).ToList();
+        foreach (var o in mates.Prepend(t))
+        {
+            o.Misses = t.Misses;
+            o.RetryAfter = Now + rest;
+            if (Designations.FirstOrDefault(d => d.Id == o.Designation) is { } des)
+            {
+                _skip[DesignationKey(des)] = o.RetryAfter.Value;
+                NoteWait(des, $"out of reach for now (tried {t.Misses}×, again in {Minutes(rest)}): {Short(why)}");
+            }
+        }
+        _tempUnreached.Add((t.At, t.Kind));
+        _log.LogInformation("story {Colony}: temporary {Block} at {At} ({Kind}) out of reach for {Pawn} ({Why}): miss {N}, resting {Rest}", Id, BlockLabel(t.Id),
+            t.At, t.Kind, p.Name, Short(why), t.Misses, Minutes(rest));
+        AlertLeftTemps();
         return true;
     }
+
+    private static string Minutes(TimeSpan t) => t.TotalMinutes >= 60 ? $"{t.TotalHours:0.#} h" : $"{t.TotalMinutes:0} min";
 
     /// <summary>The cleanup is dropped and the cell listed for the owner (one alert every few minutes with every cell since).</summary>
     private void LeaveTemp(TempBlockState t, string why)
@@ -307,13 +390,23 @@ public sealed partial class StoryColony
         AlertLeftTemps();
     }
 
-    /// <summary>Every cell left to the owner since the last alert, grouped by why (at most every 5 minutes; the tick says the rest).</summary>
+    /// <summary>Every cell left to the owner, and every cell a cleanup couldn't reach (still marked, tried again later), since the
+    /// last alert, grouped by why or kind (at most every 5 minutes; the tick says the rest).</summary>
     private void AlertLeftTemps()
     {
-        if (_tempLeft.Count == 0 || Now - _tempLeftSaid < TimeSpan.FromMinutes(5)) return;
-        _tempLeftSaid = Now;
-        var groups = _tempLeft.GroupBy(x => x.Why).Select(g => $"{g.Key}: {string.Join(", ", g.Select(x => x.At.ToString()).Take(8))}");
-        Alert("info", $"Left for you to remove ({_tempLeft.Count} block(s) the pawns can't take back): {string.Join("; ", groups)}");
-        _tempLeft.Clear();
+        static string Cells(IEnumerable<(P3 At, string Why)> xs) =>
+            string.Join("; ", xs.GroupBy(x => x.Why).Select(g => $"{g.Key}: {string.Join(", ", g.Select(x => x.At.ToString()).Distinct().Take(8))}"));
+        if (_tempLeft.Count > 0 && Now - _tempLeftSaid >= TimeSpan.FromMinutes(5))
+        {
+            _tempLeftSaid = Now;
+            Alert("info", $"Left for you to remove ({_tempLeft.Count} block(s) the pawns can't take back): {Cells(_tempLeft)}");
+            _tempLeft.Clear();
+        }
+        if (_tempUnreached.Count > 0 && Now - _tempUnreachedSaid >= TimeSpan.FromMinutes(5))
+        {
+            _tempUnreachedSaid = Now;
+            Alert("info", $"{_tempUnreached.Count} temporary block(s) the pawns couldn't reach yet: still marked, tried again later ({Cells(_tempUnreached)})");
+            _tempUnreached.Clear();
+        }
     }
 }

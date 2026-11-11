@@ -232,6 +232,17 @@ public sealed partial class StoryHost : IStoryHost
     public void KeepTemporaryBlock(string account, P3 at) =>
         PawnClient(account)?.KeepTemporaryBlock(new BlockPos(at.X, at.Y, at.Z), 0);
 
+    /// <summary>The cleaner's placed-block log learns a pawn's temporary block (overworld) it is sent to take back; already known: as is.
+    /// Merged, never noted: no <see cref="MineClaw.World.PlacedBlockLog.Added"/> event, so the lesson stays in this body's memory and
+    /// never reaches the hive's shared table (the log forgets it once the block changes).</summary>
+    public void OwnTemporaryBlock(string account, P3 at, int id, string placedBy)
+    {
+        if (PawnClient(account) is not { } c) return;
+        var pos = new BlockPos(at.X, at.Y, at.Z);
+        if (c.World.Placed.IsPlaced(pos, 0, id)) return;
+        c.World.Placed.Merge([new MineClaw.World.PlacedBlock(pos, 0, id, placedBy, DateTimeOffset.UtcNow)]);
+    }
+
     /// <summary>Main's and every online body's placed-block log (the hive's shared table), overworld, one row per cell.</summary>
     public IReadOnlyList<(P3 At, int Id, string Bot)> PlacedByBots()
     {

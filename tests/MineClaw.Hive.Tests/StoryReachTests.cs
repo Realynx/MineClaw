@@ -102,4 +102,31 @@ public sealed class StoryReachTests
         Assert.Contains("only liquid to stand on", d.Wait);
         Assert.DoesNotContain(c.Alerts, a => a.Level == "warn");
     }
+
+    /// <summary>Live 11-11: about 17,000 "out of reach even from a pillar" a day: once every pawn had tried, only each pawn's own rest
+    /// (5 minutes at most) held such a mark, so they walked at it again and again (and a walk that fails from a pit sends a pawn up an
+    /// escape pillar). It now rests for everyone, longer each round, and says when it is tried again.</summary>
+    [Fact]
+    public void A_mark_every_pawn_found_out_of_reach_even_from_a_pillar_rests_for_everyone_longer_each_round()
+    {
+        var clock = new ManualTime();
+        var (c, _, w) = StoryRig.Make(1, time: clock);
+        Only(c, WorkTypes.Chop);
+        w.Set(3, 64, 3, 31, 1);
+        c.Designate("add", "cut", null, [new P3(3, 64, 3)], null);
+        var d = c.Designations.Single();
+        foreach (var (wait, rest) in new[] { (0, 10), (11, 20), (21, 40) })
+        {
+            clock.Now += TimeSpan.FromMinutes(wait);
+            var j = c.Next();
+            Assert.Equal("3,64,3", j["at"]!.GetValue<string>());
+            c.Report(c.P(), Id(j), "failed", "out of reach even from a pillar: only liquid to stand on under it", null);
+            Assert.EndsWith($"(every pawn tried; again in {rest} min)", d.Wait);
+            clock.Now += TimeSpan.FromMinutes(rest - 1);
+            var idle = c.Next();
+            Assert.NotEqual("3,64,3", idle["at"]?.GetValue<string>());
+            c.Report(c.P(), Id(idle), "done", null, null);
+        }
+        Assert.Equal(0, d.Fails);
+    }
 }
