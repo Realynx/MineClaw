@@ -55,17 +55,22 @@ public sealed partial class StoryColony
 
     private static int StorageRank(StorageState s) => s.Signs.Count > 0 ? 5 : StoragePriority.Rank(s.Priority);
 
-    private bool HasRoom(StorageState s, int id, int meta) =>
-        s.FreeSlots > 0 || s.Contents.Any(c => c.Id == id && c.Meta == meta && c.Count % MaxStack(id) != 0);
+    private bool HasRoom(StorageState s, int id, int meta)
+    {
+        if (s.FreeSlots > 0) return true;
+        foreach (var c in s.Contents) // a loop: asked per chest per item kind
+            if (c.Id == id && c.Meta == meta && c.Count % MaxStack(id) != 0) return true;
+        return false;
+    }
 
-    /// <summary>The chest a stack goes to: accepting, room, highest priority, then nearest. Null = nothing accepts it.</summary>
+    /// <summary>The chest a stack goes to: accepting, room, highest priority, then nearest (the first of equals). Null = nothing accepts
+    /// it. Within a pick the chests that take each item are worked out once (StoryColony.ChestChoice.cs).</summary>
     public StorageState? BestChest(int id, int meta, P3 from, StorageState? except = null)
     {
         lock (_lock)
         {
             ReconcileStorageSigns();
-            return Storages.Where(s => s != except && !ChestDeconstructing(s.Chest) && ChestOpen(s.Chest) && Accepts(s, id, meta) && HasRoom(s, id, meta))
-                .OrderByDescending(StorageRank).ThenBy(s => s.Chest.Dist(from)).FirstOrDefault();
+            return BestOptions(id, meta).Nearest(from, except);
         }
     }
 
@@ -318,8 +323,13 @@ public sealed partial class StoryColony
         if ((view ?? World) is not { } w) return null;
         int id = w.Block(c.X, c.Y, c.Z).Id;
         if (id is not (54 or 146)) return null;
-        foreach (var n in new[] { c.Add(1, 0, 0), c.Add(-1, 0, 0), c.Add(0, 0, 1), c.Add(0, 0, -1) })
+        foreach (var (dx, dz) in Beside) // static offsets: asked per chest by every chest refresh
+        {
+            var n = c.Add(dx, 0, dz);
             if (w.Block(n.X, n.Y, n.Z).Id == id) return n;
+        }
         return null;
     }
+
+    private static readonly (int Dx, int Dz)[] Beside = [(1, 0), (-1, 0), (0, 1), (0, -1)];
 }

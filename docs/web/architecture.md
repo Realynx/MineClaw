@@ -254,7 +254,11 @@ Tests for these go in `tests/MineClaw.App.Tests` (or the closest existing test p
   - The perf line's `story` part adds the longest single pick and tick, `lock-wait` (how often and how long those routes
     waited for the lock, the longest wait, and how many commands and reads were answered busy), and three holders of the
     lock: `state-build`, `save` and `seen-chest` (the bot's chest memory read for a storage record), each with its count,
-    total and longest.
+    total and longest. After the pick stages and tick phases come `haul parts`, the haul search (`work:haul`) split into
+    `seen` (the chest-memory sweep), `ents` (the world's entities, when the haul search reads them first in a pick),
+    `drops`, `resort` and `look`; then `chest-looks` (the list of every chest look the bots remember, read under the lock
+    by a chest-memory sweep) and `haul scans N: entities max E, drops max D` (the most entities and drops one haul search
+    saw).
   - The line always prints the `/api/story…` routes and `/api/world/containers`. Before, only the twelve routes with the
     most total time were printed, and a colony command, rare and cheap in total, was never among them.
 - **Bridge lanes (2026-11-09).** The bridge reaches the supervisor over `Bridge:SupervisorConnections` pooled connections

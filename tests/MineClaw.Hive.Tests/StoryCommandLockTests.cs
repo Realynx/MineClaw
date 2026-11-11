@@ -10,6 +10,7 @@ namespace MineClaw.Hive.Tests;
 /// runs a command or a read in, so that it answers "busy, not applied" while its caller still listens instead of waiting on the
 /// director for as long as it takes. The lock is held by a gate (a pick parked in the host), never by a clock.
 /// </summary>
+[Collection("story-perf")] // takes the process-wide perf figures (StoryPerf.TakeInside): one such class at a time
 public sealed class StoryCommandLockTests
 {
     private static readonly TimeSpan Short = TimeSpan.FromMilliseconds(50);

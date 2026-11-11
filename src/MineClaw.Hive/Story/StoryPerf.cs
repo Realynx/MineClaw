@@ -116,9 +116,37 @@ public static class StoryPerf
         return Stopwatch.GetTimestamp();
     }
 
+    /// <summary>The host's list of every chest look (<see cref="IStoryHost.ChestLooks"/>: the bot's chest memory, its db), read under the
+    /// colony lock by a chest-memory sweep.</summary>
+    internal static readonly Meter ChestLooks = new();
+
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, Meter> HaulParts = new(StringComparer.Ordinal);
+
     /// <summary>
-    /// "pick lock-wait …, tick lock-wait …, pick stages: work 80x 51000 ms max 900 ms, work:mine …, tick phases: reconcile …" (each costliest
-    /// first, the ten costliest pick stages), and starts over.
+    /// One part of a haul search (work:haul) ended: "seen" (the chest-memory sweep), "ents" (the world's entities, when the haul search
+    /// reads them first in its pick), "drops", "resort", "look". Printed apart from the pick stages, every part (live 11-10: work:haul
+    /// 56-60 s a minute, and a bench in the live storage shape reached only a small part of it). Returns now.
+    /// </summary>
+    internal static long HaulPart(string part, long since)
+    {
+        HaulParts.GetOrAdd(part, static _ => new Meter()).Note(since);
+        return Stopwatch.GetTimestamp();
+    }
+
+    internal static long HaulScans, HaulEntsMax, HaulDropsMax;
+
+    /// <summary>A haul search read the world's entities: how many, and how many of them were drops (the most since the last perf line).</summary>
+    internal static void NoteHaulScan(int entities, int drops)
+    {
+        Interlocked.Increment(ref HaulScans);
+        Raise(ref HaulEntsMax, entities);
+        Raise(ref HaulDropsMax, drops);
+    }
+
+    /// <summary>
+    /// "pick lock-wait …, tick lock-wait …, pick stages: work 80x 51000 ms max 900 ms, work:mine …, tick phases: reconcile …, haul parts:
+    /// drops …, resort …, chest-looks …, haul scans N: entities max E, drops max D" (each costliest first, the ten costliest pick
+    /// stages), and starts over.
     /// </summary>
     public static string TakeInside()
     {
@@ -129,8 +157,10 @@ public static class StoryPerf
                 .OrderByDescending(p => p.S.Total).ThenBy(p => p.Name, StringComparer.Ordinal).Take(top).Select(p => S(p.Name, p.S));
         var stages = Costliest(PickStages, k => k.Kind == null ? k.Stage : $"{k.Stage}:{k.Kind}", 10);
         var phases = Costliest(TickPhases, k => k, int.MaxValue);
+        var haul = Costliest(HaulParts, k => k, int.MaxValue);
+        long scans = Interlocked.Exchange(ref HaulScans, 0), ents = Interlocked.Exchange(ref HaulEntsMax, 0), drops = Interlocked.Exchange(ref HaulDropsMax, 0);
         return string.Create(System.Globalization.CultureInfo.InvariantCulture,
-            $"{S("pick lock-wait", PickLockWait.Take())}, {S("tick lock-wait", TickLockWait.Take())}, pick stages: {string.Join(", ", stages)}, tick phases: {string.Join(", ", phases)}");
+            $"{S("pick lock-wait", PickLockWait.Take())}, {S("tick lock-wait", TickLockWait.Take())}, pick stages: {string.Join(", ", stages)}, tick phases: {string.Join(", ", phases)}, haul parts: {string.Join(", ", haul)}, {S("chest-looks", ChestLooks.Take())}, haul scans {scans}: entities max {ents}, drops max {drops}");
     }
 
     /// <summary>The counters since the last call, and starts them over.</summary>

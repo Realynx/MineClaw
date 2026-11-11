@@ -7,9 +7,14 @@ public sealed partial class StoryColony
     private readonly HashSet<string> _preparedChestRemovals = new(StringComparer.Ordinal);
     private readonly Dictionary<string, DateTimeOffset> _chestRemovalLookAfter = new(StringComparer.Ordinal);
 
-    private bool ChestDeconstructing(P3 at) => Designations.Any(d => !d.Auto && d.Kind == "deconstruct"
-        && d.At is { } cell && (cell == at || DoubleHalf(at) == cell
-            || StorageAt(at) is { } s && (cell == s.Chest || cell == s.DoubleWith)));
+    private bool ChestDeconstructing(P3 at)
+    {
+        foreach (var d in Designations) // a loop, not Any: asked for every chest of every chest choice (no closure per chest)
+            if (!d.Auto && d.Kind == "deconstruct" && d.At is { } cell && (cell == at || DoubleHalf(at) == cell
+                    || StorageAt(at) is { } s && (cell == s.Chest || cell == s.DoubleWith)))
+                return true;
+        return false;
+    }
 
     private static bool ManualChestRemoval(DesignationState d, IStoryWorld w, P3 at) =>
         !d.Auto && d.Kind == "deconstruct" && w.Loaded(at.X, at.Z) && w.Block(at.X, at.Y, at.Z).Id is 54 or 146;

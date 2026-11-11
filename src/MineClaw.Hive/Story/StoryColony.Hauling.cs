@@ -82,10 +82,7 @@ public sealed partial class StoryColony
 
     /// <summary>"Unfiltered storage takes anything": a chest with room that doesn't deny it, open ("*") chests first, then the lowest
     /// priority (general storage), then the nearest.</summary>
-    private StorageState? Fallback(int id, int meta, P3 from, StorageState? except) =>
-        Storages.Where(s => s != except && s.Signs.Count == 0 && !ChestDeconstructing(s.Chest) && ChestOpen(s.Chest) && HasRoom(s, id, meta) && !Denied(s, id, meta))
-            .OrderBy(s => s.Filter.Allow.Contains("*") ? 0 : 1).ThenBy(s => StoragePriority.Rank(s.Priority)).ThenBy(s => s.Chest.Dist(from))
-            .FirstOrDefault();
+    private StorageState? Fallback(int id, int meta, P3 from, StorageState? except) => FallbackOptions(id, meta).Nearest(from, except);
 
     /// <summary>The drop spot: the nearest "dump" zone's ground, else a standable spot by home. Null without a world or home.</summary>
     internal P3? DumpSpot()
@@ -254,9 +251,14 @@ public sealed partial class StoryColony
         return pts;
     }
 
-    private bool InHaulArea(P3 at) =>
-        InHome(at) || HaulAnchors().Any(a => Math.Abs(a.X - at.X) <= HaulRadius && Math.Abs(a.Z - at.Z) <= HaulRadius
-            && a.Dist(at.X + 0.5, at.Y, at.Z + 0.5) <= HaulRadius + 8);
+    private bool InHaulArea(P3 at)
+    {
+        if (InHome(at)) return true;
+        foreach (var a in HaulAnchors()) // a loop, not Any: no closure per drop per search
+            if (Math.Abs(a.X - at.X) <= HaulRadius && Math.Abs(a.Z - at.Z) <= HaulRadius && a.Dist(at.X + 0.5, at.Y, at.Z + 0.5) <= HaulRadius + 8)
+                return true;
+        return false;
+    }
 
     /// <summary>A drop a pawn may go for now (see the class summary), with where it goes.</summary>
     private (StorageState? Chest, P3? Dump, bool Fallback)? Haulable(StoryEntity e, PawnState p, P3 from, IReadOnlyList<StoryEntity> ents)
@@ -274,7 +276,7 @@ public sealed partial class StoryColony
     /// <summary>Not forbidden, not leased, in the haul area, near its level (or home's), not under ground.</summary>
     private bool HaulReach(StoryEntity e, PawnState p, P3 from)
     {
-        if (ForbiddenEntity(e.Id) || Forbidden(e.Block) || !Open("e:" + e.Id, p.Name, null)) return false;
+        if (ForbiddenEntity(e.Id) || Forbidden(e.Block) || !Open(EntityKey(e.Id), p.Name, null)) return false;
         if (!InHaulArea(e.Block)) return false;
         if (Math.Abs(e.Block.Y - from.Y) > 12 && Math.Abs(e.Block.Y - (Home()?.Y ?? from.Y)) > 12) return false;
         return World is not { } w || ReachableDrop(w, e);
@@ -293,9 +295,24 @@ public sealed partial class StoryColony
     /// <summary>A fresh monster beside the drop, a player who just dropped it at their feet, or another pawn working right there.</summary>
     private bool DropGuarded(StoryEntity e, PawnState p, IReadOnlyList<StoryEntity> ents)
     {
-        foreach (var o in ents)
+        foreach (var o in Guards(ents))
             if (MobBeside(o, e) || PlayerJustDropped(o, e) || PawnAtFreshDrop(o, e, p)) return true;
         return false;
+    }
+
+    private readonly List<StoryEntity> _guards = new();
+    private IReadOnlyList<StoryEntity>? _guardsOf;
+
+    /// <summary>The entities that can guard a drop (monsters and players; a drop never guards another), picked out once per entity list:
+    /// the haul search asked every entity for every drop (drops × entities a search).</summary>
+    private List<StoryEntity> Guards(IReadOnlyList<StoryEntity> ents)
+    {
+        if (ReferenceEquals(ents, _guardsOf)) return _guards;
+        _guards.Clear();
+        foreach (var o in ents)
+            if (o.Kind is "mob" or "player") _guards.Add(o);
+        _guardsOf = ents;
+        return _guards;
     }
 
     /// <summary>How long a fresh drop is left to another pawn working within <see cref="PawnDropReach"/> of it.</summary>
@@ -332,6 +349,7 @@ public sealed partial class StoryColony
         var from = live.Block;
         var ents = Ents();
         var items = ents.Where(e => e.Kind == "item").ToList();
+        StoryPerf.NoteHaulScan(ents.Count, items.Count); // the live entity and drop counts, on the perf line
         if (items.Count == 0) { if (!riskOnly) PassedEntityMarks("haul", null); return null; }
         if (!riskOnly && DesignatedHaul(w, p, live, items, from) is { } dj) return dj;
         return DropHaul(w, p, live, items, ents, from, riskOnly);
@@ -341,6 +359,7 @@ public sealed partial class StoryColony
     /// done with it). None: the marked drops out of sight are noted (the idle audit says so).</summary>
     private ActiveJob? DesignatedHaul(IStoryWorld w, PawnState p, PawnLive live, List<StoryEntity> items, P3 from)
     {
+        if (!AnyHaulMark()) return null; // no haul marks: nothing to look up (every drop was put in a dictionary per search)
         var byId = items.Where(e => !ForbiddenEntity(e.Id)).ToDictionary(e => e.Id);
         var d = Designations.Where(x => HaulMarkOpen(w, x, byId, p))
             .OrderBy(x => byId[x.Entity!.Value].Block.Dist(from)).FirstOrDefault();
@@ -358,6 +377,12 @@ public sealed partial class StoryColony
         return dj;
     }
 
+    private bool AnyHaulMark()
+    {
+        foreach (var d in Designations) if (d.Kind == "haul") return true;
+        return false;
+    }
+
     /// <summary>A haul mark on a drop in view, free for this pawn and not resting, that can be reached (else the idle audit hears why).</summary>
     private bool HaulMarkOpen(IStoryWorld w, DesignationState x, Dictionary<int, StoryEntity> byId, PawnState p)
     {
@@ -373,7 +398,16 @@ public sealed partial class StoryColony
     {
         var cands = HaulCandidates(p, items.Where(e => HasRoom(live, e)).ToList(), ents, from, riskOnly);
         if (cands.Count == 0) return null;
-        var first = cands.OrderBy(c => c.Risk ? 0 : 1).ThenBy(c => c.E.Block.Dist(from)).First();
+        // At despawn risk first, then the nearest; the first of equals (as an ordering would take it), without sorting them all.
+        var first = cands[0];
+        double firstD = first.E.Block.Dist(from);
+        for (int i = 1; i < cands.Count; i++)
+        {
+            var c = cands[i];
+            if (c.Risk != first.Risk) { if (c.Risk) { first = c; firstD = c.E.Block.Dist(from); } continue; }
+            double d = c.E.Block.Dist(from);
+            if (d < firstD) { first = c; firstD = d; }
+        }
         var key0 = HaulDestKey(first.Dest);
         int room = Math.Max(1, live.FreeSlots - 1);
         var batch = cands.Where(c => c.E != first.E && Equals(HaulDestKey(c.Dest), key0)
@@ -405,8 +439,13 @@ public sealed partial class StoryColony
 
     /// <summary>The pawn's bag can take some of the drop: a free slot, or a part stack of that item (totals that aren't whole stacks).
     /// A full bag's collect finds "none in sight … with room for it" and walks for nothing.</summary>
-    private bool HasRoom(PawnLive live, StoryEntity e) =>
-        live.FreeSlots > 0 || live.Inventory.Any(s => s.Id == e.ItemId && s.Meta == e.ItemMeta && s.Count % MaxStack(e.ItemId) != 0);
+    private bool HasRoom(PawnLive live, StoryEntity e)
+    {
+        if (live.FreeSlots > 0) return true;
+        foreach (var s in live.Inventory) // a loop: a full pawn asks this for every drop of every search
+            if (s.Id == e.ItemId && s.Meta == e.ItemMeta && s.Count % MaxStack(e.ItemId) != 0) return true;
+        return false;
+    }
 
     /// <summary>The collect found drops in sight but no room for them in the pawn's bag (": 2 in sight with no room in my bag"): the
     /// pawn's own trouble (it unloads), never a miss at the drops' spot.</summary>
@@ -508,17 +547,20 @@ public sealed partial class StoryColony
         if (live.FreeSlots <= 0 || !ChestOpen(src.Chest) || work != WorkTypes.Build && ChestDeconstructing(src.Chest)) return null;
         if (!Open(key, p.Name, null)) return null;
         var take = ResortParts(moves.Where(m => m.Dst == null || !ChestDeconstructing(m.Dst.Chest) && ChestOpen(m.Dst.Chest)), Math.Max(1, live.FreeSlots - 1));
+        var own = OwnGear(live, take);
+        if (own.Count > 0) take = OneChestPerOwnGear(take, own);
         if (take.Count == 0) return null;
         var drops = take.Where(t => t.Dst == null).ToList();
         var puts = take.Where(t => t.Dst != null).GroupBy(t => t.Dst!).ToList();
         var fetch = new JsonArray(take.Select(t => (JsonNode)new JsonObject { ["from"] = src.Chest.ToString(),
             ["item"] = HaulItemName(t.St), ["n"] = t.N }).ToArray());
-        var stash = new JsonArray(puts.Select(pg => (JsonNode)new JsonObject
+        var stash = new JsonArray(puts.Where(pg => pg.Any(t => !own.ContainsKey(t.St.Id))).Select(pg => (JsonNode)new JsonObject
         {
             ["to"] = pg.Key.Chest.ToString(),
-            ["items"] = new JsonArray(pg.Select(t => HaulItemName(t.St)).Distinct().Select(n => (JsonNode)n!).ToArray()),
+            ["items"] = new JsonArray(pg.Where(t => !own.ContainsKey(t.St.Id)).Select(t => HaulItemName(t.St)).Distinct().Select(n => (JsonNode)n!).ToArray()),
         }).ToArray());
         var j = drops.Count > 0 ? ResortDropJob(src, key, drops, fetch, stash) : ResortMoveJob(src, key, take, puts[0].Key, fetch, stash, work);
+        if (own.Count > 0) j.Json["store"] = OwnGearStore(take, own);
         j.Assign += () =>
         {
             foreach (var fb in take.Where(x => x.Fallback)) _fallbackStored.Add((fb.Dst!.Chest, fb.St.Id, fb.St.Meta));
@@ -555,6 +597,58 @@ public sealed partial class StoryColony
         }
         return take;
     }
+
+    /// <summary>
+    /// Gear (a tool, weapon or armour piece: what a pawn keeps) this trip carries to a chest while the pawn already carries that item:
+    /// how many of it the pawn carries. A stash puts every one of a name into the chest, the pawn's own with the moved ones (live
+    /// 11-10: "Stone Pickaxe: deposited (chest …)" over and over: a re-sort of stone pickaxes took the hauler's own pickaxe along, it
+    /// fetched one back for its next dig, and so on). These go as a store that keeps that many (the freshest) instead.
+    /// Only gear that never stacks (MaxStack 1): the store keeps that many STACKS, which is that many items only when each is its own
+    /// stack. Stacking gear (arrows are weapons; in 1.12.2 a bucket, a compass or a lead is a tool) merges with the moved ones as it is
+    /// taken, so a keep would hold back the moved ones too while the ledger records them in the chest: it stays in the stash as before.
+    /// </summary>
+    private Dictionary<int, int> OwnGear(PawnLive live, List<ResortPart> take)
+    {
+        if (Cats is not { } cats) return NoOwnGear;
+        Dictionary<int, int>? own = null;
+        foreach (var t in take)
+        {
+            if (t.Dst == null || own != null && own.ContainsKey(t.St.Id) || MaxStack(t.St.Id) != 1
+                || cats.LeafOf(t.St.Id, t.St.Meta) is not ("tools" or "weapons" or "armour")) continue;
+            int carried = 0;
+            foreach (var s in live.Inventory) if (s.Id == t.St.Id) carried += s.Count;
+            if (carried > 0) (own ??= new())[t.St.Id] = carried;
+        }
+        return own ?? NoOwnGear;
+    }
+
+    /// <summary>No own gear on this trip (shared, never written: most re-sort trips carry none).</summary>
+    private static readonly Dictionary<int, int> NoOwnGear = new();
+
+    /// <summary>One store per item: the pawn's own gear of an id goes to the first chest of that id's parts (the rest of them wait for
+    /// another trip).</summary>
+    private static List<ResortPart> OneChestPerOwnGear(List<ResortPart> take, Dictionary<int, int> own)
+    {
+        var to = new Dictionary<int, StorageState>();
+        var kept = new List<ResortPart>(take.Count);
+        foreach (var t in take)
+        {
+            if (t.Dst is { } dst && own.ContainsKey(t.St.Id))
+            {
+                if (!to.TryGetValue(t.St.Id, out var first)) to[t.St.Id] = first = dst;
+                if (first != dst) continue;
+            }
+            kept.Add(t);
+        }
+        return kept;
+    }
+
+    /// <summary>The trip's own-gear stores: {to, item, keep} (the gear job's shape; story_pawn.js runs it after the fetch).</summary>
+    private JsonArray OwnGearStore(List<ResortPart> take, Dictionary<int, int> own) =>
+        new(take.Where(t => t.Dst != null && own.ContainsKey(t.St.Id)).GroupBy(t => t.St.Id).Select(g => (JsonNode)new JsonObject
+        {
+            ["to"] = g.First().Dst!.Chest.ToString(), ["item"] = ItemName(g.Key, 0), ["keep"] = own[g.Key],
+        }).ToArray());
 
     private ActiveJob ResortDropJob(StorageState src, string key, List<ResortPart> drops, JsonArray fetch, JsonArray stash)
     {
@@ -597,14 +691,19 @@ public sealed partial class StoryColony
         _haulTick = Now;
         var ents = w.Entities();
         ForgetGoneItems(ents);
-        foreach (var e in ents)
+        BeginChestChoice(); // each pawn asks where the drop goes: the chests that take it are worked out once
+        try
         {
-            if (!AtDespawnRisk(e) || NearestFreeHauler(e, ents) is not { } best) continue;
-            _despawnCut.Add(e.Id);
-            _log.LogInformation("story {Colony}: {Pawn} leaves its work for a {Item} that {Despawns}", Id, best.Name, e.Name, Despawns(e));
-            Supersede(best, "a drop is about to despawn");
-            return; // one per tick
+            foreach (var e in ents)
+            {
+                if (!AtDespawnRisk(e) || NearestFreeHauler(e, ents) is not { } best) continue;
+                _despawnCut.Add(e.Id);
+                _log.LogInformation("story {Colony}: {Pawn} leaves its work for a {Item} that {Despawns}", Id, best.Name, e.Name, Despawns(e));
+                Supersede(best, "a drop is about to despawn");
+                return; // one per tick
+            }
         }
+        finally { EndChestChoice(); }
     }
 
     private void ForgetGoneItems(IReadOnlyList<StoryEntity> ents)
@@ -612,6 +711,17 @@ public sealed partial class StoryColony
         var ids = ents.Select(e => e.Id).ToHashSet();
         foreach (var k in _itemSeen.Keys.Where(k => !ids.Contains(k)).ToList()) _itemSeen.Remove(k);
         _despawnCut.RemoveWhere(k => !ids.Contains(k));
+        foreach (var k in _entityKeys.Keys.Where(k => !ids.Contains(k)).ToList()) _entityKeys.Remove(k);
+    }
+
+    private readonly Dictionary<int, string> _entityKeys = new();
+
+    /// <summary>An entity's lease key ("e:id"), made once per entity (the haul search asks for every drop on every search).</summary>
+    private string EntityKey(int id)
+    {
+        if (_entityKeys.TryGetValue(id, out var k)) return k;
+        if (_entityKeys.Count >= 8192) _entityKeys.Clear();
+        return _entityKeys[id] = "e:" + id;
     }
 
     /// <summary>A drop that despawns soon, not cut for yet, that nobody is hauling.</summary>

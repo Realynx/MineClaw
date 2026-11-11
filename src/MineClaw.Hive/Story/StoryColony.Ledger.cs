@@ -231,6 +231,7 @@ public sealed partial class StoryColony
             var key = StorageAt(chest)?.Chest ?? chest;
             _chestFails.Remove((p.Name, key));
             _chestSkip.Remove((p.Name, key));
+            _lookRest.Remove(key); // someone got there: looks may go again
             if (_unreachable.Remove(key)) MaterialsChanged();
         }
     }

@@ -50,6 +50,7 @@ public sealed partial class StoryColony
         _pickPawn = p.Name; _pickClaims = null; // chests this pawn can't reach are left out of its plans (StoryColony.Ledger.cs)
         PurgeToolFailuresOnce(); // after a load: tool/record failures of old never hold a target back
         t = StoryPerf.PickStage("signs", t);
+        BeginChestChoice(); // which chests take each item: once per item this pick (StoryColony.ChestChoice.cs)
         try
         {
             var core = PickCore(p, live);
@@ -60,7 +61,7 @@ public sealed partial class StoryColony
             if (job.Source is "none" or "wander" && _looks.TryGetValue(p.Name, out var look) && look.At == Now && !look.Found) _probed[p.Name] = (Now, WorkStamp());
             return job;
         }
-        finally { _pickEnts = null; _pickPawn = null; }
+        finally { EndChestChoice(); _pickEnts = null; _pickPawn = null; }
     }
 
     private ActiveJob PickCore(PawnState p, PawnLive live)
@@ -328,7 +329,19 @@ public sealed partial class StoryColony
     private bool ForbiddenEntity(int id) => Index().ForbidEntities.Contains(id);
 
     private bool Open(string key, string pawn, P3? at) =>
-        Free(key, pawn) && !Skipped(key) && !Skipped(PawnKey(key, pawn)) && (at == null || !Forbidden(at.Value) && !NearHazard(at.Value, pawn));
+        Free(key, pawn) && !Skipped(key) && !SkippedFor(key, pawn) && (at == null || !Forbidden(at.Value) && !NearHazard(at.Value, pawn));
+
+    /// <summary><c>Skipped(PawnKey(key, pawn))</c> without making the key string (asked per drop and per mark per pick).</summary>
+    private bool SkippedFor(string key, string pawn)
+    {
+        if (_skip.Count == 0) return false;
+        int n = key.Length + 1 + pawn.Length;
+        Span<char> buf = n <= 256 ? stackalloc char[n] : new char[n];
+        key.AsSpan().CopyTo(buf);
+        buf[key.Length] = '|';
+        pawn.AsSpan().CopyTo(buf[(key.Length + 1)..]);
+        return _skip.GetAlternateLookup<ReadOnlySpan<char>>().TryGetValue(buf, out var until) && until > Now;
+    }
 
     /// <summary>The nearest available job of one work type for this pawn, or null.</summary>
     internal ActiveJob? Candidate(string type, PawnState p, PawnLive live) =>
@@ -839,6 +852,7 @@ public sealed partial class StoryColony
         if (gone) return;
         if (TempCleanupFailed(p, j, why)) return; // a temporary block's cleanup: not ours any more, or out of reach (StoryColony.TempBlocks.cs)
         MarkFullChests(j, why); // first: a delivery's "A full; chest at B didn't open" is both
+        LookMissed(j, note); // a look that couldn't get to its chest: no look there for a while, whoever (StoryColony.StockCheck.cs)
         // The chest's record was wrong (corrected), or the tool's trouble (none, broke, couldn't hold): re-planned at once, never a
         // target failure, back-off or rest (StoryColony.Ledger.cs).
         // A furnace with nothing to collect yet, or a load left without fuel (a refuel follows): no failure (StoryColony.Refuel.cs).

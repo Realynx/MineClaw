@@ -339,7 +339,15 @@ public sealed class StorageFilter
 public static class StoragePriority
 {
     public static readonly IReadOnlyList<string> All = ["low", "normal", "preferred", "important", "critical"];
-    public static int Rank(string? p) => p == null ? 1 : All.ToList().IndexOf(p) is var i and >= 0 ? i : 1;
+    /// <summary>The priority's place in <see cref="All"/> (unknown: normal's). Asked per chest per stack by the haul search: no list
+    /// copy per call (it made one, live 11-10).</summary>
+    public static int Rank(string? p)
+    {
+        if (p == null) return 1;
+        for (int i = 0; i < All.Count; i++)
+            if (string.Equals(All[i], p, StringComparison.Ordinal)) return i;
+        return 1;
+    }
     public static bool Known(string? p) => p != null && All.Contains(p);
 }
 
