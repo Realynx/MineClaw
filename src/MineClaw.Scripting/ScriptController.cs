@@ -64,7 +64,8 @@ public sealed class ScriptController : IDisposable
     {
         if (string.IsNullOrWhiteSpace(request.Code)) return (null, "no code");
         if (request.Code.Length > Options.MaxCodeChars) return (null, $"script too long ({request.Code.Length} > {Options.MaxCodeChars} chars)");
-        if (Host.ActionVeto() is { } veto) return (null, "can't run scripts now: " + veto);
+        // The veto stops runs a brain must supervise (budget low). A no-model run (a Story Mode pawn) is supervised by code: it plays on.
+        if (!request.NoModel && Host.ActionVeto() is { } veto) return (null, "can't run scripts now: " + veto);
         var req = request with { Name = CleanName(request.Name) };
         if (req.ResumeFrom is { Length: > 0 } label)
         {

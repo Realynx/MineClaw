@@ -245,7 +245,7 @@ public sealed partial class ScriptSession
     internal ActResult RunAction(string label, bool atomic, Func<CancellationToken, Task<ActResult>> run, bool counts = true, JsonElement? args = null)
     {
         SafePoint();
-        if (_host.ActionVeto() is { } veto) { Stop("stopped: " + veto); ThrowIfStopping(); }
+        if (!Request.NoModel && _host.ActionVeto() is { } veto) { Stop("stopped: " + veto); ThrowIfStopping(); }
         Locate();
         if (_resumeTarget != null) return SkipForResume();
         if (_patchRun is { } patchRun) PatchBeforeAction(patchRun);
