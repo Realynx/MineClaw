@@ -27,11 +27,14 @@ import * as scripts from './data/scripts';
 import { designer } from './data/designer';
 import { seedStory, storySim } from './data/story';
 import { MockPawnControl } from './data/pawnControl';
+import { mockSkinAssign, mockSkinDelete, mockSkinFeed, mockSkinsView, mockSkinUpload } from './skins';
 
 export const pawnControl = new MockPawnControl();
 
 let mockTls = WebTlsSettings.parse({});
 let mockHumanSkins = false;
+const skinFail = (status: number, message: string) =>
+  new MockError(status, message, status === 400 ? 'bad_request' : status === 404 ? 'not_found' : 'conflict');
 const mockHosting = () => ({
   running: WebTlsSettings.parse({}),
   saved: mockTls,
@@ -522,7 +525,22 @@ export const resolvers: Partial<Record<RouteId, Resolver>> = {
     mockHumanSkins = (body as { enabled: boolean }).enabled;
     return { enabled: mockHumanSkins, cached: 0, unavailable: 0 };
   },
-  'world.humanSkins': () => ({ enabled: mockHumanSkins, epoch: 'mock', revision: 0, skins: [] }),
+  'world.humanSkins': ({ query }) => mockSkinFeed(mockHumanSkins, query),
+  'skins.list': () => mockSkinsView(mockHumanSkins),
+  'skins.upload': ({ body }) => {
+    const skin = mockSkinUpload(body as { label: string; slim?: boolean; png: string }, me()?.username ?? 'mock', skinFail);
+    return { skin, skins: mockSkinsView(mockHumanSkins) };
+  },
+  'skins.delete': ({ body }) => (mockSkinDelete((body as { id: string }).id, skinFail), mockSkinsView(mockHumanSkins)),
+  'skins.assign': ({ body }) => {
+    const b = body as { pawns: string[]; skin: Parameters<typeof mockSkinAssign>[1] };
+    mockSkinAssign(b.pawns, b.skin, skinFail);
+    return mockSkinsView(mockHumanSkins);
+  },
+  'skins.lookup': ({ body }) => {
+    if (!mockHumanSkins) throw new MockError(409, 'Turn on Administration → Player skins to look up official skins', 'conflict');
+    throw new MockError(404, `No usable skin found for ${(body as { name: string }).name} (mock mode has no profile service)`, 'not_found');
+  },
   'admin.webHostingSave': ({ body }) => {
     mockTls = WebTlsSettings.parse((body as { tls: unknown }).tls);
     return mockHosting();

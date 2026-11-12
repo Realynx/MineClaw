@@ -529,6 +529,13 @@ inspector has "Bring online", the Colony tab has "Bring all online (k offline)" 
 a pawn is offline. When the answer is blocked by the cap, the reason is shown with a secondary "Use regulars' seats" action and a
 one-line warning.
 
+### Pawn skins (added 2026-11-12)
+
+The pawn inspector (click a pawn in the colonist bar) has a **Skin Browser** tab next to Orders: upload a skin PNG, pick one from the
+shared library, use Steve or Alex from your imported game assets, or look up a player's official skin (when Administration → Player
+skins is on). A pick is previewed before "Apply". The choice is a web-view cosmetic stored by the web gateway; the game server runs
+in offline mode, so Minecraft clients keep the default skin. See [human-skins.md](human-skins.md#pawn-skins-skin-browser).
+
 ### A pawn's own claim (added 2026-11-03)
 
 Live 11-03 22:08: the only pawn online couldn't cut a single plant: "double_plant at 208,64,412: another hive bot is working on that

@@ -56,6 +56,11 @@ export interface RouteTypes {
   'admin.humanSkins': { params: never; query: never; body: never; response: z.output<typeof C.HumanSkinSettings> };
   'admin.humanSkinsSave': { params: never; query: never; body: z.input<typeof C.HumanSkinSave>; response: z.output<typeof C.HumanSkinSettings> };
   'world.humanSkins': { params: never; query: z.input<typeof C.HumanSkinQuery>; body: never; response: z.output<typeof C.HumanSkinFeed> };
+  'skins.list': { params: never; query: never; body: never; response: z.output<typeof C.PawnSkins> };
+  'skins.upload': { params: never; query: never; body: z.input<typeof C.SkinUploadRequest>; response: z.output<typeof C.SkinSaved> };
+  'skins.delete': { params: never; query: never; body: z.input<typeof C.SkinDeleteRequest>; response: z.output<typeof C.PawnSkins> };
+  'skins.assign': { params: never; query: never; body: z.input<typeof C.SkinAssignRequest>; response: z.output<typeof C.PawnSkins> };
+  'skins.lookup': { params: never; query: never; body: z.input<typeof C.SkinLookupRequest>; response: z.output<typeof C.SkinSaved> };
   'admin.webHostingSave': { params: never; query: never; body: z.input<typeof C.WebHostingSaveRequest>; response: z.output<typeof C.WebHostingResponse> };
   'admin.nodes': { params: never; query: never; body: never; response: z.output<typeof C.AdminNodesResponse> };
   'admin.settings': { params: z.input<typeof C.AdminNodeParams>; query: never; body: never; response: z.output<typeof C.AdminSettingsResponse> };

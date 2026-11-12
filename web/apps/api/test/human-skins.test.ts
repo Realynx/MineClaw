@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ROUTES } from '@mineclaw/contracts';
 import { HumanSkins, trustedSkinUrl } from '../src/skins/human-skins.js';
 import { login, ORIGIN, PASSWORD, startApp } from './helpers.js';
+import { skinPng } from './skin-fixtures.js';
 
 const dirs: string[] = [], services: HumanSkins[] = [];
 afterEach(() => {
@@ -13,12 +14,7 @@ afterEach(() => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 const temp = () => { const dir = mkdtempSync(join(tmpdir(), 'mc-skins-')); dirs.push(dir); return dir; };
-const png = () => {
-  const b = Buffer.alloc(33);
-  Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]).copy(b);
-  b.write('IHDR', 12); b.writeUInt32BE(64, 16); b.writeUInt32BE(64, 20);
-  return b;
-};
+const png = () => skinPng();
 function fixture(url = 'http://textures.minecraft.net/texture/' + 'a'.repeat(64), image = png()) {
   const bridge = { json: vi.fn(() => Promise.resolve({ status: 200, headers: {}, text: JSON.stringify({ bots: [{ name: 'maid_chan' }], entities: [] }) })) };
   const fetcher = vi.fn<typeof fetch>((input) => {

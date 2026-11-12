@@ -10,7 +10,7 @@ export { WorldThumbnail, WorldViewer, WorldViewerProvider, useWorldRuntime, disp
 export { itemLookById, itemName, loadBundle, blockIconAtlas, blockIconAtlasAsync } from '@mineclaw/world-viewer';
 export { importGameJar, importSoundFolder, readLocalPack, removeLocalPack, ASSETS_CHANGED } from '@mineclaw/world-viewer';
 export { ControllerAudio } from '@mineclaw/world-viewer';
-export { configureHumanSkins } from '@mineclaw/world-viewer';
+export { configureHumanSkins, refreshHumanSkins } from '@mineclaw/world-viewer';
 
 /** Mock mode only: the package's fixture world, re-keyed onto the mock hive's bots (see ./mockSource.ts). */
 export async function loadMockSource(player?: () => string | null | undefined) {

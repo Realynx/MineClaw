@@ -8,7 +8,10 @@
  */
 import type { z } from 'zod';
 import { WebHostingResponse, WebHostingSaveRequest } from './webHosting.js';
-import { HumanSkinSettings, HumanSkinSave, HumanSkinQuery, HumanSkinFeed } from './humanSkins.js';
+import {
+  HumanSkinSettings, HumanSkinSave, HumanSkinQuery, HumanSkinFeed,
+  PawnSkins, SkinUploadRequest, SkinDeleteRequest, SkinAssignRequest, SkinLookupRequest, SkinSaved,
+} from './humanSkins.js';
 import {
   PawnControlAcquireRequest, PawnControlSession, PawnControlInputRequest, PawnControlActionRequest,
   PawnControlActionResponse, PawnControlReleaseRequest, PawnControlReleaseResponse,
@@ -795,6 +798,28 @@ export const ROUTES = {
   'world.humanSkins': get('/api/human-skins', {
     access: 'viewer', query: HumanSkinQuery, response: HumanSkinFeed, responseKind: 'json', bridge: null, supervisor: null, audit: null,
     summary: 'Human-only skin atlas updates. Memory cache resets at web API initialization; not part of AI vision.',
+  }),
+  // Pawn skins (Controller → pawn → Skin Browser): a shared library of uploaded / looked-up skins and each pawn's choice,
+  // kept in the web data directory. Served to human world views through world.humanSkins only; never to the bridge or AI vision.
+  'skins.list': get('/api/skins', {
+    access: 'viewer', response: PawnSkins, responseKind: 'json', bridge: null, supervisor: null, audit: null,
+    summary: 'The pawn skin library and which skin each pawn wears (human browser views only).',
+  }),
+  'skins.upload': post('/api/skins', {
+    access: 'story', body: SkinUploadRequest, response: SkinSaved, responseKind: 'json', bridge: null, supervisor: null, audit: 'story',
+    summary: 'Adds a 64×32 or 64×64 PNG skin to the shared library (ancillary PNG chunks are stripped; the same image is stored once).',
+  }),
+  'skins.delete': post('/api/skins/delete', {
+    access: 'story', body: SkinDeleteRequest, response: PawnSkins, responseKind: 'json', bridge: null, supervisor: null, audit: 'story',
+    summary: 'Removes a library skin; pawns wearing it go back to the default appearance.',
+  }),
+  'skins.assign': post('/api/skins/assign', {
+    access: 'story', body: SkinAssignRequest, response: PawnSkins, responseKind: 'json', bridge: null, supervisor: null, audit: 'story',
+    summary: 'Sets (or clears, with null) the skin the pawns wear in human world views. Other Minecraft clients are unaffected.',
+  }),
+  'skins.lookup': post('/api/skins/lookup', {
+    access: 'story', body: SkinLookupRequest, response: SkinSaved, responseKind: 'json', bridge: null, supervisor: null, audit: 'story',
+    summary: "Copies a Minecraft player's official skin into the library, server-side; 409 unless Administration → Player skins is on.",
   }),
   'admin.webHostingSave': post('/api/admin/hosting', {
     access: 'admin',

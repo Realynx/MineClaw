@@ -423,6 +423,16 @@ Notes on specific routes:
 | `story.gear` | `POST /api/story/colonies/:id/gear` | story | params `StoryColonyParams`<br>body `StoryGearRequest` | `StoryGearResponse` | `POST /v1/sup/story/colonies/{id}/gear` | /api/story/colonies/{id}/gear | story |
 | `story.architect` | `GET /api/story/colonies/:id/architect` | viewer | params `StoryColonyParams` | `StoryArchitectResponse` | `GET /v1/sup/story/colonies/{id}/architect` | /api/story/colonies/{id}/architect | – |
 
+### Pawn skins (Nest-native; human browser views only, writes need `story` or `admin`)
+
+| Route id | Public route | Role | Request | Response | Bridge `/v1` | Supervisor | Audit |
+|---|---|---|---|---|---|---|---|
+| `skins.list` | `GET /api/skins` | viewer | – | `PawnSkins` | Nest-native | – | – |
+| `skins.upload` | `POST /api/skins` | story | body `SkinUploadRequest` | `SkinSaved` | Nest-native | – | story |
+| `skins.delete` | `POST /api/skins/delete` | story | body `SkinDeleteRequest` | `PawnSkins` | Nest-native | – | story |
+| `skins.assign` | `POST /api/skins/assign` | story | body `SkinAssignRequest` | `PawnSkins` | Nest-native | – | story |
+| `skins.lookup` | `POST /api/skins/lookup` | story | body `SkinLookupRequest` | `SkinSaved` | Nest-native | – | story |
+
 ### Live stream
 
 | Route id | Public route | Role | Request | Response | Bridge `/v1` | Supervisor | Audit |

@@ -29,7 +29,8 @@ let loading: Promise<WorldViewerModule | null> | null = null;
 /** The only place that loads the viewer. Resolves to null when it cannot be loaded (the placeholder stays). */
 export function loadWorldViewer(): Promise<WorldViewerModule | null> {
   loading ??= import('./viewer-module').then((mod) => {
-    if (!MOCK) mod.configureHumanSkins((query) => api('world.humanSkins', { query }));
+    // Mock mode too: its in-page gateway serves the Skin Browser's pawn skins (mocks/skins.ts).
+    mod.configureHumanSkins((query) => api('world.humanSkins', { query }));
     return mod;
   }).catch((e: unknown) => {
     console.warn('[world] viewer failed to load; using the 2D placeholder', e);

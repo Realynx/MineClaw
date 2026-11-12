@@ -1,16 +1,19 @@
 /** Human browser cosmetics only. Never import this service into the bridge or AI render pipeline. */
 import { randomUUID } from 'node:crypto';
-import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { parseBridgeJson, toCamel } from '@mineclaw/contracts';
+import { parseBridgeJson, toCamel, type DefaultSkin } from '@mineclaw/contracts';
 import type { BridgeClient } from '../bridge/bridge-client.js';
 import { NO_IDENTITY } from '../bridge/signing.js';
 import { Errors } from '../common/errors.js';
+import { SkinLibrary, writeAtomic } from './skin-library.js';
+import { sanitizeSkinPng } from './skin-png.js';
 
 const MAX_PLAYERS = 512;
 const MAX_BYTES = 64 * 1024;
 const NAME = /^[a-z0-9_]{1,16}$/i;
 interface Skin { name: string; slim: boolean; height: 32 | 64; png: string; revision: number }
+interface FeedSkin { name: string; slim: boolean; height: 32 | 64; png: string; base?: DefaultSkin }
 type Fetch = typeof fetch;
 
 /** No redirects, cookies or arbitrary hosts. Bound bytes before decoding JSON or passing PNGs to a browser. */
@@ -45,7 +48,8 @@ export function trustedSkinUrl(value: unknown): string {
   return url.href;
 }
 
-async function download(name: string, fetcher: Fetch): Promise<Omit<Skin, 'revision'>> {
+/** A player's official skin, through Mojang's profile and session services only. Throws when unavailable. */
+export async function download(name: string, fetcher: Fetch): Promise<Omit<Skin, 'revision'>> {
   const profile = JSON.parse((await bytes(fetcher, `https://api.mojang.com/users/profiles/minecraft/${name}`)).toString()) as { id?: unknown };
   if (typeof profile.id !== 'string' || !/^[a-f0-9]{32}$/i.test(profile.id)) throw new Error('Missing player UUID');
   const session = JSON.parse((await bytes(fetcher, `https://sessionserver.mojang.com/session/minecraft/profile/${profile.id}`)).toString()) as {
@@ -55,12 +59,8 @@ async function download(name: string, fetcher: Fetch): Promise<Omit<Skin, 'revis
   if (typeof property?.value !== 'string' || property.value.length > MAX_BYTES) throw new Error('Missing texture profile');
   const textures = JSON.parse(Buffer.from(property.value, 'base64').toString()) as { textures?: { SKIN?: { url?: unknown; metadata?: { model?: unknown } } } };
   const skin = textures.textures?.SKIN;
-  const png = await bytes(fetcher, trustedSkinUrl(skin?.url));
-  if (png.length < 33 || !png.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) ||
-      png.toString('ascii', 12, 16) !== 'IHDR' || png.readUInt32BE(16) !== 64) throw new Error('Invalid skin PNG');
-  const height = png.readUInt32BE(20);
-  if (height !== 32 && height !== 64) throw new Error('Invalid skin dimensions');
-  return { name, slim: skin?.metadata?.model === 'slim', height, png: png.toString('base64') };
+  const { png, height } = sanitizeSkinPng(await bytes(fetcher, trustedSkinUrl(skin?.url)));
+  return { name, slim: skin?.metadata?.model === 'slim' && height === 64, height, png: png.toString('base64') };
 }
 
 export class HumanSkins {
@@ -75,8 +75,12 @@ export class HumanSkins {
   private closed = false;
   private timer?: NodeJS.Timeout;
 
+  /** The pawn skin library and assignments (Controller → Skin Browser), served through `feed` beside the official skins. */
+  readonly library: SkinLibrary;
+
   constructor(private readonly dir: string, private readonly bridge: Pick<BridgeClient, 'json'>, private readonly fetcher: Fetch = fetch) {
     this.path = join(dir, 'human-skins.json');
+    this.library = new SkinLibrary(dir);
     if (existsSync(this.path)) {
       const saved = JSON.parse(readFileSync(this.path, 'utf8')) as { enabled?: unknown };
       this.enabled = saved.enabled === true;
@@ -137,25 +141,43 @@ export class HumanSkins {
 
   save(enabled: boolean) {
     mkdirSync(this.dir, { recursive: true, mode: 0o700 });
-    const temp = this.path + '.' + randomUUID() + '.tmp';
-    try {
-      const fd = openSync(temp, 'wx', 0o600);
-      try { writeFileSync(fd, JSON.stringify({ enabled }) + '\n'); fsyncSync(fd); } finally { closeSync(fd); }
-      renameSync(temp, this.path);
-    } catch {
-      if (existsSync(temp)) unlinkSync(temp);
-      throw Errors.internal();
-    }
+    writeAtomic(this.path, JSON.stringify({ enabled }) + '\n');
     this.enabled = enabled;
     this.enqueue();
     if (enabled) void this.refreshPlayers();
     return this.settings();
   }
 
+  /** Whether official skins (and so "Look up a player") are on. */
+  get officialEnabled(): boolean { return this.enabled; }
+
+  /**
+   * The human world views' skin feed: pawn skins chosen in the Skin Browser (always, they come from this server) and, while
+   * the admin setting is on, official skins of the players seen in the world. A pawn's chosen skin wins over its official one.
+   * The epoch changes with the setting and with every assignment change, so a view starts over and redraws every skin then.
+   */
   feed(query: { epoch?: string; since?: number } = {}) {
-    const since = query.epoch === this.epoch && (query.since ?? 0) <= this.revision ? query.since ?? 0 : 0;
-    return { enabled: this.enabled, epoch: this.epoch, revision: this.revision,
-      skins: this.enabled ? [...this.entries.values()].filter((s): s is Skin => !!s && s.revision > since).map(({ revision: _revision, ...skin }) => skin) : [] };
+    const epoch = `${this.epoch}.${this.enabled ? 1 : 0}.${this.library.generation}`;
+    const fresh = query.epoch !== epoch || (query.since ?? 0) > this.revision;
+    const since = fresh ? 0 : query.since ?? 0;
+    const assigned = this.library.assigned();
+    const official = this.enabled
+      ? [...this.entries.values()].filter((s): s is Skin => !!s && s.revision > since && !this.library.has(s.name))
+        .map(({ revision: _revision, ...skin }) => skin)
+      : [];
+    const skins: FeedSkin[] = [...(fresh ? assigned : []), ...official].slice(0, 512);
+    return { enabled: this.enabled || assigned.length > 0, epoch, revision: this.revision, skins };
+  }
+
+  /** "Look up a player" in the Skin Browser: 409 while official skins are off, 404 when the player has no usable skin. */
+  async lookup(name: string): Promise<{ slim: boolean; png: Buffer }> {
+    if (!this.enabled || this.closed) throw Errors.conflict('Turn on Administration → Player skins to look up official skins');
+    try {
+      const skin = await download(name.toLowerCase(), this.fetcher);
+      return { slim: skin.slim, png: Buffer.from(skin.png, 'base64') };
+    } catch {
+      throw Errors.notFound(`No usable skin found for ${name}`);
+    }
   }
 
   close(): void { this.closed = true; clearInterval(this.timer); this.queue.length = 0; this.entries.clear(); this.observed.clear(); }

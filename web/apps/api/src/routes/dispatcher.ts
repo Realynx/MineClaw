@@ -22,6 +22,8 @@ import {
   type WebAuditKind,
   type WebHostingSaveRequest,
   type HumanSkinSave,
+  type SkinAssignRequest,
+  type SkinUploadRequest,
 } from '@mineclaw/contracts';
 import type { z } from 'zod';
 import type { AuditService } from '../audit/audit.service.js';
@@ -71,6 +73,10 @@ interface Input {
 
 type Signed = Required<AuthState>;
 
+type NativeRoutes = Partial<
+  Record<RouteId, (req: IncomingMessage, res: ServerResponse, ctx: RequestContext, state: AuthState, input: Input) => Promise<unknown>>
+>;
+
 /** Headers passed through from binary bridge replies (api.md §1, Binary responses). */
 export const BINARY_PASSTHROUGH = [
   'content-type',
@@ -105,18 +111,7 @@ function normOrigin(o: string): string {
 
 export class RouteDispatcher {
   private readonly origins: Set<string>;
-  private readonly native: Partial<
-    Record<
-      RouteId,
-      (
-        req: IncomingMessage,
-        res: ServerResponse,
-        ctx: RequestContext,
-        state: AuthState,
-        input: Input,
-      ) => Promise<unknown>
-    >
-  >;
+  private readonly native: NativeRoutes;
 
   constructor(private readonly d: DispatcherDeps) {
     this.origins = new Set(d.allowedOrigins.map(normOrigin));
@@ -137,6 +132,7 @@ export class RouteDispatcher {
             summary: `Human browser skins ${body.enabled ? 'enabled' : 'disabled'}: ${clip(body.reason, 300)}` });
         }
       },
+      ...this.skinRoutes(),
       'admin.webHosting': () => Promise.resolve(d.hosting.read()),
       'admin.webHostingSave': (_req, _res, ctx, state, input) => {
         const body = input.body as WebHostingSaveRequest;
@@ -180,6 +176,55 @@ export class RouteDispatcher {
       const r: RouteDef = ROUTES[id];
       if (r.bridge === null && !this.native[id]) throw new Error(`route ${id} is Nest-native but has no handler`);
     }
+  }
+
+  /**
+   * The Skin Browser's library and per-pawn choices (skins/skin-library.ts), audited as Story Mode writes. Skin bytes and
+   * PNG data never go into the audit log: only the label, id and pawn names.
+   */
+  private skinRoutes(): NativeRoutes {
+    const d = this.d;
+    const library = d.skins.library;
+    const view = () => library.view(d.skins.officialEnabled);
+    const audited = async <T>(ctx: RequestContext, state: AuthState, route: string, target: string, summary: string, run: () => Promise<T> | T) => {
+      let ok = false;
+      try {
+        const out = await run();
+        ok = true;
+        return out;
+      } finally {
+        d.audit.record({ kind: 'story', ok, ip: ctx.ip, username: state.user?.username, route, method: 'POST', target,
+          requestId: ctx.requestId, summary: clip(summary, 300) });
+      }
+    };
+    return {
+      'skins.list': () => Promise.resolve(view()),
+      'skins.upload': (_req, _res, ctx, state, input) => {
+        const body = input.body as SkinUploadRequest;
+        return audited(ctx, state, '/api/skins', 'skins', `Skin uploaded: ${body.label}`, () => {
+          const skin = library.add({ label: body.label, slim: body.slim, png: Buffer.from(body.png, 'base64'), source: 'upload', by: state.user?.username });
+          return { skin, skins: view() };
+        });
+      },
+      'skins.delete': (_req, _res, ctx, state, input) => {
+        const { id } = input.body as { id: string };
+        return audited(ctx, state, '/api/skins/delete', `skin:${id}`, `Skin ${id} deleted`, () => (library.remove(id), view()));
+      },
+      'skins.assign': (_req, _res, ctx, state, input) => {
+        const body = input.body as SkinAssignRequest;
+        const what = body.skin ? `${body.skin.kind} ${body.skin.id}` : 'the default appearance';
+        return audited(ctx, state, '/api/skins/assign', body.pawns.join(','), `Skin for ${body.pawns.join(', ')}: ${what}`,
+          () => (library.assign(body.pawns, body.skin), view()));
+      },
+      'skins.lookup': (_req, _res, ctx, state, input) => {
+        const { name } = input.body as { name: string };
+        return audited(ctx, state, '/api/skins/lookup', name, `Official skin looked up: ${name}`, async () => {
+          const found = await d.skins.lookup(name);
+          const skin = library.add({ label: name, slim: found.slim, png: found.png, source: 'player', by: state.user?.username });
+          return { skin, skins: view() };
+        });
+      },
+    };
   }
 
   async dispatch(id: RouteId, req: RoutedRequest, res: ServerResponse): Promise<void> {

@@ -100,6 +100,7 @@ function pawnInspector(c: Story, name: string, close: () => void) {
       onDraft={(d) => void c.draft([p.name], d)}
       onClearQueue={() => void c.write('story.orders', { pawns: [p.name], order: { kind: 'stop' } })}
       onClose={close}
+      version={c.state?.version === '1.12.2' ? '1.12.2' : 'b1.8.1'}
       extra={
         <>
           <EquipmentView pawn={p} policies={c.state?.policies ?? []} />

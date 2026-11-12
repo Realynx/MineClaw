@@ -33,6 +33,7 @@ const groups = [
       ),
   ],
   ['Story Mode (supervisor pass-through)', (id) => id.startsWith('story.')],
+  ['Pawn skins (Nest-native; human browser views only, writes need `story` or `admin`)', (id) => id.startsWith('skins.')],
   ['Live stream', (id) => id === 'live.stream'],
   ['Design Studio (supervisor pass-through; writes need `design` or `admin`)', (id) => id.startsWith('designer.')],
 ];
