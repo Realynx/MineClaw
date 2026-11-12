@@ -7,7 +7,8 @@ namespace MineClaw.Hive.Hierarchy;
 public sealed record ManagedAccount
 {
     public string Name { get; init; } = "";
-    /// <summary>Main sent <c>/whitelist add</c> and no remove since: the reconcile removes it when it isn't running.</summary>
+    /// <summary>On the server's whitelist (a confirmed <c>/whitelist add</c> and no remove since). Add once, keep: no add is sent
+    /// while it is set (a "not white-listed" kick re-adds); the reconcile removes it when nothing runs or claims the account.</summary>
     public bool Whitelisted { get; init; }
     /// <summary>Spawned and not released yet.</summary>
     public bool Active { get; init; }

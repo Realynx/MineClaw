@@ -48,6 +48,7 @@ public sealed partial class StoryHost : IStoryHost
     public string? ReleasePawn(string account, string why)
     {
         if (_hierarchy is not { } h) return "the hive is off";
+        h.GiveUp(account); // removed from the colony: the one release that takes it off the whitelist (once it has logged out)
         var r = h.Release(account, HiveTree.Root, why);
         return r.StartsWith("ok", StringComparison.OrdinalIgnoreCase) ? null : r;
     }

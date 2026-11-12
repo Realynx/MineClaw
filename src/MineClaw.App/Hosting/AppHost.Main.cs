@@ -271,6 +271,8 @@ public static partial class AppHost
     /// <summary>Hive first: clones deposit everything and log out while main is still online (handoff receiver), then main stops.</summary>
     private static async Task RecallHivesAsync(MainParts p, MineClaw.Bot.Bodies.BodiesOptions? bodiesOptions, ShutdownSequence seq)
     {
+        // A deploy or restart gives no account up: the bodies logging out now stay on the whitelist (add once, keep).
+        p.MainHive?.Hierarchy?.Stopping();
         if (p.Inproc is { } inproc)
             await seq.StepAsync("bodies recall", TimeSpan.FromSeconds(bodiesOptions!.ShutdownRecallSeconds), _ =>
                 inproc.RecallAllAsync("main shutting down", TimeSpan.FromSeconds(Math.Max(5, Math.Min(bodiesOptions.ShutdownRecallSeconds, seq.Remaining.TotalSeconds) - 1))));

@@ -35,7 +35,73 @@ public sealed partial class WhitelistManager
     /// <summary>The predicate the command gate uses: managed, managed-shaped, never main.</summary>
     public bool Accepts(string name) => _managed.IsManaged(name) && AccountNames.IsManagedShape(name, _cfg, _main);
 
-    public Task<bool> AddAsync(string name, CancellationToken ct = default) => RunAsync("add", name, ct);
+    /// <summary>
+    /// Add once, keep (incident 2026-11-12: the server saves its whitelist file synchronously on its tick thread, and a colony's add
+    /// and remove on every login, logout and deploy stalled a slow-disk server past its 60 s watchdog). An account already known to
+    /// be on the list (its managed record says so: a confirmed add, adopted, or the server answered "already whitelisted") sends
+    /// nothing; an add already in flight for it is joined, not repeated. True = it is on the list (or the line went out, when no
+    /// replies are fed). A removal queued or in flight for the account (a pool account given up for good and reused at once), or
+    /// one sent that the server never confirmed, means the record can't be trusted: the add goes out after it, as before.
+    /// </summary>
+    public async Task<bool> AddAsync(string name, CancellationToken ct = default)
+    {
+        name = (name ?? "").Trim();
+        bool doubt = await AfterRemovalAsync(name, ct).ConfigureAwait(false);
+        if (!doubt && IsListed(name)) return true;
+        return await Coalesced("add", name, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>Waits out a removal of the account queued or in flight. True = the record may say "listed" while the server's file
+    /// no longer has it (a removal went out just now, or one sent was never confirmed).</summary>
+    private async Task<bool> AfterRemovalAsync(string name, CancellationToken ct)
+    {
+        if (!_inflight.TryGetValue(Key("remove", name), out var removal)) return _removeUnconfirmed.ContainsKey(name);
+        try { await removal.Value.WaitAsync(ct).ConfigureAwait(false); }
+        catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
+        { _log.LogDebug(ex, "hive: /whitelist remove {Name} failed before its add", name); }
+        return true;
+    }
+
+    /// <summary>
+    /// The server kicked the account "not white-listed": its list no longer has it (edited by hand, a reconcile of an older build),
+    /// whatever the managed record says, so it is added again. At most once per <see cref="ReAddCooldown"/> after a confirmed add:
+    /// a server that keeps refusing a name it just took isn't helped by more saves of its whitelist file.
+    /// </summary>
+    public async Task<bool> ReAddAsync(string name, CancellationToken ct = default)
+    {
+        name = (name ?? "").Trim();
+        // A removal since the last add (queued, in flight or unconfirmed) is why it was kicked: no cooldown then.
+        bool doubt = await AfterRemovalAsync(name, ct).ConfigureAwait(false);
+        if (!doubt && _addedAt.TryGetValue(name, out var at) && DateTimeOffset.UtcNow - at < ReAddCooldown && IsListed(name))
+        {
+            _log.LogInformation("hive: {Name} was added {S:0}s ago; not sending /whitelist add again", name, (DateTimeOffset.UtcNow - at).TotalSeconds);
+            return true;
+        }
+        if (Accepts(name) && IsListed(name)) _managed.SetWhitelisted(name, false); // the server's word: it isn't on the list
+        return await Coalesced("add", name, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>The managed record says the account is on the server's whitelist.</summary>
+    public bool IsListed(string name) => _managed.Get(name)?.Whitelisted == true;
+
+    /// <summary>Least time between two re-adds of one account after "not white-listed" kicks (<see cref="ReAddAsync"/>).</summary>
+    public TimeSpan ReAddCooldown { get; set; } = TimeSpan.FromMinutes(2);
+
+    private readonly ConcurrentDictionary<string, DateTimeOffset> _addedAt = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, Lazy<Task<bool>>> _inflight = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>One line per account and op at a time: a second caller (a connect retry, a relaunch) joins the one in flight.</summary>
+    private Task<bool> Coalesced(string op, string name, CancellationToken ct)
+    {
+        var key = Key(op, name);
+        var mine = new Lazy<Task<bool>>(() => RunAsync(op, name, ct));
+        var lazy = _inflight.GetOrAdd(key, mine);
+        if (!ReferenceEquals(lazy, mine)) return lazy.Value.WaitAsync(ct);
+        var task = mine.Value;
+        _ = task.ContinueWith(_ => _inflight.TryRemove(new KeyValuePair<string, Lazy<Task<bool>>>(key, mine)), CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+        return task;
+    }
 
     /// <summary>The server refused a login because the account isn't on the whitelist ("You are not white-listed on this server!").</summary>
     public static bool IsNotWhitelistedKick(string? reason) => reason != null
@@ -55,13 +121,23 @@ public sealed partial class WhitelistManager
     public void NoteServerLine(string? text)
     {
         _repliesFed = true;
-        if (string.IsNullOrEmpty(text) || _pending.IsEmpty) return;
+        if (string.IsNullOrEmpty(text)) return;
+        if (_pending.IsEmpty) { NoteLate(text); return; }
         foreach (var (reply, op, ok) in Replies)
             if (reply.Match(text) is { Success: true } m && _pending.TryGetValue(Key(op, m.Groups[1].Value), out var pending))
             {
                 pending.TrySetResult(ok);
                 return;
             }
+        // Newer servers answer an add of a listed name "Player is already whitelisted" (no name in it): it is on the list. Taken
+        // for the add it names, else for the only add waiting.
+        if (Already().Match(text) is { Success: true } already)
+        {
+            if (_pending.TryGetValue(Key("add", already.Groups[1].Value), out var named)) { named.TrySetResult(true); return; }
+            var adds = _pending.Where(p => p.Key.StartsWith("add ", StringComparison.Ordinal)).ToList();
+            if (adds.Count == 1) { adds[0].Value.TrySetResult(true); return; }
+        }
+        if (NoteLate(text)) return;
         // The permission error names no account: every whitelist line in flight failed (live 10-29: main not op yet, four
         // "/whitelist remove" each answered "commands.generic.permission", and the reconcile still said "removed 4").
         if (Denied().IsMatch(text))
@@ -77,6 +153,39 @@ public sealed partial class WhitelistManager
 
     private static string Key(string op, string name) => op + " " + name;
 
+    private readonly ConcurrentDictionary<string, DateTimeOffset> _unconfirmed = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>Removals main sent that the server didn't confirm in time: it may have taken the name off its list (a lagging server),
+    /// so the record's "listed" isn't trusted until an add is confirmed or a late "Removed" settles it. The flag stays set so the
+    /// reconcile tries the removal again.</summary>
+    private readonly ConcurrentDictionary<string, DateTimeOffset> _removeUnconfirmed = new(StringComparer.OrdinalIgnoreCase);
+
+    private bool NoteLate(string text) => NoteLateAdd(text) || NoteLateRemove(text);
+
+    /// <summary>A lagging server confirms a removal main stopped waiting for: the account is off the list.</summary>
+    private bool NoteLateRemove(string text)
+    {
+        if (_removeUnconfirmed.IsEmpty || Removed().Match(text) is not { Success: true } m) return false;
+        var name = m.Groups[1].Value;
+        if (!_removeUnconfirmed.TryRemove(name, out _) || !Accepts(name)) return false;
+        _managed.SetWhitelisted(name, false);
+        _log.LogInformation("hive: the server confirmed /whitelist remove {Name} late; it is off the list", name);
+        return true;
+    }
+
+    /// <summary>A lagging server ("Can't keep up!") confirms an add after <see cref="ConfirmTimeout"/>: the account is on the list
+    /// after all, so its next login sends no second add. Only for an add main sent and stopped waiting for (within 10 min).</summary>
+    private bool NoteLateAdd(string text)
+    {
+        if (_unconfirmed.IsEmpty || Added().Match(text) is not { Success: true } m) return false;
+        var name = m.Groups[1].Value;
+        if (!_unconfirmed.TryRemove(name, out var at) || DateTimeOffset.UtcNow - at > TimeSpan.FromMinutes(10) || !Accepts(name)) return false;
+        _managed.SetWhitelisted(name, true);
+        _addedAt[name] = DateTimeOffset.UtcNow;
+        _removeUnconfirmed.TryRemove(name, out _);
+        _log.LogInformation("hive: the server confirmed /whitelist add {Name} late; it is on the list", name);
+        return true;
+    }
+
     [GeneratedRegex(@"Added (\S+?) to (?:the )?white-?list", RegexOptions.IgnoreCase)]
     private static partial Regex Added();
     [GeneratedRegex(@"Could not add (\S+?) to (?:the )?white-?list", RegexOptions.IgnoreCase)]
@@ -85,9 +194,18 @@ public sealed partial class WhitelistManager
     private static partial Regex Removed();
     [GeneratedRegex(@"Could not remove (\S+?) from (?:the )?white-?list", RegexOptions.IgnoreCase)]
     private static partial Regex NotRemoved();
+    [GeneratedRegex(@"(\S+?) is already (?:white-?listed|on the white-?list)", RegexOptions.IgnoreCase)]
+    private static partial Regex Already();
     [GeneratedRegex(@"do not have permission|commands\.generic\.permission|^generic permission\b|unknown command", RegexOptions.IgnoreCase)]
     private static partial Regex Denied();
-    public Task<bool> RemoveAsync(string name, CancellationToken ct = default) => RunAsync("remove", name, ct);
+    /// <summary>Takes the account off the server's whitelist. One removal per account at a time (a second caller joins it); an add
+    /// asked for meanwhile goes out after it (<see cref="AddAsync"/>).</summary>
+    public Task<bool> RemoveAsync(string name, CancellationToken ct = default)
+    {
+        name = (name ?? "").Trim();
+        _addedAt.TryRemove(name, out _); // a re-add after this removal is never "just added"
+        return Coalesced("remove", name, ct);
+    }
 
     private readonly SemaphoreSlim _turn = new(1, 1);
     private int _queued;
@@ -113,7 +231,12 @@ public sealed partial class WhitelistManager
             // An add counts once the server confirms it (when replies are fed): a gate that ate the line, a non-op main or a
             // typo'd name must not leave the account marked whitelisted (the clone would be kicked at login, forever).
             // A removal too: the reconcile counts only what the server took off its list.
-            if (sent && confirm != null && !await ConfirmedAsync(confirm, line, ct).ConfigureAwait(false)) return false;
+            if (sent && confirm != null && !await ConfirmedAsync(confirm, line, ct).ConfigureAwait(false))
+            {
+                if (!confirm.Task.IsCompleted) // a late "Added" / "Removed" still counts
+                    (op == "add" ? _unconfirmed : _removeUnconfirmed)[name] = DateTimeOffset.UtcNow;
+                return false;
+            }
         }
         finally
         {
@@ -123,6 +246,9 @@ public sealed partial class WhitelistManager
         if (sent)
         {
             _managed.SetWhitelisted(name, op == "add");
+            if (op == "add") { _addedAt[name] = DateTimeOffset.UtcNow; _unconfirmed.TryRemove(name, out _); }
+            else _addedAt.TryRemove(name, out _);
+            _removeUnconfirmed.TryRemove(name, out _);
             _log.LogInformation("hive: {Line}", line);
         }
         return sent;
@@ -173,7 +299,8 @@ public sealed partial class WhitelistManager
 
     /// <summary>
     /// Crash cleanup: every managed account that main left whitelisted (or active) but that isn't running now is released and
-    /// taken off the whitelist. Returns how many were removed.
+    /// taken off the whitelist. Returns how many were removed. It never adds: an account it keeps (<paramref name="isRunning"/>:
+    /// running, in the tree, claimed by an owner) keeps its whitelisting, and a confirmed removal clears the flag (no pass repeats it).
     /// </summary>
     public async Task<int> ReconcileAsync(Func<string, bool> isRunning, CancellationToken ct = default)
     {

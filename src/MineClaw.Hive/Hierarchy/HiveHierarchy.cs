@@ -184,7 +184,7 @@ public sealed class HiveHierarchy : IHiveAccounts
         if (Tree.Get(account) == null && !OwnedElsewhere(account)) return "not one of the hive's bodies";
         NoteBody(account, "not whitelisted — re-adding");
         bool ok;
-        try { ok = await Whitelist.AddAsync(account, ct).ConfigureAwait(false); }
+        try { ok = await Whitelist.ReAddAsync(account, ct).ConfigureAwait(false); }
         catch (Exception ex) when (ex is not OperationCanceledException) { _log.LogDebug(ex, "hive: re-whitelisting {Account} failed", account); ok = false; }
         if (ok)
         {
@@ -334,6 +334,11 @@ public sealed class HiveHierarchy : IHiveAccounts
         catch (TimeoutException) { _log.LogWarning("hive: whitelisting {Account} took over {S:0}s; launching anyway", account, wait.TotalSeconds); }
     }
 
+    /// <summary>
+    /// A body is offline for good (<see cref="IHiveAccounts.Released"/>). Add once, keep: it leaves the whitelist only when the hive
+    /// gives the account up for good (<see cref="GivesUp"/>): back to the pool with no owner left, or given up by its owner
+    /// (<see cref="GiveUp"/>). A pawn whose colony still claims it, and every body while main shuts down, stays on the list.
+    /// </summary>
     public void Released(string account, string reason)
     {
         // An owner that went offline takes its subtree with it: each child deposits first (the recall's logout gate). Subhive
@@ -358,8 +363,11 @@ public sealed class HiveHierarchy : IHiveAccounts
         {
             if (!Managed.IsManaged(account)) return;
             Managed.MarkReleased(account);
-            if (Whitelist.Accepts(account) && Managed.Get(account)?.Whitelisted == true) _ = Whitelist.RemoveAsync(account);
-            _log.LogInformation("hive: {Account} released ({Reason})", account, reason);
+            bool listed = Whitelist.Accepts(account) && Whitelist.IsListed(account);
+            bool forGood = GivesUp(account);
+            if (listed && forGood) _ = Whitelist.RemoveAsync(account);
+            _log.LogInformation("hive: {Account} released ({Reason}){Kept}", account, reason,
+                listed && !forGood ? "; it stays on the whitelist" : "");
         }
         finally
         {
@@ -368,6 +376,36 @@ public sealed class HiveHierarchy : IHiveAccounts
             lock (_gone) _gone.Remove(account, out gone);
             gone?.TrySetResult();
         }
+    }
+
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _givenUp = new(StringComparer.OrdinalIgnoreCase);
+    private volatile bool _stopping;
+
+    /// <summary>Main is shutting down (a deploy, a restart): the bodies logging out now keep their whitelisting; the next start's
+    /// reconcile takes off only the accounts nobody claims then.</summary>
+    public void Stopping() => _stopping = true;
+
+    /// <summary>
+    /// The owner gives the account up for good (Story Mode: a pawn removed from its colony): it leaves the whitelist once it has
+    /// logged out, or now when it isn't hosted. An ordinary logout never does (<see cref="Released"/>).
+    /// </summary>
+    public void GiveUp(string account)
+    {
+        account = (account ?? "").Trim();
+        if (!Whitelist.Accepts(account)) return;
+        if (Tree.Get(account) != null) { _givenUp[account] = 0; return; }
+        if (Whitelist.IsListed(account)) _ = Whitelist.RemoveAsync(account);
+    }
+
+    /// <summary>
+    /// Is a released account given up for good? Yes when its owner gave it up (<see cref="GiveUp"/>), or when it went back to the
+    /// pool with nobody claiming it (no node in the tree, no owner such as an active colony). Never while main shuts down.
+    /// </summary>
+    private bool GivesUp(string account)
+    {
+        if (_givenUp.TryRemove(account, out _)) return true;
+        if (_stopping) return false;
+        return Tree.Get(account) == null && !OwnedElsewhere(account);
     }
 
     private bool IsDeepSeek(string? profile) =>
@@ -796,16 +834,20 @@ public sealed class HiveHierarchy : IHiveAccounts
         return t;
     }
 
-    /// <summary>A group account hosted already: its login is looping. Put it back on the whitelist, then cut the reconnect wait short.</summary>
+    /// <summary>A group account hosted already: its login is looping. Put it back on the whitelist when that is why, then cut the
+    /// reconnect wait short.</summary>
     private string? RetryHosted(ISubhiveHost host, HiveNode node, string group, string acc, bool overCap)
     {
         if (!string.Equals(node.Crew, group, StringComparison.OrdinalIgnoreCase)) return $"it belongs to {node.Crew ?? Short(node.Owner)} now";
         if (node.State == "releasing") return "it is logging out";
         if (overCap) host.AllowOverCap(acc);
+        // Add once, keep: an account on the list is only retried; a whitelist kick (its note) or an unlisted record re-adds.
+        bool readd = !Whitelist.IsListed(acc) || BodyNote(acc)?.StartsWith("not whitelisted", StringComparison.Ordinal) == true;
         _ = Task.Run(async () =>
         {
-            try { await RewhitelistAsync(acc).ConfigureAwait(false); }
-            catch (Exception ex) { _log.LogDebug(ex, "hive: re-whitelisting {Account} failed", acc); }
+            if (readd)
+                try { await RewhitelistAsync(acc).ConfigureAwait(false); }
+                catch (Exception ex) { _log.LogDebug(ex, "hive: re-whitelisting {Account} failed", acc); }
             host.RetryNow(acc);
         });
         return null;
@@ -826,7 +868,8 @@ public sealed class HiveHierarchy : IHiveAccounts
         }
     }
 
-    /// <summary>A group's bodies deposit and log out (whitelist remove follows each logout). Returns how many go.</summary>
+    /// <summary>A group's bodies deposit and log out (each leaves the whitelist once no owner claims it: <see cref="Released"/>).
+    /// Returns how many go.</summary>
     public int ReleaseGroup(string group, string reason = "released") => ReleaseMembers(group, reason);
 
     /// <summary>The accounts a group (or hive script) owns now, any state.</summary>

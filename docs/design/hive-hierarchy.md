@@ -79,8 +79,9 @@ main (admin root, default hive, brain Opus 5.5)
 7. **Deposit** its whole inventory before logout (the existing logout gate: chests → hand-off to main → placed chest; stranded
    on timeout).
 8. **Disconnect**.
-9. **Whitelist remove** once it is offline for good (`IHiveAccounts.Released`: not on a crash restart or a queued relaunch).
-   The account stays in the managed list (inactive) for reuse.
+9. **Whitelist remove** only when the hive gives the account up for good (`IHiveAccounts.Released` with no owner left:
+   back to the pool, or given up by its owner; see "Add once, keep"). Not on a crash restart, a queued relaunch, a logout
+   of a pawn its colony still claims, or main shutting down. The account stays in the managed list (inactive) for reuse.
 
 **Release** (`hive op=release name|all`): the subtree is released deepest level first (siblings in parallel), each level waiting
 for its bodies to deposit and log out before the next; whitelist removal follows each logout. A hive whose own outing ends takes
@@ -226,6 +227,26 @@ process and use threads instead … so that we can still go back to the beta ver
   only: `WhitelistManager.Accepts` = in the managed list, managed shape, not main) accepts the name. `AllowOutgoing` lets that one
   line through once and audits it as "hive account manager". Any other subcommand, name or a second send is refused.
 - Clone processes have no `ManagedAccount` hook at all; they ask main.
+
+### Add once, keep (incident 2026-11-12)
+
+A 1.12.2 server saves `whitelist.json` synchronously on its tick thread for every `/whitelist add|remove`. On a slow disk the
+colony's traffic (an add on every pawn login, connect retries included, a remove on every logout, 30 + 30 on every deploy) kept it
+behind and one save tick passed the 60 s watchdog. Now:
+
+- `WhitelistManager.AddAsync` sends nothing for an account whose managed record is `whitelisted` (a confirmed add, an adopted
+  name, the server's "already whitelisted" answer, or an add the server confirmed after the wait timed out). A second add for
+  the same account while one is in flight joins it. The flag is the existing `whitelisted` field of `hive-accounts.json`, so a
+  restart honours it.
+- A "not white-listed" kick re-adds (`ReAddAsync`: the server's list may have been edited by hand), at most once per
+  `ReAddCooldown` (2 min) after a confirmed add. "Bring online" on a hosted pawn re-adds only after such a kick.
+- `HiveHierarchy.Released` removes only when the account is given up for good: no node in the tree and no owner claims it (a
+  brain's body whose job ended, a hive's bodies when it ends, a body that was never spawned, a released colony's pawns), or its
+  owner gave it up (`GiveUp`: a pawn removed from its colony, at once when it isn't hosted). A pawn its active colony claims keeps
+  its whitelisting through every logout and reconnect. `Stopping()` (main shutting down: a deploy, a restart) keeps every body
+  listed; the next start's reconcile removes only accounts nobody claims then.
+- The bus `whitelist` request: `add` goes through `AddAsync` (no line for a listed account); `remove` is an explicit request and
+  is sent as asked.
 
 ## Crash cleanup
 
