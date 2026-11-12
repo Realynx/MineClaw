@@ -46,6 +46,15 @@ public sealed class StoryStuckPawnTests
         return made;
     }
 
+    /// <summary>A 1×1 hole four deep at x,z in the flat ground (its floor at 60, the body's feet at <see cref="HoleY"/>): the pawn is
+    /// shut in there. Live 11-12: only a pawn shut in is stuck after a run of targets out of reach; on open ground they just rest for it.</summary>
+    private static void Hole(FakeStoryWorld w, int x, int z)
+    {
+        for (int y = HoleY; y <= 63; y++) w.Set(x, y, z, 0);
+    }
+
+    private const int HoleY = 60;
+
     // ================================================================ one stuck pawn never stalls the colony
 
     [Fact]
@@ -57,7 +66,8 @@ public sealed class StoryStuckPawnTests
         int grass = Field(c, w);
         Assert.Equal(grass, c.Designations.Count);
         string stuck = c.P(0);
-        h.Lives[stuck] = FakeStoryHost.Live(40, 64, 40); // stuck somewhere else (its spot keeps the others away from work by it)
+        h.Lives[stuck] = FakeStoryHost.Live(40, HoleY, 40); // stuck somewhere else (its spot keeps the others away from work by it)
+        Hole(w, 40, 40);
         int idleWhileWork = 0, stuckFails = 0, rounds = 0;
         var watch = System.Diagnostics.Stopwatch.StartNew();
         while (c.Designations.Count > 0 && rounds++ < 200)
@@ -84,6 +94,215 @@ public sealed class StoryStuckPawnTests
         Assert.True(c.IsStuck(stuck), "the colony sees it is stuck");
         Assert.True(stuckFails > 0);
         Assert.True(watch.ElapsedMilliseconds < 5000, "picks stay cheap: " + watch.ElapsedMilliseconds + " ms");
+    }
+
+    /// <summary>
+    /// Live 11-12: "3 targets out of reach in a row" sent pawns standing on open ground to the escape, again and again at one spot, and
+    /// the escape's climb poled them 18 to 39 blocks up ("I see 11 pillars"). On open ground the targets are out of reach, not the pawn:
+    /// they rest for it, it picks other work, and no escape job is ever sent.
+    /// </summary>
+    [Fact]
+    public void Three_targets_out_of_reach_on_open_ground_rest_for_the_pawn_and_never_send_it_to_escape()
+    {
+        var clock = NewClock();
+        var (c, h, w) = StoryRig.Make(1, time: clock);
+        Only(c, WorkTypes.Chop);
+        Field(c, w, 8);
+        h.Lives[c.P()] = FakeStoryHost.Live(30, 64, 30); // flat ground all around
+        var tried = new HashSet<string>();
+        for (int i = 0; i < 6; i++)
+        {
+            var j = c.Next();
+            Assert.NotEqual("escape", Kind(j));
+            if (Kind(j) != "dig") break;
+            Assert.True(tried.Add(At(j).ToString()), "a missed target rests for it: " + At(j));
+            c.Report(c.P(), Id(j), "failed", NoPath, null);
+            clock.Now += TimeSpan.FromSeconds(2);
+        }
+        Assert.True(tried.Count >= 3);
+        Assert.False(c.IsStuck(c.P()));
+        Assert.Empty(h.Teleported);
+        // Down a hole the same run is being stuck.
+        Hole(w, 30, 30);
+        h.Lives[c.P()] = FakeStoryHost.Live(30, HoleY, 30);
+        clock.Now += TimeSpan.FromMinutes(10);
+        for (int i = 0; i < 3; i++) c.Report(c.P(), Id(c.Next()), "failed", NoPath, null);
+        Assert.True(c.IsStuck(c.P()));
+        Assert.Equal("escape", Kind(c.Next()));
+    }
+
+    /// <summary>Shut in is being down in something with no walk back up to the ground around: a hole, and a ravine's floor however far
+    /// it runs (live 11-04: 3 wide, 13 deep); not flat ground, nor a floor with a stair back up.</summary>
+    [Fact]
+    public void Shut_in_is_a_hole_or_a_long_ravine_floor_never_open_ground_or_a_floor_with_a_stair()
+    {
+        var w = new FakeStoryWorld();
+        Assert.False(StoryWander.Enclosed(w, new P3(0, 64, 0)));
+        Hole(w, 0, 0);
+        Assert.True(StoryWander.Enclosed(w, new P3(0, HoleY, 0)));
+        for (int x = 10; x <= 70; x++)
+            for (int z = 9; z <= 11; z++)
+                for (int y = 51; y <= 63; y++) w.Set(x, y, z, 0); // a ravine 61 long
+        Assert.True(StoryWander.Enclosed(w, new P3(14, 51, 10)));
+        for (int i = 0; i < 13; i++) w.Set(40 + i, 51 + i, 9, 1); // a stair up its wall
+        Assert.False(StoryWander.Enclosed(w, new P3(14, 51, 10)));
+    }
+
+    /// <summary>A column of cobblestone <paramref name="h"/> tall on the flat ground at x,z (the body on its top has its feet at 64 + h).</summary>
+    private static void Pillar(FakeStoryWorld w, int x, int z, int h)
+    {
+        for (int y = 64; y < 64 + h; y++) w.Set(x, y, z, 4);
+    }
+
+    /// <summary>Marooned is being up on something with no walk down to the ground around: a 10-tall pillar's top, a floating island;
+    /// not flat ground, a hole, a 3-tall pillar (a drop of 3 is a walk), nor a tower with a stair down.</summary>
+    [Fact]
+    public void Marooned_is_a_pillar_top_or_a_floating_island_never_open_ground_a_short_drop_or_a_tower_with_a_stair()
+    {
+        var w = new FakeStoryWorld();
+        Assert.False(StoryWander.Marooned(w, new P3(0, 64, 0)));
+        Hole(w, 0, 0);
+        Assert.False(StoryWander.Marooned(w, new P3(0, HoleY, 0)));
+        Pillar(w, 20, 20, 10);
+        Assert.Equal(StoryWander.Cut.Above, StoryWander.CutOffAt(w, new P3(20, 74, 20)));
+        Assert.False(StoryWander.Enclosed(w, new P3(20, 74, 20)));
+        Pillar(w, 40, 20, 3);
+        Assert.False(StoryWander.Marooned(w, new P3(40, 67, 20)));
+        for (int x = 60; x <= 64; x++)
+            for (int z = 20; z <= 24; z++) w.Set(x, 90, z, 3); // a floating island of dirt, 26 over the ground
+        Assert.True(StoryWander.Marooned(w, new P3(62, 91, 22)));
+        Pillar(w, 80, 20, 12);
+        Assert.True(StoryWander.Marooned(w, new P3(80, 76, 20)));
+        for (int i = 1; i <= 11; i++) w.Set(80 + i, 75 - i, 20, 4); // a stair down from its top
+        Assert.False(StoryWander.Marooned(w, new P3(80, 76, 20)));
+    }
+
+    /// <summary>
+    /// Review 11-12: once only a pawn shut in below was stuck after a run of targets out of reach, a pawn marooned up high was never
+    /// marked stuck, escaped or teleported. Fox 11-12: "If a bot can't navigate something without deleting its nerd pole, then it
+    /// should teleport." On top of a 10-tall pillar, 3 targets out of reach: stuck, never an escape (whose climb would pole it further
+    /// up), it holds where it is for the escape budget, then it is teleported home. No block placed.
+    /// </summary>
+    [Fact]
+    public void A_pawn_marooned_on_a_ten_tall_pillar_is_teleported_home_after_the_budget_and_never_poles()
+    {
+        var clock = NewClock();
+        var (c, h, w) = StoryRig.Make(1, time: clock);
+        Only(c, WorkTypes.Chop);
+        Field(c, w, 8);
+        Pillar(w, 30, 30, 10);
+        h.Lives[c.P()] = FakeStoryHost.Live(30, 74, 30);
+        int blocks = w.Blocks.Count;
+        for (int i = 0; i < 3; i++)
+        {
+            var j = c.Next();
+            Assert.Equal("dig", Kind(j));
+            c.Report(c.P(), Id(j), "failed", NoPath, null);
+            if (i < 2) clock.Now += TimeSpan.FromSeconds(1);
+        }
+        Assert.True(c.IsStuck(c.P()));
+        var stuckAt = clock.Now;
+        JsonObject wait = null!;
+        for (int i = 0; i < 20 && h.Teleported.Count == 0; i++)
+        {
+            wait = c.Next();
+            Assert.Equal("hold", Kind(wait)); // never an escape: no pole up from a pillar's top
+            Assert.Null(wait["pole"]);
+            if (h.Teleported.Count == 0)
+            {
+                Assert.Contains("waiting for the teleport home", wait["label"]!.GetValue<string>());
+                c.Report(c.P(), Id(wait), "done", null, null);
+                clock.Now += TimeSpan.FromSeconds(3);
+            }
+        }
+        Assert.Equal(c.P(), Assert.Single(h.Teleported).Account);
+        Assert.True(clock.Now - stuckAt >= TimeSpan.FromSeconds(20), "after stuck_teleport_after_s: " + (clock.Now - stuckAt));
+        Assert.Equal(blocks, w.Blocks.Count);
+        // It shows up at home: out, and back to work.
+        h.Lives[c.P()] = FakeStoryHost.Live(1, 64, 1);
+        c.Report(c.P(), Id(wait), "done", null, null);
+        clock.Now += TimeSpan.FromSeconds(31);
+        Assert.Equal("dig", Kind(c.Next()));
+        Assert.False(c.IsStuck(c.P()));
+    }
+
+    /// <summary>With no teleport to wait for (rescue_teleport off, or one that can't be sent) a marooned pawn gets the usual escape,
+    /// marked <c>pole: false</c> (its escape never takes a pillar step); a pawn shut in below gets it unmarked, as before.</summary>
+    [Fact]
+    public void Without_a_teleport_a_marooned_pawn_escapes_with_no_pole_and_a_shut_in_one_as_before()
+    {
+        var clock = NewClock();
+        var (c, h, w) = StoryRig.Make(1, time: clock);
+        Only(c, WorkTypes.Chop);
+        c.SetHaulOptions(false, null, null);
+        Field(c, w, 8);
+        Pillar(w, 30, 30, 10);
+        h.Lives[c.P()] = FakeStoryHost.Live(30, 74, 30);
+        for (int i = 0; i < 3; i++) c.Report(c.P(), Id(c.Next()), "failed", NoPath, null);
+        Assert.True(c.IsStuck(c.P()));
+        var esc = c.Next();
+        Assert.Equal("escape", Kind(esc));
+        Assert.False(esc["pole"]!.GetValue<bool>());
+        c.Report(c.P(), Id(esc), "failed", "no way home (no path)", null);
+        clock.Now += TimeSpan.FromSeconds(30);
+        esc = c.Next();
+        Assert.Equal("escape", Kind(esc));
+        Assert.False(esc["pole"]!.GetValue<bool>());
+        Assert.Empty(h.Teleported);
+
+        // The option on, but the teleport can't be sent (no op path): it waits the budget, then escapes with no pole.
+        var (c2, h2, w2) = StoryRig.Make(1, time: clock);
+        Only(c2, WorkTypes.Chop);
+        Field(c2, w2, 8);
+        Pillar(w2, 30, 30, 10);
+        h2.Lives[c2.P()] = FakeStoryHost.Live(30, 74, 30);
+        h2.TeleportError = "no op command path";
+        for (int i = 0; i < 3; i++) c2.Report(c2.P(), Id(c2.Next()), "failed", NoPath, null);
+        var held = c2.Next();
+        Assert.Equal("hold", Kind(held));
+        c2.Report(c2.P(), Id(held), "done", null, null);
+        clock.Now += TimeSpan.FromSeconds(21);
+        esc = c2.Next();
+        Assert.Equal("escape", Kind(esc));
+        Assert.False(esc["pole"]!.GetValue<bool>());
+        Assert.Empty(h2.Teleported);
+        Assert.False(c2.Teleports(c2.P()));
+    }
+
+    /// <summary>The SDK says "shut in" when a pole out would be taller than it can take back (rescue_teleport on): the colony teleports
+    /// it at once, even with an idle colleague and blocks at hand (blocks would only build that pole).</summary>
+    [Fact]
+    public void A_pawn_shut_in_too_deep_to_pole_is_teleported_without_a_rescuer()
+    {
+        var (c, h, w) = StoryRig.Make(2, time: NewClock());
+        Only(c, WorkTypes.Chop);
+        c.StorageOp("set", [new P3(2, 64, 0)], null, null, null);
+        c.AddContents(c.StorageAt(new P3(2, 64, 0))!, new Stack(4, 0, 32));
+        h.Lives[c.P(0)] = FakeStoryHost.Live(6, 60, 6);
+        h.Lives[c.P(1)] = FakeStoryHost.Live(4, 64, 4);
+        Assert.True(c.Teleports(c.P(0)));
+        Assert.Equal("teleported home", c.Stuck(c.P(0), "stuck shut in at 6,60,6 (a pole out would be 4 block(s), more than it could take back from the rim)"));
+        Assert.Contains(h.Teleported, t => t.Account == c.P(0));
+        Assert.NotEqual("give", Kind(c.Next(1)));
+        c.SetHaulOptions(false, null, null);
+        Assert.False(c.Teleports(c.P(0)));
+    }
+
+    /// <summary>Review 11-12: the SDK caps an escape pole at 2 blocks while the colony says it teleports. When the teleport can't be
+    /// sent (here: no op path), the cap would leave a pawn in a deeper hole with no way out at all: the colony then says it doesn't
+    /// teleport, and the next escape poles out to the rim as without the option.</summary>
+    [Fact]
+    public void The_pole_cap_holds_only_while_a_teleport_home_can_actually_be_sent()
+    {
+        var (c, h, w) = StoryRig.Make(1, time: NewClock());
+        Only(c, WorkTypes.Chop);
+        Hole(w, 6, 6);
+        h.Lives[c.P()] = FakeStoryHost.Live(6, HoleY, 6);
+        Assert.True(c.Teleports(c.P()));
+        h.TeleportError = "no op command path";
+        Assert.StartsWith("nobody can help: no teleport (no op command path)", c.Stuck(c.P(), "stuck shut in at 6,60,6 (a pole out would be 4 block(s), more than it could take back from the rim)"));
+        Assert.Empty(h.Teleported);
+        Assert.False(c.Teleports(c.P()));
     }
 
     [Fact]
@@ -360,7 +579,8 @@ public sealed class StoryStuckPawnTests
         Only(c, WorkTypes.Chop);
         c.SetHaulOptions(false, null, null); // no teleport here: it keeps escaping (the budget has its own test)
         Field(c, w, 6);
-        h.Lives[c.P()] = FakeStoryHost.Live(30, 64, 30);
+        h.Lives[c.P()] = FakeStoryHost.Live(30, HoleY, 30);
+        Hole(w, 30, 30);
         for (int i = 0; i < 3; i++)
         {
             var j = c.Next();
@@ -427,13 +647,15 @@ public sealed class StoryStuckPawnTests
     // ================================================================ the escape budget (Fox 11-04: "they should teleport sooner")
 
     /// <summary>Stuck after three targets out of reach; the escape job it gets.</summary>
-    private static JsonObject StuckPawn(StoryColony c, FakeStoryHost h)
+    private static JsonObject StuckPawn(StoryColony c, FakeStoryHost h, FakeStoryWorld w)
     {
-        h.Lives[c.P()] = FakeStoryHost.Live(30, 64, 30);
+        h.Lives[c.P()] = FakeStoryHost.Live(30, HoleY, 30);
+        Hole(w, 30, 30);
         for (int i = 0; i < 3; i++) c.Report(c.P(), Id(c.Next()), "failed", NoPath, null);
         Assert.True(c.IsStuck(c.P()));
         var esc = c.Next();
         Assert.Equal("escape", Kind(esc));
+        Assert.Null(esc["pole"]); // shut in below: its escape may pole to the rim, as before
         return esc;
     }
 
@@ -444,7 +666,7 @@ public sealed class StoryStuckPawnTests
         var (c, h, w) = StoryRig.Make(1, time: clock);
         Only(c, WorkTypes.Chop);
         Field(c, w, 6);
-        var esc = StuckPawn(c, h);
+        var esc = StuckPawn(c, h, w);
         c.Report(c.P(), Id(esc), "failed", "no way home (couldn't climb out below home at 30,49,30)", null);
         esc = c.Next();
         Assert.Equal("escape", Kind(esc));
@@ -468,7 +690,7 @@ public sealed class StoryStuckPawnTests
         var (c, h, w) = StoryRig.Make(1, time: clock);
         Only(c, WorkTypes.Chop);
         Field(c, w, 6);
-        var esc = StuckPawn(c, h);
+        var esc = StuckPawn(c, h, w);
         clock.Now += TimeSpan.FromSeconds(12);
         c.Report(c.P(), Id(esc), "progress", "trying a staircase toward home", null);
         Assert.Empty(h.Teleported);

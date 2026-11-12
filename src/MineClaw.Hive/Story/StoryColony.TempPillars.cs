@@ -13,6 +13,11 @@ namespace MineClaw.Hive.Story;
 /// onto the top (<c>stand</c>) and digs down beneath itself a block at a time (<c>unpole</c>: the cells top first, and <c>back</c>,
 /// the cell it walks back out to). The top's mark leads the job; the others are leased with it, and rest with it after a miss. Its
 /// own builder may take it: standing over its column for this job is not "temporary access still in use".</item>
+/// <item>A pillar whose top nobody can walk or drop onto (live 11-12: escape pillars 18 to 39 blocks tall on open ground, 208 cleanups
+/// "out of reach" in 3 h) comes down the owner's way (Fox: "pillar up and then delete 2 blocks in each level as you come down"): from
+/// a ground cell next to it (<c>unpole.beside</c>, the job's <c>stand</c>) the pawn poles its own helper column up beside the pillar
+/// until its top is in reach, then comes down taking the pillar's block and the helper block under its feet at each level. Both
+/// columns end gone. Only a pillar with no ground next to it to start from is out of reach; its marks then rest and say so.</item>
 /// <item>Down on the floor with no way back (a pit, a cave), the pawn asks for the rescue teleport home (the owner's rule: it removes
 /// what it can and teleports rather than leave the blocks). Only offered with <see cref="ColonyMeta.RescueTeleport"/> on: without
 /// it the pawn would pillar out again.</item>
@@ -23,22 +28,36 @@ namespace MineClaw.Hive.Story;
 /// </summary>
 public sealed partial class StoryColony
 {
-    /// <summary>A pillar to take down from its top: the mark that leads the job, the top cell, the cell over it, the cell beside that to
-    /// walk back out to, the cells top first, and the other cells' lease keys.</summary>
-    private sealed record TempPillar(DesignationState Mark, P3 Top, P3 Stand, P3 Back, List<P3> Cells, List<string> MoreKeys)
+    /// <summary>A pillar to take down: the mark that leads the job, the top cell, where the pawn stands to start (over the top, or the
+    /// ground cell beside the pillar when it builds up alongside), the cell beside the top to walk back out to (from the top only), the
+    /// cells top first, and the other cells' lease keys.</summary>
+    private sealed record TempPillar(DesignationState Mark, P3 Top, P3 Stand, P3? Back, List<P3> Cells, List<string> MoreKeys)
     {
-        public JsonObject Json() => new()
+        /// <summary>Built up alongside from the ground (<see cref="Stand"/> is that ground cell), not walked onto from its top.</summary>
+        public bool Alongside => Back == null;
+
+        /// <summary>Where the job is sent: the top (from its top), else the pillar's lowest cell (the walk there ends on the ground beside it).</summary>
+        public P3 Target => Alongside ? Cells[^1] : Top;
+
+        /// <summary>How many blocks the pawn builds up beside it at most (its pillar hint).</summary>
+        public int Climb => Alongside ? Math.Max(0, Top.Y - Stand.Y) : 0;
+
+        public JsonObject Json()
         {
-            ["back"] = Back.ToString(),
-            ["cells"] = new JsonArray(Cells.Select(c => (JsonNode)c.ToString()).ToArray()),
-        };
+            var o = new JsonObject();
+            if (Back is { } back) o["back"] = back.ToString();
+            else o["beside"] = Stand.ToString();
+            o["cells"] = new JsonArray(Cells.Select(c => (JsonNode)c.ToString()).ToArray());
+            return o;
+        }
     }
 
-    /// <summary>The pillar <paramref name="d"/>'s block is part of, when it can be taken down from its top by this pawn; else null (the
-    /// block is dug from beside, as before).</summary>
+    /// <summary>The pillar <paramref name="d"/>'s block is part of, when this pawn can take it down as one job: from its top (rescue
+    /// teleport on, its top walkable or dropped onto), else built up alongside from the ground beside it; else null (the block is dug
+    /// from beside, as before: a lone block, or a pillar with no ground next to it).</summary>
     private TempPillar? TempPillarFor(PawnState p, IStoryWorld w, DesignationState d)
     {
-        if (!Meta.RescueTeleport || d.At is not { } at || Meta.TempBlocks is not { Count: > 1 } temps) return null;
+        if (d.At is not { } at || Meta.TempBlocks is not { Count: > 1 } temps) return null;
         var column = new Dictionary<P3, TempBlockState>();
         foreach (var t in temps)
             if (t.At.X == at.X && t.At.Z == at.Z && t.Designation != null && !t.Cancelled && t.DeferredReason == null && t.Id != 0) column[t.At] = t;
@@ -50,8 +69,13 @@ public sealed partial class StoryColony
         if (top == bottom) return null; // a lone block: dug from beside
         var topCell = new P3(at.X, top, at.Z);
         var stand = topCell.Add(0, 1, 0);
-        if (!OpenAt(w, stand) || !OpenAt(w, stand.Add(0, 1, 0)) || StoodOnByOthers(p.Name).Contains(topCell)) return null;
-        if ((BackFrom(w, stand) ?? DropInFrom(w, stand)) is not { } back) return null;
+        if (StoodOnByOthers(p.Name).Contains(topCell)) return null; // somebody up there: never dug out from under them
+        P3? back = Meta.RescueTeleport && OpenAt(w, stand) && OpenAt(w, stand.Add(0, 1, 0)) ? BackFrom(w, stand) ?? DropInFrom(w, stand) : null;
+        if (back == null)
+        {
+            if (AlongsideFrom(w, at.X, at.Z, bottom, top) is not { } ground) return null;
+            stand = ground;
+        }
         // The top's own mark leads the job (not resting, nobody at it); every other cell's mark goes with it.
         var lead = column[topCell];
         if (lead.RetryAfter > Now || Designations.FirstOrDefault(x => x.Id == lead.Designation) is not { } mark || !Open(DesignationKey(mark), p.Name, null))
@@ -66,6 +90,51 @@ public sealed partial class StoryColony
             more.Add(key);
         }
         return new TempPillar(mark, topCell, stand, back, cells, more);
+    }
+
+    /// <summary>How far under the pillar's base the ground beside it may be (the helper column then starts lower: a pillar whose
+    /// lowest blocks are already gone floats over the ground, the old per-cell cleanup dug those from the ground and left the rest up
+    /// there), and over it (the pillar's lowest cells are then dug from that ground, below the feet).</summary>
+    private const int AlongsideBelow = 48, AlongsideAbove = 2;
+
+    /// <summary>
+    /// The ground cell next to the pillar column x,z (bottom..top) a pawn builds its helper column up from: a floor that isn't liquid
+    /// under two open cells, and the column over it open (no liquid) up to a head over the pillar's top. Nearest the pillar's base
+    /// wins, a cell at or under it before one over it. None: no ground beside it to start from, the pillar is out of reach.
+    /// </summary>
+    private static P3? AlongsideFrom(IStoryWorld w, int x, int z, int bottom, int top)
+    {
+        P3? best = null;
+        int bestCost = int.MaxValue;
+        foreach (var (dx, dz) in new[] { (1, 0), (-1, 0), (0, 1), (0, -1) })
+        {
+            int cx = x + dx, cz = z + dz;
+            if (!w.Loaded(cx, cz)) continue;
+            for (int y = bottom + AlongsideAbove; y >= Math.Max(1, bottom - AlongsideBelow); y--)
+            {
+                if (!StoryWander.Standable(w, cx, y, cz))
+                {
+                    if (!StoryWander.Passable(w.Block(cx, y, cz).Id)) break; // solid: ground under it has no open column up
+                    continue;
+                }
+                int cost = y <= bottom ? bottom - y : 2 * (y - bottom) + 1;
+                if (cost < bestCost && ShaftOpen(w, cx, cz, y, top + 1)) { best = new P3(cx, y, cz); bestCost = cost; }
+                break; // the highest ground in this column within the range: lower cells are under it
+            }
+        }
+        return best;
+    }
+
+    /// <summary>Open (walk-through, no liquid) from <paramref name="from"/> up to <paramref name="to"/>, with no lava beside it.</summary>
+    private static bool ShaftOpen(IStoryWorld w, int x, int z, int from, int to)
+    {
+        for (int y = from; y <= Math.Min(to, w.Height - 1); y++)
+        {
+            if (!StoryWander.Passable(w.Block(x, y, z).Id)) return false;
+            foreach (var (dx, dz) in new[] { (1, 0), (-1, 0), (0, 1), (0, -1) })
+                if (w.Block(x + dx, y, z + dz).Id is 10 or 11) return false;
+        }
+        return true;
     }
 
     private static bool OpenAt(IStoryWorld w, P3 c) => OpenCell(w.Block(c.X, c.Y, c.Z).Id);

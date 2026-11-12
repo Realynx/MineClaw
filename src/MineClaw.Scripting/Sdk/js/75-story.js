@@ -393,21 +393,48 @@
     for (const c of st.dig) { r = escDig(c); if (!globalThis.ok(r)) break; }
     return globalThis.ok(r) ? globalThis.go(st.to, 0) : r;
   };
-  const canPole = s => s.pillar && s.blocks > 0;
-  // A pillar step out: the cell joins e.poles (taken back once it is out, from where it stands; the rest is the colony's cleanup).
+  // How high a pole out may go (Fox 11-12: "If a bot can't navigate something without deleting its nerd pole, then it should
+  // teleport"). Only up to the rim (s.need: walkable ground beside the column; none = it would only climb into the air, live 11-12:
+  // escapes on open ground poled 18 to 39 blocks up). With the colony's rescue teleport, only as high as the pole can be dug back
+  // from the rim once it is out (POLE_BACK); deeper, the colony is asked and teleports it home. An escape job with pole: false (the
+  // colony saw it marooned up high, no walk down) never poles at all: a pole there only takes it further up.
+  const POLE_BACK = 2, POLE_MAX = 16;
+  const teleports = () => { try { return !!H.storyTeleports(); } catch (x) { return false; } };
+  const poleFits = (e, s) => !e.nopole && typeof s.need === 'number' && s.need >= 1 && s.need <= (e.teleports ? POLE_BACK : POLE_MAX);
+  const canPole = (e, s) => s.pillar && s.blocks > 0 && poleFits(e, s);
+  // A pillar step out: the cell joins e.poles (taken back once it is out, from the rim; what it can't reach is the colony's cleanup).
   const pole = (e, s) => {
     const r = globalThis.place(s.block, s.feet);
     if (globalThis.ok(r)) { e.poles.push(s.feet); temp(s.feet, true, 'escape pillar'); }
     return r;
   };
-  // Out: its escape pillar dug back, top first, as far as it reaches from where it stands; never the column under its own feet (it
-  // would fall back in): what is left is the colony's cleanup.
+  // Out: it steps off its pole onto the rim, then digs the pole back top first from there (dig_here: never walking back down into
+  // the pit for it); never the column under its own feet (it would fall back in). What it can't reach is the colony's cleanup.
   const column = c => String(c).split(',').filter((_, k) => k != 1).join(',');
+  const cellAt = (x, y, z) => x + ',' + y + ',' + z;
+  const cellY = c => +String(c).split(',')[1];
+  const open = c => H.block(c) === 'air' && !H.storyLiquid(c);
+  // Onto a cell beside its column (floor under two open cells): a step up first in every direction, then level, then a step down,
+  // and never down to the pit floor it poled up from (floorY: its first pole's cell) or below; a step down tried before a step up
+  // elsewhere walked a pawn in a 2-deep trench back down into it, off its pole and stuck again.
+  const stepOff = (col, floorY) => {
+    const [x, y, z] = feet().split(',').map(Number);
+    for (const dy of [1, 0, -1]) {
+      if (y + dy <= floorY) continue;
+      for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const c = cellAt(x + dx, y + dy, z + dz), below = cellAt(x + dx, y + dy - 1, z + dz);
+        if (!open(c) || !open(cellAt(x + dx, y + dy + 1, z + dz)) || H.block(below) === 'air' || H.storyLiquid(below)) continue;
+        if (good(globalThis.go(c, 0)) && column(feet()) !== col) return true;
+      }
+    }
+    return column(feet()) !== col;
+  };
   const unpoleEscape = e => {
+    if (e.poles.length && column(feet()) === column(e.poles[0])) stepOff(column(e.poles[0]), cellY(e.poles[0]));
     const mine = column(feet());
     for (let i = e.poles.length - 1; i >= 0; i--) {
       const c = e.poles[i];
-      if (column(c) != mine && (globalThis.ok(escDig(c)) || H.block(c) == 'air')) temp(c, false, 'escape pillar');
+      if (column(c) != mine && (good(digHere(c)) || H.block(c) == 'air')) temp(c, false, 'escape pillar');
     }
     e.poles = [];
   };
@@ -416,9 +443,9 @@
   const escMoves = (e, s, climb) => [
     [!!s.approach, 'a' + s.approach, () => globalThis.go(s.approach, 0)],
     [!!s.exit, 'e' + s.exit, () => globalThis.go(s.exit, 0)],
-    [!climb && canPole(s), 'p' + s.feet, () => pole(e, s)],
+    [!climb && canPole(e, s), 'p' + s.feet, () => pole(e, s)],
     [!!s.stair, s.stair && s.stair.to, () => escStair(s.stair)],
-    [canPole(s), 'p' + s.feet, () => pole(e, s)],
+    [canPole(e, s), 'p' + s.feet, () => pole(e, s)],
   ];
   // A move not tried here yet: -> true when it worked (the body moved).
   const escTry = (e, key, move) => {
@@ -431,7 +458,7 @@
   };
   // No blocks to pole with: dig one of the walls for them (-> true: dug or tried, look again).
   const escGather = (e, s) => {
-    const c = s.pillar && s.blocks <= 0 && (s.gather || []).find(x => !e.tried['g' + x]);
+    const c = s.pillar && s.blocks <= 0 && poleFits(e, s) && (s.gather || []).find(x => !e.tried['g' + x]);
     if (!c) return false;
     e.tried['g' + c] = 1;
     const r = globalThis.dig(c);
@@ -449,17 +476,25 @@
     if (!s.pit) return { ok: true, out: moved, msg: moved ? 'got out' : 'not stuck' };
     return null;
   };
-  const escStuck = (s, climb, cause) => {
-    const where = (s.water ? 'in water' : climb ? 'below home' : s.cave ? 'in a cave' : 'in a pit') + ' at ' + s.feet;
-    const tail = where + (cause ? ' (' + cause + ')' : '');
+  // Too deep to pole out (or nothing beside it to pole up to): "shut in", never "in a pit", so the colony teleports it at once instead
+  // of sending a pawn with blocks it may not use.
+  const tooDeep = (e, s) => !s.water && !s.cave && !!s.pillar && !poleFits(e, s);
+  const poleWhy = (e, s) => (e.nopole ? 'up on something with no walk down: no pole from here'
+    : s.need == null ? 'no ground beside it to pole up to'
+    : 'a pole out would be ' + s.need + ' block(s), more than it could take back from the rim');
+  const escStuck = (e, s, climb, cause) => {
+    const deep = tooDeep(e, s);
+    const where = (s.water ? 'in water' : climb ? 'below home' : s.cave ? 'in a cave' : deep ? 'shut in' : 'in a pit') + ' at ' + s.feet;
+    const why = [cause, deep ? poleWhy(e, s) : ''].filter(Boolean).join('; ');
+    const tail = where + (why ? ' (' + why + ')' : '');
     if (climb) return { ok: false, stuck: true, msg: "couldn't climb out " + tail };
     const help = H.storyStuck('stuck ' + tail);
     return { ok: false, stuck: true, msg: 'stuck ' + tail + ': ' + help };
   };
   const str = v => (v == null ? null : String(v));
-  const escape = (toward, climb) => {
-    // e: the moves tried (each once per spot), the last refusal, whether it moved.
-    const e = { tried: {}, why: '', moved: false, poles: [] }, ty = toward == null ? null : +String(toward).split(',')[1];
+  const escape = (toward, climb, nopole) => {
+    // e: the moves tried (each once per spot), the last refusal, whether it moved; nopole: never a pillar step.
+    const e = { tried: {}, why: '', moved: false, poles: [], teleports: teleports(), nopole: !!nopole }, ty = toward == null ? null : +String(toward).split(',')[1];
     let s = null;
     for (let i = 0; i < (climb ? 64 : 40); i++) {
       s = H.storyPit(str(toward), !!climb);
@@ -467,7 +502,8 @@
       if (out) { unpoleEscape(e); return out; }
       if (!escStep(e, s, climb)) break;
     }
-    return escStuck(s, climb, e.why);
+    unpoleEscape(e); // whatever pole it put up and can reach again comes back down
+    return escStuck(e, s, climb, e.why);
   };
   const NO_WAY = /no path|no route|unreachable|partway|stuck/i;
   // go(at, d, opts?): try walking first, then a reachable base below the target for story.dig's removable pillar.
@@ -539,17 +575,15 @@
     }
     return placed;
   };
-  // Dig the pillar back down from the top, standing on each block it placed -> the cells it couldn't take back.
+  // Dig the pillar back down from the top, standing on each block it placed -> the cells it couldn't take back. A body that stays up
+  // after a block under it is gone (its box rests on a ledge beside the pillar) keeps digging the rest from there: each is then below
+  // it, not under its feet (live 11-12: short reach pillars were left whole after that first block).
   const poleDown = (placed, visit) => {
     const left = [];
     for (let i = placed.length - 1; i >= 0; i--) {
       const c = placed[i];
       if (visit) visit();
-      if (globalThis.ok(digHere(c)) || H.block(c) == 'air') {
-        temp(c, false, 'reach pillar');
-        const [x, y, z] = c.split(',').map(Number), p = H.me('pos');
-        if (Math.floor(p.x) === x && Math.floor(p.z) === z && p.y > y + 0.1) { left.push(...placed.slice(0, i)); break; }
-      }
+      if (globalThis.ok(digHere(c)) || H.block(c) == 'air') temp(c, false, 'reach pillar');
       else { left.push(...placed.slice(0, i + 1)); break; }
     }
     return left;
@@ -581,7 +615,15 @@
     if (!globalThis.ok(w)) return { ok: false, msg: 'out of reach: ' + w.msg };
     const placed = access ? access.placed : [];
     if (access) access.stand = s.stand;
-    try { poleUp(at, s.steps, placed, act, s.block, j); return fn(); }
+    try {
+      poleUp(at, s.steps, placed, act, s.block, j);
+      // The plan said this height reaches it; the world may disagree (a face hidden after all, a step that didn't hold). Then the
+      // pillar did not help: it comes down at once, in this job, and the target is out of reach from here.
+      if (!access && !H.storyWithin(String(at), j && j._place, j && j._meta)) {
+        return { ok: false, msg: 'out of reach: the pillar at ' + s.stand + ' (' + placed.length + ' of ' + s.steps + ' block(s)) did not reach ' + at + '; taken back down' };
+      }
+      return fn();
+    }
     finally { if (!access) unpole(placed, s.stand, visit); }
   };
   // A pillar of the pawns' temporary blocks taken down from its top (j.unpole {back, cells: top first}; j.stand: the cell over its
@@ -609,6 +651,82 @@
     }
     return failed ? { ok: false, msg: took + '; ' + why(failed) + tail } : { ok: true, msg: took + tail };
   };
+  // A pillar of the pawns' temporary blocks whose top nobody can walk onto, taken down the owner's way (Fox 11-12: "pillar up and
+  // then delete 2 blocks in each level as you come down"). j.unpole {beside: a ground cell next to it, cells: top first}; j.stand is
+  // that cell. From there the pawn poles its own helper column up beside the pillar until the pillar's top is in reach (a block at its
+  // feet a step), digs every pillar block it reaches, top first, then comes down: at each level the pillar's block beside it and the
+  // helper block under its feet. Short of blocks it first takes the job's pillar stack from storage (j.pillar); still short on the
+  // way up, it takes the pillar's lowest block in reach at its feet or above (its drop then lands where the body picks it up: b1.8.1
+  // grows the pickup box only sideways), waits for that pickup, never sand or gravel nor one under them (what is over it would fall).
+  // A dig the world refuses stops the pillar's digs; anything else (out of blocks) still takes every pillar block it passes on the
+  // way down. Both columns end gone, the pawn back on the ground, every block in its pocket. Stranded up its helper (a block under it
+  // won't come out): the colony teleports it home; whatever is left keeps its mark.
+  const PILLAR_BLOCKS = ['dirt', 'cobblestone', 'netherrack', 'stone', 'sandstone'];
+  const FALLS = /^(sand|red_sand|gravel|anvil|dragon_egg|concrete_powder)$/;
+  const over = c => { const [x, y, z] = String(c).split(',').map(Number); return cellAt(x, y + 1, z); };
+  const carried = () => PILLAR_BLOCKS.reduce((n, b) => n + H.inv(b), 0);
+  // How many it builds up beside the pillar: to a few under its top (the top is then in reach from the eyes).
+  const ALONGSIDE_REACH = 3;
+  const unpoleAlongside = j => {
+    const g = globalThis, u = j.unpole, base = String(u.beside), cells = (u.cells || []).map(String);
+    const need = Math.max(0, Math.max(...cells.map(cellY)) - cellY(base) - ALONGSIDE_REACH);
+    if (carried() < need && j.pillar && typeof g.take === 'function') g.take(j.pillar.item, j.pillar.n, j.pillar.from);
+    if (feet() !== base) g.go(base, 0);
+    if (feet() !== base) return { ok: false, msg: 'out of reach: could not get to ' + base + ' beside the pillar' };
+    const helper = [], standing = () => cells.filter(c => H.block(c) !== 'air');
+    let refused = null, failed = null, built = 0;
+    // Every pillar block in reach, top first; stops at the first one out of reach (a lower one waits for the way down).
+    const take = () => {
+      if (refused) return;
+      for (const c of standing().sort((a, b) => cellY(b) - cellY(a))) {
+        if (!H.storyWithin(c)) return;
+        const r = digHere(c);
+        if (!good(r) && H.block(c) !== 'air') { refused = r; return; }
+      }
+    };
+    // A block to step up with: one it carries, else the pillar's lowest one in reach at its feet or above, once picked up (the drop
+    // reaches the bag some ticks after the dig).
+    const have = () => PILLAR_BLOCKS.find(b => H.inv(b) > 0);
+    const stepBlock = () => {
+      if (have()) return have();
+      const y = cellY(feet());
+      const c = standing().sort((a, b) => cellY(a) - cellY(b))
+        .find(x => cellY(x) >= y && H.storyWithin(x) && !FALLS.test(H.block(x)) && !FALLS.test(H.block(over(x))));
+      if (!c || (!good(digHere(c)) && H.block(c) !== 'air')) return null;
+      for (let k = 0; k < 8 && !have(); k++) H.idle(0.25);
+      return have();
+    };
+    for (let i = 0; i < 64; i++) { // up
+      take();
+      const left = standing();
+      if (refused || !left.length || Math.max(...left.map(cellY)) <= cellY(feet())) break;
+      const b = stepBlock();
+      if (!b) { failed = { ok: false, msg: 'out of reach: no blocks to build up beside the pillar' }; break; }
+      const f = feet(), p = g.place(b, f);
+      if (!good(p)) { failed = p; break; }
+      helper.push(f);
+      built++;
+      temp(f, true, 'pillar helper');
+    }
+    while (helper.length) { // down: the pillar's blocks around it, then the helper block under its feet
+      take();
+      const h = helper[helper.length - 1], r = digHere(h);
+      if (!good(r) && H.block(h) !== 'air') { failed = failed || r; break; }
+      helper.pop();
+      temp(h, false, 'pillar helper');
+    }
+    if (!helper.length) take();
+    const left = standing().length;
+    let msg = 'took ' + (cells.length - left) + ' of ' + cells.length + ' pillar block(s) down from beside it'
+      + (built ? ' (built ' + built + ' up beside it and took them back)' : '');
+    if (helper.length) {
+      try { msg += '; stranded at ' + feet() + ': ' + H.storyStuck('stranded at ' + feet() + ' on ' + helper.length + ' block(s) it put up beside a temporary pillar and could not take back'); }
+      catch (x) { msg += '; stranded at ' + feet(); }
+    }
+    if (!left && !helper.length) return { ok: true, msg };
+    const cause = refused || failed ? why(refused || failed) : 'out of reach';
+    return { ok: false, msg: msg + '; ' + (/out of reach|protected|can't|won't/i.test(cause) ? cause : 'out of reach: ' + cause) };
+  };
   // dig(at, job?): the usual dig; a block out of reach is reached from a pillar (reachUp), never just given up on. j.ordered (a
   // preserved zone's repair): the owner's clear (clear_dig), which the preserved-block filter lets through. j.unpole: a temporary
   // pillar taken down from its top (unpoleFromTop).
@@ -619,10 +737,56 @@
     // A chest designation never falls back to a plain/forced dig: the atomic action must freshly prove both halves empty.
     if (j && j.deconstruct) return typeof globalThis.deconstruct_chest === 'function'
       ? call('deconstruct_chest', at) : { ok: false, msg: 'safe chest deconstruction is unavailable' };
+    if (j && j.unpole && j.unpole.beside) return unpoleAlongside(j);
     if (j && j.unpole && j.stand) { const top = unpoleFromTop(j); if (top) return top; }
     const g = globalThis, one = () => (j && (j.ordered || j.replace) ? clearDig(at, j) : g.dig(at)), r = one();
     if (g.ok(r) || !REACH.test(r.msg || '')) return r;
     return reachUp(at, () => j && (j.ordered || j.replace) ? clearDig(at, j) : digHere(at), j);
+  };
+  // collect(job, at): walk to the drops and pick them up (the plain collect). A drop up on a ledge it can't walk onto ("no path …
+  // it's 3 blocks up", live 11-12: 144 collects in 3 h failed "unreachable even by pillaring/bridging") is reached the way a dig is:
+  // a pole beside it, up to where the body touches the drop (one below it: the pickup box reaches up), then the pole comes down
+  // again in the same job.
+  const collectDrops = (j, at) => {
+    const g = globalThis, t = at ? g.go(at, 1) : { ok: true }, r = g.collect(j.r || 4);
+    if (good(r) || good(t) || !NO_WAY.test(why(t))) return good(r) || good(t) ? r : t;
+    const up = dropUp(String(at), j);
+    return up && good(up) ? up : t;
+  };
+  // The column beside the drop with ground under it that needs the fewest steps (none: null), its pole, a wait for the pickup.
+  const dropUp = (at, j) => {
+    const g = globalThis, [x, y, z] = at.split(',').map(Number);
+    if (![x, y, z].every(Number.isFinite)) return null;
+    let best = null;
+    for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      for (let gy = y; gy >= y - 8; gy--) {
+        const c = cellAt(x + dx, gy, z + dz), below = cellAt(x + dx, gy - 1, z + dz);
+        if (!open(c)) break;
+        if (H.block(below) === 'air') continue;
+        if (H.storyLiquid(below)) break;
+        const steps = Math.max(0, y - 1 - gy);
+        if (!best || steps < best.steps) best = { stand: c, steps };
+        break;
+      }
+    }
+    if (!best || !good(g.go(best.stand, 0))) return null;
+    const placed = [];
+    for (let i = 0; i < best.steps; i++) {
+      const b = PILLAR_BLOCKS.find(n => H.inv(n) > keepMaterial(n, j));
+      if (!b) break;
+      const f = feet();
+      if (!good(g.place(b, f))) break;
+      placed.push(f);
+      temp(f, true, 'reach pillar');
+    }
+    let got = null;
+    if (placed.length >= best.steps) {
+      g.wait(1); // the pickup is the server's: standing in reach is enough; a collect then says whether anything is left
+      got = g.collect(2);
+    }
+    const left = unpole(placed, best.stand), tail = left.length ? '; ' + left.length + ' pole block(s) left' : '';
+    if (!got) return { ok: false, msg: 'out of reach: ' + best.steps + ' block(s) to pole up to the drop at ' + at + ', ' + placed.length + ' placed' + tail };
+    return good(got) || /none in sight/i.test(why(got)) ? { ok: true, msg: 'picked up from a pole beside ' + at + tail } : { ok: false, msg: why(got) + tail };
   };
   // A reserved cluster shares its access: dig everything visible before dismantling the pillar, and visit lower cells on the way
   // down. A later target needing another approach waits until this pillar is recovered. Never walk off the top to chase a cell.
@@ -722,7 +886,7 @@
   const walkHome = j => globalThis.go(j.at, j.dist ?? 2);
   // escape: done only once home is reached by walking (the colony then knows it is out); a pit, a cave or water first.
   const runEscape = j => {
-    const g = globalThis, e = escape(j.at);
+    const g = globalThis, e = escape(j.at, false, j.pole === false);
     if (!g.ok(e)) { g.wait(j.s || 8); return e; }
     if (!j.at) return e;
     const r = walkHome(j);
@@ -732,7 +896,7 @@
   const climbHome = (j, r) => {
     const g = globalThis;
     report(j, 'progress', 'no way home (' + r.msg + '): trying a staircase toward home');
-    const e = escape(j.at, true);
+    const e = escape(j.at, true, j.pole === false);
     if (g.ok(e)) {
       r = walkHome(j);
       if (g.ok(r) || r.cancelled) return r;
@@ -783,6 +947,7 @@
     go,
     escape,
     dig,
+    collect: collectDrops,
     digBatch,
     ready,
     route,

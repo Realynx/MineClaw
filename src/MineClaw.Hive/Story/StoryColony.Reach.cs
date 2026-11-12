@@ -55,7 +55,7 @@ public sealed partial class StoryColony
         int want = Math.Max(8, Math.Min(Meta.PillarStack, top - (int)live.Y + 2));
         // The reachable base can be far below both target and pawn. Keep a supply hint for the longest supported climb;
         // the SDK only takes these extra blocks when its actual access plan needs them.
-        if (job.Kind == "dig") want = Math.Max(want, Scripting.Story.ReachScan.MaxPillar);
+        if (job.Kind == "dig") want = Math.Max(want, Math.Max(Scripting.Story.ReachScan.MaxPillar, AlongsideClimb(job)));
         if (have >= want) return job;
         if (FindStored(s => PillarKeep.Contains(s.Id), live.Block, 64) is not { } st) return job;
         job.Json["pillar"] = new JsonObject
@@ -64,6 +64,15 @@ public sealed partial class StoryColony
             ["n"] = Math.Min(st.Stack.Count, (job.Kind == "dig" ? want : Math.Max(want, Meta.PillarStack)) - have),
         };
         return job;
+    }
+
+    /// <summary>The blocks a pillar taken down alongside is built up beside it (its top over the ground cell it starts from), else 0.
+    /// Short of them on the way up the pawn uses the pillar's own lowest blocks, so this is a hint, not a gate.</summary>
+    private static int AlongsideClimb(ActiveJob job)
+    {
+        if (job.Json["unpole"] is not JsonObject u || u["beside"] is not JsonValue b || u["cells"] is not JsonArray { Count: > 0 } cells
+            || ParseCell(b.GetValue<string>()) is not { } ground || ParseCell(cells[0]!.GetValue<string>()) is not { } top) return 0;
+        return Math.Max(0, top.Y - ground.Y);
     }
 
     /// <summary>The highest cell a job works at: its target, or a chop's top log.</summary>

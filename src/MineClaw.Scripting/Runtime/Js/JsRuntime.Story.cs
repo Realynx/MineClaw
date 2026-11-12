@@ -91,6 +91,8 @@ internal sealed partial class JsRuntime
             var port = StoryPort ?? throw ScriptSession.Bug("story.escape(): this body isn't a Story Mode pawn");
             return new JsString(port.Stuck(s.Host.Username, Str(a, 0) ?? "stuck"));
         });
+        // story.escape's pole cap: does the colony teleport a stuck pawn home (rescue_teleport)? False off-colony.
+        H(h, "storyTeleports", _ => StoryPort?.Teleports(s.Host.Username) == true ? JsBoolean.True : JsBoolean.False);
         // A block put down for itself (a pillar step, a scaffold) or taken back: the colony's registry of temporary blocks. No-op off-colony.
         H(h, "storyTemp", a =>
         {

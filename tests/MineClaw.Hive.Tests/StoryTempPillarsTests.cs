@@ -187,19 +187,24 @@ public sealed class StoryTempPillarsTests
         Assert.DoesNotContain(h.Owned, o => o.At == new P3(5, 64, 5)); // but never taught
     }
 
-    /// <summary>Without the rescue teleport a pawn left at the bottom would pillar out again: the pillar is dug from beside, as before.</summary>
+    /// <summary>Without the rescue teleport a pawn left at the bottom would pillar out again: never from its top. The pit's floor is
+    /// ground beside it, so the job is built up alongside from there (a pawn that can't walk down to it misses, and the column rests).</summary>
     [Fact]
-    public void Without_the_rescue_teleport_a_pit_pillar_is_dug_from_beside()
+    public void Without_the_rescue_teleport_a_pit_pillar_is_never_taken_from_its_top_only_built_up_alongside_from_the_floor()
     {
         var (c, _, _, _) = PitWithEscapePillar(teleport: false);
         var job = c.Next(1);
-        Assert.Null(job["unpole"]);
-        Assert.NotEqual("14,64,12", job["stand"]?.GetValue<string>());
+        var unpole = job["unpole"]!.AsObject();
+        Assert.Null(unpole["back"]); // no way back up from the floor without the teleport: never from its top
+        Assert.Equal("13,55,12", unpole["beside"]!.GetValue<string>()); // the pit's floor beside it
+        Assert.Equal("13,55,12", job["stand"]!.GetValue<string>());
     }
 
-    /// <summary>A pillar standing on open ground whose top nobody can walk onto (a tree's reach pillar) is dug from beside, top first.</summary>
+    /// <summary>A pillar standing on open ground whose top nobody can walk onto (a tree's reach pillar) is one job from the ground
+    /// beside it: built up alongside as far as needed, top first (Fox 11-12: "pillar up and then delete 2 blocks in each level as you
+    /// come down").</summary>
     [Fact]
-    public void A_free_standing_pillar_whose_top_no_one_can_walk_onto_is_dug_from_beside()
+    public void A_free_standing_pillar_whose_top_no_one_can_walk_onto_is_taken_down_from_the_ground_beside_it()
     {
         var clock = new ManualTime();
         var (c, h, w) = StoryRig.Make(1, time: clock);
@@ -210,9 +215,12 @@ public sealed class StoryTempPillarsTests
         clock.Now += TimeSpan.FromSeconds(50);
         c.Tick();
         var job = c.Next();
-        Assert.Null(job["unpole"]);
-        Assert.Equal("5,67,5", job["at"]!.GetValue<string>());
-        Assert.NotEqual("5,68,5", job["stand"]?.GetValue<string>());
+        var unpole = job["unpole"]!.AsObject();
+        Assert.Null(unpole["back"]);
+        Assert.Equal("6,64,5", unpole["beside"]!.GetValue<string>());
+        Assert.Equal("6,64,5", job["stand"]!.GetValue<string>());
+        Assert.Equal("5,64,5", job["at"]!.GetValue<string>()); // walked to its foot
+        Assert.Equal(Enumerable.Range(64, 4).Reverse().Select(y => $"5,{y},5"), unpole["cells"]!.AsArray().Select(n => n!.GetValue<string>()));
         Assert.Contains(h.Owned, o => o.At == new P3(5, 67, 5) && o.Account == pawn); // still taught before the dig
     }
 
@@ -365,5 +373,162 @@ public sealed class StoryTempPillarsTests
             Assert.StartsWith("needs a wooden shovel", d.Wait);
         });
         Assert.Contains("deconstruct marks: 2 waiting for a tool (needs a wooden shovel", c.IdleReasonOf(pawn));
+    }
+
+    // ================================================================ 11-12: any pillar, however tall (Fox: "pillar up and then delete 2 blocks in each level as you come down")
+
+    /// <summary>
+    /// Live 11-12: escape pillars 18 to 39 blocks tall on open ground, 208 cleanups "out of reach (no path …)" in 3 h: nobody could walk
+    /// onto their tops, and from beside only the lowest few are in reach. A 30-tall one is now one job from the ground beside it: the
+    /// pawn builds up alongside and comes down taking both columns. Every cell is leased with it, the cleaner is taught every block, it
+    /// is told to bring blocks enough to build up (a hint: short, it uses the pillar's own), and once the world shows both columns gone
+    /// the registry and the marks are empty.
+    /// </summary>
+    [Fact]
+    public void A_thirty_tall_pillar_with_no_walkable_top_is_one_job_built_up_alongside_and_leaves_nothing()
+    {
+        var clock = new ManualTime();
+        var (c, h, w) = StoryRig.Make(1, time: clock);
+        Only(c, WorkTypes.Build);
+        var pawn = c.P();
+        w.Set(2, 64, 0, 54); // a chest
+        c.StorageOp("set", [new P3(2, 64, 0)], null, null, null);
+        c.AddContents(c.StorageAt(new P3(2, 64, 0))!, new Stack(3, 0, 64));
+        for (int y = 64; y <= 93; y++) { w.Set(8, y, 8, 3); c.Temporary(pawn, $"8,{y},8", true, "escape pillar"); }
+        h.Lives[pawn] = FakeStoryHost.Live(20, 64, 20);
+        clock.Now += TimeSpan.FromSeconds(50);
+        c.Tick();
+        Assert.Equal(30, Cleanups(c).Count);
+        var job = c.Next();
+        Assert.Equal("dig", job["kind"]!.GetValue<string>());
+        var unpole = job["unpole"]!.AsObject();
+        Assert.Null(unpole["back"]);
+        Assert.Equal("9,64,8", unpole["beside"]!.GetValue<string>()); // the ground next to its foot
+        Assert.Equal("9,64,8", job["stand"]!.GetValue<string>());
+        Assert.Equal("8,64,8", job["at"]!.GetValue<string>());
+        Assert.Equal(Enumerable.Range(64, 30).Reverse().Select(y => $"8,{y},8"), unpole["cells"]!.AsArray().Select(n => n!.GetValue<string>()));
+        Assert.Equal(30, c.Leases().Count(l => l.Value == pawn && l.Key.StartsWith("b:8,")));
+        Assert.Equal(30, h.Owned.Count(o => o.Account == pawn && o.At.X == 8 && o.At.Z == 8));
+        Assert.True(job["pillar"]?["n"]?.GetValue<int>() >= 29, job.ToJsonString()); // blocks to build up 29 beside it
+        // Done: both columns gone (its helper blocks were its own, taken back in the job).
+        for (int y = 64; y <= 93; y++) w.Set(8, y, 8, 0);
+        h.Lives[pawn] = FakeStoryHost.Live(9, 64, 8);
+        Assert.True(c.Report(pawn, Id(job), "done", "took 30 of 30 pillar block(s) down from beside it (built 29 up beside it and took them back)", null));
+        clock.Now += TimeSpan.FromSeconds(5);
+        c.Tick();
+        Assert.Empty(Cleanups(c));
+        Assert.Null(c.Meta.TempBlocks);
+    }
+
+    /// <summary>Review 11-12: a pillar whose lowest blocks are already gone (dug from the ground by the old per-cell cleanup, or left
+    /// over a failed job) floats 6 over flat ground. That ground is still ground to build up from: one alongside job from the ground
+    /// under it, never "out of reach" for good.</summary>
+    [Fact]
+    public void A_pillar_floating_over_the_ground_is_still_one_job_built_up_from_the_ground_under_it()
+    {
+        var clock = new ManualTime();
+        var (c, h, w) = StoryRig.Make(1, time: clock);
+        Only(c, WorkTypes.Build);
+        var pawn = c.P();
+        for (int y = 70; y <= 98; y++) { w.Set(8, y, 8, 3); c.Temporary(pawn, $"8,{y},8", true, "escape pillar"); }
+        h.Lives[pawn] = FakeStoryHost.Live(20, 64, 20);
+        clock.Now += TimeSpan.FromSeconds(50);
+        c.Tick();
+        Assert.Equal(29, Cleanups(c).Count);
+        var job = c.Next();
+        Assert.Equal("dig", job["kind"]!.GetValue<string>());
+        var unpole = job["unpole"]!.AsObject();
+        Assert.Null(unpole["back"]);
+        Assert.Equal("9,64,8", unpole["beside"]!.GetValue<string>()); // the flat ground 6 under its lowest block
+        Assert.Equal("8,70,8", job["at"]!.GetValue<string>());
+        Assert.Equal(29, unpole["cells"]!.AsArray().Count);
+    }
+
+    /// <summary>Review 11-12: a pawn's own helper column beside the pillar it takes down is in use for the whole job, however tall and
+    /// however long the job: never "left behind" (marked, alerted, given to another pawn to dig from under it). Once the job is over and
+    /// the pawn gone (stranded and teleported home), what is left of it is marked like any other leftover.</summary>
+    [Fact]
+    public void A_helper_column_is_in_use_for_the_whole_take_down_and_marked_only_once_its_pawn_left_it()
+    {
+        var clock = new ManualTime();
+        var (c, h, w) = StoryRig.Make(1, time: clock);
+        Only(c, WorkTypes.Build);
+        var pawn = c.P();
+        for (int y = 64; y <= 93; y++) { w.Set(8, y, 8, 3); c.Temporary(pawn, $"8,{y},8", true, "escape pillar"); }
+        h.Lives[pawn] = FakeStoryHost.Live(20, 64, 20);
+        clock.Now += TimeSpan.FromSeconds(50);
+        c.Tick();
+        var job = c.Next();
+        Assert.Equal("9,64,8", job["unpole"]!["beside"]!.GetValue<string>());
+        // 30 up beside it, the pawn on top: its lowest helper blocks are more than a reach pillar's height under it.
+        for (int y = 64; y <= 93; y++) { w.Set(9, y, 8, 3); c.Temporary(pawn, $"9,{y},8", true, "pillar helper"); }
+        h.Lives[pawn] = FakeStoryHost.Live(9, 94, 8);
+        for (int i = 0; i < 4; i++) { clock.Now += TimeSpan.FromSeconds(30); c.Tick(); }
+        Assert.DoesNotContain(Cleanups(c), d => d.At is { X: 9 });
+        // Stranded up there and teleported home: the job is over, the column is a leftover now.
+        Assert.True(c.Report(pawn, Id(job), "failed", "took 30 of 30 pillar block(s) down from beside it; stranded at 9,94,8: teleported home", null));
+        for (int y = 64; y <= 93; y++) w.Set(8, y, 8, 0);
+        h.Lives[pawn] = FakeStoryHost.Live(30, 64, 30);
+        clock.Now += TimeSpan.FromSeconds(50);
+        c.Tick();
+        Assert.Equal(30, Cleanups(c).Count(d => d.At is { X: 9 }));
+    }
+
+    /// <summary>A pillar with no ground next to it to build up from (it stands in water) is the one truly out of reach: no such job, the
+    /// usual dig from beside, and a miss keeps every mark with its reason (never parked).</summary>
+    [Fact]
+    public void A_pillar_with_no_ground_beside_it_is_out_of_reach_and_keeps_its_marks()
+    {
+        var clock = new ManualTime();
+        var (c, h, w) = StoryRig.Make(1, time: clock);
+        Only(c, WorkTypes.Build);
+        var pawn = c.P();
+        for (int dx = -2; dx <= 2; dx++)
+            for (int dz = -2; dz <= 2; dz++)
+                if (dx != 0 || dz != 0) { w.Set(8 + dx, 63, 8 + dz, 9); w.Set(8 + dx, 62, 8 + dz, 9); }
+        for (int y = 63; y <= 70; y++) { w.Set(8, y, 8, 3); c.Temporary(pawn, $"8,{y},8", true, "escape pillar"); }
+        h.Lives[pawn] = FakeStoryHost.Live(20, 64, 20);
+        clock.Now += TimeSpan.FromSeconds(50);
+        c.Tick();
+        Assert.Equal(8, Cleanups(c).Count);
+        var job = c.Next();
+        Assert.Equal("dig", job["kind"]!.GetValue<string>());
+        Assert.Null(job["unpole"]);
+        c.Report(pawn, Id(job), "failed", "out of reach even from a pillar: only liquid to stand on under it", null);
+        Assert.Equal(8, Cleanups(c).Count);
+        Assert.Contains(Cleanups(c), d => (d.Wait ?? "").StartsWith("out of reach for now"));
+    }
+
+    /// <summary>Live 11-12: 144 collects "it's 3 blocks up; unreachable even by pillaring/bridging" in 3 h: drops lying on the top of a
+    /// pawn's pillar. Such a drop isn't walked at: it comes down with the pillar and is collected from the ground.</summary>
+    [Fact]
+    public void A_drop_on_a_temporary_pillar_waits_for_the_pillar_and_is_hauled_once_it_is_down()
+    {
+        var clock = new ManualTime();
+        var (c, h, w) = StoryRig.Make(1, time: clock);
+        Only(c, WorkTypes.Haul);
+        var pawn = c.P();
+        w.Set(2, 64, 0, 54); // a chest
+        c.StorageOp("set", [new P3(2, 64, 0)], null, null, null);
+        w.Set(8, 64, 8, 3); // the stub of a pillar: a drop on it is in reach from the ground, yet the pillar comes down anyway
+        c.Temporary(pawn, "8,64,8", true, "reach pillar");
+        h.Lives[pawn] = FakeStoryHost.Live(20, 64, 20);
+        clock.Now += TimeSpan.FromSeconds(50);
+        c.Tick();
+        Assert.Single(Cleanups(c));
+        h.Lives[pawn] = FakeStoryHost.Live(4, 64, 4);
+        w.Ents.Add(new StoryEntity(5, "item", "cobblestone", 8.5, 65, 8.5, ItemId: 4, Count: 3));
+        var j = c.Next();
+        Assert.NotEqual("collect", j["kind"]!.GetValue<string>());
+        c.Report(pawn, Id(j), "done", null, null);
+        // The pillar came down: the drop fell to the ground, and is hauled.
+        w.Set(8, 64, 8, 0);
+        w.Ents.Clear();
+        w.Ents.Add(new StoryEntity(5, "item", "cobblestone", 8.5, 64, 8.5, ItemId: 4, Count: 3));
+        clock.Now += TimeSpan.FromSeconds(5);
+        c.Tick();
+        var k = c.Next();
+        Assert.True(k["kind"]!.GetValue<string>() == "collect", k.ToJsonString() + " | " + c.IdleReasonOf(pawn));
+        Assert.Equal("8,64,8", k["at"]!.GetValue<string>());
     }
 }

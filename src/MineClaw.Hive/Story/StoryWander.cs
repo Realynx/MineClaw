@@ -126,6 +126,140 @@ public static class StoryWander
         return false;
     }
 
+    /// <summary>The ring around the feet the local surface is read from (columns this far out, every other one), how far under (or
+    /// over) that surface the feet must be to be down in (up on) something, and how close to it a walk must get to be out.</summary>
+    private const int SurfaceRing = 6, SurfaceDepth = 4, SurfaceReach = 2;
+    /// <summary>The most cells a walk from the feet looks at.</summary>
+    private const int EnclosedNodes = 3000;
+    /// <summary>How far under the feet the ring's ground is looked for: 8 for a pawn down in something; for one up on something,
+    /// as far as the tallest poles seen live (live 11-12: 18 to 39 blocks).</summary>
+    private const int SurfaceBelow = 8, MaroonedBelow = 48;
+
+    /// <summary>Where a pawn is cut off from the ground around it (<see cref="CutOffAt"/>).</summary>
+    public enum Cut
+    {
+        /// <summary>Not cut off, or the colony can't tell.</summary>
+        No,
+        /// <summary>Shut in under the ground around it: a pit, a hole, a pocket, a cave, a ravine's floor (<see cref="Enclosed"/>).</summary>
+        Below,
+        /// <summary>Marooned over the ground around it with no walk down: a pillar's top, a roof, a tree, a ledge, a floating island.</summary>
+        Above,
+    }
+
+    /// <summary>
+    /// Shut in at <paramref name="feet"/>: down in something (at least <see cref="SurfaceDepth"/> under the ground around it, the
+    /// median height of the columns <see cref="SurfaceRing"/> out) and walking from there (level, a 1-block jump with head room, a drop
+    /// of up to 3) never gets back up to within <see cref="SurfaceReach"/> of that ground: a pit, a 1×1 hole, a closed pocket, a cave,
+    /// a ravine's floor however long (live 11-04: 3 wide, 13 deep). Only then is a pawn whose targets were out of reach stuck (live
+    /// 11-12: pawns on open ground were sent to escape and poled up 18 to 39 blocks). Level with the ground around, it is not; nor
+    /// when the colony can't tell (feet over nothing solid, too little of the ring in view, a walk that meets the edge of the view or
+    /// runs past <see cref="EnclosedNodes"/> cells): the pawn's own <c>story.go</c> still escapes a pit it finds itself in.
+    /// </summary>
+    public static bool Enclosed(IStoryWorld w, P3 feet) => CutOffAt(w, feet) == Cut.Below;
+
+    /// <summary>
+    /// Marooned at <paramref name="feet"/>: up on something (at least <see cref="SurfaceDepth"/> over the ground around it) and walking
+    /// from there never gets back down to within <see cref="SurfaceReach"/> of that ground: the top of a pillar, a roof, a tree, a
+    /// ledge, a floating island of blocks. Review 11-12: once only a pawn shut in below was stuck, a pawn stranded up high was never
+    /// marked stuck, escaped or teleported. Fox 11-12: "If a bot can't navigate something without deleting its nerd pole, then it
+    /// should teleport." The same "can't tell" cases as <see cref="Enclosed"/> are not marooned.
+    /// </summary>
+    public static bool Marooned(IStoryWorld w, P3 feet) => CutOffAt(w, feet) == Cut.Above;
+
+    /// <summary>
+    /// Cut off from the ground around <paramref name="feet"/>, below it (<see cref="Enclosed"/>) or above it (<see cref="Marooned"/>).
+    /// One read of the ring and at most one walk of <see cref="EnclosedNodes"/> cells: asked only when a run of targets out of reach
+    /// ends, never per tick.
+    /// </summary>
+    public static Cut CutOffAt(IStoryWorld w, P3 feet)
+    {
+        if (feet.Y <= 0 || feet.Y >= w.Height - 2) return Cut.No;
+        if (!Passable(w.Block(feet.X, feet.Y, feet.Z).Id) && Passable(w.Block(feet.X, feet.Y + 1, feet.Z).Id)) feet = feet.Add(0, 1, 0); // on a slab, farmland
+        int under = w.Block(feet.X, feet.Y - 1, feet.Z).Id;
+        if (Passable(under) || StoryBlocks.Liquids.Contains(under)) return Cut.No;
+        var tops = RingTops(w, feet, out int samples);
+        if (Median(tops.Where(y => y >= feet.Y - SurfaceBelow).ToList(), samples) is { } surface && feet.Y <= surface - SurfaceDepth)
+            return WalksTo(w, feet, t => t.Y >= surface - SurfaceReach) ? Cut.No : Cut.Below;
+        if (Median(tops, samples) is { } ground && feet.Y >= ground + SurfaceDepth)
+            return WalksTo(w, feet, t => t.Y <= ground + SurfaceReach) ? Cut.No : Cut.Above;
+        return Cut.No;
+    }
+
+    /// <summary>Walking from the feet reaches a cell that is <paramref name="out"/>; true too when the colony can't tell (the walk
+    /// meets the edge of the view, or runs past <see cref="EnclosedNodes"/> cells).</summary>
+    private static bool WalksTo(IStoryWorld w, P3 feet, Func<P3, bool> @out)
+    {
+        var seen = new HashSet<P3> { feet };
+        var queue = new Queue<P3>();
+        queue.Enqueue(feet);
+        while (queue.Count > 0)
+        {
+            var c = queue.Dequeue();
+            foreach (var (dx, dz) in Around)
+            {
+                if (!w.Loaded(c.X + dx, c.Z + dz)) return true; // the edge of the view: can't tell
+                if (WalkStep(w, c, c.X + dx, c.Z + dz) is not { } t || !seen.Add(t)) continue;
+                if (@out(t)) return true; // back at the ground around: it walks out
+                if (seen.Count > EnclosedNodes) return true;
+                queue.Enqueue(t);
+            }
+        }
+        return false;
+    }
+
+    /// <summary>The highest standable cell (never on leaves) of each column on a ring <see cref="SurfaceRing"/> out, every other one,
+    /// looked for from 40 over the feet down to <see cref="MaroonedBelow"/> under them; <paramref name="samples"/>: the columns looked
+    /// at.</summary>
+    private static List<int> RingTops(IStoryWorld w, P3 feet, out int samples)
+    {
+        var tops = new List<int>();
+        int ring = SurfaceRing;
+        samples = 0;
+        for (int i = -ring; i <= ring; i += 2)
+            foreach (var (x, z) in new[] { (feet.X + i, feet.Z - ring), (feet.X + i, feet.Z + ring), (feet.X - ring, feet.Z + i), (feet.X + ring, feet.Z + i) })
+            {
+                samples++;
+                if (!w.Loaded(x, z)) continue;
+                for (int y = Math.Min(w.Height - 2, feet.Y + 40); y >= Math.Max(1, feet.Y - MaroonedBelow); y--)
+                    if (Standable(w, x, y, z)) { tops.Add(y); break; }
+            }
+        return tops;
+    }
+
+    /// <summary>The ground around a spot: the median of the ring's tops; null when fewer than half of the columns looked at are in
+    /// view and have ground.</summary>
+    private static int? Median(List<int> tops, int samples)
+    {
+        if (tops.Count * 2 < samples) return null;
+        tops.Sort();
+        return tops[tops.Count / 2];
+    }
+
+    /// <summary>Feet fit in a cell over ground (no liquid in it, none as its floor).</summary>
+    private static bool Stands(IStoryWorld w, int x, int y, int z)
+    {
+        if (y <= 0 || y >= w.Height - 1) return false;
+        int floor = w.Block(x, y - 1, z).Id;
+        return !Passable(floor) && !StoryBlocks.Liquids.Contains(floor) && Passable(w.Block(x, y, z).Id) && Passable(w.Block(x, y + 1, z).Id);
+    }
+
+    /// <summary>The cell walking from <paramref name="c"/> toward x,z lands on (level, a drop of up to 3, a 1-block jump), else null.</summary>
+    private static P3? WalkStep(IStoryWorld w, P3 c, int x, int z)
+    {
+        if (!w.Loaded(x, z)) return null;
+        if (Stands(w, x, c.Y, z)) return new P3(x, c.Y, z);
+        if (Passable(w.Block(x, c.Y, z).Id) && Passable(w.Block(x, c.Y + 1, z).Id))
+        {
+            for (int d = 1; d <= 3; d++)
+            {
+                if (Stands(w, x, c.Y - d, z)) return new P3(x, c.Y - d, z);
+                if (!Passable(w.Block(x, c.Y - d, z).Id)) break;
+            }
+            return null;
+        }
+        return Passable(w.Block(c.X, c.Y + 2, c.Z).Id) && Stands(w, x, c.Y + 1, z) ? new P3(x, c.Y + 1, z) : null;
+    }
+
     /// <summary>Horizontal distance between two cells; cells more than two storeys apart never crowd each other.</summary>
     public static double Gap(P3 a, P3 b) =>
         Math.Abs(a.Y - b.Y) > 2 ? double.PositiveInfinity : Math.Sqrt((double)(a.X - b.X) * (a.X - b.X) + (double)(a.Z - b.Z) * (a.Z - b.Z));

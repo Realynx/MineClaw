@@ -71,6 +71,9 @@ public sealed partial class StoryColony
         public int Failed;
         /// <summary>Why the last teleport home couldn't be sent (option off, no op path, the pawn offline…).</summary>
         public string? TeleportError;
+        /// <summary>Up on something with no walk down (<see cref="StoryWander.Cut.Above"/>): never an escape pole. It waits for the
+        /// teleport home while one can be sent, else escapes without poling.</summary>
+        public bool Marooned;
     }
 
     /// <summary>How long a teleport home has to show in the pawn's position before the colony takes it as refused.</summary>
@@ -196,7 +199,16 @@ public sealed partial class StoryColony
         return n;
     }
 
-    /// <summary>A run of unreachable targets: the colony takes the pawn for stuck (an escape job).</summary>
+    /// <summary>
+    /// A run of unreachable targets: the colony takes the pawn for stuck, but only when it is cut off from the ground around it
+    /// (<see cref="StoryWander.CutOffAt"/>). Shut in below it (a pit, a hole, a pocket with no walkable way out): an escape job.
+    /// Marooned above it (a pillar's top, a roof, a tree, a ledge, a floating island, with no walk down): stuck too, but never an escape
+    /// pole (<see cref="StuckState.Marooned"/>): it waits for the teleport home (review 11-12: once only a pawn shut in below was
+    /// stuck, a pawn stranded up high was never escaped nor teleported; Fox 11-12: "If a bot can't navigate something without deleting
+    /// its nerd pole, then it should teleport"). Live 11-12: the streak alone sent pawns standing on open ground to the escape, whose
+    /// climb poled them 18 to 39 blocks straight up ("I see 11 pillars"). On open ground the targets are out of reach, not the pawn:
+    /// each already rests for it (<see cref="RestForPawn(PawnState, ActiveJob, string, bool)"/>) and it picks other work.
+    /// </summary>
     private void NoteUnreachable(PawnState p, ActiveJob j)
     {
         if (!_unreachRun.TryGetValue(p.Name, out var run)) _unreachRun[p.Name] = run = new();
@@ -206,10 +218,31 @@ public sealed partial class StoryColony
         if (LostBesidePit(p, j)) { StuckBesidePit(p); return; }
         if (run.Select(r => r.Key).Distinct().Count() < StuckStreak) return;
         var live = Host.Live(p.Name);
-        _stuck[p.Name] = new StuckState { Since = Now, At = live.Block, Why = $"{StuckStreak} targets out of reach in a row" };
-        NoteHazard(p.Name, live.Block);
         run.Clear();
-        _log.LogInformation("story {Colony}: {Pawn} looks stuck at {At}: {N} targets out of reach in a row", Id, p.Name, live.Block, StuckStreak);
+        var cut = CutOff(p, live);
+        if (cut == StoryWander.Cut.No)
+        {
+            _log.LogInformation("story {Colony}: {Pawn} missed {N} targets in a row at {At}, but it can walk away: they rest for it, no escape",
+                Id, p.Name, StuckStreak, live.Block);
+            return;
+        }
+        bool up = cut == StoryWander.Cut.Above;
+        string why = $"{StuckStreak} targets out of reach in a row" + (up ? ", up on something with no walk down" : "");
+        _stuck[p.Name] = new StuckState { Since = Now, At = live.Block, Why = why, Marooned = up };
+        NoteHazard(p.Name, live.Block);
+        _log.LogInformation("story {Colony}: {Pawn} looks stuck at {At}: {Why}", Id, p.Name, live.Block, why);
+    }
+
+    /// <summary>Cut off where it stands, as its own view shows it (else the colony's): shut in below the ground around it (a pit, a
+    /// hole, a closed pocket) or marooned above it (no walk down). A view that doesn't show the spot can't say: not cut off (the pawn's
+    /// own <c>story.go</c> still escapes a pit it finds itself in).</summary>
+    private StoryWander.Cut CutOff(PawnState p, PawnLive live)
+    {
+        if (!live.Online) return StoryWander.Cut.No;
+        IStoryWorld? w = null;
+        try { w = Host.ViewOf(p.Name); } catch (Exception) { /* main's view */ }
+        w ??= World;
+        return w != null && w.Loaded(live.Block.X, live.Block.Z) ? StoryWander.CutOffAt(w, live.Block) : StoryWander.Cut.No;
     }
 
     /// <summary>
@@ -315,17 +348,21 @@ public sealed partial class StoryColony
     /// <summary>
     /// Sticky until it is out: only escape work, never a regular task (live 11-04: pawns in a ravine cycled through tasks for 20
     /// minutes, ~100 failures each, because moving a few blocks along the ravine floor read as "got out"). When the budget is spent
-    /// (time, or failed escape steps): home at once, by /tp (rescue_teleport).
+    /// (time, or failed escape steps): home at once, by /tp (rescue_teleport). A pawn marooned up high (<see cref="StuckState.Marooned"/>)
+    /// gets no escape while a teleport home can be sent: it waits where it is for the budget, then the teleport (an escape's climb
+    /// would only pole it further up). Without one (rescue_teleport off, no op path, refused by the server) it escapes, never poling.
     /// </summary>
     private ActiveJob? StuckEscape(PawnState p, PawnLive live, StuckState st)
     {
         if (st.TeleportedAt is { } sent && AfterTeleport(p, live, st, sent) is (true, var settled)) return settled;
         if (BudgetOver(st) && TeleportHome(p, live, st, $"escape budget spent ({(int)(Now - st.Since).TotalSeconds} s, {st.Failed} failed step(s))"))
             return Hold("stuck: teleported home, arriving", "moving", s: 3, type: "need");
+        if (st.Marooned && TeleportSendable(st))
+            return Hold("stuck up high: waiting for the teleport home", "moving", s: 3, type: "need");
         st.Attempts++;
         if (st.Attempts == 1 || st.Attempts % 5 == 0)
             _log.LogInformation("story {Colony}: {Pawn} stuck at {At} ({Why}): escape attempt {N}", Id, p.Name, live.Block, st.Why, st.Attempts);
-        return Escape(p, live, st.Asked ? $"stuck: getting out (attempt {st.Attempts})" : "stuck? heading home");
+        return Escape(p, live, st.Asked ? $"stuck: getting out (attempt {st.Attempts})" : "stuck? heading home", pole: !st.Marooned);
     }
 
     /// <summary>A teleport home was sent: home (out: no job), still arriving (a hold), or it didn't take (Done false: the escape goes
@@ -353,11 +390,17 @@ public sealed partial class StoryColony
         return (false, null);
     }
 
-    private ActiveJob Escape(PawnState p, PawnLive live, string label)
+    /// <summary>The escape job (home). <paramref name="pole"/> false: <c>pole: false</c>, its escape never nerd-poles (a pawn marooned
+    /// up high: a pole only takes it further up).</summary>
+    private ActiveJob Escape(PawnState p, PawnLive live, string label, bool pole = true)
     {
         var home = Home();
         P3? to = home is { } h ? SpreadHome(p, live, h) ?? h : null;
-        return Job("need", "escape", label, to, null, "escape", p.Name, "moving", j => { j["dist"] = 2; j["s"] = 8; }, xp: 0);
+        return Job("need", "escape", label, to, null, "escape", p.Name, "moving", j =>
+        {
+            j["dist"] = 2; j["s"] = 8;
+            if (!pole) j["pole"] = false;
+        }, xp: 0);
     }
 
     /// <summary>Digging work within 16 blocks (a mine or deconstruct designation, a mine zone, a build: a basement): being under ground
@@ -409,6 +452,22 @@ public sealed partial class StoryColony
             return "nobody can help: " + NoHelpReason(st);
         }
     }
+
+    /// <summary>The SDK's pole cap (<see cref="Scripting.Story.IStoryPort.Teleports"/>): with <see cref="ColonyMeta.RescueTeleport"/> on, an
+    /// escape poles only as high as it can take the pole back from the rim, and asks for the teleport when deeper. Only while a teleport
+    /// home can be sent for it: a home with a safe spot by it, and no teleport of its current stuck spell refused by the server
+    /// (<see cref="StuckState.TeleportFailed"/>) or not sendable (<see cref="StuckState.TeleportError"/>: no op path). Else the cap would
+    /// leave a pawn in a hole deeper than the cap with no way out at all: it poles out (to the rim) as without the option.</summary>
+    public bool Teleports(string body)
+    {
+        lock (_lock) return Pawns.ContainsKey(body) && TeleportSendable(_stuck.GetValueOrDefault(body));
+    }
+
+    /// <summary>A teleport home can be sent for this stuck spell (none yet: any): the option on, none refused by the server or found
+    /// unsendable, and a home with a safe spot by it.</summary>
+    private bool TeleportSendable(StuckState? st) =>
+        Meta.RescueTeleport && st is not { TeleportFailed: true } && st?.TeleportError == null
+        && Home() is { } home && World is { } w && SafeSpot(w, home) != null;
 
     /// <summary>The pawn's stuck state (a new one marks the spot a hazard), with its own reason; asked once.</summary>
     private StuckState AskedStuck(string body, PawnLive live, string why)

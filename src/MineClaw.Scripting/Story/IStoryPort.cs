@@ -32,6 +32,13 @@ public interface IStoryPort
     string Stuck(string body, string why) => "no colony to ask for help";
 
     /// <summary>
+    /// The colony teleports a stuck pawn home (its <c>rescue_teleport</c> option). Fox 11-12: "If a bot can't navigate something without
+    /// deleting its nerd pole, then it should teleport." With it on, <c>story.escape</c> poles only as high as it can take the pole back
+    /// from the rim afterwards; deeper, it asks for the teleport. Off (and off-colony): it poles up to the rim, however high.
+    /// </summary>
+    bool Teleports(string body) => false;
+
+    /// <summary>
     /// A block <paramref name="body"/> put down for itself (<paramref name="placed"/>: a reach pillar step, a build's scaffold, an escape
     /// pillar; <paramref name="why"/> says which) or took back again. Fox 11-05: "Bots should delete whatever they put down unless it
     /// was a directive to build it." The colony keeps every such cell until the world shows it gone; one its pawn leaves behind (the

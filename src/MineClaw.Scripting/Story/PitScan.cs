@@ -23,6 +23,9 @@ public static class PitScan
     public const int Radius = 8, CaveRadius = 12, MaxNodes = 700;
     /// <summary>A shut-in floor bigger than this isn't a pit (an island, a walled yard): only a hole, a trench, a shaft is.</summary>
     public const int PitCells = 30;
+    /// <summary>How high above the feet the rim (walkable ground beside the column) is looked for: a pole out is never taller, and
+    /// with no rim within it there is no pole at all (live 11-12: escapes on open ground poled 18 to 39 blocks into the sky).</summary>
+    public const int RimSearch = 16;
 
     /// <summary>Blocks a pawn pillars with, best first (cobblestone, dirt, planks, stone, netherrack, sandstone, stone bricks, logs).</summary>
     private static readonly int[] PillarIds = [4, 3, 1, 87, 24, 98, 5, 17, 162]; // planks and logs last: a build's material
@@ -63,7 +66,7 @@ public static class PitScan
         if (cave) o["cave"] = true;
         if (!climb && walk.Exit is { } e && e != feet) o["exit"] = ScanGround.Fmt(e);
         if (climb) Climb(o, g, feet, walk.Seen);
-        if (!cave) o["need"] = RimNeed(g, feet);
+        o["need"] = RimNeed(g, feet); // a cave's and a climb's pole too: never above the ground beside it
         return Finish(o, g, feet, walk.Seen);
     }
 
@@ -100,12 +103,13 @@ public static class PitScan
         if (g.Pref(near.X, near.Z) < g.Pref(feet.X, feet.Z) - 0.5) o["approach"] = ScanGround.Fmt(near);
     }
 
-    /// <summary>How high the rim is: the blocks a nerd-pole needs to step out (null: no rim within 8).</summary>
+    /// <summary>How high the rim is: the blocks a nerd-pole needs to step out (null: no rim within <see cref="RimSearch"/>: nothing
+    /// beside the column to step onto, so a pole only climbs into the air).</summary>
     private static int? RimNeed(PitGround g, BlockPos feet)
     {
         int rim = int.MaxValue;
         foreach (var (dx, dz) in Dirs)
-            for (int y = feet.Y + 1; y <= feet.Y + 8; y++)
+            for (int y = feet.Y + 1; y <= feet.Y + RimSearch; y++)
                 if (g.Stand(feet.X + dx, y, feet.Z + dz)) { rim = Math.Min(rim, y); break; }
         return rim == int.MaxValue ? null : Math.Max(0, rim - 1 - feet.Y);
     }

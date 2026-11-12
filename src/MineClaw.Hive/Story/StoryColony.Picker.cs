@@ -571,9 +571,9 @@ public sealed partial class StoryColony
         (DesignationState D, string Key, P3 Target) best, MarkSearch s)
     {
         var (d, key, target) = best;
-        // A pillar of the pawns' temporary blocks: taken down from its top when the top is walkable (StoryColony.TempPillars.cs).
+        // A pillar of the pawns' temporary blocks: one job, from its top when the top is walkable, else built up alongside it (StoryColony.TempPillars.cs).
         var pillar = s.Digs && s.W != null && IsTempMark(d) ? TempPillarFor(p, s.W, d) : null;
-        if (pillar != null) (d, key, target) = (pillar.Mark, DesignationKey(pillar.Mark), pillar.Top);
+        if (pillar != null) (d, key, target) = (pillar.Mark, DesignationKey(pillar.Mark), pillar.Target);
         if (s.W != null && IsTempMark(d)) OwnTempBlocks(p.Name, s.W, pillar?.Cells ?? [target]);
         bool chest = s.W is { } world && ManualChestRemoval(d, world, target);
         if (chest)

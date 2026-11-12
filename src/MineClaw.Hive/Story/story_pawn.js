@@ -60,7 +60,7 @@ const acts = new Map(Object.entries({
   dig: (j, a) => { if (j.dig_cells) return story.digBatch(j); story.ready(j); const t = reach(a, 3); return ok(t) ? digAt(j) : t },
   harvest: harvestAt,
   till: j => story.till(j),
-  collect: (j, a) => { const t = go(a, 1), r = collect(j.r || 4); return ok(r) || ok(t) ? r : t },
+  collect: (j, a) => story.collect(j, a),
   place: j => story.place(j),
   attack: (j, a) => { if (a) go(a, 3); return attack('' + (j.target ?? j.mob)) },
   eat: () => eat(),

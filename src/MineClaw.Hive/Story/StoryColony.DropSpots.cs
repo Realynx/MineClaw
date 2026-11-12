@@ -96,7 +96,22 @@ public sealed partial class StoryColony
     private string? DropUnreachable(IStoryWorld w, StoryEntity e)
     {
         if (_dropSpots.Count > 0 && SpotNear(e.Block, resting: true) is { } spot) return spot.Text;
+        if (OnTempPillar(e.Block)) return $"drops at {e.Block} lie on a temporary pillar: they come down with it";
         return StandBy(w, e) ? null : $"drops at {e.Block} unreachable";
+    }
+
+    /// <summary>
+    /// The drop lies on a marked temporary block (a pawn's pillar, its top left by a cleanup that dug from beside): taking the pillar
+    /// down drops it to the ground, where it is collected; a collect walked at it first only fails "it's 3 blocks up" (live 11-12:
+    /// 144 such collects in 3 h).
+    /// </summary>
+    private bool OnTempPillar(P3 cell)
+    {
+        if (Meta.TempBlocks is not { Count: > 0 } temps) return false;
+        var under = cell.Add(0, -1, 0);
+        foreach (var t in temps)
+            if (t.At == under && t.Designation != null && !t.Cancelled && t.DeferredReason == null) return true;
+        return false;
     }
 
     /// <summary>Somewhere to pick the drop up from (cached a few seconds per spot, to a sixteenth of a block): the client's own rule

@@ -141,10 +141,11 @@ public sealed class StoryTempBlocksTests
         Assert.Equal(3, marks.Count);
         Assert.All(marks, m => Assert.Contains("reach pillar", m.Label));
         Assert.Single(c.Alerts, a => a.Text.Contains("temporary block(s) the pawns left behind") && a.Text.Contains("3 "));
-        // Any builder takes it: a dig at the pillar, top first.
+        // Any builder takes it: one dig job for the whole pillar, from the ground beside it, top first.
         var j = c.Next();
         Assert.Equal("dig", j["kind"]!.GetValue<string>());
-        Assert.Equal("5,66,5", j["at"]!.GetValue<string>());
+        Assert.Equal("5,64,5", j["at"]!.GetValue<string>());
+        Assert.Equal("5,66,5", j["unpole"]!["cells"]![0]!.GetValue<string>());
         // Dug: the registry and the marks go.
         for (int y = 64; y <= 66; y++) w.Set(5, y, 5, 0);
         clock.Now += TimeSpan.FromSeconds(5);

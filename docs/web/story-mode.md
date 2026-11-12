@@ -592,13 +592,34 @@ so the other pawns stood idle in front of a field of work. Fox also saw pawns st
   2. dig a staircase: the blocks in the way of a 1-block jump onto a neighbour, toward the target first. Never below the feet, never a
      block with liquid beside or over it, never one with sand or gravel on top, never a container or anything as hard as obsidian;
   3. nerd-pole with blocks it carries (cobblestone, dirt, planks, stone, netherrack, sandstone, stone bricks, logs): `place(block,
-     <its own feet>)` is a pillar step (jump, place under itself, land on it);
+     <its own feet>)` is a pillar step (jump, place under itself, land on it). Only up to the rim (added 2026-11-12): `storyPit`'s
+     `need` is how high the walkable ground beside the column is (looked for up to 16 up, in a pit, a cave and a climb alike); with
+     none there is no pole at all (live 11-12: escapes on open ground poled 18 to 39 blocks into the sky). With `rescue_teleport` on,
+     only a pole of up to 2 blocks, which it can dig back from the rim; deeper it says "stuck shut in at …" (never "in a pit", so no
+     rescuer brings blocks) and the colony teleports it home. That cap holds only while a teleport can be sent (`Teleports`: a home
+     with a safe spot by it, and no teleport of this stuck spell refused by the server or unsendable); otherwise it poles to the rim
+     as without the option. Once out it steps off the pole onto the rim (a step up in any direction first, then level, then a step
+     down, never back down to the pit's floor) and digs the pole back from there, top first (`dig_here`); what it can't reach stays
+     registered for the colony's cleanup;
   4. with no blocks, dig the pit's walls for some (dirt by hand; stone, cobble, netherrack with a pickaxe), head height first, then
      pole;
   5. ask the colony for help (`story.stuck`).
-- **The colony sees what the pawn can't.** Three unreachable targets in a row within a minute, or a pawn under ground (three blocks of
-  natural ground over it) with no mining, deconstructing or build within 16 blocks, outside a home zone and with no queued order: the
-  pawn's next job is `escape` (label "stuck: getting out (attempt N)", "stuck? heading home", "under ground: heading back up").
+- **The colony sees what the pawn can't.** Three unreachable targets in a row within a minute while the pawn is shut in where it
+  stands (`StoryWander.Enclosed`: at least 4 under the ground around it, the median top of the columns 6 out, and no walk back up to
+  within 2 of that ground: a pit, a hole, a cave, a ravine's floor however long), or a pawn under
+  ground (three blocks of natural ground over it) with no mining, deconstructing or build within 16 blocks, outside a home zone and
+  with no queued order: the pawn's next job is `escape` (label "stuck: getting out (attempt N)", "stuck? heading home", "under
+  ground: heading back up"). On open ground (added 2026-11-12) the run only rests those targets for the pawn and it picks other work:
+  live 11-12 the run alone sent pawns on open ground to escape again and again at one spot.
+- **Marooned up high** (added 2026-11-12). Fox: "If a bot can't navigate something without deleting its nerd pole, then it should
+  teleport." The same run while the pawn is up on something with no walk down (`StoryWander.Marooned`: at least 4 over the ground
+  around it, read down to 48 under the feet, and no walk, with drops of up to 3, back down to within 2 of that ground: a pillar's
+  top, a roof, a tree, a ledge, a floating island of blocks) marks it stuck too ("3 targets out of reach in a row, up on something
+  with no walk down"). It never gets an escape pole: while a teleport home can be sent (`rescue_teleport` on, a safe spot at home,
+  none of this stuck spell refused or unsendable) it holds where it is ("stuck up high: waiting for the teleport home") until
+  `stuck_teleport_after_s`, then is teleported home as any stuck pawn. Without one it gets the usual escape job with `pole: false`:
+  `story.escape` walks, stairs and asks for help, but never takes a pillar step (a pole there only takes it further up). Before,
+  with only the shut-in check, a pawn stranded up high was never marked stuck, escaped or teleported.
 - **Down in a quarry** (added 2026-11-10). A pawn in a quarry's columns, at or under its top, is never lost under ground: the stair's
   steps and the seals standing over a miner read as ground over it, and deep in a small quarry every pick sent its miners home. A
   quarry is "mining near" within 16 blocks across of its columns, at any depth up to 2 over its top (it was measured from the level
@@ -847,6 +868,26 @@ Now:
     `rescue_teleport` on; otherwise, and for a top nobody can walk or drop onto, the cells are dug from beside as before. A miss
     rests the whole column with its top. The pawn that built the pillar may take it: standing over its own column for this job is
     not "temporary access still in use".
+  - **Any pillar, however tall** (added 2026-11-12). Fox: "pillar up and then delete 2 blocks in each level as you come down." Live
+    11-12: escape pillars 18 to 39 blocks tall on open ground, 208 cleanups "out of reach (no path …)" in 3 h. A column (two cells
+    or more) that can't be taken from its top is one job from a ground cell next to it (`unpole` {beside, cells top first}, `stand`
+    that cell, `at` the pillar's foot): floor that isn't liquid under two open cells, the column over it open to a head over the
+    pillar's top, no lava beside it, nearest the pillar's base (up to 48 under it, so a pillar whose lowest blocks are gone and that
+    floats over the ground still counts, or 2 over it). The pawn poles its own helper column up beside the pillar until the top is in
+    reach, digs every pillar block it reaches top first, then comes down: at each level the pillar's block beside it and the helper
+    block under its feet. Short of blocks it first takes the job's `pillar` stack from storage, then climbs on the pillar's own lowest
+    block in reach at its feet or above (its drop lands where the pickup box reaches) and waits up to 2 s for the pickup (never sand
+    or gravel, nor one under them). Both columns end gone, the pawn on the ground. The helper column (kind "pillar helper") is in use
+    for the whole job however tall: never marked "left behind" from under its pawn. Stranded up its helper (a block under it won't
+    come out) it asks for the teleport ("stranded at … on N block(s) it put up beside a temporary pillar"); its helper blocks stay
+    registered and are marked once the job is over. Only a pillar with no ground next to it is out of reach: the cells are dug from
+    beside, and a miss rests them with the reason (never parked).
+  - A drop lying on a marked temporary block is not hauled ("lie on a temporary pillar: they come down with it"): taking the pillar
+    down drops it to the ground. A drop up on a natural ledge ("no path … it's 3 blocks up") is collected by `story.collect`: a pole
+    beside the ledge up to one under the drop (the pickup box reaches it), a short collect to confirm, the pole back down.
+  - A reach pillar that the plan said would reach its target and didn't (a step that didn't hold, a face hidden after all) comes
+    down at once in the same job ("out of reach: the pillar at … did not reach …; taken back down"). Taking a reach pillar down, a
+    body that stays up after the block under it goes (resting on a ledge beside it) keeps digging the rest from there.
   - Before a cleanup digs, the cleaner's body is taught each block as the hive's own, in memory only (`IStoryHost.OwnTemporaryBlock`,
     never saved to the shared table): the shared log keeps only the newest 8,192 cells, and without the row the step-down rule
     refuses the block under its feet. Only blocks the registry has from the placing pawn's own report; one adopted from the view

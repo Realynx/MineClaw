@@ -1,6 +1,6 @@
 namespace MineClaw.Scripting.Tests;
 
-/// <summary>The golden dump of <see cref="StoryScanGoldenTests"/> (generated from the pre-refactor code).</summary>
+/// <summary>The golden dump of <see cref="StoryScanGoldenTests"/> (generated from the pre-refactor code; 11-12: every pit scan says its rim height, `need`, looked for up to 16 up).</summary>
 internal static class StoryScanGoldenData
 {
     public const string Expected = """
@@ -214,9 +214,9 @@ internal static class StoryScanGoldenData
   reach 3,6,0 {"within":false,"block":null,"blocks":0,"stand":"0,72,3","steps":0,"gather":[]}
   reach -2,9,2 {"within":false,"block":null,"blocks":0,"stand":"-3,72,3","steps":0,"gather":[]}
 @ -2,65,4
-  pit  {"feet":"-2,65,4","pit":true,"feet_y":65,"cave":true,"exit":"-1,65,2","stair":{"dig":["-3,66,4"],"to":"-3,66,4"},"pillar":true,"block":null,"blocks":0,"gather":["-2,66,3","-1,65,4"]}
-  home {"feet":"-2,65,4","pit":true,"feet_y":65,"cave":true,"exit":"-1,65,2","stair":{"dig":["-2,66,3"],"to":"-2,66,3"},"pillar":true,"block":null,"blocks":0,"gather":["-2,66,3","-1,65,4"],"toward":"9,67,0"}
-  clmb {"feet":"-2,65,4","pit":true,"feet_y":65,"cave":true,"climb":true,"approach":"9,65,0","stair":{"dig":["-2,66,3"],"to":"-2,66,3"},"pillar":true,"block":null,"blocks":0,"gather":["-2,66,3","-1,65,4"],"toward":"9,67,0"}
+  pit  {"feet":"-2,65,4","pit":true,"feet_y":65,"cave":true,"exit":"-1,65,2","need":0,"stair":{"dig":["-3,66,4"],"to":"-3,66,4"},"pillar":true,"block":null,"blocks":0,"gather":["-2,66,3","-1,65,4"]}
+  home {"feet":"-2,65,4","pit":true,"feet_y":65,"cave":true,"exit":"-1,65,2","need":0,"stair":{"dig":["-2,66,3"],"to":"-2,66,3"},"pillar":true,"block":null,"blocks":0,"gather":["-2,66,3","-1,65,4"],"toward":"9,67,0"}
+  clmb {"feet":"-2,65,4","pit":true,"feet_y":65,"cave":true,"climb":true,"approach":"9,65,0","need":0,"stair":{"dig":["-2,66,3"],"to":"-2,66,3"},"pillar":true,"block":null,"blocks":0,"gather":["-2,66,3","-1,65,4"],"toward":"9,67,0"}
   reach 0,4,0 {"within":true,"block":null,"blocks":0}
   reach 1,7,0 {"within":false,"block":null,"blocks":0,"stand":"-1,72,4","steps":0,"gather":[]}
   reach 0,12,1 {"within":false,"block":null,"blocks":0,"stand":"-2,72,5","steps":0,"gather":[]}
@@ -225,9 +225,9 @@ internal static class StoryScanGoldenData
   reach 3,6,0 {"within":false,"block":null,"blocks":0,"stand":"1,67,4","steps":0,"gather":["-2,66,2","-2,66,3","0,66,2","0,66,3","0,66,4","1,66,5","3,66,2","3,66,6","4,66,1","4,66,6","4,66,7"]}
   reach -2,9,2 {"within":false,"block":null,"blocks":0,"stand":"-3,72,5","steps":0,"gather":[]}
 @ -2,66,6
-  pit  {"feet":"-2,66,6","pit":true,"feet_y":66,"cave":true,"exit":"-4,65,6","stair":null,"pillar":true,"block":null,"blocks":0,"gather":[]}
-  home {"feet":"-2,66,6","pit":true,"feet_y":66,"cave":true,"exit":"-4,65,6","stair":null,"pillar":true,"block":null,"blocks":0,"gather":[],"toward":"9,67,0"}
-  clmb {"feet":"-2,66,6","pit":true,"feet_y":66,"cave":true,"climb":true,"approach":"9,65,0","stair":null,"pillar":true,"block":null,"blocks":0,"gather":[],"toward":"9,67,0"}
+  pit  {"feet":"-2,66,6","pit":true,"feet_y":66,"cave":true,"exit":"-4,65,6","need":5,"stair":null,"pillar":true,"block":null,"blocks":0,"gather":[]}
+  home {"feet":"-2,66,6","pit":true,"feet_y":66,"cave":true,"exit":"-4,65,6","need":5,"stair":null,"pillar":true,"block":null,"blocks":0,"gather":[],"toward":"9,67,0"}
+  clmb {"feet":"-2,66,6","pit":true,"feet_y":66,"cave":true,"climb":true,"approach":"9,65,0","need":5,"stair":null,"pillar":true,"block":null,"blocks":0,"gather":[],"toward":"9,67,0"}
   reach 0,4,0 {"within":true,"block":null,"blocks":0}
   reach 1,7,0 {"within":false,"block":null,"blocks":0,"stand":"-1,72,6","steps":0,"gather":[]}
   reach 0,12,1 {"within":false,"block":null,"blocks":0,"stand":"-2,72,7","steps":1,"gather":[]}
@@ -302,9 +302,9 @@ internal static class StoryScanGoldenData
   reach 3,6,0 {"within":false,"block":null,"blocks":0,"stand":"3,72,4","steps":0,"gather":[]}
   reach -2,9,2 {"within":false,"block":null,"blocks":0,"stand":"-2,72,6","steps":2,"gather":[]}
 @ 0,68,6
-  pit  {"feet":"0,68,6","pit":true,"feet_y":68,"cave":true,"exit":"4,67,6","stair":{"dig":["0,69,5"],"to":"0,69,5"},"pillar":true,"block":null,"blocks":0,"gather":["0,69,5"]}
-  home {"feet":"0,68,6","pit":true,"feet_y":68,"cave":true,"exit":"4,67,6","stair":{"dig":["0,69,5"],"to":"0,69,5"},"pillar":true,"block":null,"blocks":0,"gather":["0,69,5"],"toward":"9,67,0"}
-  clmb {"feet":"0,68,6","pit":true,"feet_y":68,"cave":true,"climb":true,"approach":"9,65,0","stair":{"dig":["0,69,5"],"to":"0,69,5"},"pillar":true,"block":null,"blocks":0,"gather":["0,69,5"],"toward":"9,67,0"}
+  pit  {"feet":"0,68,6","pit":true,"feet_y":68,"cave":true,"exit":"4,67,6","need":3,"stair":{"dig":["0,69,5"],"to":"0,69,5"},"pillar":true,"block":null,"blocks":0,"gather":["0,69,5"]}
+  home {"feet":"0,68,6","pit":true,"feet_y":68,"cave":true,"exit":"4,67,6","need":3,"stair":{"dig":["0,69,5"],"to":"0,69,5"},"pillar":true,"block":null,"blocks":0,"gather":["0,69,5"],"toward":"9,67,0"}
+  clmb {"feet":"0,68,6","pit":true,"feet_y":68,"cave":true,"climb":true,"approach":"9,65,0","need":3,"stair":{"dig":["0,69,5"],"to":"0,69,5"},"pillar":true,"block":null,"blocks":0,"gather":["0,69,5"],"toward":"9,67,0"}
   reach 0,4,0 {"within":false,"block":null,"blocks":0,"stand":"0,72,6","steps":0,"gather":[]}
   reach 1,7,0 {"within":false,"block":null,"blocks":0,"stand":"1,72,6","steps":0,"gather":[]}
   reach 0,12,1 {"within":false,"block":null,"blocks":0,"stand":"0,72,7","steps":3,"gather":[]}
@@ -379,9 +379,9 @@ internal static class StoryScanGoldenData
   reach 3,6,0 {"within":false,"block":null,"blocks":0,"stand":"3,72,3","steps":1,"gather":[]}
   reach -2,9,2 {"within":false,"block":null,"blocks":0,"stand":"0,72,6","steps":3,"gather":[]}
 @ 2,66,6
-  pit  {"feet":"2,66,6","pit":true,"feet_y":66,"cave":true,"exit":"4,67,6","stair":null,"pillar":true,"block":null,"blocks":0,"gather":["3,66,6"]}
-  home {"feet":"2,66,6","pit":true,"feet_y":66,"cave":true,"exit":"4,67,6","stair":null,"pillar":true,"block":null,"blocks":0,"gather":["3,66,6"],"toward":"9,67,0"}
-  clmb {"feet":"2,66,6","pit":true,"feet_y":66,"cave":true,"climb":true,"approach":"9,65,0","stair":null,"pillar":true,"block":null,"blocks":0,"gather":["3,66,6"],"toward":"9,67,0"}
+  pit  {"feet":"2,66,6","pit":true,"feet_y":66,"cave":true,"exit":"4,67,6","need":0,"stair":null,"pillar":true,"block":null,"blocks":0,"gather":["3,66,6"]}
+  home {"feet":"2,66,6","pit":true,"feet_y":66,"cave":true,"exit":"4,67,6","need":0,"stair":null,"pillar":true,"block":null,"blocks":0,"gather":["3,66,6"],"toward":"9,67,0"}
+  clmb {"feet":"2,66,6","pit":true,"feet_y":66,"cave":true,"climb":true,"approach":"9,65,0","need":0,"stair":null,"pillar":true,"block":null,"blocks":0,"gather":["3,66,6"],"toward":"9,67,0"}
   reach 0,4,0 {"within":true,"block":null,"blocks":0}
   reach 1,7,0 {"within":false,"block":null,"blocks":0,"stand":"3,72,6","steps":0,"gather":[]}
   reach 0,12,1 {"within":false,"block":null,"blocks":0,"stand":"2,72,7","steps":1,"gather":[]}
@@ -742,9 +742,9 @@ internal static class StoryScanGoldenData
   reach 3,6,0 {"within":false,"block":null,"blocks":0,"stand":"9,67,-5","steps":0,"gather":["6,66,-2","7,66,-8","7,66,-4","7,66,-2","8,66,-8","8,66,-7","9,66,-7","9,66,-6","10,66,-2","11,66,-7","11,66,-4","12,66,-6"]}
   reach -2,9,2 {"within":false,"block":null,"blocks":0,"stand":"4,70,-3","steps":0,"gather":["3,69,-5","5,69,-2","6,69,-2"]}
 @ 0,68,6
-  pit  {"feet":"0,68,6","pit":true,"feet_y":68,"cave":true,"exit":"4,67,6","stair":{"dig":["0,69,5"],"to":"0,69,5"},"pillar":true,"block":null,"blocks":0,"gather":["0,69,5"]}
-  home {"feet":"0,68,6","pit":true,"feet_y":68,"cave":true,"exit":"4,67,6","stair":{"dig":["0,69,5"],"to":"0,69,5"},"pillar":true,"block":null,"blocks":0,"gather":["0,69,5"],"toward":"9,67,0"}
-  clmb {"feet":"0,68,6","pit":true,"feet_y":68,"cave":true,"climb":true,"approach":"9,65,0","stair":{"dig":["0,69,5"],"to":"0,69,5"},"pillar":true,"block":null,"blocks":0,"gather":["0,69,5"],"toward":"9,67,0"}
+  pit  {"feet":"0,68,6","pit":true,"feet_y":68,"cave":true,"exit":"4,67,6","need":3,"stair":{"dig":["0,69,5"],"to":"0,69,5"},"pillar":true,"block":null,"blocks":0,"gather":["0,69,5"]}
+  home {"feet":"0,68,6","pit":true,"feet_y":68,"cave":true,"exit":"4,67,6","need":3,"stair":{"dig":["0,69,5"],"to":"0,69,5"},"pillar":true,"block":null,"blocks":0,"gather":["0,69,5"],"toward":"9,67,0"}
+  clmb {"feet":"0,68,6","pit":true,"feet_y":68,"cave":true,"climb":true,"approach":"9,65,0","need":3,"stair":{"dig":["0,69,5"],"to":"0,69,5"},"pillar":true,"block":null,"blocks":0,"gather":["0,69,5"],"toward":"9,67,0"}
   reach 0,4,0 {"within":false,"block":null,"blocks":0,"stand":"0,72,6","steps":0,"gather":[]}
   reach 1,7,0 {"within":false,"block":null,"blocks":0,"stand":"1,72,6","steps":0,"gather":[]}
   reach 0,12,1 {"within":false,"block":null,"blocks":0,"stand":"0,72,7","steps":3,"gather":[]}
@@ -753,9 +753,9 @@ internal static class StoryScanGoldenData
   reach 3,6,0 {"within":false,"block":null,"blocks":0,"stand":"3,72,6","steps":0,"gather":[]}
   reach -2,9,2 {"within":false,"block":null,"blocks":0,"stand":"-2,72,8","steps":0,"gather":[]}
 @ 1,67,6
-  pit  {"feet":"1,67,6","pit":true,"feet_y":67,"cave":true,"exit":"4,67,6","stair":null,"pillar":true,"block":null,"blocks":0,"gather":["0,67,6"]}
-  home {"feet":"1,67,6","pit":true,"feet_y":67,"cave":true,"exit":"4,67,6","stair":null,"pillar":true,"block":null,"blocks":0,"gather":["0,67,6"],"toward":"9,67,0"}
-  clmb {"feet":"1,67,6","pit":true,"feet_y":67,"cave":true,"climb":true,"approach":"9,65,0","stair":null,"pillar":true,"block":null,"blocks":0,"gather":["0,67,6"],"toward":"9,67,0"}
+  pit  {"feet":"1,67,6","pit":true,"feet_y":67,"cave":true,"exit":"4,67,6","need":0,"stair":null,"pillar":true,"block":null,"blocks":0,"gather":["0,67,6"]}
+  home {"feet":"1,67,6","pit":true,"feet_y":67,"cave":true,"exit":"4,67,6","need":0,"stair":null,"pillar":true,"block":null,"blocks":0,"gather":["0,67,6"],"toward":"9,67,0"}
+  clmb {"feet":"1,67,6","pit":true,"feet_y":67,"cave":true,"climb":true,"approach":"9,65,0","need":0,"stair":null,"pillar":true,"block":null,"blocks":0,"gather":["0,67,6"],"toward":"9,67,0"}
   reach 0,4,0 {"within":true,"block":null,"blocks":0}
   reach 1,7,0 {"within":false,"block":null,"blocks":0,"stand":"2,72,6","steps":0,"gather":[]}
   reach 0,12,1 {"within":false,"block":null,"blocks":0,"stand":"1,72,7","steps":2,"gather":[]}
@@ -764,9 +764,9 @@ internal static class StoryScanGoldenData
   reach 3,6,0 {"within":false,"block":null,"blocks":0,"stand":"3,72,5","steps":0,"gather":[]}
   reach -2,9,2 {"within":false,"block":null,"blocks":0,"stand":"-1,72,8","steps":0,"gather":[]}
 @ -1,65,7
-  pit  {"feet":"-1,65,7","pit":true,"feet_y":65,"cave":true,"exit":"-1,65,10","stair":{"dig":["0,66,7"],"to":"0,66,7"},"pillar":true,"block":null,"blocks":0,"gather":["0,65,7","-2,65,7"]}
-  home {"feet":"-1,65,7","pit":true,"feet_y":65,"cave":true,"exit":"-1,65,10","stair":{"dig":["0,66,7"],"to":"0,66,7"},"pillar":true,"block":null,"blocks":0,"gather":["0,65,7","-2,65,7"],"toward":"9,67,0"}
-  clmb {"feet":"-1,65,7","pit":true,"feet_y":65,"cave":true,"climb":true,"approach":"9,65,0","stair":{"dig":["0,66,7"],"to":"0,66,7"},"pillar":true,"block":null,"blocks":0,"gather":["0,65,7","-2,65,7"],"toward":"9,67,0"}
+  pit  {"feet":"-1,65,7","pit":true,"feet_y":65,"cave":true,"exit":"-1,65,10","need":0,"stair":{"dig":["0,66,7"],"to":"0,66,7"},"pillar":true,"block":null,"blocks":0,"gather":["0,65,7","-2,65,7"]}
+  home {"feet":"-1,65,7","pit":true,"feet_y":65,"cave":true,"exit":"-1,65,10","need":0,"stair":{"dig":["0,66,7"],"to":"0,66,7"},"pillar":true,"block":null,"blocks":0,"gather":["0,65,7","-2,65,7"],"toward":"9,67,0"}
+  clmb {"feet":"-1,65,7","pit":true,"feet_y":65,"cave":true,"climb":true,"approach":"9,65,0","need":0,"stair":{"dig":["0,66,7"],"to":"0,66,7"},"pillar":true,"block":null,"blocks":0,"gather":["0,65,7","-2,65,7"],"toward":"9,67,0"}
   reach 0,4,0 {"within":true,"block":null,"blocks":0}
   reach 1,7,0 {"within":false,"block":null,"blocks":0,"stand":"0,72,7","steps":0,"gather":[]}
   reach 0,12,1 {"within":false,"block":null,"blocks":0,"stand":"-1,72,8","steps":0,"gather":[]}
@@ -774,6 +774,6 @@ internal static class StoryScanGoldenData
   reach 0,2,0 {"within":true,"block":null,"blocks":0}
   reach 3,6,0 {"within":false,"block":null,"blocks":0,"stand":"1,72,6","steps":0,"gather":[]}
   reach -2,9,2 {"within":false,"block":null,"blocks":0,"stand":"-3,72,9","steps":0,"gather":[]}
-all 29494969C65C6CED
+all C79F62B94F0141CC
 """;
 }

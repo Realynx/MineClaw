@@ -1,3 +1,4 @@
+using System.Text.Json.Nodes;
 using Microsoft.Extensions.Logging;
 
 namespace MineClaw.Hive.Story;
@@ -246,14 +247,24 @@ public sealed partial class StoryColony
     /// <summary>Its pawn stands over it on its own pillar, still using it, unless it stands there to take that pillar down
     /// (<see cref="TakingDownColumn"/>): then the column is the cleanup's, never "temporary access still in use", which cut the dig with
     /// the pawn partway down the pit and took the rest of the marks away.</summary>
-    private bool InUseAsPillar(TempBlockState t, PawnLive live) => OnOwnPillar(t, live) && !TakingDownColumn(t.Pawn, t.At);
+    private bool InUseAsPillar(TempBlockState t, PawnLive live) => HelperInUse(t, live) || OnOwnPillar(t, live) && !TakingDownColumn(t.Pawn, t.At);
+
+    /// <summary>
+    /// A helper column its pawn is building up beside a pillar to take that pillar down (StoryColony.TempPillars.cs, the SDK's
+    /// <c>unpoleAlongside</c>): in use for the whole job, however tall. The job runs well past <see cref="LeftAfter"/> and the pawn is
+    /// far over the column's lowest blocks, which then read as left behind: marked, alerted, and given to another pawn to take down
+    /// from under it.
+    /// </summary>
+    private bool HelperInUse(TempBlockState t, PawnLive live) => live.Online && t.Kind == "pillar helper"
+        && _current.TryGetValue(t.Pawn, out var j) && j.Json["unpole"]?["beside"] is JsonValue b && b.TryGetValue<string>(out var s)
+        && ParseCell(s) is { } ground && ground.X == t.At.X && ground.Z == t.At.Z;
 
     /// <summary>The pawn's current job takes the pillar in this cell's column down from its top (StoryColony.TempPillars.cs).</summary>
     private bool TakingDownColumn(string pawn, P3 at) =>
         _current.TryGetValue(pawn, out var j) && j.Json["unpole"] != null && j.At is { } top && top.X == at.X && top.Z == at.Z;
 
     private static bool OnOwnPillar(TempBlockState t, PawnLive live) => live.Online
-        && t.Kind is "reach pillar" or "escape pillar" && live.Y > t.At.Y
+        && t.Kind is "reach pillar" or "escape pillar" or "pillar helper" && live.Y > t.At.Y
         && live.Y - t.At.Y <= Scripting.Story.ReachScan.MaxPillar + 2
         && Math.Abs(live.X - (t.At.X + 0.5)) <= 0.8 && Math.Abs(live.Z - (t.At.Z + 0.5)) <= 0.8;
 
