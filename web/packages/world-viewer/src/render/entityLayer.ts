@@ -1943,7 +1943,10 @@ export class EntityLayer {
 
   private playerLook(name: string, bot: boolean): Look {
     const look = playerLook(this.version, name, bot), skin = humanSkins.get(name);
-    return skin ? { ...look, model: this.beta || skin.height === 32 ? 'player_beta' : skin.slim ? 'player_slim' : 'player', texture: `human:${name.toLowerCase()}` } : look;
+    if (!skin) return look;
+    // A default skin is the pack's own texture: b1.8.1 has only mob/char (its Alex is drawn as Steve).
+    if (skin.base) return this.beta ? look : { ...look, model: skin.base === 'alex' ? 'player_slim' : 'player', texture: `entity/${skin.base}` };
+    return { ...look, model: this.beta || skin.height === 32 ? 'player_beta' : skin.slim ? 'player_slim' : 'player', texture: `human:${name.toLowerCase()}` };
   }
 
   private rect(key: string): [number, number, number, number] | null {

@@ -78,6 +78,7 @@ import {
   type TrackedWrites,
 } from './optimistic';
 import { panel } from './StoryHud';
+import { SkinBrowser } from './skins/SkinBrowser';
 import { DirectiveList } from './StoryPanels';
 import {
   addBillBody,
@@ -400,7 +401,7 @@ function designationAt(d: StoryDesignation): number[] | null {
 
 // ------------------------------------------------------------------ pawn
 
-type PawnTab = 'overview' | 'inventory' | 'skills' | 'orders';
+type PawnTab = 'overview' | 'inventory' | 'skills' | 'orders' | 'skin';
 
 /** What the pawn is doing (its job's progress), or drafted / nothing. */
 function PawnDoing({ pawn }: { pawn: StoryPawn }) {
@@ -581,9 +582,12 @@ export function PawnInspector({
   blocked = [],
   onBringOnline,
   extra,
+  version = 'b1.8.1',
 }: {
   /** The pawn's equipment and gear actions (assign/GearActions), under its overview. */
   extra?: ReactNode;
+  /** The colony world's game version: which skin layout and default textures the Skin Browser previews. */
+  version?: 'b1.8.1' | '1.12.2';
   pawn: StoryPawn;
   bed?: StoryBed | null;
   canWrite: boolean;
@@ -603,7 +607,7 @@ export function PawnInspector({
       sub={offline ? 'offline' : (pawn.state ?? 'idle')}
       onClose={onClose}
       avatar={<Avatar name={pawn.name} size={30} />}
-      wide={tab === 'inventory'}
+      wide={tab === 'inventory' || tab === 'skin'}
     >
       {offline && onBringOnline ? (
         <PawnOffline pawn={pawn} blocked={blocked} canWrite={canWrite} onBringOnline={onBringOnline} />
@@ -614,6 +618,7 @@ export function PawnInspector({
           ['inventory', 'Inventory'],
           ['skills', 'Skills'],
           ['orders', 'Orders'],
+          ['skin', 'Skin Browser'],
         ]}
         value={tab}
         onChange={setTab}
@@ -628,6 +633,7 @@ export function PawnInspector({
         <InventorySection bot={pawn.name} compact />
       ) : null}
       {tab === 'orders' ? <PawnOrders pawn={pawn} canWrite={canWrite} onClearQueue={onClearQueue} /> : null}
+      {tab === 'skin' ? <SkinBrowser key={pawn.name} pawn={pawn.name} display={pawn.display} canWrite={canWrite} version={version} /> : null}
     </Shell>
   );
 }

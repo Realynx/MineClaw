@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { configureHumanSkins, humanSkins, type HumanSkinFeed } from '../src/assets/humanSkins';
+import { configureHumanSkins, humanSkins, refreshHumanSkins, type HumanSkinFeed } from '../src/assets/humanSkins';
 import * as THREE from 'three';
 import { PNG } from 'pngjs';
 import { EntityLayer } from '../src/render/entityLayer';
@@ -37,6 +37,51 @@ it('shows only configured human skins; resets across disable/re-enable and servi
   configureHumanSkins(null);
   await vi.advanceTimersByTimeAsync(5000);
   expect(humanSkins.get('player')).toBeUndefined();
+});
+
+it('keeps pawn default skins out of the atlas, packs uploaded skins from slot 0 after a reset, and refreshes on demand', async () => {
+  vi.useFakeTimers();
+  vi.stubGlobal('document', { hidden: false, createElement: () => ({ width: 0, height: 0, getContext: () => ({ drawImage: vi.fn(), clearRect: vi.fn() }) }) });
+  vi.stubGlobal('createImageBitmap', vi.fn(() => Promise.resolve({ width: 64, height: 64, close: vi.fn() })));
+  let feed: HumanSkinFeed = { enabled: true, epoch: 'gen-1', revision: 0, skins: [
+    { name: 'maid_chan', slim: true, height: 64, png: '', base: 'alex' },
+    { name: 'kiwi_bot', slim: false, height: 64, png: btoa('fixture') },
+  ] };
+  const source = vi.fn(() => Promise.resolve(feed));
+  configureHumanSkins(source);
+  stop = humanSkins.subscribe(() => {});
+  await vi.advanceTimersByTimeAsync(0);
+  expect(humanSkins.get('Maid_Chan')).toMatchObject({ base: 'alex', slim: true });
+  expect(humanSkins.rect('maid_chan', false)).toBeNull();
+  expect(humanSkins.rect('kiwi_bot', false)).toEqual([0, 0, 64 / 1024, 64 / 2048]);
+  // The Skin Browser changed a pawn: a new epoch, fetched at once rather than at the next five-second poll.
+  feed = { enabled: true, epoch: 'gen-2', revision: 0, skins: [{ name: 'maid_chan', slim: false, height: 64, png: btoa('other') }] };
+  const before = source.mock.calls.length;
+  refreshHumanSkins();
+  await vi.advanceTimersByTimeAsync(0);
+  expect(source.mock.calls.length).toBe(before + 1);
+  expect(humanSkins.get('maid_chan')?.base).toBeUndefined();
+  expect(humanSkins.get('kiwi_bot')).toBeUndefined();
+  expect(humanSkins.rect('maid_chan', false)).toEqual([0, 0, 64 / 1024, 64 / 2048]);
+});
+
+it("draws a pawn's default skin with the pack's own Steve / Alex texture (b1.8.1: its only player texture)", async () => {
+  vi.useFakeTimers();
+  vi.stubGlobal('document', { hidden: false, createElement: () => ({ width: 0, height: 0, getContext: () => ({ drawImage: vi.fn(), clearRect: vi.fn() }) }) });
+  configureHumanSkins(() => Promise.resolve({ enabled: true, epoch: 'looks', revision: 0, skins: [
+    { name: 'maid_chan', slim: true, height: 64, png: '', base: 'alex' },
+    { name: 'kiwi_bot', slim: false, height: 64, png: '', base: 'steve' },
+  ] }));
+  const layer = new EntityLayer();
+  stop = () => layer.dispose();
+  await vi.advanceTimersByTimeAsync(0);
+  const look = (name: string) => (layer as unknown as { playerLook(n: string, bot: boolean): { model: string; texture: string } }).playerLook(name, true);
+  layer.setVersion('1.12.2');
+  expect(look('Maid_Chan')).toMatchObject({ model: 'player_slim', texture: 'entity/alex' });
+  expect(look('kiwi_bot')).toMatchObject({ model: 'player', texture: 'entity/steve' });
+  expect(look('someone_else')).toMatchObject({ model: 'player', texture: 'entity/steve' });
+  layer.setVersion('b1.8.1');
+  expect(look('maid_chan')).toMatchObject({ model: 'player_beta', texture: 'mob/char' });
 });
 
 it.skipIf(noPacks)('draws slim and legacy skins using distinct atlas UVs and correct instanced player models', async () => {

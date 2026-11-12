@@ -7,9 +7,11 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { mockSetupMode, mockSignIn, resolvers, SAMPLE_CALLS, type Ctx } from '@/mocks/api';
 import { tick } from '@/mocks/data/live';
 import { seedStory, storySim } from '@/mocks/data/story';
+import { skinPng } from './skinPng';
 
 // Answer errors by design (phase 2 / unused; setup.create is 409 once users exist, so it has its own test below).
-const SKIP = new Set<RouteId>(['groom.preview', 'bots.tile', 'setup.create', 'story.directive']);
+// skins.delete / skins.lookup answer 404 / 409 without a prior upload or the admin setting (test/skinBrowserLogic.test.ts covers them).
+const SKIP = new Set<RouteId>(['groom.preview', 'bots.tile', 'setup.create', 'story.directive', 'skins.delete', 'skins.lookup']);
 
 /** Bodies and params for the write routes (the shared SAMPLE_CALLS cover the reads). */
 const WRITES: Partial<Record<RouteId, Ctx>> = {
@@ -19,6 +21,8 @@ const WRITES: Partial<Record<RouteId, Ctx>> = {
   'admin.rebuildStart': { params: {}, query: {}, body: { scope: 'kind', kind: 'fact' } },
   'admin.rebuildCancel': { params: { jobId: 'job-1' }, query: {}, body: {} },
   'bots.chat': { params: { bot: 'maid_chan' }, query: {}, body: { text: 'hi', requestId: 'abcdefgh1234' } },
+  'skins.upload': { params: {}, query: {}, body: { label: 'Fixture', slim: true, png: skinPng().toString('base64') } },
+  'skins.assign': { params: {}, query: {}, body: { pawns: ['maid_chan'], skin: { kind: 'default', id: 'steve' } } },
   ...storyWrites(),
 };
 

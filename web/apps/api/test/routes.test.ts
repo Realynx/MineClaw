@@ -9,6 +9,7 @@ import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { generate } from '../src/mock/generate.js';
 import { CAMP, topAt } from '../src/mock/terrain.js';
+import { skinPng } from './skin-fixtures.js';
 import { csrfSession, login, ORIGIN, PASSWORD, PERSONAS, startApp, type Session, type TestApp } from './helpers.js';
 
 /** Routes whose success path has side effects or needs its own flow; tested in auth/setup/sse tests. Gating is still checked. */
@@ -21,6 +22,9 @@ const OWN_FLOW: ReadonlySet<RouteId> = new Set([
   'auth.stepUp',
   'live.stream',
   'designer.deleteDesign',
+  // A delete needs an uploaded id, a lookup the official-skins setting and Mojang: skin-library.test.ts runs both flows.
+  'skins.delete',
+  'skins.lookup',
 ]);
 
 const OVERRIDES: Partial<
@@ -33,6 +37,8 @@ const OVERRIDES: Partial<
   'designer.save': { body: { name: 'route test design', asNew: true } },
   'auth.stepUp': { body: { password: 'correct horse battery staple' } },
   'admin.webHostingSave': { body: { tls: { enabled: false }, reason: 'route table test' } },
+  'skins.upload': { body: { label: 'Route test', png: skinPng().toString('base64') } },
+  'skins.assign': { body: { pawns: ['maid_s1_dara'], skin: { kind: 'default', id: 'steve' } } },
   'admin.settingsSave': { params: { node: 'local' }, body: { changes: [{ key: 'Supervisor:Viewer:PerMinute', value: 20 }], reason: 'route table test' } },
   // Story Mode: the mock bridge's colony `story-1` (Mock Hollow, founded at start) and its first pawn.
   ...storyOverrides(),

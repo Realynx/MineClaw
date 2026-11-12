@@ -25,6 +25,9 @@ const KNOWN_PATTERNS: Record<string, string> = {
   '^[A-Za-z0-9_-]{8,64}$': 'r-8f14e45fceea',
   '^[A-Za-z,]*$': 'feed,now',
   '^#[0-9a-fA-F]{6}$': '#4f8cff',
+  '^[a-f0-9]{24}$': '3c9a1f0e7d52b8a4c6e01f2d',
+  '^[A-Za-z0-9_]{1,16}$': 'maid_chan',
+  '^[A-Za-z0-9+/]+={0,2}$': 'iVBORw0KGgo=',
   [/^-?\d+,-?\d+(;-?\d+,-?\d+){0,63}$/.source]: '0,0;1,0',
 };
 
