@@ -16,6 +16,10 @@ export interface RouteTypes {
   'auth.totpVerify': { params: never; query: never; body: z.input<typeof C.TotpVerifyRequest>; response: z.output<typeof C.TotpVerifyResponse> };
   'auth.stepUp': { params: never; query: never; body: z.input<typeof C.StepUpRequest>; response: z.output<typeof C.StepUpResponse> };
   'audit.list': { params: never; query: z.input<typeof C.WebAuditQuery>; body: never; response: z.output<typeof C.WebAuditPage> };
+  'system.version': { params: never; query: never; body: never; response: z.output<typeof C.SystemVersion> };
+  'system.update': { params: never; query: never; body: never; response: z.output<typeof C.SystemUpdateStatus> };
+  'system.updateCheck': { params: never; query: never; body: never; response: z.output<typeof C.SystemUpdateStatus> };
+  'system.updateRequest': { params: never; query: never; body: z.input<typeof C.SystemUpdateRequest>; response: z.output<typeof C.SystemUpdateStatus> };
   'overview': { params: never; query: never; body: never; response: z.output<typeof C.Overview> };
   'memory.kinds': { params: never; query: never; body: never; response: z.output<typeof C.MemoryKindsResponse> };
   'memory.list': { params: z.input<typeof C.MemoryKindParams>; query: z.input<typeof C.MemoryListQuery>; body: never; response: z.output<typeof C.MemoryPage> };

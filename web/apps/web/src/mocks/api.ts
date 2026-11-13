@@ -45,6 +45,28 @@ const mockHosting = () => ({
   savedOrigin: mockTls.enabled ? `https://${mockTls.hostname}:${mockTls.port}` : null,
 });
 
+/** The update checker in mock mode: a manual install already on the latest release (no banner by default). */
+let mockUpdateRequest: { version: string; requestedBy: string; requestedAt: string } | null = null;
+const MOCK_RELEASE = {
+  version: '0.1.0',
+  name: 'MineClaw 0.1.0',
+  notes: ['## Mock release', '- The update checker answers from fixtures in mock mode.'].join('\n'),
+  notesTruncated: false,
+  url: 'https://github.com/Realynx/MineClaw/releases',
+  publishedAt: '2026-11-01T12:00:00Z',
+  prerelease: false,
+};
+const mockUpdate = () => ({
+  enabled: true,
+  current: '0.1.0',
+  latest: MOCK_RELEASE,
+  outdated: false,
+  checkedAt: nowIso(),
+  lastError: null,
+  installKind: 'manual' as const,
+  update: { mode: 'none' as const, ...(mockUpdateRequest ? { request: mockUpdateRequest } : {}) },
+});
+
 export class MockError extends Error {
   constructor(
     readonly status: number,
@@ -329,6 +351,15 @@ export const resolvers: Partial<Record<RouteId, Resolver>> = {
     const offset = num(query.offset);
     const limit = num(query.limit);
     return { total: items.length, offset, limit, items: items.slice(offset, offset + limit) };
+  },
+  'system.version': () => ({ version: '0.1.0', commit: 'mock', built: null, installKind: 'manual' }),
+  'system.update': () => mockUpdate(),
+  'system.updateCheck': () => mockUpdate(),
+  'system.updateRequest': ({ body }) => {
+    const version = (body as { version: string }).version;
+    if (version !== MOCK_RELEASE.version) throw new MockError(400, 'only the latest known release can be installed', 'bad_request');
+    mockUpdateRequest = { version, requestedBy: me()?.username ?? 'mock', requestedAt: nowIso() };
+    return mockUpdate();
   },
 
   overview: () => misc.overview(),
@@ -830,6 +861,7 @@ export const SAMPLE_CALLS: Partial<Record<RouteId, Ctx>> = {
   'admin.settings': { params: { node: 'local' }, query: {}, body: null },
   'admin.webHostingSave': { params: {}, query: {}, body: { tls: WebTlsSettings.parse({}), reason: 'fixture test' } },
   'admin.humanSkinsSave': { params: {}, query: {}, body: { enabled: false, reason: 'fixture test' } },
+  'system.updateRequest': { params: {}, query: {}, body: { version: '0.1.0' } },
   'admin.settingsSave': {
     params: { node: 'local' },
     query: {},

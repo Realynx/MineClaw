@@ -24,6 +24,7 @@ import {
   type HumanSkinSave,
   type SkinAssignRequest,
   type SkinUploadRequest,
+  type SystemUpdateRequest,
 } from '@mineclaw/contracts';
 import type { z } from 'zod';
 import type { AuditService } from '../audit/audit.service.js';
@@ -43,6 +44,7 @@ import type { LiveHub } from '../live/live-hub.js';
 import { contractSample } from '../live/contract-sample.js';
 import type { WebHostingSettings } from '../config/web-hosting.js';
 import type { HumanSkins } from '../skins/human-skins.js';
+import type { UpdateChecker } from '../system/update-checker.js';
 import { VERSION } from '../version.js';
 import { encodeShardUpload, parseShardUpload, type ShardUpload } from './multipart.js';
 
@@ -51,6 +53,7 @@ export type RoutedRequest = IncomingMessage & { params?: Record<string, string |
 export interface DispatcherDeps {
   hosting: WebHostingSettings;
   skins: HumanSkins;
+  updates: UpdateChecker;
   auth: AuthService;
   setup: SetupService;
   audit: AuditService;
@@ -133,6 +136,7 @@ export class RouteDispatcher {
         }
       },
       ...this.skinRoutes(),
+      ...this.systemRoutes(),
       'admin.webHosting': () => Promise.resolve(d.hosting.read()),
       'admin.webHostingSave': (_req, _res, ctx, state, input) => {
         const body = input.body as WebHostingSaveRequest;
@@ -223,6 +227,34 @@ export class RouteDispatcher {
           const skin = library.add({ label: name, slim: found.slim, png: found.png, source: 'player', by: state.user?.username });
           return { skin, skins: view() };
         });
+      },
+    };
+  }
+
+  /** Version and update checker (system/update-checker.ts). An update request is audited, accepted or refused. */
+  private systemRoutes(): NativeRoutes {
+    const d = this.d;
+    return {
+      'system.version': () => Promise.resolve(d.updates.version()),
+      'system.update': () => Promise.resolve(d.updates.status()),
+      'system.updateCheck': () => d.updates.forceCheck(),
+      'system.updateRequest': (_req, _res, ctx, state, input) => {
+        const { version } = input.body as SystemUpdateRequest;
+        const from = d.updates.version().version;
+        let ok = false;
+        let note = '';
+        try {
+          const out = d.updates.requestUpdate(version, state.user?.username ?? 'unknown');
+          ok = true;
+          return Promise.resolve(out);
+        } catch (e) {
+          if (e instanceof ApiHttpError) note = `: ${e.body.error}`;
+          throw e;
+        } finally {
+          d.audit.record({ kind: 'system_update', ok, ip: ctx.ip, username: state.user?.username,
+            route: 'system.updateRequest', method: 'POST', target: `v${version}`, requestId: ctx.requestId,
+            summary: clip(`Update from v${from} to v${version} ${ok ? 'requested' : `refused${note}`}`, 300) });
+        }
       },
     };
   }

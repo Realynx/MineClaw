@@ -4,7 +4,7 @@
  * min/max, arrays get two items. Output is the PUBLIC (camelCase) shape; the mock bridge converts it with `toSnake`.
  */
 import type { z } from 'zod';
-import { StoryTimeRange } from '@mineclaw/contracts';
+import { RELEASE_VERSION_RE, StoryTimeRange } from '@mineclaw/contracts';
 
 interface Def {
   type: string;
@@ -29,6 +29,7 @@ const KNOWN_PATTERNS: Record<string, string> = {
   '^[A-Za-z0-9_]{1,16}$': 'maid_chan',
   '^[A-Za-z0-9+/]+={0,2}$': 'iVBORw0KGgo=',
   [/^-?\d+,-?\d+(;-?\d+,-?\d+){0,63}$/.source]: '0,0;1,0',
+  [RELEASE_VERSION_RE.source]: '1.2.0',
 };
 
 function inner(s: Schema): Def {

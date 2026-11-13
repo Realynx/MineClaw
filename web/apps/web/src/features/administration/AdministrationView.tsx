@@ -22,6 +22,7 @@ import { api, ApiError } from '@/lib/api/client';
 import { useApi } from '@/lib/api/query';
 import { ago } from '@/lib/utils';
 import { AuditCard } from './AuditCard';
+import { UpdatesCard } from './UpdatesCard';
 import { AdminFormContext, fieldId, type AdminForm } from './context';
 import { buildDiff, toChanges, withoutKeys } from './diff';
 import { serverErrors, validateDraft, type Draft } from './fieldState';
@@ -133,6 +134,7 @@ export function AdministrationView() {
         subtitle="Configure web access and the bot's settings. Changes are reviewed before saving; secret contents stay on the server."
         actions={<NodePicker node={node} setNode={setNode} nodeList={nodeList} />}
       />
+      <UpdatesCard />
       <WebHostingCard />
       <HumanSkinsCard />
       {q.isPending ? (

@@ -183,6 +183,7 @@ export const WebAuditKind = z.enum([
   'story',
   'step_up',
   'admin_settings',
+  'system_update',
 ]);
 export type WebAuditKind = z.infer<typeof WebAuditKind>;
 

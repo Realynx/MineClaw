@@ -86,6 +86,8 @@ export async function startApp(
       proxyNext: false,
       validateResponses: 'strict',
       logLevel: 'silent',
+      // No test reaches GitHub: suites that exercise the update checker enable it with a fake fetch.
+      updates: { enabled: false, dir: join(dir, 'update') },
     },
     bridge: { url: 'http://127.0.0.1:9', key: KEY, timeoutMs: 3000 },
   };
