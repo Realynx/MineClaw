@@ -26,7 +26,9 @@ env:
 jobs:
   dotnet:
     name: dotnet ${{ matrix.project }}
-    runs-on: ubuntu-latest
+    # Windows, like the development machines: the golden tests (renders, TUI frames, bit-exact numerics) are recorded there,
+    # and several differ on Linux's libm and terminal handling (docs/release.md › CI).
+    runs-on: windows-latest
     timeout-minutes: 40
     strategy:
       fail-fast: false
@@ -57,7 +59,7 @@ jobs:
           key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', 'Directory.Build.props') }}
           restore-keys: nuget-${{ runner.os }}-
       - name: Test (quarantine list + one retry of failures)
-        run: python3 tests/ci/dotnet_test.py tests/${{ matrix.project }} --results artifacts/test-results
+        run: python tests/ci/dotnet_test.py tests/${{ matrix.project }} --results artifacts/test-results
       - name: Upload test results
         if: failure()
         uses: actions/upload-artifact@v4
@@ -112,7 +114,7 @@ jobs:
           helm lint deploy/helm/mineclaw
           helm lint deploy/helm/mineclaw -f deploy/helm/mineclaw/ci/kind-values.yaml
           helm template mc deploy/helm/mineclaw > /dev/null
-          helm template mc deploy/helm/mineclaw --set ingress.enabled=true --set 'ingress.hosts[0].host=mineclaw.example.com' > /dev/null
+          helm template mc deploy/helm/mineclaw --set ingress.enabled=true --set 'ingress.hosts[0].host=mineclaw.example.com' --set 'ingress.hosts[0].paths[0].path=/' > /dev/null
       - name: docker compose config
         run: |
           cd deploy/docker

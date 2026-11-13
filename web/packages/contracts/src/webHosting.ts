@@ -15,12 +15,14 @@ export const WebTlsSettings = z
       .string()
       .trim()
       .max(4096)
+      // eslint-disable-next-line no-control-regex -- refusing control characters is the point
       .regex(/^[^\x00-\x1f]*$/)
       .default(''),
     keyFile: z
       .string()
       .trim()
       .max(4096)
+      // eslint-disable-next-line no-control-regex -- refusing control characters is the point
       .regex(/^[^\x00-\x1f]*$/)
       .default(''),
   })

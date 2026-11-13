@@ -7,7 +7,7 @@ the same checks with a read-only token.
 
 | Job | What it runs |
 |---|---|
-| `dotnet <project>` | One job per test project under `tests/` (14 jobs, in parallel on separate runners), through `tests/ci/dotnet_test.py` |
+| `dotnet <project>` | One job per test project under `tests/` (14 jobs, in parallel on separate runners), through `tests/ci/dotnet_test.py`. They run on **Windows** runners like the development machines: the golden tests (renders, TUI frames, bit-exact numerics) are recorded there and several differ on Linux. The release builds and the install tests run on Linux |
 | `web` | `npm ci`, then `turbo run typecheck`, `lint` and `test` (vitest, `--retry=1`) in `web/` |
 | `scripts` | `bash -n` + shellcheck (errors gate, warnings are reported) on `deploy/**/*.sh`, `helm lint`/`helm template` of the chart, `docker compose config` of the compose file |
 
