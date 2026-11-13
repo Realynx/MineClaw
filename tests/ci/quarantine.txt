@@ -1,0 +1,9 @@
+# Quarantined .NET tests: excluded from the gating CI run, still run report-only (tests/ci/dotnet_test.py).
+#
+# Format, one per line:   <test project dir name> <fully-qualified name prefix>   # why, and since when
+#   MineClaw.Bot.Tests MineClaw.Bot.Tests.SomeClass.SomeMethod   # timing-sensitive on 2-core runners (2026-11-12)
+#
+# A prefix matches every test under it (a class, or a method's theory cases). Prefer fixing over quarantining; a test that
+# fails only now and then is retried once automatically and reported as flaky, so only list tests that fail reliably in CI
+# for reasons outside the code under test (missing local game files, wall-clock timing, machine-specific paths).
+# CI posts a notice when every quarantined test of a project passes, so entries don't outlive their reason.

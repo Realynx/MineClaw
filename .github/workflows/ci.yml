@@ -1,0 +1,119 @@
+# CI for pull requests and main: the .NET test projects (one job each), the web typecheck/lint/vitest, and the deploy scripts.
+# Fork-safe: no secrets, read-only token. Quarantine and retries: tests/ci/quarantine.txt and tests/ci/dotnet_test.py
+# (docs/release.md › CI).
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  DOTNET_NOLOGO: "1"
+  DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: "1"
+  NEXT_TELEMETRY_DISABLED: "1"
+  TURBO_TELEMETRY_DISABLED: "1"
+
+jobs:
+  dotnet:
+    name: dotnet ${{ matrix.project }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        project:
+          - MineClaw.Agent.Tests
+          - MineClaw.App.Tests
+          - MineClaw.Bot.Tests
+          - MineClaw.Client.Tests
+          - MineClaw.Data.Tests
+          - MineClaw.Hive.Tests
+          - MineClaw.MemoryExplorer.Tests
+          - MineClaw.Protocol.Tests
+          - MineClaw.Raptor.Tests
+          - MineClaw.Scripting.Tests
+          - MineClaw.Skills.Tests
+          - MineClaw.Tests
+          - MineClaw.ViewerBridge.Tests
+          - MineClaw.World.Tests
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', 'Directory.Build.props') }}
+          restore-keys: nuget-${{ runner.os }}-
+      - name: Test (quarantine list + one retry of failures)
+        run: python3 tests/ci/dotnet_test.py tests/${{ matrix.project }} --results artifacts/test-results
+      - name: Upload test results
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ matrix.project }}
+          path: artifacts/test-results
+          retention-days: 7
+
+  web:
+    name: web typecheck, lint, vitest
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - name: Typecheck
+        run: npx turbo run typecheck --concurrency=2
+      - name: Lint
+        run: npx turbo run lint --concurrency=2
+      - name: Vitest
+        # One retry of a failing vitest file covers the rare timing flake; a file that fails twice fails the job.
+        run: npx turbo run test --concurrency=2 -- --retry=1
+
+  scripts:
+    name: deploy scripts and chart
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: bash -n and shellcheck
+        run: |
+          set -euo pipefail
+          mapfile -t files < <(git ls-files 'deploy/*.sh' 'deploy/**/*.sh' 'deploy/viewer/mineclaw-web-users')
+          for f in "${files[@]}"; do bash -n "$f"; done
+          # Errors only: the existing scripts predate shellcheck in CI; warnings are reported, not gating.
+          shellcheck -S error "${files[@]}"
+          shellcheck -S warning "${files[@]}" || echo "::warning::shellcheck warnings above (not gating)"
+      - name: Python test runner compiles
+        run: python3 -m py_compile tests/ci/dotnet_test.py
+      - uses: azure/setup-helm@v4
+      - name: helm lint + template
+        run: |
+          set -euo pipefail
+          helm lint deploy/helm/mineclaw
+          helm lint deploy/helm/mineclaw -f deploy/helm/mineclaw/ci/kind-values.yaml
+          helm template mc deploy/helm/mineclaw > /dev/null
+          helm template mc deploy/helm/mineclaw --set ingress.enabled=true --set 'ingress.hosts[0].host=mineclaw.example.com' > /dev/null
+      - name: docker compose config
+        run: |
+          cd deploy/docker
+          MINECLAW_SUPERVISOR_TOKEN=x MINECLAW_BRIDGE_KEY=0123456789abcdef0123456789abcdef docker compose -f docker-compose.yml config > /dev/null
