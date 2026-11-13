@@ -22,6 +22,23 @@ More detail: [ARCHITECTURE.md](ARCHITECTURE.md) (the C# side), [docs/web/archite
 app), [docs/web/story-mode.md](docs/web/story-mode.md), [docs/design/](docs/design/) and
 [docs/design/multi-version.md](docs/design/multi-version.md).
 
+## Install
+
+Each release installs the bot and the web panel with one command. You then finish the setup in the browser: the first
+visit creates the admin account, and the API key and Minecraft server are set in Administration.
+
+```bash
+# Docker compose
+curl -fsSL https://github.com/Realynx/MineClaw/releases/latest/download/install-docker.sh | sudo bash
+# Linux with systemd (Debian/Ubuntu, x86-64 or arm64)
+curl -fsSL https://github.com/Realynx/MineClaw/releases/latest/download/install.sh | sudo bash
+# Kubernetes
+helm install mineclaw oci://ghcr.io/realynx/charts/mineclaw -n mineclaw --create-namespace
+```
+
+The web panel tells you when a newer release is out and can update a systemd install in place. Options, updates and
+uninstalling: [docs/install.md](docs/install.md). How releases are built: [docs/release.md](docs/release.md).
+
 ## Repository layout
 
 | Path | Contents |
