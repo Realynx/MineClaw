@@ -1,0 +1,30 @@
+{{- range $vol := list "data" "web" }}
+{{- $p := index $.Values.persistence $vol }}
+{{- if and (or (eq $vol "data") $p.enabled) (not $p.existingClaim) }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ ternary (include "mineclaw.dataClaim" $) (include "mineclaw.webClaim" $) (eq $vol "data") }}
+  labels:
+    {{- include "mineclaw.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ $vol }}
+  {{- if $.Values.persistence.keepOnUninstall }}
+  annotations:
+    helm.sh/resource-policy: keep
+  {{- end }}
+spec:
+  accessModes:
+    {{- toYaml $p.accessModes | nindent 4 }}
+  {{- if $p.storageClass }}
+  {{- if eq "-" $p.storageClass }}
+  storageClassName: ""
+  {{- else }}
+  storageClassName: {{ $p.storageClass | quote }}
+  {{- end }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ $p.size | quote }}
+{{- end }}
+{{- end }}

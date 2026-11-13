@@ -1,0 +1,143 @@
+# MineClaw Helm chart. One StatefulSet (replicas fixed at 1: the bot is a singleton) whose Pod runs three containers that
+# share loopback: bot (Supervisor 127.0.0.1:8765), bridge (127.0.0.1:8766, loopback callers only), web (:8080).
+#
+#   helm install mineclaw oci://ghcr.io/realynx/charts/mineclaw -n mineclaw --create-namespace \
+#     --set minecraft.host=mc.example.com --set ingress.enabled=true ...
+#
+# With no API key / Minecraft server set, the bot starts in setup mode: create the admin on the first visit, then set them
+# in the web's Administration page (saved on the data volume; the bot restarts itself).
+
+image:
+  server:
+    repository: ghcr.io/realynx/mineclaw-server
+    # Default: the chart's appVersion.
+    tag: ""
+    pullPolicy: IfNotPresent
+  web:
+    repository: ghcr.io/realynx/mineclaw-web
+    tag: ""
+    pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# Shown in the web's update notice (`helm upgrade <release> <chartRef> --version X.Y.Z -n <ns> --reuse-values`).
+chartRef: oci://ghcr.io/realynx/charts/mineclaw
+
+minecraft:
+  # Empty = set it in Administration (setup mode until then).
+  host: ""
+  port: 25565
+  username: ""
+
+anthropic:
+  # Plain value (stored in the chart's Secret), or an existing Secret. Empty = set it in Administration.
+  apiKey: ""
+  existingSecret: ""
+  existingSecretKey: api-key
+
+secrets:
+  # The bridge HMAC key and the Supervisor token are generated once and kept across upgrades. To bring your own, name a
+  # Secret with the keys `bridge-key` (>= 32 chars) and `supervisor-token`.
+  existingSecret: ""
+
+# Extra bot appsettings, merged over the chart's defaults and mounted at /etc/mineclaw/appsettings.json (a Secret, so keys
+# may go here). Same format as src/MineClaw.App/appsettings.example.json. The chart's defaults:
+#   Supervisor: { Enabled: true, Bind: 127.0.0.1, Port: 8765, AllowAdminWrites: true, Viewer: { Enabled: true } }
+#   Minecraft:  { Host, Port, Username } from `minecraft` above (when set)
+# What the Administration page saves (settings.override.json on the data volume) wins over this file.
+config: {}
+
+persistence:
+  # Keep the PVCs on `helm uninstall` (a reinstall with the same release name picks them up again).
+  keepOnUninstall: true
+  # /var/lib/mineclaw: the bot's db, usage, settings.override.json. The bridge reads it too (same Pod).
+  data:
+    existingClaim: ""
+    storageClass: ""
+    accessModes: [ReadWriteOnce]
+    size: 5Gi
+  # /var/lib/mineclaw-web: users.json (the accounts), web.db (sessions, audit). Disabled = emptyDir: accounts are lost
+  # whenever the Pod is recreated.
+  web:
+    enabled: true
+    existingClaim: ""
+    storageClass: ""
+    accessModes: [ReadWriteOnce]
+    size: 256Mi
+  # /var/log/mineclaw: file logs + the bridge audit (stdout carries the same events), an emptyDir.
+  logs:
+    sizeLimit: 2Gi
+
+web:
+  # Every URL people browse to (the CSRF/Origin check). Empty = http://localhost:8080 and http://127.0.0.1:8080 (for
+  # `kubectl port-forward`) plus each ingress host (https when it is in ingress.tls).
+  allowedOrigins: []
+  # Behind the ingress controller: honour X-Forwarded-For/-Proto from these source IPs/CIDRs (e.g. the Pod CIDR).
+  # Needed for Secure cookies and real client IPs (login rate limits) when TLS ends at the ingress.
+  trustProxy: false
+  trustedProxies: []
+  # The first-run admin is created only by a direct LAN/loopback client by default (use `kubectl port-forward`). true =
+  # also through the ingress: only for a short window, on a private network.
+  allowProxiedSetup: false
+  extraEnv: []
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits: { memory: 1Gi }
+
+bot:
+  extraEnv: []
+  #  - name: MINECLAW_Agent__Embeddings__ApiKey
+  #    valueFrom: { secretKeyRef: { name: my-embeddings, key: api-key } }
+  resources:
+    requests: { cpu: 250m, memory: 512Mi }
+    limits: { memory: 3Gi }
+
+bridge:
+  # The bridge reads the bot's config file but not env or settings.override.json: give it the same embeddings env as the bot.
+  extraEnv: []
+  resources:
+    requests: { cpu: 50m, memory: 128Mi }
+    limits: { memory: 768Mi }
+
+service:
+  type: ClusterIP
+  port: 8080
+  annotations: {}
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: mineclaw.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+  #  - secretName: mineclaw-tls
+  #    hosts: [mineclaw.example.com]
+
+# fsGroup 1654 lets the three users share the volumes: bot and bridge run as 1654 (the bridge reads the bot's db), the
+# web as 1000 with group 1654 on its own volume.
+podSecurityContext:
+  runAsNonRoot: true
+  fsGroup: 1654
+  fsGroupChangePolicy: OnRootMismatch
+  seccompProfile:
+    type: RuntimeDefault
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: [ALL]
+
+# Graceful bot stop: stop actions, deposit items, disconnect, flush (Host:ShutdownTimeoutSeconds, default 30).
+terminationGracePeriodSeconds: 90
+
+podAnnotations: {}
+podLabels: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}

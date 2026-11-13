@@ -1,0 +1,36 @@
+MineClaw {{ .Chart.AppVersion }} is installed as release "{{ .Release.Name }}" in namespace "{{ .Release.Namespace }}".
+{{- $fullname := include "mineclaw.fullname" . }}
+
+1. Create the admin account (first visit only). By default the first-run setup accepts only a direct client, not one
+   through the ingress, so use a port-forward for it:
+
+     kubectl -n {{ .Release.Namespace }} port-forward svc/{{ $fullname }} 8080:{{ .Values.service.port }}
+     # then open http://localhost:8080
+
+2. In the web's Administration page, set the Anthropic API key{{ if not .Values.minecraft.host }} and the Minecraft server{{ end }}.
+   Until they are set the bot waits in setup mode (its log says "setup mode: ..."); once saved it restarts and joins.
+{{- if or .Values.anthropic.apiKey .Values.anthropic.existingSecret }}
+   (An API key was given to the chart: the bot uses it unless Administration saves another one.)
+{{- end }}
+
+{{- if .Values.ingress.enabled }}
+
+{{- $tlsHosts := list }}
+{{- range .Values.ingress.tls }}{{- $tlsHosts = concat $tlsHosts (.hosts | default list) }}{{- end }}
+
+3. After setup, the web is served at:
+{{- range .Values.ingress.hosts }}
+     {{ if has .host $tlsHosts }}https{{ else }}http{{ end }}://{{ .host }}
+{{- end }}
+   Allowed origins (sign-in works only from these URLs): {{ include "mineclaw.allowedOrigins" . }}
+{{- if not .Values.web.trustProxy }}
+   TLS ends at the ingress? Set web.trustProxy=true and web.trustedProxies=[<ingress controller IPs/CIDRs>] so cookies
+   are marked Secure and login rate limits see real client IPs.
+{{- end }}
+{{- end }}
+
+Logs:     kubectl -n {{ .Release.Namespace }} logs statefulset/{{ $fullname }} -c bot -f     (also: -c bridge, -c web)
+Upgrade:  helm upgrade {{ .Release.Name }} {{ .Values.chartRef }} --version X.Y.Z -n {{ .Release.Namespace }} --reuse-values
+{{- if .Values.persistence.keepOnUninstall }}
+Uninstall keeps the data PVCs (persistence.keepOnUninstall); delete them with kubectl when you no longer need the data.
+{{- end }}

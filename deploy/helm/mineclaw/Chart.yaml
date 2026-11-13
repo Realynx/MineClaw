@@ -1,0 +1,17 @@
+apiVersion: v2
+name: mineclaw
+description: MineClaw, a Claude-driven Minecraft bot (b1.8.1 / 1.12.2), with its web explorer. One Pod runs the bot, the viewer bridge and the web.
+type: application
+# Placeholders: the release workflow packages the chart with --version VER --app-version VER.
+version: 0.0.0
+appVersion: "0.0.0"
+kubeVersion: ">=1.25.0-0"
+home: https://github.com/Realynx/MineClaw
+sources:
+  - https://github.com/Realynx/MineClaw
+keywords:
+  - minecraft
+  - bot
+  - claude
+annotations:
+  artifacthub.io/license: MIT

@@ -1,0 +1,209 @@
+{{- $fullname := include "mineclaw.fullname" . }}
+{{- $secret := include "mineclaw.secretName" . }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $fullname }}
+  labels:
+    {{- include "mineclaw.labels" . | nindent 4 }}
+spec:
+  # The bot is a singleton (one Minecraft login, one db writer): never more than one Pod.
+  replicas: 1
+  serviceName: {{ $fullname }}
+  podManagementPolicy: OrderedReady
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      {{- include "mineclaw.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "mineclaw.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/config.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      automountServiceAccountToken: false
+      # No MINECLAW_PORT/..._SERVICE_HOST style variables: every MINECLAW_* env var is read as a config key.
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        # ---- the bot / control server (Supervisor on 127.0.0.1:8765, loopback only: no probe can reach it, k8s restarts
+        # it when it exits; it exits 0 after the Administration page saves settings, to reload them)
+        - name: bot
+          image: {{ include "mineclaw.serverImage" . }}
+          imagePullPolicy: {{ .Values.image.server.pullPolicy }}
+          args: ["server"]
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+            runAsUser: 1654
+            runAsGroup: 1654
+          env:
+            {{- include "mineclaw.installEnv" . | nindent 12 }}
+            - name: MINECLAW_SUPERVISOR_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: supervisor-token
+            {{- if .Values.anthropic.existingSecret }}
+            - name: MINECLAW_Agent__Llm__ApiKey
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.anthropic.existingSecret }}
+                  key: {{ .Values.anthropic.existingSecretKey }}
+            {{- else if .Values.anthropic.apiKey }}
+            - name: MINECLAW_Agent__Llm__ApiKey
+              valueFrom:
+                secretKeyRef:
+                  name: {{ printf "%s-secrets" $fullname }}
+                  key: anthropic-api-key
+            {{- end }}
+            {{- with .Values.bot.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/mineclaw
+            - name: logs
+              mountPath: /var/log/mineclaw
+            - name: config
+              mountPath: /etc/mineclaw/appsettings.json
+              subPath: appsettings.json
+              readOnly: true
+          resources:
+            {{- toYaml .Values.bot.resources | nindent 12 }}
+
+        # ---- the viewer bridge (127.0.0.1:8766, loopback callers only; reads the bot's db read-only)
+        - name: bridge
+          image: {{ include "mineclaw.serverImage" . }}
+          imagePullPolicy: {{ .Values.image.server.pullPolicy }}
+          args: ["bridge"]
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+            runAsUser: 1654
+            runAsGroup: 1654
+          env:
+            {{- include "mineclaw.installEnv" . | nindent 12 }}
+            - name: MINECLAW_BRIDGE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: bridge-key
+            - name: MINECLAW_SUPERVISOR_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: supervisor-token
+            {{- with .Values.bridge.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/mineclaw
+              readOnly: true
+            - name: logs
+              mountPath: /var/log/mineclaw
+            - name: config
+              mountPath: /etc/mineclaw/appsettings.json
+              subPath: appsettings.json
+              readOnly: true
+          resources:
+            {{- toYaml .Values.bridge.resources | nindent 12 }}
+
+        # ---- the web: Nest on :8080 (the Service/Ingress target) + Next on 127.0.0.1:3000
+        - name: web
+          image: {{ include "mineclaw.webImage" . }}
+          imagePullPolicy: {{ .Values.image.web.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+            runAsUser: 1000
+            runAsGroup: 1000
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            {{- include "mineclaw.installEnv" . | nindent 12 }}
+            - name: MINECLAW_BRIDGE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: bridge-key
+            - name: MINECLAW_WEB_Web__AllowedOrigins
+              value: {{ include "mineclaw.allowedOrigins" . | quote }}
+            - name: MINECLAW_WEB_Web__TrustProxy
+              value: {{ .Values.web.trustProxy | toString | quote }}
+            - name: MINECLAW_WEB_Web__TrustedProxies
+              value: {{ join "," (.Values.web.trustedProxies | default list) | quote }}
+            - name: MINECLAW_WEB_Web__Setup__AllowProxied
+              value: {{ .Values.web.allowProxiedSetup | toString | quote }}
+            {{- with .Values.web.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          volumeMounts:
+            - name: web-data
+              mountPath: /var/lib/mineclaw-web
+          startupProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 36
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 6
+          resources:
+            {{- toYaml .Values.web.resources | nindent 12 }}
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ include "mineclaw.dataClaim" . }}
+        - name: web-data
+          {{- if .Values.persistence.web.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "mineclaw.webClaim" . }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: logs
+          emptyDir:
+            sizeLimit: {{ .Values.persistence.logs.sizeLimit | quote }}
+        - name: config
+          secret:
+            secretName: {{ include "mineclaw.configName" . }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

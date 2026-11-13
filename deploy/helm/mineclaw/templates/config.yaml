@@ -1,0 +1,20 @@
+{{- /* The bot's /etc/mineclaw/appsettings.json (the bridge mounts it too: Supervisor:Port, the Agent section for search). */ -}}
+{{- $cfg := dict "Supervisor" (dict "Enabled" true "Bind" "127.0.0.1" "Port" 8765 "AllowAdminWrites" true "Viewer" (dict "Enabled" true)) }}
+{{- $mc := dict }}
+{{- with .Values.minecraft }}
+{{- if .host }}{{- $_ := set $mc "Host" .host }}{{- end }}
+{{- if and .host .port }}{{- $_ := set $mc "Port" (int .port) }}{{- end }}
+{{- if .username }}{{- $_ := set $mc "Username" .username }}{{- end }}
+{{- end }}
+{{- if $mc }}{{- $_ := set $cfg "Minecraft" $mc }}{{- end }}
+{{- $cfg = mustMergeOverwrite $cfg (deepCopy (.Values.config | default dict)) }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ include "mineclaw.configName" . }}
+  labels:
+    {{- include "mineclaw.labels" . | nindent 4 }}
+    app.kubernetes.io/component: config
+type: Opaque
+data:
+  appsettings.json: {{ toPrettyJson $cfg | b64enc | quote }}
