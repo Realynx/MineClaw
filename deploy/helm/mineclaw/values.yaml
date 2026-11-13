@@ -30,6 +30,8 @@ minecraft:
   host: ""
   port: 25565
   username: ""
+  # Game version: "" or auto = ping the server and pick; or "b1.8.1" / "1.12.2".
+  version: ""
 
 anthropic:
   # Plain value (stored in the chart's Secret), or an existing Secret. Empty = set it in Administration.

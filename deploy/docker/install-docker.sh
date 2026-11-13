@@ -4,7 +4,7 @@
 #   curl -fsSL https://github.com/Realynx/MineClaw/releases/latest/download/install-docker.sh | sudo bash
 #   curl -fsSL https://github.com/Realynx/MineClaw/releases/latest/download/install-docker.sh | sudo bash -s -- \
 #        [--dir /opt/mineclaw-docker] [--version X.Y.Z] [--port 8080] [--mc-host mc.example.com] [--mc-port 25565] \
-#        [--mc-username NAME] [--origins https://mineclaw.example.com,...] [--from DIR] [--no-pull]
+#        [--mc-username NAME] [--mc-version auto|b1.8.1|1.12.2] [--origins https://mineclaw.example.com,...] [--from DIR] [--no-pull]
 #   ... | sudo bash -s -- --uninstall [--purge] [--dir DIR]
 #
 #   --dir DIR        install dir: docker-compose.yml, .env (secrets, 0600), config/ (optional appsettings.json)
@@ -29,7 +29,7 @@ PULL=1
 REPO=Realynx/MineClaw
 REGISTRY=""
 PORT=""
-MC_HOST="" MC_PORT="" MC_USERNAME="" ORIGINS=""
+MC_HOST="" MC_PORT="" MC_USERNAME="" MC_VERSION="" ORIGINS=""
 UNINSTALL=0
 PURGE=0
 
@@ -49,6 +49,7 @@ while [[ $# -gt 0 ]]; do
         --mc-host) need_arg "$@"; MC_HOST=$2; shift 2 ;;
         --mc-port) need_arg "$@"; MC_PORT=$2; shift 2 ;;
         --mc-username) need_arg "$@"; MC_USERNAME=$2; shift 2 ;;
+        --mc-version) need_arg "$@"; MC_VERSION=$2; shift 2 ;;
         --origins) need_arg "$@"; ORIGINS=$2; shift 2 ;;
         --uninstall) UNINSTALL=1; shift ;;
         --purge) PURGE=1; shift ;;
@@ -60,6 +61,7 @@ done
 [[ -z $VERSION || $VERSION =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || die "bad version '$VERSION' (X.Y.Z[-pre])"
 [[ -z $PORT || $PORT =~ ^[0-9]+$ ]] || die "bad port '$PORT'"
 [[ -z $MC_PORT || $MC_PORT =~ ^[0-9]+$ ]] || die "bad Minecraft port '$MC_PORT'"
+[[ -z $MC_VERSION || $MC_VERSION =~ ^(auto|b1\.8\.1|1\.12\.2)$ ]] || die "bad Minecraft version '$MC_VERSION' (auto, b1.8.1 or 1.12.2)"
 [[ $REPO =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || die "bad repo '$REPO'"
 case $DIR in /*) ;; *) DIR=$(pwd)/$DIR ;; esac
 DIR=${DIR%/}
@@ -172,6 +174,7 @@ if [[ ! -f $ENV_FILE ]]; then
         echo "MC_HOST=$MC_HOST"
         echo "MC_PORT=$MC_PORT"
         echo "MC_USERNAME=$MC_USERNAME"
+        echo "MC_VERSION=$MC_VERSION"
         echo "# Behind a TLS reverse proxy: MINECLAW_TRUST_PROXY=true, its source IPs/CIDRs, and its https:// URL in MINECLAW_ORIGINS."
         echo "MINECLAW_TRUST_PROXY=false"
         echo "MINECLAW_TRUSTED_PROXIES="
@@ -186,6 +189,7 @@ else
     [[ -n $MC_HOST ]] && set_env MC_HOST "$MC_HOST"
     [[ -n $MC_PORT ]] && set_env MC_PORT "$MC_PORT"
     [[ -n $MC_USERNAME ]] && set_env MC_USERNAME "$MC_USERNAME"
+    [[ -n $MC_VERSION ]] && set_env MC_VERSION "$MC_VERSION"
     [[ -n ${ANTHROPIC_API_KEY:-} ]] && set_env ANTHROPIC_API_KEY "$ANTHROPIC_API_KEY"
     grep -q '^MINECLAW_SUPERVISOR_TOKEN=.' "$ENV_FILE" || set_env MINECLAW_SUPERVISOR_TOKEN "$(rand_hex)"
     grep -q '^MINECLAW_BRIDGE_KEY=.' "$ENV_FILE" || set_env MINECLAW_BRIDGE_KEY "$(rand_hex)"

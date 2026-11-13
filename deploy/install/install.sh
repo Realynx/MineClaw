@@ -8,7 +8,7 @@
 #   --components LIST        server | server,web (default server,web; web needs the server on the same host)
 #   --from DIR               use release assets from DIR (flat, with SHA256SUMS) instead of downloading them
 #   --repo OWNER/NAME        GitHub repo of the releases (default Realynx/MineClaw; remembered in /etc/mineclaw/install.conf)
-#   --mc-host H --mc-port P --mc-username U
+#   --mc-host H --mc-port P --mc-username U [--mc-version auto|b1.8.1|1.12.2]
 #                            Minecraft server for a NEW bot config (optional: Administration sets them later)
 #   --api-key-file FILE      Anthropic API key (first line of FILE) -> /etc/mineclaw/mineclaw.env (0600 root); never pass a key in argv
 #   --origin URL             web AllowedOrigins for a NEW web config (repeatable; default http://<primary IP>:<port>,
@@ -52,7 +52,7 @@ HELPERS=(mineclaw-release.sh:mineclaw-release mineclaw-web-release.sh:mineclaw-w
 UNIT_FILES=(mineclaw.service mineclaw-bridge.service mineclaw-web-ui.service mineclaw-web-api.service mineclaw-update.service
     mineclaw-update.path)
 
-VERSION="" COMPONENTS="" FROM="" REPO="" MC_HOST="" MC_PORT="" MC_USER="" KEY_FILE="" PORT="" ORIGINS=()
+VERSION="" COMPONENTS="" FROM="" REPO="" MC_HOST="" MC_PORT="" MC_USER="" MC_VERSION="" KEY_FILE="" PORT="" ORIGINS=()
 NO_START=0 REINSTALL=0 DRY=0 UNINSTALL=0 PURGE=0 YES=0 UPDATE=0 TIMEOUT=${MINECLAW_HEALTH_TIMEOUT:-}
 ARCH="" WORK="" ASSETS="" WEB=0 NODE_MANAGED=0 RESTART_BOT=0 RESTART_WEB=0 NODE_BIN=/usr/local/bin/node
 
@@ -74,6 +74,7 @@ parse_args() {
             --mc-host) need "$@"; MC_HOST=$2; shift 2 ;;
             --mc-port) need "$@"; MC_PORT=$2; shift 2 ;;
             --mc-username) need "$@"; MC_USER=$2; shift 2 ;;
+            --mc-version) need "$@"; MC_VERSION=$2; shift 2 ;;
             --api-key-file) need "$@"; KEY_FILE=$2; shift 2 ;;
             --api-key | --api-key=*) die "never pass an API key on the command line: put it in a file and use --api-key-file FILE" ;;
             --origin) need "$@"; ORIGINS+=("$2"); shift 2 ;;
@@ -97,6 +98,7 @@ parse_args() {
     [[ -z $REPO || $REPO =~ $REPO_RE ]] || die "bad --repo '$REPO' (want OWNER/NAME)"
     [[ -z $MC_HOST || $MC_HOST =~ ^[A-Za-z0-9._:-]{1,253}$ ]] || die "bad --mc-host '$MC_HOST'"
     [[ -z $MC_PORT || ($MC_PORT =~ ^[0-9]{1,5}$ && $MC_PORT -ge 1 && $MC_PORT -le 65535) ]] || die "bad --mc-port '$MC_PORT'"
+    [[ -z $MC_VERSION || $MC_VERSION =~ ^(auto|b1\.8\.1|1\.12\.2)$ ]] || die "bad --mc-version '$MC_VERSION' (auto, b1.8.1 or 1.12.2)"
     [[ -z $MC_USER || $MC_USER =~ ^[A-Za-z0-9_]{1,16}$ ]] || die "bad --mc-username '$MC_USER' (1-16 of A-Z a-z 0-9 _)"
     [[ -z $PORT || ($PORT =~ ^[0-9]{1,5}$ && $PORT -ge 1 && $PORT -le 65535) ]] || die "bad --port '$PORT'"
     [[ -z $TIMEOUT || $TIMEOUT =~ ^[0-9]{1,5}$ ]] || die "bad --timeout '$TIMEOUT'"
@@ -357,7 +359,7 @@ bot_config() {
     local cfg=/etc/mineclaw/appsettings.json
     if [[ -f $cfg ]]; then
         note "appsettings.json: kept"
-        if [[ -n $MC_HOST$MC_PORT$MC_USER ]]; then
+        if [[ -n $MC_HOST$MC_PORT$MC_USER$MC_VERSION ]]; then
             warn "--mc-host/--mc-port/--mc-username are only used for a new config; change them in Administration (web) or in $cfg"
         fi
     else
@@ -370,6 +372,7 @@ bot_config() {
     "Port": ${MC_PORT:-25565},
     "Username": "$MC_USER"
   },
+  "Bot": { "Server": { "Version": "${MC_VERSION:-auto}" } },
   "Supervisor": {
     "Enabled": true,
     "Bind": "127.0.0.1",

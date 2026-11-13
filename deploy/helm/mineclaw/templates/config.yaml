@@ -7,6 +7,7 @@
 {{- if .username }}{{- $_ := set $mc "Username" .username }}{{- end }}
 {{- end }}
 {{- if $mc }}{{- $_ := set $cfg "Minecraft" $mc }}{{- end }}
+{{- with .Values.minecraft.version }}{{- $_ := set $cfg "Bot" (dict "Server" (dict "Version" .)) }}{{- end }}
 {{- $cfg = mustMergeOverwrite $cfg (deepCopy (.Values.config | default dict)) }}
 apiVersion: v1
 kind: Secret

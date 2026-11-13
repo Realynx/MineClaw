@@ -58,6 +58,7 @@ services:
       MC_HOST: ${MC_HOST:-}
       MC_PORT: ${MC_PORT:-}
       MC_USERNAME: ${MC_USERNAME:-}
+      MC_VERSION: ${MC_VERSION:-}
       MINECLAW_Supervisor__Enabled: "true"
       MINECLAW_Supervisor__Bind: "127.0.0.1"
       MINECLAW_Supervisor__AllowAdminWrites: "true"

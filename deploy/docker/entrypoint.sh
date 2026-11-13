@@ -9,6 +9,7 @@
 # non-empty, so an empty value in .env never blanks a setting (the bot then starts in setup mode and the web's
 # Administration page fills it in):
 #   MC_HOST / MC_PORT / MC_USERNAME   -> MINECLAW_Minecraft__Host / __Port / __Username
+#   MC_VERSION (auto|b1.8.1|1.12.2)   -> MINECLAW_Bot__Server__Version
 #   ANTHROPIC_API_KEY                 -> MINECLAW_Agent__Llm__ApiKey
 #   MINECLAW_SUPERVISOR_TOKEN         -> MINECLAW_Supervisor__Token (the bridge reads MINECLAW_SUPERVISOR_TOKEN itself)
 # An explicit MINECLAW_Section__Key always wins over the short name. Secrets are never printed.
@@ -29,6 +30,7 @@ map() {
 map MC_HOST MINECLAW_Minecraft__Host
 map MC_PORT MINECLAW_Minecraft__Port
 map MC_USERNAME MINECLAW_Minecraft__Username
+map MC_VERSION MINECLAW_Bot__Server__Version
 map ANTHROPIC_API_KEY MINECLAW_Agent__Llm__ApiKey
 map MINECLAW_SUPERVISOR_TOKEN MINECLAW_Supervisor__Token
 unset short long

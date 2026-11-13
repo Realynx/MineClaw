@@ -42,7 +42,8 @@
       "properties": {
         "host": { "type": "string" },
         "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
-        "username": { "type": "string" }
+        "username": { "type": "string" },
+        "version": { "type": "string", "enum": ["", "auto", "b1.8.1", "1.12.2"] }
       }
     },
     "anthropic": {

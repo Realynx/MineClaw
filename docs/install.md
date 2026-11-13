@@ -41,6 +41,7 @@ curl -fsSL https://github.com/Realynx/MineClaw/releases/latest/download/install-
 - It creates `/opt/mineclaw-docker` with `docker-compose.yml` and a `.env` (0600) holding random secrets (the bridge key,
   the Supervisor token), pulls `ghcr.io/realynx/mineclaw-server` and `mineclaw-web`, and starts them.
 - Options: `--dir DIR`, `--version X.Y.Z`, `--port 8080`, `--mc-host`, `--mc-port`, `--mc-username`,
+  `--mc-version auto|b1.8.1|1.12.2` (default auto: the bot pings the server),
   `--origins https://mineclaw.example.com` (the browser origins the panel accepts: add your HTTPS hostname when you put
   it behind a reverse proxy).
 - The API key is never a flag (it would end up in your shell history): set it in Administration, or pass it through the
@@ -67,7 +68,7 @@ curl -fsSL https://github.com/Realynx/MineClaw/releases/latest/download/install.
 - Options:
   - `--version X.Y.Z`;
   - `--components server` (bot only; the default is `server,web`);
-  - `--mc-host H --mc-port P --mc-username U`;
+  - `--mc-host H --mc-port P --mc-username U`, `--mc-version auto|b1.8.1|1.12.2` (default auto);
   - `--api-key-file FILE` (the key goes to `/etc/mineclaw/mineclaw.env`, 0600);
   - `--origin https://mineclaw.example.com` (repeatable);
   - `--port 8080`, `--no-start`, `--dry-run`;
@@ -96,7 +97,7 @@ helm install mineclaw oci://ghcr.io/realynx/charts/mineclaw -n mineclaw --create
 - One StatefulSet (one replica: the bot is a singleton). Its pod runs three containers, `bot`, `bridge` and `web`, that
   share loopback.
 - Values (see `deploy/helm/mineclaw/values.yaml`):
-  - `minecraft.host/port/username`;
+  - `minecraft.host/port/username/version`;
   - `anthropic.apiKey`, or `anthropic.existingSecret` + `existingSecretKey`;
   - `persistence.*` (the data PVC; set `storageClass` and `size`);
   - `ingress.*`, `web.allowedOrigins` (add your ingress URL), `web.trustProxy`;
