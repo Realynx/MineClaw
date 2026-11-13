@@ -6,6 +6,11 @@ using MineClaw.App.Hosting;
 
 try { Console.OutputEncoding = new System.Text.UTF8Encoding(false); } catch (Exception) { /* no console */ }
 var cli = AppCli.Parse(args);
+if (cli.PrintVersion && cli.Errors.Count == 0)
+{
+    Console.Out.WriteLine(AppVersion.Informational);
+    return ExitCodes.Ok;
+}
 if (cli.PrintSchemaVersion && cli.Errors.Count == 0)
 {
     Console.Out.WriteLine(MineClaw.Agent.Rag.AgentDb.LatestSchemaVersion);

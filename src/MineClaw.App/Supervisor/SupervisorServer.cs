@@ -6,6 +6,7 @@ using System.Text;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using AdminSettingsRoutes = MineClaw.App.Supervisor.Admin.AdminSettingsRoutes;
+using SetupSupervisor = MineClaw.App.Supervisor.Admin.SetupSupervisor;
 
 namespace MineClaw.App.Supervisor;
 
@@ -79,6 +80,9 @@ public sealed class SupervisorServer : IAsyncDisposable
     public AdminSettingsRoutes? Settings { get; set; }
     /// <summary><c>/api/hive/tree</c>: the hive's ownership tree (main → children: kind, brain, state, task); null = main alone.</summary>
     public Func<object?>? HiveTree { get; set; }
+    /// <summary>Setup mode (<see cref="SetupSupervisor"/>): only the settings routes and the health reads answer; every other
+    /// route is 503 <c>{error:"setup"}</c> (401 without the token).</summary>
+    public bool SetupOnly { get; init; }
     public string? Prefix { get; private set; }
 
     /// <summary>Starts listening on Bind:Port. Throws when the address can't be bound (the host logs and runs without it).</summary>
@@ -240,6 +244,8 @@ public sealed class SupervisorServer : IAsyncDisposable
 
     public async Task<SupervisorReply> HandleAsync(SupervisorRequest r, CancellationToken ct = default)
     {
+        if (SetupOnly && !SetupSupervisor.Serves(r.Path))
+            return Authorized(r) ? SetupSupervisor.Unavailable() : Json(401, new { error = "token required (X-Supervisor-Token header or ?token=)" });
         if (await GatedRoutesAsync(r, ct).ConfigureAwait(false) is { } gated) return gated;
         if (!IsGet(r.Method)) return Json(405, new { error = "read-only: GET only" }, new Dictionary<string, string> { ["Allow"] = "GET, HEAD" });
         var path = r.Path.TrimEnd('/');
