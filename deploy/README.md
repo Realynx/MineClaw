@@ -1,5 +1,9 @@
 # Deploying MineClaw on a Proxmox LXC (systemd)
 
+> Installing from a release (Docker, a Linux host or Kubernetes) is in [docs/install.md](../docs/install.md); `install/`,
+> `docker/`, `helm/` and `release/` here hold those installers and the release packaging. This page is the hand-deployed
+> development setup.
+
 MineClaw runs the same binary two ways:
 
 - **Interactive** (`./MineClaw.App` in a terminal, SSH included): a full-screen TUI with a header, an ASCII map, token/cost

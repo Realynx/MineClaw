@@ -66,6 +66,28 @@ const WebExtra = NestConfig.shape.web.extend({
     .default({ scripts: 'nonce', reportOnly: false }),
   maxSseClients: z.number().int().positive().default(200),
   /**
+   * Update checker (system/update-checker.ts): GitHub releases of `Repo`, cached in `<DataDir>/update-cache.json`.
+   * `Dir` is the systemd handshake directory (`request.json` / `status.json`). Disabled = no network at all.
+   */
+  updates: z
+    .object({
+      enabled: z.boolean().default(true),
+      repo: z
+        .string()
+        .regex(/^[A-Za-z0-9_.-]{1,100}\/[A-Za-z0-9_.-]{1,100}$/, 'owner/name')
+        .default('Realynx/MineClaw'),
+      intervalHours: z.number().min(1).max(168).default(12),
+      prereleases: z.boolean().default(false),
+      dir: z.string().min(1).default('/var/lib/mineclaw-web/update'),
+    })
+    .default({
+      enabled: true,
+      repo: 'Realynx/MineClaw',
+      intervalHours: 12,
+      prereleases: false,
+      dir: '/var/lib/mineclaw-web/update',
+    }),
+  /**
    * First-run setup (`/setup`, open while the users file has no users). By default only a direct LAN/loopback client may
    * complete it: never a request through a trusted proxy or one that carries Cloudflare/forwarding headers.
    */

@@ -527,3 +527,6 @@ bridge.key
 # (its .txt reports stay tracked), and real-session recordings are never fixtures.
 /docs/vision/*.png
 /tests/fixtures/live-hive/
+
+# Release packaging scripts (not build output, despite the Release/ rule above).
+!deploy/release/

@@ -1,0 +1,154 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "MineClaw chart values",
+  "type": "object",
+  "definitions": {
+    "image": {
+      "type": "object",
+      "required": ["repository"],
+      "properties": {
+        "repository": { "type": "string", "minLength": 1 },
+        "tag": { "type": "string" },
+        "pullPolicy": { "type": "string", "enum": ["Always", "IfNotPresent", "Never"] }
+      }
+    },
+    "claim": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "existingClaim": { "type": "string" },
+        "storageClass": { "type": "string" },
+        "accessModes": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+        "size": { "type": "string", "pattern": "^[0-9]+(\\.[0-9]+)?([EPTGMK]i?|[mk])?$" }
+      }
+    },
+    "envList": { "type": "array", "items": { "type": "object", "required": ["name"] } },
+    "resources": { "type": "object" }
+  },
+  "properties": {
+    "image": {
+      "type": "object",
+      "properties": {
+        "server": { "$ref": "#/definitions/image" },
+        "web": { "$ref": "#/definitions/image" }
+      }
+    },
+    "imagePullSecrets": { "type": "array" },
+    "nameOverride": { "type": "string" },
+    "fullnameOverride": { "type": "string" },
+    "chartRef": { "type": "string" },
+    "minecraft": {
+      "type": "object",
+      "properties": {
+        "host": { "type": "string" },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "username": { "type": "string" }
+      }
+    },
+    "anthropic": {
+      "type": "object",
+      "properties": {
+        "apiKey": { "type": "string" },
+        "existingSecret": { "type": "string" },
+        "existingSecretKey": { "type": "string", "minLength": 1 }
+      }
+    },
+    "secrets": {
+      "type": "object",
+      "properties": { "existingSecret": { "type": "string" } }
+    },
+    "config": { "type": "object" },
+    "persistence": {
+      "type": "object",
+      "properties": {
+        "keepOnUninstall": { "type": "boolean" },
+        "data": { "$ref": "#/definitions/claim" },
+        "web": { "$ref": "#/definitions/claim" },
+        "logs": {
+          "type": "object",
+          "properties": { "sizeLimit": { "type": "string" } }
+        }
+      }
+    },
+    "web": {
+      "type": "object",
+      "properties": {
+        "allowedOrigins": { "type": "array", "items": { "type": "string", "pattern": "^https?://[^/]+$" } },
+        "trustProxy": { "type": "boolean" },
+        "trustedProxies": { "type": "array", "items": { "type": "string" } },
+        "allowProxiedSetup": { "type": "boolean" },
+        "extraEnv": { "$ref": "#/definitions/envList" },
+        "resources": { "$ref": "#/definitions/resources" }
+      }
+    },
+    "bot": {
+      "type": "object",
+      "properties": {
+        "extraEnv": { "$ref": "#/definitions/envList" },
+        "resources": { "$ref": "#/definitions/resources" }
+      }
+    },
+    "bridge": {
+      "type": "object",
+      "properties": {
+        "extraEnv": { "$ref": "#/definitions/envList" },
+        "resources": { "$ref": "#/definitions/resources" }
+      }
+    },
+    "service": {
+      "type": "object",
+      "properties": {
+        "type": { "type": "string", "enum": ["ClusterIP", "NodePort", "LoadBalancer"] },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "annotations": { "type": "object" }
+      }
+    },
+    "ingress": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "className": { "type": "string" },
+        "annotations": { "type": "object" },
+        "hosts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["host", "paths"],
+            "properties": {
+              "host": { "type": "string", "minLength": 1 },
+              "paths": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": ["path"],
+                  "properties": {
+                    "path": { "type": "string" },
+                    "pathType": { "type": "string", "enum": ["Prefix", "Exact", "ImplementationSpecific"] }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "tls": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "secretName": { "type": "string" },
+              "hosts": { "type": "array", "items": { "type": "string" } }
+            }
+          }
+        }
+      }
+    },
+    "podSecurityContext": { "type": "object" },
+    "containerSecurityContext": { "type": "object" },
+    "terminationGracePeriodSeconds": { "type": "integer", "minimum": 0 },
+    "podAnnotations": { "type": "object" },
+    "podLabels": { "type": "object" },
+    "nodeSelector": { "type": "object" },
+    "tolerations": { "type": "array" },
+    "affinity": { "type": "object" }
+  }
+}

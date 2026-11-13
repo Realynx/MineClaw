@@ -1,0 +1,114 @@
+# MineClaw with Docker Compose. Installed by install-docker.sh (same release), which writes the .env next to this file:
+#   curl -fsSL https://github.com/Realynx/MineClaw/releases/latest/download/install-docker.sh | sudo bash
+#
+# Three processes share ONE network namespace (the bridge only accepts loopback callers), like the containers of a
+# Kubernetes Pod. `net` only holds that namespace and the published port; it never restarts, so the bot can restart on its
+# own (after the Administration page saves settings it exits 0 and `restart: unless-stopped` brings it back) without
+# cutting the bridge and the web off. (Joining `server` directly would strand them in its old namespace on every restart.)
+#   server  the bot / control server; Supervisor on 127.0.0.1:8765
+#   bridge  the web explorer's C# bridge on 127.0.0.1:8766 (reads the bot's db read-only)
+#   web     Nest on :8080 (published by `net`) + Next on 127.0.0.1:3000
+#
+# .env (created once by install-docker.sh, 0600; never commit it):
+#   MINECLAW_VERSION            image tag (an update: set it, then `docker compose pull && docker compose up -d`)
+#   MINECLAW_SUPERVISOR_TOKEN   random; bot <-> bridge
+#   MINECLAW_BRIDGE_KEY         random; bridge <-> web (HMAC)
+#   MINECLAW_HTTP_PORT          host port of the web (default 8080)
+#   MINECLAW_ORIGINS            every URL people browse to, comma-separated (the web's CSRF/Origin check)
+#   ANTHROPIC_API_KEY, MC_HOST, MC_PORT, MC_USERNAME   optional: left empty, the bot starts in setup mode and the web's
+#                               Administration page sets them (saved on the data volume, settings.override.json)
+#   MINECLAW_TRUST_PROXY=true + MINECLAW_TRUSTED_PROXIES=<IPs/CIDRs>   behind a TLS reverse proxy (e.g. 172.16.0.0/12 for
+#                               one on the host); then add its https:// URL to MINECLAW_ORIGINS
+#   MINECLAW_REGISTRY           image registry prefix (default ghcr.io/realynx)
+#
+# Optional bot config: ./config/appsettings.json (readable by uid 1654, e.g. chmod 0644), same format as
+# src/MineClaw.App/appsettings.example.json. Extra env (embeddings keys, ...) goes in docker-compose.override.yml, which
+# compose merges automatically and the installer never touches.
+
+x-service: &service
+  restart: unless-stopped
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "5"
+
+x-server-image: &server-image "${MINECLAW_REGISTRY:-ghcr.io/realynx}/mineclaw-server:${MINECLAW_VERSION:-latest}"
+
+services:
+  net:
+    <<: *service
+    image: *server-image
+    command: ["sleep", "infinity"]
+    init: true
+    ports:
+      - "${MINECLAW_HTTP_PORT:-8080}:8080"
+    stop_grace_period: 5s
+
+  server:
+    <<: *service
+    image: *server-image
+    command: ["server"]
+    network_mode: "service:net"
+    depends_on:
+      - net
+    environment:
+      MINECLAW_SUPERVISOR_TOKEN: ${MINECLAW_SUPERVISOR_TOKEN:?missing in .env (run install-docker.sh)}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      MC_HOST: ${MC_HOST:-}
+      MC_PORT: ${MC_PORT:-}
+      MC_USERNAME: ${MC_USERNAME:-}
+      MINECLAW_Supervisor__Enabled: "true"
+      MINECLAW_Supervisor__Bind: "127.0.0.1"
+      MINECLAW_Supervisor__AllowAdminWrites: "true"
+      MINECLAW_Supervisor__Viewer__Enabled: "true"
+    volumes:
+      - data:/var/lib/mineclaw
+      - logs:/var/log/mineclaw
+      - ./config:/etc/mineclaw:ro
+    # Graceful stop: stop actions, deposit items, disconnect, flush (Host:ShutdownTimeoutSeconds, default 30).
+    stop_grace_period: 90s
+
+  bridge:
+    <<: *service
+    image: *server-image
+    command: ["bridge"]
+    network_mode: "service:net"
+    depends_on:
+      - net
+      - server
+    environment:
+      MINECLAW_BRIDGE_KEY: ${MINECLAW_BRIDGE_KEY:?missing in .env (run install-docker.sh)}
+      MINECLAW_SUPERVISOR_TOKEN: ${MINECLAW_SUPERVISOR_TOKEN:?missing in .env (run install-docker.sh)}
+    volumes:
+      - data:/var/lib/mineclaw:ro
+      - logs:/var/log/mineclaw
+      - ./config:/etc/mineclaw:ro
+    stop_grace_period: 20s
+
+  web:
+    <<: *service
+    image: "${MINECLAW_REGISTRY:-ghcr.io/realynx}/mineclaw-web:${MINECLAW_VERSION:-latest}"
+    network_mode: "service:net"
+    depends_on:
+      - net
+    environment:
+      MINECLAW_BRIDGE_KEY: ${MINECLAW_BRIDGE_KEY:?missing in .env (run install-docker.sh)}
+      MINECLAW_WEB_Web__AllowedOrigins: ${MINECLAW_ORIGINS:-http://localhost:${MINECLAW_HTTP_PORT:-8080}}
+      MINECLAW_WEB_Web__TrustProxy: ${MINECLAW_TRUST_PROXY:-false}
+      MINECLAW_WEB_Web__TrustedProxies: ${MINECLAW_TRUSTED_PROXIES:-}
+      MINECLAW_COMPOSE_DIR: ${MINECLAW_COMPOSE_DIR:-/opt/mineclaw-docker}
+    volumes:
+      - web-data:/var/lib/mineclaw-web
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/api/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    stop_grace_period: 30s
+
+volumes:
+  data:
+  logs:
+  web-data:

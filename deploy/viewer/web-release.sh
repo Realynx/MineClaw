@@ -3,7 +3,7 @@
 # pushes it to /usr/local/sbin/mineclaw-web-release on every deploy. By hand: pct exec 114 -- /usr/local/sbin/mineclaw-web-release status
 #
 #   mineclaw-web-release install <web.tgz> <bridge.tgz> <release-id> [--units DIR] [--no-start] [--timeout SEC]
-#   mineclaw-web-release rollback [--timeout SEC] [--dry-run]   # both trees -> the next older release, restart, health check
+#   mineclaw-web-release rollback [--to ID] [--timeout SEC] [--dry-run]   # both trees -> the next older (or that) release
 #   mineclaw-web-release restart  [--timeout SEC]               # bridge, then ui, then api; health check
 #   mineclaw-web-release health   [--timeout SEC]
 #   mineclaw-web-release status
@@ -13,7 +13,7 @@
 #   /opt/mineclaw-bridge/releases/<id>/   MineClaw.ViewerBridge (self-contained linux-x64) + shards/defaults
 #   /opt/mineclaw-web/current, /opt/mineclaw-bridge/current -> releases/<id>   (atomic rename swap; the newest $KEEP stay)
 # Only the three web units are ever restarted here: mineclaw-bridge, mineclaw-web-ui, mineclaw-web-api. Never the bot.
-# Healthy = all three active + GET http://127.0.0.1:8080/api/health says ok with bridge "up" (Nest's signed ping of the
+# Healthy = all three active + GET http://127.0.0.1:<Web:Port, 8080>/api/health says ok with bridge "up" (Nest's signed ping of the
 # bridge's /v1/health, so it also proves the HMAC keys match) + the UI answers on 127.0.0.1:3000 and through :8080.
 set -euo pipefail
 export LC_ALL=C
@@ -24,9 +24,9 @@ UNIT_DIR=${MINECLAW_UNIT_DIR:-/etc/systemd/system}
 NODE=${MINECLAW_NODE:-/usr/local/bin/node}
 KEEP=${MINECLAW_KEEP:-3}
 UNITS=(mineclaw-bridge mineclaw-web-ui mineclaw-web-api)
-API_HEALTH=http://127.0.0.1:8080/api/health
+WEB_CONFIG=${MINECLAW_WEB_CONFIG:-/etc/mineclaw-web/config.json}
 
-TIMEOUT=120 UNIT_SRC="" NO_START=0 DRY=0
+TIMEOUT=120 UNIT_SRC="" NO_START=0 DRY=0 TO=""
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 current_of() { if [[ -L $1/current ]]; then basename "$(readlink "$1/current")"; fi; return 0; }
@@ -81,7 +81,7 @@ install_units() { # $1 dir holding the .service files
 }
 
 probe() { # one health probe; prints a summary line, exit 0 = healthy
-    "$NODE" --input-type=module - "$API_HEALTH" <<'EOF'
+    "$NODE" --input-type=module - "$WEB_CONFIG" <<'EOF'
 const get = async (url) => {
   const c = new AbortController();
   const t = setTimeout(() => c.abort(), 3000);
@@ -94,11 +94,15 @@ const get = async (url) => {
     clearTimeout(t);
   }
 };
-const [health, ui, viaApi] = await Promise.all([get(process.argv[2]), get('http://127.0.0.1:3000/login'), get('http://127.0.0.1:8080/login')]);
+import { readFileSync } from 'node:fs';
+let port = 8080; // Web:Port of the api's config (the installer's --port), else the default
+try { const p = (JSON.parse(readFileSync(process.argv[2], 'utf8')).Web ?? {}).Port; if (Number.isInteger(p) && p > 0) port = p; } catch { /* default */ }
+const api = `http://127.0.0.1:${port}`;
+const [health, ui, viaApi] = await Promise.all([get(`${api}/api/health`), get('http://127.0.0.1:3000/login'), get(`${api}/login`)]);
 let h = {};
 try { h = JSON.parse(health.body); } catch { /* not JSON yet */ }
 const ok = health.status === 200 && h.ok === true && h.bridge === 'up' && ui.status > 0 && ui.status < 500 && viaApi.status > 0 && viaApi.status < 500;
-console.log(`api ${health.status} ${h.ok === true ? `ok v${h.version} bridge ${h.bridge}` : health.body.slice(0, 120)}; ui ${ui.status || ui.body}; ui via :8080 ${viaApi.status || viaApi.body}`);
+console.log(`api ${health.status} ${h.ok === true ? `ok v${h.version} bridge ${h.bridge}` : health.body.slice(0, 120)}; ui ${ui.status || ui.body}; ui via :${port} ${viaApi.status || viaApi.body}`);
 process.exit(ok ? 0 : 1);
 EOF
 }
@@ -162,7 +166,13 @@ rollback() {
     local cur prev
     cur=$(current_of "$WEB")
     [[ -n $cur ]] || die "no current web release"
-    prev=$(releases_of "$WEB" | awk -v c="$cur" '$0 < c' | tail -n1)
+    if [[ -n $TO ]]; then # a named release (mineclaw-update rolls back to exactly what ran before a failed update)
+        [[ $TO =~ ^[0-9]{8}-[0-9]{6}$ && -d $WEB/releases/$TO ]] || die "no web release '$TO'"
+        [[ $TO != "$cur" ]] || die "releases/$TO is already current"
+        prev=$TO
+    else
+        prev=$(releases_of "$WEB" | awk -v c="$cur" '$0 < c' | tail -n1)
+    fi
     [[ -n $prev ]] || die "no web release older than $cur to roll back to"
     [[ -d $BRIDGE/releases/$prev ]] || die "bridge release $prev is gone (pruned?); redeploy instead"
     echo "rollback: releases/$cur -> releases/$prev (web + bridge together)"
@@ -198,6 +208,7 @@ while (($#)); do
         --units) UNIT_SRC=$2; shift 2 ;;
         --no-start) NO_START=1; shift ;;
         --dry-run) DRY=1; shift ;;
+        --to) TO=$2; shift 2 ;;
         *) args+=("$1"); shift ;;
     esac
 done

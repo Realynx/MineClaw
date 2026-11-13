@@ -8,6 +8,7 @@
  */
 import type { z } from 'zod';
 import { WebHostingResponse, WebHostingSaveRequest } from './webHosting.js';
+import { SystemUpdateRequest, SystemUpdateStatus, SystemVersion } from './system.js';
 import {
   HumanSkinSettings, HumanSkinSave, HumanSkinQuery, HumanSkinFeed,
   PawnSkins, SkinUploadRequest, SkinDeleteRequest, SkinAssignRequest, SkinLookupRequest, SkinSaved,
@@ -402,6 +403,24 @@ export const ROUTES = {
     supervisor: null,
     audit: null,
     summary: 'The web audit log (logins, chat lines, writes), newest first.',
+  }),
+
+  // ---------- version and update checker (Nest-native; docs/web/api.md §10) ----------
+  'system.version': get('/api/system/version', {
+    access: 'authenticated', response: SystemVersion, responseKind: 'json', bridge: null, supervisor: null, audit: null,
+    summary: 'The running MineClaw version, commit and install kind (`MINECLAW_INSTALL_KIND`).',
+  }),
+  'system.update': get('/api/system/update', {
+    access: 'authenticated', response: SystemUpdateStatus, responseKind: 'json', bridge: null, supervisor: null, audit: null,
+    summary: 'Update checker: the newest GitHub release and its notes, whether this install is behind, and how to update it.',
+  }),
+  'system.updateCheck': post('/api/system/update/check', {
+    access: 'admin', response: SystemUpdateStatus, responseKind: 'json', bridge: null, supervisor: null, audit: null,
+    summary: 'Checks GitHub now (at most once a minute; 429 otherwise or while GitHub rate-limits).',
+  }),
+  'system.updateRequest': post('/api/system/update', {
+    access: 'admin', body: SystemUpdateRequest, response: SystemUpdateStatus, responseKind: 'json', bridge: null, supervisor: null, audit: 'system_update',
+    summary: 'systemd installs: asks the root updater to install the latest release (writes `request.json`); 409 while one is pending or running.',
   }),
 
   // ---------- db reads (bridge-native) ----------

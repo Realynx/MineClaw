@@ -56,10 +56,12 @@ public static partial class AppHost
     }
 
     /// <summary>The configuration a run starts from: the bound settings and this process's log/telemetry directories.</summary>
+    /// <param name="SetupProblems">Non-empty = the config check failed and this run waits in <see cref="SetupMode"/> for the web panel.</param>
     private sealed record StartupConfig(AppCli Cli, string Root, IConfigurationRoot Config, AppSettings Settings, string LogDir, string TelemetryDir,
-        string MainLogDir);
+        string MainLogDir, IReadOnlyList<string> SetupProblems);
 
-    /// <summary>Config → settings → a clone's own overrides → the config check → the directories; null = exit with a config error.</summary>
+    /// <summary>Config → settings → a clone's own overrides → the config check (a failed one waits in setup mode when it can) → the
+    /// directories; null = exit with a config error.</summary>
     private static StartupConfig? Configure(AppCli cli, string root)
     {
         if (BuildConfig(cli, root) is not { } config) return null;
@@ -70,8 +72,14 @@ public static partial class AppHost
         var (logDir, telemetryDir) = (settings.LogDir, settings.TelemetryDir);
         var mainLogDir = logDir;
         if (cli.CloneName != null) (logDir, telemetryDir) = CloneMode.Prepare(cli.CloneName, settings.Mc, settings.Agent, settings.Hive, logDir, telemetryDir);
-        if (!ConfigIsValid(settings.Mc, settings.Agent) || !CreateDirectories(settings.Agent.DataDirectory, logDir, telemetryDir)) return null;
-        return new StartupConfig(cli, root, config, settings, logDir, telemetryDir, mainLogDir);
+        var (problems, setup) = SetupMode.Check(cli, config, settings);
+        if (problems.Count > 0 && !setup)
+        {
+            ReportConfigProblems(problems);
+            return null;
+        }
+        if (!CreateDirectories(settings.Agent.DataDirectory, logDir, telemetryDir)) return null;
+        return new StartupConfig(cli, root, config, settings, logDir, telemetryDir, mainLogDir, setup ? problems : []);
     }
 
     /// <summary>With logging up: the provider checks, the game version, then the clone's or main's run.</summary>
@@ -81,10 +89,14 @@ public static partial class AppHost
         var (cli, root, settings) = (s.Cli, s.Root, s.Settings);
         var (mc, agentOptions, botOptions, host, hive) = (settings.Mc, settings.Agent, settings.Bot, settings.Host, settings.Hive);
         var (telemetryOptions, supervisorOptions, bodiesOptions) = (settings.Telemetry, settings.Supervisor, settings.Bodies);
+        if (s.SetupProblems.Count > 0) return await SetupMode.RunAsync(s.Config, settings, s.SetupProblems, useTui, log, signals);
         if (agentOptions.Llm.MockInUse)
             log.LogWarning("MOCK LLM provider enabled: deterministic offline script replies, not a real language model");
         // -------------------------------------------------------- key check (models API: free)
-        if (!cli.NoKeyCheck && await CheckKeysAsync(agentOptions.Llm, useTui, log, signals.Token) is { } keyFailed) return keyFailed;
+        if (!cli.NoKeyCheck && await CheckKeysAsync(agentOptions.Llm, useTui, log, signals.Token) is { } keyFailed)
+            return keyFailed == ExitCodes.Auth && SetupMode.Applies(cli, s.Config, supervisorOptions) // a rejected key: fix it in the web panel
+                ? await SetupMode.RunAsync(s.Config, settings, [SetupMode.KeyRejected], useTui, log, signals)
+                : keyFailed;
         if (cli.CloneName == null) WarnIfBrainIsNotOpus(agentOptions.Llm, log);
         if (cli.CloneName == null) foreach (var note in ConfigCheck.Notes(mc, agentOptions)) log.LogWarning("{Note}", note);
         // The game version, once, before any client graph exists (docs/design/multi-version.md): config, else a server ping.
@@ -114,15 +126,12 @@ public static partial class AppHost
         }
     }
 
-    /// <summary>False after listing on the console what the config needs.</summary>
-    private static bool ConfigIsValid(MinecraftSettings mc, AgentOptions agentOptions)
+    /// <summary>Lists on the console what the config needs.</summary>
+    private static void ReportConfigProblems(IReadOnlyList<string> problems)
     {
-        var problems = ConfigCheck.Validate(mc, agentOptions);
-        if (problems.Count == 0) return true;
         Console.Error.WriteLine("MineClaw can't start, the config needs attention:");
         foreach (var p in problems) Console.Error.WriteLine("  - " + p);
         Console.Error.WriteLine("Edit appsettings.json (copy appsettings.example.json), pass --config <file>, or set env vars like MINECLAW_Agent__Llm__ApiKey.");
-        return false;
     }
 
     /// <summary>The data, log and telemetry directories; false after telling the console why one can't be made.</summary>

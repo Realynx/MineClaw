@@ -25,6 +25,9 @@ const OWN_FLOW: ReadonlySet<RouteId> = new Set([
   // A delete needs an uploaded id, a lookup the official-skins setting and Mojang: skin-library.test.ts runs both flows.
   'skins.delete',
   'skins.lookup',
+  // The update checker is off in tests (no GitHub); system-routes.test.ts runs both with a fake fetch.
+  'system.updateCheck',
+  'system.updateRequest',
 ]);
 
 const OVERRIDES: Partial<

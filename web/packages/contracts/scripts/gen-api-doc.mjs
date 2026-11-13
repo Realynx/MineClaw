@@ -15,6 +15,7 @@ const n = (s) => (s ? `\`${names.get(s) ?? '(inline)'}\`` : '');
 
 const groups = [
   ['Setup, auth and web audit (Nest-native)', (id) => id === 'health' || id.startsWith('setup.') || id.startsWith('auth.') || id.startsWith('audit.')],
+  ['Version and updates (Nest-native, §10)', (id) => id.startsWith('system.')],
   [
     'Db reads (bridge-native)',
     (id) => /^(overview|memory\.|search|raptor\.|personality|shards\.|scripts\.|designs\.)/.test(id),

@@ -12,6 +12,12 @@
        leaves the rest for native memory: SQLite, thread stacks, sockets). The resource ceiling refuses a spawn that wouldn't fit
        this heap (ResourceCeiling.Heap). Lands in MineClaw.App.runtimeconfig.json; DOTNET_GCHeapHardLimit (hex bytes) overrides
        it, e.g. 0xA0000000 (2.5 GiB) on a 4 GB host. -->
+  <!-- A release stamps -p:InformationalVersion=1.2.3+<sha> itself: keep it exactly (the SDK would append the commit again),
+       so the version flag and the Administration page's node info report what the release named. -->
+  <PropertyGroup Condition="'$(InformationalVersion)' != ''">
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+  </PropertyGroup>
+
   <PropertyGroup>
     <ServerGarbageCollection>false</ServerGarbageCollection>
     <ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>

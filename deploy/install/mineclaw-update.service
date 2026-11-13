@@ -1,0 +1,43 @@
+# /etc/systemd/system/mineclaw-update.service: installs the release the Web Explorer asked for (deploy/install/mineclaw-update.sh,
+# installed as /usr/local/sbin/mineclaw-update). Started by mineclaw-update.path only; never enabled by itself.
+#   journalctl -u mineclaw-update            # the run's output (also /var/log/mineclaw-update/update-<utc>.log)
+#   mineclaw-update status                   # the last result (status.json)
+# It runs as root on purpose: it swaps releases under /opt, refreshes units in /etc/systemd/system and helpers in
+# /usr/local/sbin, and restarts the MineClaw services. The hardening below keeps all of that (and systemctl/journalctl) working.
+[Unit]
+Description=MineClaw updater (installs the release the web asked for)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/mineclaw-update run-request
+SyslogIdentifier=mineclaw-update
+# Downloads + a health check of the bot (up to 180 s) and of the web (up to 120 s), and a rollback with its own checks.
+TimeoutStartSec=45min
+UMask=0022
+# ProtectHome hides /root: tools that look at $HOME (the .NET schema check, Node) get a root-owned dir instead.
+Environment=HOME=/var/lib/mineclaw-update
+
+# ---- hardening (root, but no kernel/devices/home access; /usr stays read-only apart from /usr/local) ----
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectHome=yes
+ProtectSystem=true
+ReadWritePaths=-/usr/local
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+# HTTPS downloads, systemctl/journald (AF_UNIX), and glibc's address lookup (AF_NETLINK).
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+# Not set on purpose: MemoryDenyWriteExecute (the health probe runs Node, the schema check runs .NET: both JIT),
+# CapabilityBoundingSet (chown/setpriv/useradd need root's capabilities), SystemCallFilter (the installer runs many tools).

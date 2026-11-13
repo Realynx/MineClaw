@@ -41,6 +41,8 @@ import { CloudflareAccess } from './security/cf-access.js';
 import { securityHeaders } from './security/headers.js';
 import { TrustedProxies } from './security/client-ip.js';
 import { HumanSkins } from './skins/human-skins.js';
+import { UpdateChecker } from './system/update-checker.js';
+import { installKindOf, VERSION_INFO, type VersionInfo } from './version.js';
 import type { JWTVerifyGetKey } from 'jose';
 
 export interface CreateAppOptions {
@@ -51,6 +53,8 @@ export interface CreateAppOptions {
   cfAccessJwks?: JWTVerifyGetKey;
   /** Mock bridge stream tick (ms). */
   mockIntervalMs?: number;
+  /** Tests: the update checker's fetch, environment (MINECLAW_INSTALL_KIND, ...), version and first-check delay. */
+  system?: { fetch?: typeof fetch; env?: NodeJS.ProcessEnv; version?: VersionInfo; firstCheckDelayMs?: number };
 }
 
 export interface ApiApp {
@@ -68,6 +72,7 @@ export interface ApiApp {
     bridge: BridgeClient;
     hub: LiveHub;
     skins: HumanSkins;
+    updates: UpdateChecker;
     mock?: MockBridge;
   };
   listen(port?: number, host?: string): Promise<string>;
@@ -126,11 +131,24 @@ export async function createApp(config: ApiConfig, opts: CreateAppOptions = {}):
     validate: config.web.validateResponses,
     ...opts.hub,
   }, (world) => skins.observeWorld(world));
+  const systemEnv = opts.system?.env ?? process.env;
+  const updates = new UpdateChecker({
+    settings: config.web.updates,
+    dataDir: config.web.dataDir,
+    version: opts.system?.version ?? VERSION_INFO,
+    installKind: installKindOf(systemEnv),
+    env: systemEnv,
+    log: log.child({ ctx: 'updates' }),
+    clock,
+    fetch: opts.system?.fetch,
+    firstCheckDelayMs: opts.system?.firstCheckDelayMs,
+  });
   const trusted = new TrustedProxies(config.web);
   const setup = new SetupService(users, sessions, auth, audit, trusted, config.web.setup, clock, log);
   const dispatcher = new RouteDispatcher({
     hosting: new WebHostingSettings(config),
     skins,
+    updates,
     auth,
     setup,
     audit,
@@ -253,10 +271,11 @@ export async function createApp(config: ApiConfig, opts: CreateAppOptions = {}):
     server,
     config,
     log,
-    services: { db, users, sessions, auth, setup, audit, bridge, hub, skins, mock },
+    services: { db, users, sessions, auth, setup, audit, bridge, hub, skins, updates, mock },
     async listen(port = config.web.port, host = config.web.bind) {
       await app.listen(port, host);
       skins.start();
+      updates.start();
       if (tlsServer)
         await new Promise<void>((resolve, reject) => {
           const failed = (error: Error) => reject(error);
@@ -274,6 +293,7 @@ export async function createApp(config: ApiConfig, opts: CreateAppOptions = {}):
       closed = true;
       clearInterval(gc);
       skins.close();
+      updates.close();
       hub.close();
       sockets.close();
       for (const s of upgraded) s.destroy();

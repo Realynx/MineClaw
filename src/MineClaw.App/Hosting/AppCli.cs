@@ -44,6 +44,8 @@ public sealed record AppCli
     /// <summary>auto | simple | systemd | json.</summary>
     public string? LogFormat { get; init; }
     public bool Help { get; init; }
+    /// <summary>Print this build's informational version (e.g. <c>1.2.3+abc1234</c>) and exit.</summary>
+    public bool PrintVersion { get; init; }
     /// <summary>Print the db schema version this build opens (AgentDb migrations) and exit: deploy/ct-release.sh records it
     /// per release so a rollback never starts a build older than the live db (live 10-27: crash loop on schema v6).</summary>
     public bool PrintSchemaVersion { get; init; }
@@ -75,6 +77,7 @@ Usage: MineClaw.App [options]
   --tui                    force the terminal UI
   --stdin-commands         headless: also read console commands from stdin
   --config <file>          extra appsettings JSON layered over the defaults (env MINECLAW_CONFIG)
+  --version                print this build's version and exit
   --schema-version         print the db schema version this build opens and exit (deploy rollback guard)
   --data-dir <dir>         data directory (db, usage.json)        [Agent:DataDirectory]
   --log-dir <dir>          log + usage-*.jsonl directory          [Host:LogDirectory]
@@ -143,6 +146,7 @@ Exit codes: 0 clean, 1 crash, 2 config, 3 auth, 64 usage, 75 transient startup f
         ["--help"] = HelpOption,
         ["-?"] = HelpOption,
         ["--schema-version"] = (c, _) => c with { PrintSchemaVersion = true },
+        ["--version"] = (c, _) => c with { PrintVersion = true },
         ["--reset-memory"] = (c, _) => c with { ResetMemory = true },
         ["--pack"] = (c, a) => c with { ResetPack = a.Value() },
         ["--modes"] = ModesOption,

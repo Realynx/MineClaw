@@ -1,0 +1,346 @@
+# Release: build every artifact, test the three install paths against them, then publish.
+#
+#   tag vX.Y.Z           -> GitHub Release (latest), images :X.Y.Z :X.Y :latest, chart X.Y.Z
+#   tag vX.Y.Z-rc.N      -> the same as a prerelease (no :latest / :X.Y)
+#   tag vX.Y.Z-test.N    -> a DRAFT prerelease (images :X.Y.Z-test.N only): for trying the pipeline
+#   pull request / manual run without "publish" -> a dry run: everything is built and the installs are tested, nothing is
+#                           pushed or released (fork-safe: no secrets, read-only token)
+#
+# Version stamping: the .NET builds get InformationalVersion X.Y.Z+<sha>, every tarball a RELEASE.json, the images MINECLAW_VERSION.
+# Runbook: docs/release.md.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  pull_request:
+    paths:
+      - ".github/workflows/release.yml"
+      - "deploy/**"
+      - "tests/ci/**"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to build (X.Y.Z[-pre]); a dry run unless publish is set"
+        required: true
+        default: "0.0.0-dev.1"
+      publish:
+        description: "Publish (needs a matching tag vVERSION to exist)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  DOTNET_NOLOGO: "1"
+  DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+  NEXT_TELEMETRY_DISABLED: "1"
+  TURBO_TELEMETRY_DISABLED: "1"
+  REGISTRY: ghcr.io
+
+jobs:
+  meta:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      sha: ${{ steps.v.outputs.sha }}
+      publish: ${{ steps.v.outputs.publish }}
+      prerelease: ${{ steps.v.outputs.prerelease }}
+      draft: ${{ steps.v.outputs.draft }}
+      owner: ${{ steps.v.outputs.owner }}
+      minor: ${{ steps.v.outputs.minor }}
+    steps:
+      - id: v
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_PUBLISH: ${{ inputs.publish }}
+        run: |
+          set -euo pipefail
+          case "$GITHUB_EVENT_NAME" in
+            push) ver=${GITHUB_REF_NAME#v}; publish=true ;;
+            workflow_dispatch) ver=$INPUT_VERSION; publish=$INPUT_PUBLISH ;;
+            *) ver="0.0.0-ci.${GITHUB_RUN_NUMBER}"; publish=false ;;
+          esac
+          [[ $ver =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || { echo "::error::bad version '$ver'"; exit 1; }
+          if [[ $publish == true && $GITHUB_REPOSITORY_OWNER != Realynx && $GITHUB_EVENT_NAME != push ]]; then publish=false; fi
+          prerelease=false; draft=false
+          [[ $ver == *-* ]] && prerelease=true
+          [[ $ver == *-test* ]] && draft=true
+          minor=$(echo "$ver" | cut -d. -f1-2)
+          {
+            echo "version=$ver"; echo "sha=$GITHUB_SHA"; echo "publish=$publish"
+            echo "prerelease=$prerelease"; echo "draft=$draft"; echo "minor=$minor"
+            echo "owner=${GITHUB_REPOSITORY_OWNER,,}"
+          } >> "$GITHUB_OUTPUT"
+          echo "version $ver, publish $publish, prerelease $prerelease, draft $draft"
+
+  dotnet:
+    needs: meta
+    name: dotnet ${{ matrix.rid }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      matrix:
+        rid: [linux-x64, linux-arm64, win-x64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', 'Directory.Build.props') }}
+          restore-keys: nuget-${{ runner.os }}-
+      - run: sudo apt-get install -y --no-install-recommends zip >/dev/null
+      - name: Publish + package
+        run: deploy/release/package-dotnet.sh ${{ matrix.rid }} ${{ needs.meta.outputs.version }} ${{ needs.meta.outputs.sha }} out/assets out/stage
+      - name: Smoke-test the binary
+        if: matrix.rid == 'linux-x64'
+        run: |
+          set -euo pipefail
+          out/stage/linux-x64/mineclaw/MineClaw.App --version | tee /dev/stderr | grep -F "${{ needs.meta.outputs.version }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: assets-dotnet-${{ matrix.rid }}
+          path: out/assets
+          retention-days: 7
+      - uses: actions/upload-artifact@v4
+        if: startsWith(matrix.rid, 'linux-')
+        with:
+          name: stage-dotnet-${{ matrix.rid }}
+          path: out/stage
+          retention-days: 3
+
+  web:
+    needs: meta
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Build
+        working-directory: web
+        run: |
+          npm ci --no-audit --no-fund
+          npx turbo run build --concurrency=2 --filter=@mineclaw/api --filter=@mineclaw/web
+      - name: Assemble x64 + arm64
+        run: |
+          set -euo pipefail
+          for arch in x64 arm64; do
+            deploy/release/assemble-web.sh $arch ${{ needs.meta.outputs.version }} ${{ needs.meta.outputs.sha }} out/assets out/stage
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: assets-web
+          path: out/assets
+          retention-days: 7
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage-web
+          path: out/stage
+          retention-days: 3
+
+  installers:
+    needs: meta
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Stage installer assets
+        run: deploy/release/stage-installers.sh ${{ needs.meta.outputs.version }} out/assets
+      - uses: azure/setup-helm@v4
+      - name: Package the chart
+        run: |
+          set -euo pipefail
+          v=${{ needs.meta.outputs.version }}
+          helm lint deploy/helm/mineclaw
+          helm package deploy/helm/mineclaw --version "$v" --app-version "$v" -d out/assets
+      - uses: actions/upload-artifact@v4
+        with:
+          name: assets-installers
+          path: out/assets
+          retention-days: 7
+
+  images:
+    needs: [meta, dotnet, web]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: stage-*
+          path: out/stage
+          merge-multiple: true
+      - name: Docker build context
+        run: deploy/release/stage-docker.sh out/stage out/docker
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - name: Build amd64 images for the install tests
+        run: |
+          set -euo pipefail
+          v=${{ needs.meta.outputs.version }}
+          o=${{ needs.meta.outputs.owner }}
+          for img in server web; do
+            docker buildx build out/docker --platform linux/amd64 -f "out/docker/$img.Dockerfile" \
+              --build-arg VERSION="$v" --build-arg COMMIT=${{ needs.meta.outputs.sha }} \
+              -t "$REGISTRY/$o/mineclaw-$img:$v" --load
+          done
+          mkdir -p out/images
+          docker save "$REGISTRY/$o/mineclaw-server:$v" "$REGISTRY/$o/mineclaw-web:$v" | gzip -1 > out/images/images-amd64.tar.gz
+          ls -la out/images
+      - uses: actions/upload-artifact@v4
+        with:
+          name: images-amd64
+          path: out/images
+          retention-days: 3
+      - name: Log in to GHCR
+        if: needs.meta.outputs.publish == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Push multi-arch images (version tag only; :latest after the tests)
+        if: needs.meta.outputs.publish == 'true'
+        run: |
+          set -euo pipefail
+          v=${{ needs.meta.outputs.version }}
+          o=${{ needs.meta.outputs.owner }}
+          for img in server web; do
+            docker buildx build out/docker --platform linux/amd64,linux/arm64 -f "out/docker/$img.Dockerfile" \
+              --build-arg VERSION="$v" --build-arg COMMIT=${{ needs.meta.outputs.sha }} \
+              --label org.opencontainers.image.source=https://github.com/${{ github.repository }} \
+              -t "$REGISTRY/$o/mineclaw-$img:$v" --push
+          done
+
+  test-linux:
+    name: test install.sh (systemd)
+    needs: [meta, dotnet, web, installers]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: assets-*
+          path: out/assets
+          merge-multiple: true
+      - name: Install, re-install, update request, uninstall
+        run: sudo -E bash deploy/install/test/ci-install-test.sh "$PWD/out/assets"
+      - name: Journal on failure
+        if: failure()
+        run: sudo journalctl -u 'mineclaw*' --no-pager -n 300 || true
+
+  test-docker:
+    name: test docker compose
+    needs: [meta, images, installers]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: images-amd64
+          path: out/images
+      - uses: actions/download-artifact@v4
+        with:
+          name: assets-installers
+          path: out/assets
+      - run: gunzip -c out/images/images-amd64.tar.gz | docker load
+      - name: Install with the one-liner script, check health, uninstall
+        run: bash deploy/docker/test/ci-compose-test.sh "$PWD/out/assets" ${{ needs.meta.outputs.version }}
+
+  test-helm:
+    name: test helm chart (kind)
+    needs: [meta, images, installers]
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: images-amd64
+          path: out/images
+      - uses: actions/download-artifact@v4
+        with:
+          name: assets-installers
+          path: out/assets
+      - uses: azure/setup-helm@v4
+      - uses: helm/kind-action@v1
+        with:
+          cluster_name: mineclaw
+      - name: Load images, install the packaged chart, check health
+        run: |
+          set -euo pipefail
+          gunzip -c out/images/images-amd64.tar.gz | docker load
+          bash deploy/helm/test/ci-kind-test.sh "$PWD/out/assets/mineclaw-${{ needs.meta.outputs.version }}.tgz" \
+            ${{ needs.meta.outputs.version }} ${{ env.REGISTRY }}/${{ needs.meta.outputs.owner }} mineclaw
+
+  release:
+    needs: [meta, dotnet, web, installers, images, test-linux, test-docker, test-helm]
+    if: needs.meta.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: assets-*
+          path: out/assets
+          merge-multiple: true
+      - name: Checksums
+        working-directory: out/assets
+        run: |
+          set -euo pipefail
+          sha256sum -- * | grep -v ' SHA256SUMS$' > SHA256SUMS
+          cat SHA256SUMS
+      - uses: azure/setup-helm@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Push the chart
+        run: |
+          set -euo pipefail
+          echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
+          helm push out/assets/mineclaw-${{ needs.meta.outputs.version }}.tgz oci://$REGISTRY/${{ needs.meta.outputs.owner }}/charts
+      - name: Tag :X.Y and :latest (final releases only)
+        if: needs.meta.outputs.prerelease == 'false'
+        run: |
+          set -euo pipefail
+          v=${{ needs.meta.outputs.version }}
+          o=${{ needs.meta.outputs.owner }}
+          for img in server web; do
+            docker buildx imagetools create -t "$REGISTRY/$o/mineclaw-$img:${{ needs.meta.outputs.minor }}" \
+              -t "$REGISTRY/$o/mineclaw-$img:latest" "$REGISTRY/$o/mineclaw-$img:$v"
+          done
+      - name: GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          v=${{ needs.meta.outputs.version }}
+          flags=(--title "MineClaw $v" --generate-notes --notes-file out/notes.md --verify-tag)
+          [[ ${{ needs.meta.outputs.prerelease }} == true ]] && flags+=(--prerelease)
+          [[ ${{ needs.meta.outputs.draft }} == true ]] && flags+=(--draft)
+          [[ ${{ needs.meta.outputs.prerelease }} == false ]] && flags+=(--latest)
+          deploy/release/release-notes.sh "$v" ${{ needs.meta.outputs.owner }} "${{ github.repository }}" > out/notes.md
+          gh release create "v$v" "${flags[@]}" out/assets/*

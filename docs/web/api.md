@@ -278,6 +278,15 @@ Notes on specific routes:
 | `auth.stepUp` | `POST /api/auth/step-up` | authenticated | body `StepUpRequest` | `StepUpResponse` | Nest-native | – | step_up |
 | `audit.list` | `GET /api/audit` | admin | query `WebAuditQuery` | `WebAuditPage` | Nest-native | – | – |
 
+### Version and updates (Nest-native, §10)
+
+| Route id | Public route | Role | Request | Response | Bridge `/v1` | Supervisor | Audit |
+|---|---|---|---|---|---|---|---|
+| `system.version` | `GET /api/system/version` | authenticated | – | `SystemVersion` | Nest-native | – | – |
+| `system.update` | `GET /api/system/update` | authenticated | – | `SystemUpdateStatus` | Nest-native | – | – |
+| `system.updateCheck` | `POST /api/system/update/check` | admin | – | `SystemUpdateStatus` | Nest-native | – | – |
+| `system.updateRequest` | `POST /api/system/update` | admin | body `SystemUpdateRequest` | `SystemUpdateStatus` | Nest-native | – | system_update |
+
 ### Db reads (bridge-native)
 
 | Route id | Public route | Role | Request | Response | Bridge `/v1` | Supervisor | Audit |
@@ -1104,3 +1113,46 @@ web", for storage and the server-side changes.
 - **Audit.** The bot appends `{at, who, action, keys, reason, ok, note}` to `settings-audit.jsonl` next to the override file
   (0600): keys, never values. The web audit records the call as `admin_settings` with only the keys and the reason
   (`adminSettingsAuditSummary`). The bridge's write log never holds bodies.
+
+## 10. Version and update checker (added 2026-11-12)
+
+Nest-native (`web/apps/api/src/system/update-checker.ts`, contracts `system.ts`). Every signed-in user sees a notice in the app
+shell when a newer release exists ("MineClaw vX.Y.Z is available (you run vA.B.C)", release notes behind an expander, hidden per
+release in that browser). Administration → **Version and updates** shows the running version, the newest release, the last check
+and the update action.
+
+- **Version** (`GET /api/system/version`): env `MINECLAW_VERSION` (images set it) > `version` in `RELEASE.json` at the release root
+  (`<root>/RELEASE.json`, three levels above `apps/api/dist`) > the api `package.json`. `commit` and `built` come from
+  `RELEASE.json` (deploy-web.ps1 writes `{id, commit, built}` without a version). `installKind` is `MINECLAW_INSTALL_KIND`
+  (`systemd` | `docker` | `helm`; anything else or unset = `manual`).
+- **Config** `Web:Updates` (env `MINECLAW_WEB_Web__Updates__<Key>`):
+
+  | Key | Default | Notes |
+  |---|---|---|
+  | `Enabled` | true | false = no network at all; the status reports `enabled: false` and `mode: "none"` |
+  | `Repo` | `Realynx/MineClaw` | `owner/name` |
+  | `IntervalHours` | 12 | 1–168; the first check runs a minute after start |
+  | `Prereleases` | false | include `X.Y.Z-pre` releases (and ones GitHub marks prerelease) |
+  | `Dir` | `/var/lib/mineclaw-web/update` | systemd handshake directory (`request.json`, `status.json`) |
+
+- **Checking.** `GET https://api.github.com/repos/{Repo}/releases?per_page=20` with `User-Agent: mineclaw-update-check`,
+  `Accept: application/vnd.github+json` and `If-None-Match` (a 304 keeps the cached list). Drafts and tags that are not
+  `vX.Y.Z[-pre]` are skipped; the newest by semver precedence wins (a prerelease sorts before its release). One request at a
+  time; `X-RateLimit-Remaining: 0` (until `X-RateLimit-Reset`) and `Retry-After` pause all checks, forced ones included (429).
+  A failure is one warn line and `lastError`; it retries after 15 min, doubling up to the interval. The release list is cached
+  in memory and in `<Web:DataDir>/update-cache.json` (0640). Notes are cut at `RELEASE_NOTES_MAX` (16 000 characters,
+  `notesTruncated`); the UI renders them as markdown with React elements only (no raw HTML, http(s) links only).
+- **Updating** (`update.mode`):
+  - `trigger` (systemd): `POST /api/system/update {version}` (admin + CSRF) accepts only the latest known release, newer than the
+    running one. Nest writes `<Dir>/request.json` = `{"version","requestedBy","requestedAt"}` atomically (temp file + rename,
+    0640) and records a `system_update` audit entry (refusals too). The root `mineclaw-update.path` unit starts the updater, which
+    takes the repo only from `/etc/mineclaw/install.conf`, verifies checksums, installs, health-checks, rolls back on failure and
+    writes `<Dir>/status.json` (`UpdateRunStatus`: `running|succeeded|failed|rolled-back`, `message`, last `log` lines). 409 while
+    `request.json` exists or `status.json` says `running`; 409 too when `<Dir>` is missing (the updater is not installed). The
+    UI polls `GET /api/system/update` every 3 s while a request is pending or running.
+  - `command` (docker, helm): `update.command` is shown with a copy button; the web container has no docker socket or cluster RBAC.
+    Docker: `cd $MINECLAW_COMPOSE_DIR && sed -i '/^MINECLAW_VERSION=/d' .env && echo MINECLAW_VERSION=VER >> .env && docker compose pull && docker compose up -d`
+    (default dir `/opt/mineclaw-docker`). Helm: `helm upgrade $MINECLAW_HELM_RELEASE $MINECLAW_HELM_CHART --version VER -n $MINECLAW_HELM_NAMESPACE --reuse-values`
+    (defaults `mineclaw`, `oci://ghcr.io/realynx/charts/mineclaw`, `default`).
+  - `none` (manual installs and dev): the notice only.
+- `POST /api/system/update/check` (admin + CSRF) checks now, at most once a minute (429 otherwise), and returns the new status.

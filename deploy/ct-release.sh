@@ -3,7 +3,7 @@
 # /usr/local/sbin/mineclaw-release on every deploy. You can also run it by hand: pct exec 114 -- /usr/local/sbin/mineclaw-release status
 #
 #   mineclaw-release install <tarball> <release-id> [--unit FILE] [--no-start] [--timeout SEC]
-#   mineclaw-release rollback [--timeout SEC] [--dry-run] [--force]
+#   mineclaw-release rollback [--to ID] [--timeout SEC] [--dry-run] [--force]   (--to: that release instead of the next older)
 #                                                  # current -> the next older release, restart, health check; the db
 #                                                  # goes back to that release's backup when the live schema is newer
 #   mineclaw-release restart  [--timeout SEC]
@@ -41,10 +41,11 @@ TEST=${MINECLAW_RELEASE_TEST:-}
 UNIT=${MINECLAW_UNIT:-/etc/systemd/system/mineclaw.service}
 ETC=${MINECLAW_ETC:-/etc/mineclaw}
 KEEP=${MINECLAW_KEEP:-3}
-# Log lines the app writes once it is in the world (first connect, and every reconnect).
-JOIN_RE='joined .* as |in game:'
+# Log lines the app writes once it is in the world (first connect, and every reconnect), or once a fresh install waits for
+# its settings from the web panel (setup mode: healthy, the Administration page finishes the setup).
+JOIN_RE='joined .* as |in game:|setup mode:'
 
-TIMEOUT=180 SINCE="" UNIT_SRC="" NO_START=0 DRY=0 FORCE=0 START=0 NO_SDK=0
+TIMEOUT=180 SINCE="" UNIT_SRC="" NO_START=0 DRY=0 FORCE=0 START=0 NO_SDK=0 TO=""
 CONFIG=$ETC/appsettings.json
 
 die() { echo "ERROR: $*" >&2; exit 1; }
@@ -221,7 +222,13 @@ install_release() {
 rollback() {
     local cur prev live want bk aside cs
     cur=$(current_id)
-    prev=$(releases | awk -v c="$cur" '$0 < c' | tail -n1)
+    if [[ -n $TO ]]; then # a named release (mineclaw-update rolls back to exactly what ran before a failed update)
+        [[ $TO =~ ^[0-9]{8}-[0-9]{6}$ && -d $REL/$TO ]] || die "no release '$TO' in $REL"
+        [[ $TO != "$cur" ]] || die "releases/$TO is already current"
+        prev=$TO
+    else
+        prev=$(releases | awk -v c="$cur" '$0 < c' | tail -n1)
+    fi
     [[ -n $prev ]] || die "no release older than '${cur:-none}' to roll back to"
     live=$(db_schema "$DB")
     want=$(release_schema "$prev")
@@ -328,6 +335,7 @@ while (($#)); do
         --force) FORCE=1; shift ;;
         --start) START=1; shift ;;
         --no-sdk) NO_SDK=1; shift ;;
+        --to) TO=$2; shift 2 ;;
         *) args+=("$1"); shift ;;
     esac
 done

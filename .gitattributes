@@ -17,3 +17,8 @@
 **/*GoldenData.*.cs linguist-generated
 tests/MineClaw.Hive.Tests/StoryGolden/** linguist-generated
 third_party/** linguist-vendored
+# systemd units and extensionless helper scripts are installed on Linux as they are.
+*.service text eol=lf
+*.path text eol=lf
+deploy/viewer/mineclaw-web-users text eol=lf
+deploy/install/release-assets.txt text eol=lf

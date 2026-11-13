@@ -11,6 +11,7 @@ import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/primitives';
 import { Tooltip } from '@/components/ui/overlays';
 import { initViewerSettings } from '@/features/settings/store';
+import { UpdateBanner } from '@/features/system/UpdateBanner';
 import { CommandPalette } from './CommandPalette';
 import { Header } from './Header';
 import { NAV } from './nav';
@@ -231,6 +232,7 @@ export function Shell({ children }: { children: ReactNode }) {
             </Button>
           }
         />
+        <UpdateBanner />
         {/* Contain absolute field labels in their scroll pane so focus/hash scrolling cannot move the shell. */}
         <main id="main" className="relative min-h-0 flex-1 overflow-auto overscroll-contain">
           {children}
