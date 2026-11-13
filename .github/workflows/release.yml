@@ -115,6 +115,7 @@ jobs:
         with:
           name: stage-dotnet-${{ matrix.rid }}
           path: out/stage
+          include-hidden-files: true  # Next's .next/ and the like
           retention-days: 3
 
   web:
@@ -148,6 +149,7 @@ jobs:
         with:
           name: stage-web
           path: out/stage
+          include-hidden-files: true  # Next's .next/ and the like
           retention-days: 3
 
   installers:

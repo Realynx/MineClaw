@@ -269,7 +269,7 @@ field() { # $1 key: a string field of the RELEASE.json on stdin
     sed -n "s/.*\"$1\"[[:space:]]*:[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p" | tail -n1
 }
 current_field() { # $1 app dir, $2 key
-    field "$2" < "$1/current/RELEASE.json" 2>/dev/null || true
+    [[ -f $1/current/RELEASE.json ]] && field "$2" < "$1/current/RELEASE.json" || true
 }
 same_release() { # $1 tarball, $2 top dir, $3 app dir: the same version + commit is already current
     [[ -L $3/current && -f $3/current/RELEASE.json ]] || return 1
@@ -280,12 +280,12 @@ same_release() { # $1 tarball, $2 top dir, $3 app dir: the same version + commit
 }
 
 # ------------------------------------------------------------------ host setup
-nologin() { command -v nologin 2>/dev/null || echo /usr/sbin/nologin; }
+nologin_shell() { local s; s=$(type -P nologin 2>/dev/null) || s=/usr/sbin/nologin; echo "$s"; }
 
 ensure_user() { # $1 user, $2 primary group, $3 home, $4 comment
     getent group "$2" >/dev/null || { groupadd --system "$2" && note "group $2: created"; }
     if id -u "$1" >/dev/null 2>&1; then return 0; fi
-    useradd --system --gid "$2" --home-dir "$3" --no-create-home --shell "$(nologin)" --comment "$4" "$1"
+    useradd --system --gid "$2" --home-dir "$3" --no-create-home --shell "$(nologin_shell)" --comment "$4" "$1"
     note "user $1: created"
 }
 

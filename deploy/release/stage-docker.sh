@@ -16,6 +16,7 @@ for pair in x64:amd64 arm64:arm64; do
     for tree in mineclaw mineclaw-bridge mineclaw-web; do
         [[ -d $src/$tree ]] || { echo "missing $src/$tree" >&2; exit 1; }
     done
+    [[ -f $src/mineclaw-web/apps/web/.next/standalone/apps/web/server.js ]] || { echo "no Next server.js in $src/mineclaw-web (hidden .next dropped?)" >&2; exit 1; }
     mkdir -p "$dst"
     cp -a "$src/mineclaw" "$src/mineclaw-bridge" "$src/mineclaw-web" "$dst/"
     # upload/download-artifact drops the exec bit
