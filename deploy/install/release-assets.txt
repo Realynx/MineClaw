@@ -1,0 +1,13 @@
+# Release assets the systemd installer (install.sh) and updater (mineclaw-update) need besides the tarballs and SHA256SUMS.
+# One per line: <asset name> <source path in the repo>. Assets are flat; every one of them must be listed in SHA256SUMS.
+install.sh                 deploy/install/install.sh
+mineclaw-update.sh         deploy/install/mineclaw-update.sh
+mineclaw-release.sh        deploy/ct-release.sh
+mineclaw-web-release.sh    deploy/viewer/web-release.sh
+mineclaw-web-users.sh      deploy/viewer/mineclaw-web-users
+mineclaw.service           deploy/mineclaw.service
+mineclaw-bridge.service    deploy/viewer/bridge/mineclaw-bridge.service
+mineclaw-web-api.service   deploy/viewer/web/mineclaw-web-api.service
+mineclaw-web-ui.service    deploy/viewer/web/mineclaw-web-ui.service
+mineclaw-update.service    deploy/install/mineclaw-update.service
+mineclaw-update.path       deploy/install/mineclaw-update.path

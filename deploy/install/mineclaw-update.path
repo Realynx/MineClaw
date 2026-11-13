@@ -1,0 +1,12 @@
+# /etc/systemd/system/mineclaw-update.path: starts mineclaw-update.service when the Web Explorer asks for an update
+# (Administration -> install), i.e. when the api writes /var/lib/mineclaw-web/update/request.json. Installed and enabled by
+# deploy/install/install.sh for the web component. The service takes the file away first, so it fires once per request.
+[Unit]
+Description=MineClaw update requests from the Web Explorer
+
+[Path]
+PathExists=/var/lib/mineclaw-web/update/request.json
+Unit=mineclaw-update.service
+
+[Install]
+WantedBy=paths.target
